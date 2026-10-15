@@ -1,0 +1,12 @@
+{
+  "id": "slate_roof",
+  "name": "Blue slate",
+  "category": "roof",
+  "footprint": [1, 1],
+  "height": 0.2,
+  "pattern": "shingles",
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.12, 1.0], "at": [0.0, 0.0, 0.0], "color": "#4f6683" },
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.12, 0.0], "color": "#3a4c63" }
+  ]
+}

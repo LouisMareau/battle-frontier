@@ -1,0 +1,11 @@
+{
+  "id": "barrel",
+  "name": "Barrel",
+  "category": "decoration",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "blocks": true,
+  "parts": [
+    { "shape": "cylinder", "size": [0.7, 0.9, 0.7], "at": [0.0, 0.0, 0.0], "color": "#8a5a34" }
+  ]
+}

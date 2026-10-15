@@ -1,0 +1,2 @@
+# shell scripts run on Linux (Cloudflare Pages, GitHub Actions): always LF
+*.sh text eol=lf

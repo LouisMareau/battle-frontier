@@ -1,0 +1,11 @@
+{
+  "id": "dirt",
+  "name": "Dirt path",
+  "order": 4,
+  "color": "#cfa96f",
+  "color2": "#b38d58",
+  "pattern": "dirt",
+  "side": "#8a6a48",
+  "walk": "walk",
+  "priority": 4
+}

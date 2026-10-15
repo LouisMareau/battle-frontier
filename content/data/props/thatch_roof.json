@@ -1,0 +1,12 @@
+{
+  "id": "thatch_roof",
+  "name": "Thatch",
+  "category": "roof",
+  "footprint": [1, 1],
+  "height": 0.2,
+  "pattern": "thatch",
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.12, 1.0], "at": [0.0, 0.0, 0.0], "color": "#cfae62" },
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.12, 0.0], "color": "#a8873f" }
+  ]
+}

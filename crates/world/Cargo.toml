@@ -1,0 +1,14 @@
+[package]
+name = "engine-world"
+description = "Maps: the grid of cells and levels, what stands on them, procedural trees, collisions, and their geometry"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "world"
+
+[dependencies]
+engine-content = { path = "../content" }
+glam.workspace = true
+bytemuck.workspace = true

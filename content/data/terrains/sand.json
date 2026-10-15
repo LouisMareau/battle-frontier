@@ -1,0 +1,11 @@
+{
+  "id": "sand",
+  "name": "Sand",
+  "order": 5,
+  "color": "#ecd9a1",
+  "color2": "#d6bd83",
+  "pattern": "sand",
+  "side": "#c2a46e",
+  "walk": "walk",
+  "priority": 3
+}

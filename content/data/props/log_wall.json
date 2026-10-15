@@ -1,0 +1,12 @@
+{
+  "id": "log_wall",
+  "name": "Logs",
+  "category": "wall",
+  "footprint": [1, 1],
+  "height": 2.0,
+  "pattern": "logs",
+  "parts": [
+    { "shape": "box", "size": [1.0, 2.0, 0.12], "at": [0.0, 0.0, 0.0], "color": "#8e5f39" },
+    { "shape": "box", "size": [1.0, 0.16, 0.14], "at": [0.0, 0.0, 0.0], "color": "#5e3d22" }
+  ]
+}

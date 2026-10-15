@@ -1,0 +1,12 @@
+{
+  "id": "plaster_wall",
+  "name": "Plaster",
+  "category": "wall",
+  "footprint": [1, 1],
+  "height": 2.0,
+  "pattern": "plaster",
+  "parts": [
+    { "shape": "box", "size": [1.0, 2.0, 0.12], "at": [0.0, 0.0, 0.0], "color": "#efe6d2" },
+    { "shape": "box", "size": [1.0, 0.16, 0.14], "at": [0.0, 0.0, 0.0], "color": "#b89f7e" }
+  ]
+}

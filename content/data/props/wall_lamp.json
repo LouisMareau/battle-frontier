@@ -1,0 +1,11 @@
+{
+  "id": "wall_lamp",
+  "name": "Wall lamp",
+  "category": "wall_decoration",
+  "footprint": [1, 1],
+  "height": 0.35,
+  "parts": [
+    { "shape": "box", "size": [0.06, 0.06, 0.24], "at": [0.0, 0.24, 0.12], "color": "#2f3238" },
+    { "shape": "sphere", "size": [0.2, 0.2, 0.2], "at": [0.0, 0.1, 0.24], "color": "#ffe9a8" }
+  ]
+}

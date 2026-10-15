@@ -1,0 +1,889 @@
+//! The Build tool: a building is drawn as a footprint of cells (any shape, one piece), then
+//! designed floor by floor (flooring, doors and windows along the outside walls, what
+//! stands inside, pillars, the walls' and the roof's styles), then confirmed into the map,
+//! where it blocks and its doors let the player through. Buildings already on the map are
+//! moved, turned, edited and deleted from the Select tool, which also anchors decorations
+//! on their outside walls.
+
+use content::{segment_ends, Anchor, Building, Floor, Opening, Pillar, Placed};
+use egui::{Color32, RichText};
+use glam::{Vec2, Vec3};
+use render::scene::{Shape, ShapeKind};
+
+use super::{hex, MapEditor};
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Step {
+    Footprint,
+    Design,
+}
+
+/// What a click does while designing.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Clicks {
+    Openings,
+    Inside,
+    Pillars,
+}
+
+pub(super) struct Draft {
+    pub b: Building,
+    /// the building on the map it replaces, when one is edited
+    pub editing: Option<usize>,
+    pub step: Step,
+    /// the footprint while it's drawn (map cells)
+    pub cells: Vec<(i32, i32)>,
+    /// the floor being designed (the ones above are cut away)
+    pub floor: usize,
+    pub clicks: Clicks,
+    /// doors, or windows
+    pub doors: bool,
+    /// a span of wall chosen for a door or window (its prop still to pick)
+    pub span: Option<Opening>,
+    pub drag_from: Option<(i32, i32, &'static str)>,
+    pub hover_edge: Option<(i32, i32, &'static str)>,
+    pub hover_point: Option<[i32; 2]>,
+    pub inside_prop: Option<String>,
+    pub pillar_prop: Option<String>,
+    /// the inside item selected on this floor
+    pub item: Option<usize>,
+    pub problems: Vec<String>,
+}
+
+/// Decorating a selected building's walls.
+pub(super) struct Decorate {
+    pub prop: Option<String>,
+    /// where the pointer is on a wall: (cell, side, floor, height)
+    pub hover: Option<([i32; 2], &'static str, usize, f64)>,
+}
+
+fn first_of(ed: &MapEditor, category: &str) -> Option<String> {
+    ed.content.props.iter().find(|p| p.category == category).map(|p| p.id.clone())
+}
+
+/// A new building's style: these if the content has them, else the first of each kind.
+fn default_of(ed: &MapEditor, category: &str, wanted: &str) -> String {
+    if ed.content.props.get(wanted).map(|p| p.category == category).unwrap_or(false) {
+        return wanted.into();
+    }
+    first_of(ed, category).unwrap_or_default()
+}
+
+fn ids_of(ed: &MapEditor, categories: &[&str]) -> Vec<(String, String, [u8; 2], String)> {
+    ed.content
+        .props
+        .iter()
+        .filter(|p| categories.contains(&p.category.as_str()))
+        .map(|p| (p.id.clone(), p.name.clone(), p.footprint, p.color(0).to_string()))
+        .collect()
+}
+
+fn swatch(ui: &mut egui::Ui, color: &str) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    ui.painter().rect_filled(r, 3.0, hex(color));
+}
+
+/// Shifts everything a building holds when its corner moves from `old` to its `at`, and
+/// drops what no longer fits the footprint.
+fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
+    let (dx, dz) = (old[0] - b.at[0], old[1] - b.at[1]);
+    let mut dropped = 0;
+    for f in b.floors.iter_mut() {
+        for o in f.openings.iter_mut() {
+            o.cell = [o.cell[0] + dx, o.cell[1] + dz];
+        }
+        for p in f.props.iter_mut() {
+            p.at = [p.at[0] + dx as f64, p.at[1] + dz as f64];
+        }
+    }
+    for p in b.pillars.iter_mut() {
+        p.corner = [p.corner[0] + dx, p.corner[1] + dz];
+    }
+    for a in b.anchors.iter_mut() {
+        a.cell = [a.cell[0] + dx, a.cell[1] + dz];
+    }
+    let copy = b.clone();
+    for f in b.floors.iter_mut() {
+        let before = f.openings.len() + f.props.len();
+        f.openings.retain(|o| copy.fits(o));
+        f.props.retain(|p| copy.has(p.at[0].floor() as i32, p.at[1].floor() as i32));
+        dropped += before - f.openings.len() - f.props.len();
+    }
+    let corners = copy.corners();
+    let before = b.pillars.len() + b.anchors.len();
+    b.pillars.retain(|p| corners.contains(&p.corner));
+    b.anchors.retain(|a| copy.is_edge(a.cell[0], a.cell[1], &a.side));
+    dropped + before - b.pillars.len() - b.anchors.len()
+}
+
+impl MapEditor {
+    /// The map cells every building but `except` covers.
+    fn taken(&self, except: Option<usize>) -> Vec<(i32, i32)> {
+        self.map.buildings.iter().enumerate().filter(|(i, _)| Some(*i) != except).flat_map(|(_, b)| b.map_cells()).collect()
+    }
+
+    pub(super) fn start_building(&mut self, editing: Option<usize>) {
+        let b = match editing.and_then(|i| self.map.buildings.get(i)) {
+            Some(b) => b.clone(),
+            None => {
+                let n = (1..).find(|n| !self.map.buildings.iter().any(|b| b.id == format!("building_{n}"))).unwrap_or(1);
+                Building {
+                    id: format!("building_{n}"),
+                    name: format!("Building {n}"),
+                    level: self.level,
+                    wall: default_of(self, "wall", "plaster_wall"),
+                    roof: default_of(self, "roof", "red_tile_roof"),
+                    floors: vec![Floor { tile: default_of(self, "floor", "wood_floor"), ..Default::default() }],
+                    ..Default::default()
+                }
+            }
+        };
+        let cells = b.map_cells();
+        self.draft = Some(Draft {
+            step: if editing.is_some() { Step::Design } else { Step::Footprint },
+            editing,
+            cells,
+            floor: 0,
+            clicks: Clicks::Openings,
+            doors: true,
+            span: None,
+            drag_from: None,
+            hover_edge: None,
+            hover_point: None,
+            inside_prop: first_of(self, "furniture"),
+            pillar_prop: first_of(self, "pillar"),
+            item: None,
+            problems: vec![],
+            b,
+        });
+        if let Some(i) = editing {
+            self.level = self.map.buildings[i].level;
+        }
+        self.tool = super::Tool::Build;
+        self.selected = None;
+        self.selected_building = None;
+        self.need_buildings = true;
+    }
+
+    fn open_design(&mut self) {
+        let taken = self.taken(self.draft.as_ref().and_then(|d| d.editing));
+        let Some(d) = &mut self.draft else { return };
+        if d.cells.is_empty() {
+            self.status = "Draw the building's cells first".into();
+            return;
+        }
+        let (at, rows) = Building::rows_for(&d.cells);
+        let old = d.b.at;
+        d.b.at = at;
+        d.b.cells = rows;
+        if !d.b.connected() {
+            self.status = "The cells must be one piece: every cell next to another".into();
+            return;
+        }
+        if d.cells.iter().any(|c| taken.contains(c)) {
+            self.status = "Another building is already there".into();
+            return;
+        }
+        let dropped = rebase(&mut d.b, old);
+        if dropped > 0 {
+            self.status = format!("{dropped} doors, windows or items didn't fit the new outline and were dropped");
+        }
+        d.step = Step::Design;
+        d.span = None;
+        self.need_buildings = true;
+    }
+
+    fn confirm_building(&mut self) {
+        let taken = self.taken(self.draft.as_ref().and_then(|d| d.editing));
+        let Some(d) = &mut self.draft else { return };
+        let content = self.content.clone();
+        let prop = |id: &str| content.props.get(id).map(|p| (p.category.clone(), p.footprint[0]));
+        let mut problems = d.b.problems(&prop);
+        let cells = d.b.map_cells();
+        if cells.iter().any(|&(x, z)| !self.map.inside(x, z)) {
+            problems.push("it goes off the map".into());
+        }
+        if cells.iter().any(|c| taken.contains(c)) {
+            problems.push("another building is already there".into());
+        }
+        if !problems.is_empty() {
+            d.problems = problems;
+            return;
+        }
+        let b = d.b.clone();
+        let editing = d.editing;
+        self.draft = None;
+        self.checkpoint();
+        let i = match editing {
+            Some(i) => {
+                self.map.buildings[i] = b;
+                i
+            }
+            None => {
+                self.map.buildings.push(b);
+                self.map.buildings.len() - 1
+            }
+        };
+        self.settle(i);
+        self.selected_building = Some(i);
+        self.status = format!("{} is on the map: walls block, doors let you in", self.map.buildings[i].name);
+    }
+
+    /// Levels the ground under a building to its floor and clears tree areas from it.
+    pub(super) fn settle(&mut self, i: usize) {
+        let b = &self.map.buildings[i];
+        let level = b.level;
+        for (x, z) in b.map_cells() {
+            if let Some(c) = self.map.index(x, z) {
+                if self.map.level[c] != level || self.map.area[c] != 0 {
+                    self.map.level[c] = level;
+                    self.map.area[c] = 0;
+                    self.need_ground = true;
+                    self.need_trees = true;
+                }
+            }
+        }
+        self.need_buildings = true;
+    }
+
+    // ------------------------------------------------------------ picking walls
+
+    /// The outline edge nearest a point on the floor's plane (within 0.6 cells).
+    fn nearest_edge(b: &Building, p: Vec3) -> Option<(i32, i32, &'static str)> {
+        let (px, pz) = (p.x - b.at[0] as f32, p.z - b.at[1] as f32);
+        let mut best: Option<(f32, (i32, i32, &'static str))> = None;
+        for (x, z, side) in b.edges() {
+            let (a, q) = segment_ends(x, z, side);
+            let (ax, az, qx, qz) = (a[0] as f32, a[1] as f32, q[0] as f32, q[1] as f32);
+            let t = (((px - ax) * (qx - ax) + (pz - az) * (qz - az)) / 1.0).clamp(0.0, 1.0);
+            let (cx, cz) = (ax + (qx - ax) * t, az + (qz - az) * t);
+            let d = ((px - cx).powi(2) + (pz - cz).powi(2)).sqrt();
+            if d < 0.6 && best.map(|(bd, _)| d < bd).unwrap_or(true) {
+                best = Some((d, (x, z, side)));
+            }
+        }
+        best.map(|(_, e)| e)
+    }
+
+    /// The opening from one edge to another along the same wall, as far as the wall goes.
+    fn span(b: &Building, from: (i32, i32, &'static str), to: (i32, i32, &'static str)) -> Opening {
+        let side = from.2;
+        let along_x = matches!(side, "n" | "s");
+        let (a, c) = if along_x { (from.0, to.0) } else { (from.1, to.1) };
+        let same_line = to.2 == side && if along_x { to.1 == from.1 } else { to.0 == from.0 };
+        let (lo, hi) = if same_line { (a.min(c), a.max(c)) } else { (a, a) };
+        let cell = |k: i32| if along_x { (k, from.1) } else { (from.0, k) };
+        // only as far as the wall goes without a break, from where the drag started
+        let mut s = a;
+        while s > lo && b.is_edge(cell(s - 1).0, cell(s - 1).1, side) {
+            s -= 1;
+        }
+        let mut e = a;
+        while e < hi && b.is_edge(cell(e + 1).0, cell(e + 1).1, side) {
+            e += 1;
+        }
+        let start = cell(s);
+        Opening { prop: String::new(), cell: [start.0, start.1], side: side.into(), width: (e - s + 1) as u8 }
+    }
+
+    /// The building's wall under a ray: (cell, side, floor, height above that floor).
+    pub(super) fn pick_wall(&self, b: &Building, origin: Vec3, dir: Vec3) -> Option<(f32, [i32; 2], &'static str, usize, f64)> {
+        let lh = self.level_height;
+        let mut best: Option<(f32, [i32; 2], &'static str, usize, f64)> = None;
+        for (x, z, side) in b.edges() {
+            let (p, q) = segment_ends(x, z, side);
+            let (p, q) = ([p[0] + b.at[0], p[1] + b.at[1]], [q[0] + b.at[0], q[1] + b.at[1]]);
+            let along_x = matches!(side, "n" | "s");
+            let (plane, d, o) = if along_x { (p[1] as f32, dir.z, origin.z) } else { (p[0] as f32, dir.x, origin.x) };
+            if d.abs() < 1e-5 {
+                continue;
+            }
+            let t = (plane - o) / d;
+            if t <= 0.0 {
+                continue;
+            }
+            let hit = origin + dir * t;
+            let a = if along_x { hit.x } else { hit.z };
+            let (a0, a1) = if along_x { (p[0] as f32, q[0] as f32) } else { (p[1] as f32, q[1] as f32) };
+            let base = b.level as f32 * lh;
+            let top = base + b.floors.len() as f32 * lh;
+            if a < a0 || a > a1 || hit.y < base || hit.y > top {
+                continue;
+            }
+            if best.map(|bb| t < bb.0).unwrap_or(true) {
+                let floor = (((hit.y - base) / lh).floor() as usize).min(b.floors.len() - 1);
+                let height = ((hit.y - base - floor as f32 * lh) as f64 * 20.0).round() / 20.0;
+                best = Some((t, [x, z], side, floor, height));
+            }
+        }
+        best
+    }
+
+    /// The nearest building along a ray (by its cells' columns).
+    pub(super) fn pick_building(&self, origin: Vec3, dir: Vec3) -> Option<(f32, usize)> {
+        let lh = self.level_height;
+        let mut best: Option<(f32, usize)> = None;
+        for (i, b) in self.map.buildings.iter().enumerate() {
+            let y0 = b.level as f32 * lh;
+            let y1 = y0 + b.floors.len() as f32 * lh + 1.0;
+            for (x, z) in b.map_cells() {
+                let (lo, hi) = (Vec3::new(x as f32, y0, z as f32), Vec3::new(x as f32 + 1.0, y1, z as f32 + 1.0));
+                let inv = dir.recip();
+                let (t1, t2) = ((lo - origin) * inv, (hi - origin) * inv);
+                let (tmin, tmax) = (t1.min(t2).max_element(), t1.max(t2).min_element());
+                if tmax >= tmin.max(0.0) && best.map(|(t, _)| tmin < t).unwrap_or(true) {
+                    best = Some((tmin, i));
+                }
+            }
+        }
+        best
+    }
+
+    // ------------------------------------------------------------ the view
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn build_view(&mut self, origin: Vec3, dir: Vec3, alt: bool, pressed: bool, down: bool, released: bool, over_view: bool) {
+        let lh = self.level_height;
+        if self.draft.is_none() {
+            if !(pressed && over_view) {
+                return;
+            }
+            self.start_building(None);
+        }
+        let step = self.draft.as_ref().map(|d| d.step).unwrap_or(Step::Footprint);
+        match step {
+            Step::Footprint => {
+                if let Some(d) = &mut self.draft {
+                    d.b.level = self.level;
+                }
+                if pressed && over_view {
+                    self.stroke = true;
+                }
+                if self.stroke && down {
+                    let taken = self.taken(self.draft.as_ref().and_then(|d| d.editing));
+                    if let Some(p) = Self::plane(origin, dir, self.level as f32 * lh) {
+                        let centre = (p.x.floor() as i32, p.z.floor() as i32);
+                        for c in self.line_to(centre) {
+                            for cell in self.brush_cells(c) {
+                                let remove = self.remove_cells != alt;
+                                let d = self.draft.as_mut().unwrap();
+                                if remove {
+                                    d.cells.retain(|&x| x != cell);
+                                } else if !d.cells.contains(&cell) && !taken.contains(&cell) {
+                                    d.cells.push(cell);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            Step::Design => {
+                let Some(d) = &self.draft else { return };
+                let y = (d.b.level as usize + d.floor) as f32 * lh;
+                let Some(p) = Self::plane(origin, dir, y) else { return };
+                let clicks = d.clicks;
+                match clicks {
+                    Clicks::Openings => {
+                        let d = self.draft.as_mut().unwrap();
+                        d.hover_edge = Self::nearest_edge(&d.b, p);
+                        if pressed && over_view {
+                            d.drag_from = d.hover_edge;
+                            d.span = None;
+                        }
+                        if let (Some(from), true) = (d.drag_from, down) {
+                            let to = d.hover_edge.unwrap_or(from);
+                            let mut s = Self::span(&d.b, from, to);
+                            // the asset picked before stays if it's as wide
+                            if let Some(old) = &d.span {
+                                if old.width == s.width {
+                                    s.prop = old.prop.clone();
+                                }
+                            }
+                            d.span = Some(s);
+                        }
+                        if released {
+                            d.drag_from = None;
+                        }
+                    }
+                    Clicks::Inside => {
+                        if !(pressed && over_view) {
+                            return;
+                        }
+                        let d = self.draft.as_ref().unwrap();
+                        let rel = Vec2::new(p.x - d.b.at[0] as f32, p.z - d.b.at[1] as f32);
+                        let floor = &d.b.floors[d.floor];
+                        let hit = floor.props.iter().position(|q| (Vec2::new(q.at[0] as f32, q.at[1] as f32) - rel).length() < 0.5);
+                        if let Some(i) = hit {
+                            self.draft.as_mut().unwrap().item = Some(i);
+                            return;
+                        }
+                        let Some(prop) = d.inside_prop.clone() else { return };
+                        let at = self.snap(&prop, 0.0, Vec3::new(rel.x, 0.0, rel.y), false);
+                        if !d.b.has(at[0].floor() as i32, at[1].floor() as i32) {
+                            self.status = "Inside the building's cells only".into();
+                            return;
+                        }
+                        let d = self.draft.as_mut().unwrap();
+                        let floor = &mut d.b.floors[d.floor];
+                        floor.props.push(Placed { prop, at, level: 0, turn: 0.0, scale: 1.0 });
+                        d.item = Some(floor.props.len() - 1);
+                        self.need_buildings = true;
+                    }
+                    Clicks::Pillars => {
+                        let d = self.draft.as_mut().unwrap();
+                        let rel = (p.x - d.b.at[0] as f32, p.z - d.b.at[1] as f32);
+                        d.hover_point = d.b.corners().into_iter().find(|c| (c[0] as f32 - rel.0).powi(2) + (c[1] as f32 - rel.1).powi(2) < 0.2);
+                        if pressed && over_view {
+                            if let (Some(c), Some(prop)) = (d.hover_point, d.pillar_prop.clone()) {
+                                match d.b.pillars.iter().position(|q| q.corner == c) {
+                                    Some(i) => {
+                                        d.b.pillars.remove(i);
+                                    }
+                                    None => d.b.pillars.push(Pillar { prop, corner: c }),
+                                }
+                                self.need_buildings = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn build_shapes(&self, shapes: &mut Vec<Shape>) {
+        let lh = self.level_height;
+        let rect = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
+        let Some(d) = &self.draft else {
+            if let Some(p) = self.plane_hit {
+                shapes.push(rect(p.x.floor() + 0.5, p.y + 0.04, p.z.floor() + 0.5, 1.0, 1.0, [0.4, 0.7, 1.0, 0.4]));
+            }
+            return;
+        };
+        match d.step {
+            Step::Footprint => {
+                let y = d.b.level as f32 * lh + 0.05;
+                let (at, rows) = Building::rows_for(&d.cells);
+                let probe = Building { at, cells: rows, ..Default::default() };
+                let whole = probe.connected();
+                for &(x, z) in &d.cells {
+                    let c = if whole { [0.3, 0.55, 1.0, 0.5] } else { [1.0, 0.35, 0.3, 0.5] };
+                    shapes.push(rect(x as f32 + 0.5, y, z as f32 + 0.5, 0.96, 0.96, c));
+                }
+                if let Some(p) = self.plane_hit {
+                    let size = (self.brush * 2 + 1) as f32;
+                    shapes.push(rect(p.x.floor() + 0.5, y + 0.01, p.z.floor() + 0.5, size, size, [1.0, 1.0, 1.0, 0.3]));
+                }
+            }
+            Step::Design => {
+                let y = (d.b.level as usize + d.floor) as f32 * lh + 0.06;
+                let (ox, oz) = (d.b.at[0] as f32, d.b.at[1] as f32);
+                let edge = |x: i32, z: i32, side: &str, color: [f32; 4], shapes: &mut Vec<Shape>| {
+                    let (p, q) = segment_ends(x, z, side);
+                    let (mx, mz) = (ox + (p[0] + q[0]) as f32 / 2.0, oz + (p[1] + q[1]) as f32 / 2.0);
+                    let (dx, dz) = content::side_step(side).unwrap_or((0, 0));
+                    let (w, dd) = if matches!(side, "n" | "s") { (1.0, 0.3) } else { (0.3, 1.0) };
+                    shapes.push(rect(mx + dx as f32 * 0.2, y, mz + dz as f32 * 0.2, w, dd, color));
+                };
+                if d.clicks == Clicks::Openings {
+                    for o in &d.b.floors[d.floor].openings {
+                        for (x, z) in Building::segments(o) {
+                            edge(x, z, &o.side, [0.3, 0.85, 0.4, 0.55], shapes);
+                        }
+                    }
+                    if let Some((x, z, side)) = d.hover_edge {
+                        edge(x, z, side, [1.0, 1.0, 1.0, 0.5], shapes);
+                    }
+                    if let Some(s) = &d.span {
+                        for (x, z) in Building::segments(s) {
+                            edge(x, z, &s.side, [1.0, 0.6, 0.15, 0.75], shapes);
+                        }
+                    }
+                }
+                if d.clicks == Clicks::Pillars {
+                    for c in d.b.corners() {
+                        let on = d.b.pillars.iter().any(|p| p.corner == c);
+                        let hover = d.hover_point == Some(c);
+                        let color = if hover { [1.0, 1.0, 1.0, 0.8] } else if on { [0.3, 0.85, 0.4, 0.6] } else { [1.0, 1.0, 1.0, 0.25] };
+                        shapes.push(rect(ox + c[0] as f32, y + 0.01, oz + c[1] as f32, 0.3, 0.3, color));
+                    }
+                }
+                if let (Clicks::Inside, Some(i)) = (d.clicks, d.item) {
+                    if let Some(p) = d.b.floors[d.floor].props.get(i) {
+                        shapes.push(rect(ox + p.at[0] as f32, y, oz + p.at[1] as f32, 1.0, 1.0, [1.0, 0.85, 0.2, 0.45]));
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------ the panel
+
+    pub(super) fn build_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(step) = self.draft.as_ref().map(|d| d.step) else {
+            ui.label(RichText::new("Click the map to start a building, then draw its cells.").color(Color32::GRAY));
+            if ui.button("New building").clicked() {
+                self.start_building(None);
+            }
+            return;
+        };
+        match step {
+            Step::Footprint => self.footprint_panel(ui),
+            Step::Design => self.design_panel(ui),
+        }
+    }
+
+    fn footprint_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("1. The footprint").strong());
+        ui.label(RichText::new(format!("Paint the cells it stands on, at level {}. Any shape, in one piece.", self.level)).color(Color32::GRAY));
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut self.remove_cells, false, "Add cells");
+            ui.radio_value(&mut self.remove_cells, true, "Remove");
+        });
+        ui.add(egui::Slider::new(&mut self.brush, 0..=2).text("brush").custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+        let d = self.draft.as_ref().unwrap();
+        let (at, rows) = Building::rows_for(&d.cells);
+        let whole = Building { at, cells: rows, ..Default::default() }.connected();
+        ui.label(format!("{} cells", d.cells.len()));
+        if !d.cells.is_empty() && !whole {
+            ui.label(RichText::new("Not one piece yet: every cell must touch another").color(Color32::from_rgb(255, 120, 100)));
+        }
+        let ok = !d.cells.is_empty() && whole;
+        ui.horizontal(|ui| {
+            let next = ui.add_enabled(ok, egui::Button::new("Next: the building"));
+            super::mark("uiNext", &next);
+            if next.clicked() {
+                self.open_design();
+            }
+            if ui.button("Cancel").clicked() {
+                self.draft = None;
+                self.need_buildings = true;
+            }
+        });
+    }
+
+    fn design_panel(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new("2. The building").strong());
+        let walls = ids_of(self, &["wall"]);
+        let roofs = ids_of(self, &["roof"]);
+        let tiles = ids_of(self, &["floor"]);
+        let doors = ids_of(self, &["door"]);
+        let windows = ids_of(self, &["window"]);
+        let inside = ids_of(self, &["furniture", "decoration", "stairs", "flora"]);
+        let pillars = ids_of(self, &["pillar"]);
+        let content = self.content.clone();
+        let mut changed = false;
+        let mut confirm = false;
+        let mut cancel = false;
+        let mut reshape = false;
+        {
+            let d = self.draft.as_mut().unwrap();
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                changed |= ui.text_edit_singleline(&mut d.b.name).changed();
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new("Floors").strong());
+            for f in 0..d.b.floors.len() {
+                let label = if f == 0 { "Floor 1 (ground)".to_string() } else { format!("Floor {}", f + 1) };
+                if ui.selectable_label(d.floor == f, label).clicked() && d.floor != f {
+                    d.floor = f;
+                    d.span = None;
+                    d.item = None;
+                    changed = true;
+                }
+            }
+            ui.horizontal(|ui| {
+                let add = ui.button("Add a floor").on_hover_text("A new floor on top, with the same flooring: a floor is never empty");
+                super::mark("uiAddFloor", &add);
+                if add.clicked() {
+                    let tile = d.b.floors.last().map(|f| f.tile.clone()).unwrap_or_default();
+                    d.b.floors.push(Floor { tile, ..Default::default() });
+                    d.floor = d.b.floors.len() - 1;
+                    changed = true;
+                }
+                if ui.add_enabled(d.b.floors.len() > 1, egui::Button::new("Remove the top floor")).clicked() {
+                    d.b.floors.pop();
+                    d.floor = d.floor.min(d.b.floors.len() - 1);
+                    let floors = d.b.floors.len();
+                    d.b.anchors.retain(|a| (a.floor as usize) < floors);
+                    changed = true;
+                }
+            });
+            ui.add_space(4.0);
+            ui.label(RichText::new(format!("Flooring (floor {})", d.floor + 1)).strong());
+            for (id, name, _, color) in &tiles {
+                ui.horizontal(|ui| {
+                    swatch(ui, color);
+                    if ui.selectable_label(d.b.floors[d.floor].tile == *id, name).clicked() {
+                        d.b.floors[d.floor].tile = id.clone();
+                        changed = true;
+                    }
+                });
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new("Clicking places").strong());
+            ui.horizontal(|ui| {
+                super::mark("uiOpenings", &ui.radio_value(&mut d.clicks, Clicks::Openings, "Doors & windows"));
+                super::mark("uiInside", &ui.radio_value(&mut d.clicks, Clicks::Inside, "Inside"));
+                super::mark("uiPillars", &ui.radio_value(&mut d.clicks, Clicks::Pillars, "Pillars"));
+            });
+            match d.clicks {
+                Clicks::Openings => {
+                    ui.horizontal(|ui| {
+                        if ui.radio(d.doors, "Doors").clicked() {
+                            d.doors = true;
+                            if let Some(s) = &mut d.span {
+                                s.prop.clear();
+                            }
+                        }
+                        let windows = ui.radio(!d.doors, "Windows");
+                        super::mark("uiWindows", &windows);
+                        if windows.clicked() {
+                            d.doors = false;
+                            if let Some(s) = &mut d.span {
+                                s.prop.clear();
+                            }
+                        }
+                    });
+                    ui.label(RichText::new("Drag along an outside wall: the span sets the width.").color(Color32::GRAY));
+                    if let Some(span) = d.span.clone() {
+                        let wall = match span.side.as_str() { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
+                        ui.label(format!("{} cell{} of the {wall} wall", span.width, if span.width == 1 { "" } else { "s" }));
+                        let list = if d.doors { &doors } else { &windows };
+                        let fitting: Vec<&(String, String, [u8; 2], String)> = list.iter().filter(|(_, _, fp, _)| fp[0] == span.width).collect();
+                        if fitting.is_empty() {
+                            ui.label(RichText::new(format!("No {} {} cells wide: drag a different span", if d.doors { "door" } else { "window" }, span.width)).color(Color32::from_rgb(255, 170, 90)));
+                        }
+                        for (k, (id, name, _, _)) in fitting.into_iter().enumerate() {
+                            let put = ui.button(format!("Put a {name} here"));
+                            if k == 0 {
+                                super::mark("uiPut", &put);
+                            }
+                            if put.clicked() {
+                                let floor = &mut d.b.floors[d.floor];
+                                let segs = Building::segments(&span);
+                                // what was in the way goes
+                                floor.openings.retain(|o| o.side != span.side || !Building::segments(o).iter().any(|s| segs.contains(s)));
+                                floor.openings.push(Opening { prop: id.clone(), ..span.clone() });
+                                d.span = None;
+                                changed = true;
+                            }
+                        }
+                    }
+                    let mut remove = None;
+                    for (i, o) in d.b.floors[d.floor].openings.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            let name = content.props.get(&o.prop).map(|p| p.name.clone()).unwrap_or_else(|| o.prop.clone());
+                            ui.label(format!("{name} · {:?} {}", o.cell, o.side));
+                            if ui.small_button("remove").on_hover_text("Remove").clicked() {
+                                remove = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove {
+                        d.b.floors[d.floor].openings.remove(i);
+                        changed = true;
+                    }
+                }
+                Clicks::Inside => {
+                    ui.label(RichText::new("Click inside to place; click an item to select it (Q/E turn, Delete).").color(Color32::GRAY));
+                    for (id, name, fp, _) in &inside {
+                        if ui.selectable_label(d.inside_prop.as_deref() == Some(id.as_str()), format!("{name}  {}×{}", fp[0], fp[1])).clicked() {
+                            d.inside_prop = Some(id.clone());
+                        }
+                    }
+                }
+                Clicks::Pillars => {
+                    ui.label(RichText::new("Click a point of the outline to put or take away a pillar.").color(Color32::GRAY));
+                    for (id, name, _, color) in &pillars {
+                        ui.horizontal(|ui| {
+                            swatch(ui, color);
+                            if ui.selectable_label(d.pillar_prop.as_deref() == Some(id.as_str()), name).clicked() {
+                                d.pillar_prop = Some(id.clone());
+                            }
+                        });
+                    }
+                }
+            }
+            ui.add_space(4.0);
+            ui.label(RichText::new("Walls").strong());
+            for (id, name, _, color) in &walls {
+                ui.horizontal(|ui| {
+                    swatch(ui, color);
+                    if ui.selectable_label(d.b.wall == *id, name).clicked() {
+                        d.b.wall = id.clone();
+                        changed = true;
+                    }
+                });
+            }
+            ui.label(RichText::new("Roof").strong());
+            for (id, name, _, color) in &roofs {
+                ui.horizontal(|ui| {
+                    swatch(ui, color);
+                    if ui.selectable_label(d.b.roof == *id, name).clicked() {
+                        d.b.roof = id.clone();
+                        changed = true;
+                    }
+                });
+            }
+            ui.add_space(6.0);
+            for p in &d.problems {
+                ui.label(RichText::new(p).color(Color32::from_rgb(255, 120, 100)));
+            }
+            ui.horizontal(|ui| {
+                let c = ui.button(RichText::new("Confirm the building").strong());
+                super::mark("uiConfirm", &c);
+                confirm = c.clicked();
+                reshape = ui.button("Change the footprint").clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
+        }
+        if changed {
+            self.need_buildings = true;
+            if let Some(d) = &mut self.draft {
+                d.problems.clear();
+            }
+        }
+        if reshape {
+            if let Some(d) = &mut self.draft {
+                d.cells = d.b.map_cells();
+                d.step = Step::Footprint;
+                self.level = d.b.level;
+            }
+        }
+        if confirm {
+            self.confirm_building();
+        }
+        if cancel {
+            self.draft = None;
+            self.need_buildings = true;
+        }
+    }
+
+    // ------------------------------------------------------------ buildings on the map
+
+    /// The selected building's inspector.
+    pub(super) fn building_inspector(&mut self, ui: &mut egui::Ui, i: usize) {
+        let decorations = ids_of(self, &["wall_decoration"]);
+        let b = self.map.buildings[i].clone();
+        ui.heading(&b.name);
+        ui.label(RichText::new(format!("{} · {} cells · {} floor{}", b.id, b.cells().len(), b.floors.len(), if b.floors.len() == 1 { "" } else { "s" })).color(Color32::GRAY));
+        ui.horizontal(|ui| {
+            if ui.button("Edit").clicked() {
+                self.start_building(Some(i));
+            }
+            if ui.button("Turn 90°").on_hover_text("Q / E").clicked() {
+                self.turn_building(i);
+            }
+            if ui.button("Delete").clicked() {
+                self.checkpoint();
+                self.map.buildings.remove(i);
+                self.selected_building = None;
+                self.decorate = None;
+                self.need_buildings = true;
+            }
+        });
+        if self.selected_building != Some(i) {
+            return;
+        }
+        ui.add_space(8.0);
+        let mut on = self.decorate.is_some();
+        let decorate = ui.checkbox(&mut on, "Decorate the walls").on_hover_text("Click an outside wall to anchor a decoration where you clicked");
+        super::mark("uiDecorate", &decorate);
+        if decorate.changed() {
+            self.decorate = on.then(|| Decorate { prop: decorations.first().map(|d| d.0.clone()), hover: None });
+        }
+        if let Some(dec) = &mut self.decorate {
+            for (id, name, _, color) in &decorations {
+                ui.horizontal(|ui| {
+                    swatch(ui, color);
+                    if ui.selectable_label(dec.prop.as_deref() == Some(id.as_str()), name).clicked() {
+                        dec.prop = Some(id.clone());
+                    }
+                });
+            }
+        }
+        let mut remove = None;
+        for (k, a) in b.anchors.iter().enumerate() {
+            ui.horizontal(|ui| {
+                let name = self.content.props.get(&a.prop).map(|p| p.name.clone()).unwrap_or_else(|| a.prop.clone());
+                ui.label(format!("{name} · floor {} · {:.2} up", a.floor + 1, a.height));
+                if ui.small_button("remove").clicked() {
+                    remove = Some(k);
+                }
+            });
+        }
+        if let Some(k) = remove {
+            self.checkpoint();
+            self.map.buildings[i].anchors.remove(k);
+            self.need_buildings = true;
+        }
+    }
+
+    pub(super) fn turn_building(&mut self, i: usize) {
+        let turned = self.map.buildings[i].turned();
+        let taken = self.taken(Some(i));
+        if turned.map_cells().iter().any(|&(x, z)| !self.map.inside(x, z) || taken.contains(&(x, z))) {
+            self.status = "No room to turn it there".into();
+            return;
+        }
+        self.checkpoint();
+        self.map.buildings[i] = turned;
+        self.settle(i);
+    }
+
+    /// Moves a building so its corner is at `at`, if it fits there.
+    pub(super) fn move_building(&mut self, i: usize, at: [i32; 2]) -> bool {
+        let mut b = self.map.buildings[i].clone();
+        b.at = at;
+        let taken = self.taken(Some(i));
+        if b.map_cells().iter().any(|&(x, z)| !self.map.inside(x, z) || taken.contains(&(x, z))) {
+            return false;
+        }
+        self.map.buildings[i] = b;
+        self.need_buildings = true;
+        true
+    }
+
+    /// Decorating: what the pointer's on, and a click anchors the decoration there.
+    pub(super) fn decorate_view(&mut self, origin: Vec3, dir: Vec3, pressed: bool) {
+        let Some(i) = self.selected_building else { return };
+        let hit = self.pick_wall(&self.map.buildings[i], origin, dir);
+        let Some(dec) = &mut self.decorate else { return };
+        dec.hover = hit.map(|(_, c, s, f, h)| (c, s, f, h));
+        if let (true, Some((cell, side, floor, height)), Some(prop)) = (pressed, dec.hover, dec.prop.clone()) {
+            self.checkpoint();
+            self.map.buildings[i].anchors.push(Anchor { prop, cell, side: side.into(), floor: floor as u8, height });
+            self.need_buildings = true;
+        }
+    }
+
+    pub(super) fn decorate_shapes(&self, shapes: &mut Vec<Shape>) {
+        let (Some(i), Some(dec)) = (self.selected_building, &self.decorate) else { return };
+        let Some((cell, side, floor, height)) = dec.hover else { return };
+        let b = &self.map.buildings[i];
+        let (mid, out) = world::buildings::segment_point(b, cell, side, floor, height as f32, self.level_height);
+        let (w, d) = if matches!(side, "n" | "s") { (0.8, 0.25) } else { (0.25, 0.8) };
+        shapes.push(Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: mid + out * 0.15, color: [1.0, 0.85, 0.2, 0.8], additive: false });
+    }
+
+    /// Q/E on an inside item while designing, Delete removes it.
+    pub(super) fn build_keys(&mut self, turn: f32, delete: bool) -> bool {
+        let Some(d) = &mut self.draft else { return false };
+        let Some(i) = d.item else { return false };
+        let floor = &mut d.b.floors[d.floor];
+        if i >= floor.props.len() {
+            return false;
+        }
+        if delete {
+            floor.props.remove(i);
+            d.item = None;
+        } else if turn != 0.0 {
+            floor.props[i].turn = ((floor.props[i].turn as f32 + turn).rem_euclid(360.0)) as f64;
+        } else {
+            return false;
+        }
+        self.need_buildings = true;
+        true
+    }
+}

@@ -1,0 +1,10 @@
+{
+  "id": "grass",
+  "name": "Grass",
+  "order": 1,
+  "color": "#6cbb4e",
+  "color2": "#4f9a3b",
+  "pattern": "grass",
+  "side": "#8a6a48",
+  "walk": "walk"
+}

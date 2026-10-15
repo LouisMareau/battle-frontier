@@ -1,0 +1,14 @@
+{
+  "id": "double_door",
+  "name": "Double door",
+  "category": "door",
+  "footprint": [2, 1],
+  "height": 1.7,
+  "parts": [
+    { "shape": "box", "size": [0.88, 1.7, 0.08], "at": [-0.45, 0.0, -0.05], "color": "#7a4e2c" },
+    { "shape": "box", "size": [0.88, 1.7, 0.08], "at": [0.45, 0.0, -0.05], "color": "#7a4e2c" },
+    { "shape": "box", "size": [1.86, 0.1, 0.14], "at": [0.0, 1.7, -0.04], "color": "#5e3c20" },
+    { "shape": "sphere", "size": [0.08, 0.08, 0.08], "at": [-0.1, 0.8, 0.0], "color": "#e2c15a" },
+    { "shape": "sphere", "size": [0.08, 0.08, 0.08], "at": [0.1, 0.8, 0.0], "color": "#e2c15a" }
+  ]
+}

@@ -1,0 +1,17 @@
+[package]
+name = "engine-core"
+description = "The game's rules: battles (timing, move levels, locks, rounds by Speed), creatures, data"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "rules"
+
+[dependencies]
+engine-content = { path = "../content" }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+engine-content = { path = "../content" }

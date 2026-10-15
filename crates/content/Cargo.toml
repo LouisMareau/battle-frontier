@@ -1,0 +1,17 @@
+[package]
+name = "engine-content"
+description = "The game's content: creatures, moves, types, abilities, items... as data files, in spaces (the game's own, and temporary imports)"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "content"
+
+[[bin]]
+name = "content"
+path = "src/bin/content.rs"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true

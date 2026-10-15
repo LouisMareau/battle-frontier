@@ -1,0 +1,194 @@
+# Battle Frontier
+
+An original creature-catching RPG and its engine, in Rust: one program for the browser
+(WebAssembly, on WebGPU or WebGL 2) and for the desktop, holding both the game and the
+tools to build it (a content browser and a map editor so far). "Battle Frontier" is a
+working name. Battles are its own: timed hits and blocks on a classic RPG menu, MP, moves
+that level up and change shape, locks on big attacks, rounds ordered by Speed, battles that
+grow up to 6v6, staged in 3D on the overworld map, day and night.
+
+Everything the game is made of is data, in `content/`. Until it has its own creatures and
+moves, the author develops with local placeholders in `temporary/`, a space that is never
+committed (see below): without them the game has no battles yet, and the editors work.
+
+## Running it
+
+Needs Rust (stable, with the `wasm32-unknown-unknown` target), [Trunk](https://trunkrs.dev)
+for the web build, Node 22+ and a Chrome for the checks. Build output goes to `build/` (set in `.cargo/config.toml`, with 8 parallel jobs).
+
+```bash
+cargo run -p engine-content --bin content -- check   # what's in content/ and temporary/, every broken reference
+cargo test -p engine-core              # the battle rules on their own fixtures: 15 tests, incl. 60 simulated battles and every mechanic
+cargo test -p engine-world             # maps: records round-trip, tree areas
+cargo run -p engine-game --release     # the desktop game (run from this folder, or set GAME_ROOT)
+trunk build --release                  # the site in build/dist/ (content/ only, never temporary/)
+node tools/serve.mjs                   # serves the site at http://localhost:8080, with temporary/ next to it
+node tools/check.mjs [seconds=60]      # plays battles in a headless Chrome (needs creatures and encounters), frame times -> screenshots/
+node tools/frames.mjs [encounter]      # frame times of one encounter, second by second
+node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
+node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
+node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
+node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from commands
+```
+
+The desktop build takes `--preset ID` (start that encounter), `--auto` (the AI plays your
+side), `--time morning|day|night`, `--levels 1-5` (every move at that level), `--maps [ID]` (the
+map editor), `--exit-after SECONDS` and `--stats` (frames per second and the worst frame
+gap, printed every second). The browser build takes the same as
+`<body data-cmd="start:ID;auto:1">` (also `editor`, `maps`, `map:ID` and `back`) and
+writes `data-state`, `data-round`, `data-fps`, `data-maxgap`, `data-pending` (the timing
+read in progress), and in the map editor `data-map`, `data-tool`, `data-level`,
+`data-props`, `data-areas`, `data-dirty`, `data-buildings`, `data-build`, `data-draft`,
+`data-selection`, `data-walker`, `data-zones`, `data-links`, `data-roamers`, `data-roaming`,
+`data-pool` and the places of a few buttons (`data-ui-*`) on `<body>`;
+`view:x,z,distance,yaw,pitch` points the editor's camera and `point:x,y,z` reports where a
+world point is on the screen (`data-point`): that's what the checks drive.
+
+## Content
+
+Two spaces with the same layout, `data/<collection>/<id>.json` (one record per file) and
+`assets/` (the pictures and sounds the records name):
+
+| Space | What | In git |
+|---|---|---|
+| `content/` | The game's own content. What the public game ships. | Yes |
+| `temporary/` | Local placeholders, imported by a private tool that isn't part of the repository: creatures, moves, abilities, items, types, pictures and battle maps to develop with until the game has its own. | Never (`.gitignore`) |
+| `private/` | The author's local tools and prototypes. | Never (`.gitignore`) |
+
+The collections: `types`, `creatures`, `moves`, `abilities`, `items`, `natures`,
+`growth_rates`, `egg_groups`, `regions`, `encounters`, `parties`, and for the world
+`settings`, `terrains`, `props`, `maps`, `spawns`; their fields are in `crates/content/src/model.rs`.
+`content format` rewrites `content/`'s records in the layout the editor saves (short lists
+on one line, one map row or placed prop per line), so every change reads as a small diff. Ids are lowercase slugs and records refer to each other by
+id. A record in `content/` replaces the temporary one with the same id, which is how
+placeholders get replaced one by one; the content browser (menu: "Browse the content")
+shows every record with its space and flags each one that's still temporary.
+
+Mechanics are named by `effect` keys the engine knows, never by ids or names: abilities
+and moves carry an `effect`, types list the statuses they're immune to, and the few rules
+about particular types (weather and water/fire, ground against electric paralysis...) find those
+types by id and simply don't apply if the content has none. A brand new ability can use an
+existing mechanic under its own name.
+
+The browser loads each space as one `bundle.json` (`content bundle content`, which Trunk
+runs before every web build; the import writes temporary/'s). A deployed site only has
+`content/`; locally, `tools/serve.mjs` adds `temporary/` next to it.
+
+## Maps and the map editor
+
+A map is a grid. Each cell has a terrain and the level its ground stands at; a level is
+the main character's height plus some room (`settings/world.json`: 1.5 + 0.5 cells), so
+floors of buildings will stack on the same steps. Cells are stored as rows of characters
+(`terrain` with a `legend`, `levels` as 0-9 then a-z, `areas` for tree areas), props as a
+list (`prop`, `at` in cells, `level`, `turn`, `scale`).
+
+- **Terrains** are painted per cell; the border between two is drawn by the ground shader
+  (the four nearest cells vote with noise and priority), so edges come out organic and
+  corners round without border tiles. Patterns (grass, meadow, tall grass, dirt, sand,
+  cobbles, rock, water) are procedural for now. Raised cells get cliff faces.
+- **Props** are the asset database: footprint in cells, height, whether they block, and a
+  stand-in model made of simple shapes (`parts`) until real models (glTF) come. Trees and
+  flora can't be scaled; the rest can be scaled down.
+- **Tree areas** are cells the player can't cross. The engine fills them with trees from
+  the area's settings (which trees, spacing, size range, density, a tree in every edge
+  cell, seed): the same trees every time.
+- **Buildings** have a footprint of cells (any shape, in one piece), floors one level each
+  (each with its flooring, never empty), walls along the outline in a style (plaster,
+  planks, bricks, stone, logs), doors and windows in them (an opening is as wide, in cells,
+  as its asset: a 2-cell span only offers 2-cell doors), what stands inside each floor,
+  pillars on points of the outline, a roof (gabled on a rectangle, flat with a parapet on
+  any other shape) and decorations anchored on the outside walls. Walls block and doors
+  let the player through; a building flattens the ground under it and clears trees.
+
+- **Zones** are areas creatures roam (`zone_cells` rows, `zones`), and **links** send
+  creatures out of a treeline (edge cells of a tree area) to a zone: they walk out of the
+  trees, roam the zone for a while, then walk back in. Creatures move freely, not cell by
+  cell, around whatever blocks, and stay inside their zone while roaming (`crates/world/src/spawn.rs`).
+  Who lives in each zone, by time of day, is the map's **spawns** record
+  (`spawns/<map>.json`), kept apart from the map because it names creatures: the editor
+  saves it in `temporary/` while it names placeholders, in `content/` once it only names
+  the game's own creatures (the check refuses a `content/` record naming a placeholder).
+
+The editor (menu: "Edit maps", or `--maps`): pick the level at the top (PageUp/PageDown);
+**Ground** paints terrain and, with "set the level", raises or lowers cells to it
+(right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
+it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props;
+**Trees** paints tree areas and edits their settings; **Build** draws a building's
+footprint, then designs it floor by floor (the floors above are cut away): flooring, doors
+and windows (drag along an outside wall, then pick an asset that wide), what's inside,
+pillars, walls and roof, then "Confirm the building". A building on the map is selected
+with Select: Edit, turn (Q/E), move (drag), delete, and "Decorate the walls" anchors a
+decoration where you click a wall. **Walk** puts a stand-in character on the map: the
+arrows move it cell by cell, and the building it enters is cut away above it. **Zones**
+paints zones (and who lives there: morning, day, night) or, in "Link treelines", takes a
+drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
+every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
+the view, the wheel zooms; Morning/Day/Night preview the light; Ctrl+Z/Ctrl+Y undo and
+redo. Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
+file. Maps made here are the game's own content.
+
+## Layout
+
+| Crate | What |
+|---|---|
+| `crates/content` (`content`) | The content model (`model.rs`; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
+| `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
+| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `shot.mjs`, `cdp.mjs` (headless Chrome). |
+
+## Frame pacing
+
+Nothing in a battle steps per frame: the rules are event-driven, animations and timing
+windows run on a millisecond clock (`performance.now()` in the browser), so the battle
+looks and plays the same at 60 or 120 Hz. Timing presses are stamped with the time of the
+frame that sees them (at most one frame late, against windows of ±110 ms or more). The
+renderer reuses its buffers (the sprite buffer only grows), so a frame allocates very little.
+The overworld, when it comes, will step its movement at a fixed 60 Hz. Every pipeline draws
+once offscreen at startup, so a browser that compiles shaders on first use doesn't do it
+mid-battle.
+
+Measured on 2026-10-14 (RTX 3080), a triple battle played by the AI:
+
+| Where | Frames per second | Worst frame, per second |
+|---|---|---|
+| Desktop build (DX12/Vulkan, 144 Hz screen), 20 s | 144-145 | 7-10 ms (one frame = 6.9 ms) |
+| Browser, headless Chrome on WebGPU, 60 s (`tools/frames.mjs`) | 56-58 (headless Chrome ticks at ~57 Hz) | 18-19 ms; one frame over 25 ms (25 ms, a battle restarting) |
+
+The only long frame on either is the first one, while the battle loads.
+
+## Not yet
+
+- The content browser only reads; the map editor saves maps (other records next).
+- Maps: creatures roam but don't battle yet (walking into one does nothing), no stairs or ramps between
+  levels (walking stays on one level, so upper floors aren't reachable on foot), no
+  interiors as separate maps, no lights at night; props are stand-in shapes.
+- Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
+- No overworld yet (walking, map loading and connections, scripts).
+- Sprites are battle pictures on billboards. The renderer can take 3D models later
+  (glTF), the battle code doesn't care.
+- No gamepad or touch yet (keyboard and mouse), no sound.
+
+## Checks and deployment
+
+Every pull request and push to `main` runs `.github/workflows/checks.yml` on GitHub: the
+tests, clippy with warnings as errors, `content check`, the site built by
+`tools/cloudflare-build.sh`, a check that the site holds nothing from `temporary/`, a scan
+for other games' brand names (`tools/check-names.py`; the names are kept as hashes in
+`tools/forbidden-names.sha256`, so they never appear in the repository),
+and, on pull requests, a `Signed-off-by` line on every commit (`tools/check-signoff.sh`).
+Nothing is deployed there and no secret is used, so pull requests from forks are safe.
+
+Cloudflare Pages deploys the site through its Git integration: framework "None", build
+command `bash tools/cloudflare-build.sh` (it installs Rust and Trunk when missing), output
+directory `build/dist`, production branch `main`; the repository's other branches get
+preview addresses.
+
+## License
+
+The code (everything outside `content/`) is under the MIT license or the Apache License
+2.0, at your choice (`LICENSE-MIT`, `LICENSE-APACHE`). The game's content (`content/`:
+records, maps, props, and pictures and sounds as they come) is under Creative Commons
+Attribution-ShareAlike 4.0 (`content/LICENSE`). Contributions are welcome as pull requests;
+see `CONTRIBUTING.md` (original work only, commits signed off).

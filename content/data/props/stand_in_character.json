@@ -1,0 +1,15 @@
+{
+  "id": "stand_in_character",
+  "name": "Stand-in character",
+  "category": "character",
+  "footprint": [1, 1],
+  "height": 1.5,
+  "parts": [
+    { "shape": "cylinder", "size": [0.18, 0.5, 0.18], "at": [-0.1, 0.0, 0.0], "color": "#2f3238" },
+    { "shape": "cylinder", "size": [0.18, 0.5, 0.18], "at": [0.1, 0.0, 0.0], "color": "#2f3238" },
+    { "shape": "cylinder", "size": [0.46, 0.5, 0.36], "at": [0.0, 0.48, 0.0], "color": "#3f6fa3" },
+    { "shape": "sphere", "size": [0.42, 0.42, 0.42], "at": [0.0, 0.96, 0.0], "color": "#f0c9a0" },
+    { "shape": "sphere", "size": [0.46, 0.24, 0.46], "at": [0.0, 1.2, -0.02], "color": "#d0473d" },
+    { "shape": "box", "size": [0.32, 0.04, 0.22], "at": [0.0, 1.26, 0.2], "color": "#d0473d" }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "id": "awning",
+  "name": "Awning",
+  "category": "wall_decoration",
+  "footprint": [1, 1],
+  "height": 0.1,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.06, 0.6], "at": [0.0, 0.0, 0.3], "color": "#e8eef0" },
+    { "shape": "box", "size": [0.25, 0.07, 0.6], "at": [-0.375, 0.0, 0.3], "color": "#d0473d" },
+    { "shape": "box", "size": [0.25, 0.07, 0.6], "at": [0.125, 0.0, 0.3], "color": "#d0473d" }
+  ]
+}

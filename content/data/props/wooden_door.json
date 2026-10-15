@@ -1,0 +1,12 @@
+{
+  "id": "wooden_door",
+  "name": "Wooden door",
+  "category": "door",
+  "footprint": [1, 1],
+  "height": 1.6,
+  "parts": [
+    { "shape": "box", "size": [0.8, 1.6, 0.08], "at": [0.0, 0.0, -0.05], "color": "#8a5a34" },
+    { "shape": "box", "size": [0.92, 0.1, 0.14], "at": [0.0, 1.6, -0.04], "color": "#6b4528" },
+    { "shape": "sphere", "size": [0.08, 0.08, 0.08], "at": [0.28, 0.76, 0.0], "color": "#e2c15a" }
+  ]
+}

@@ -1,0 +1,30 @@
+[package]
+name = "engine-game"
+description = "The game: one program for the browser (WebAssembly) and the desktop"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "game"
+path = "src/main.rs"
+
+[dependencies]
+engine-content = { path = "../content" }
+engine-core = { path = "../core" }
+engine-render = { path = "../render" }
+engine-world = { path = "../world" }
+eframe.workspace = true
+egui.workspace = true
+image.workspace = true
+glam.workspace = true
+log = "0.4"
+serde_json.workspace = true
+
+# The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ehttp = "0.7"
+js-sys = "0.3"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Performance", "Url", "Window"] }

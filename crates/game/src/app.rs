@@ -1,0 +1,816 @@
+//! The game's shell: the encounter menu, the content browser and the map editor, loading
+//! what a battle needs, the battle itself (3D scene + HUD), the results; frame-time
+//! statistics and the test hooks. Everything it shows comes from the content (both spaces).
+
+use std::collections::{BTreeMap, HashMap};
+use std::sync::Arc;
+
+use content::{Content, Space};
+use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Vec2};
+use render::map::{find_spot, MapScene};
+use render::scene::{Frame, SceneRenderer};
+use rules::battle::{Battle, BattleKind, BattleSetup, Outcome, Side};
+use rules::config::{Config, Period};
+use rules::dex::{Dex, Rng};
+use rules::mon::{create_mon, Mon, MonSpec};
+
+use crate::director::Director;
+use crate::editor::Browser;
+use crate::hud::{Hud, ACCENT, MUTED, TEXT};
+use crate::input::{Button, Input};
+use crate::mapedit::MapEditor;
+use crate::platform::{self, Files, Load};
+use crate::presets::{kind_label, kind_of, pool, spec, DEFAULT_BAG};
+use crate::stage::Stage;
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum TimeChoice {
+    Clock,
+    Fixed(Period),
+}
+
+pub struct Options {
+    pub time: TimeChoice,
+    /// 0 easy (wide windows), 1 normal, 2 hard
+    pub difficulty: usize,
+    pub assist: bool,
+    /// 0 fast, 1 normal, 2 slow
+    pub text: usize,
+    pub match_level: bool,
+    pub auto: bool,
+}
+
+/// Command-line options of the desktop build (the browser takes them as `<body data-cmd>`).
+#[derive(Default, Clone)]
+pub struct Cli {
+    pub preset: Option<String>,
+    pub auto: bool,
+    pub time: Option<String>,
+    pub exit_after: Option<f64>,
+    pub stats: bool,
+    pub levels: Option<u8>,
+    /// open the map editor (on that map, if not empty)
+    pub maps: Option<String>,
+}
+
+struct Loading {
+    encounter: usize,
+    period: Period,
+    /// the map's folder from the root (e.g. temporary/assets/maps/Route101)
+    map_dir: String,
+    scene: Option<MapScene>,
+    /// (file, texture key)
+    textures: Vec<(String, String)>,
+    player_key: Option<String>,
+    foe_key: Option<String>,
+}
+
+struct Results {
+    encounter: usize,
+    outcome: Option<Outcome>,
+    rounds: u32,
+    level_ups: Vec<String>,
+    caught: Vec<String>,
+    since: f64,
+}
+
+enum Screen {
+    Boot,
+    Menu,
+    Editor(Box<Browser>),
+    Maps(Box<MapEditor>),
+    Loading(Loading),
+    Battle(Box<Director>, usize),
+    Results(Box<Director>, Results),
+}
+
+/// Frame times: frames per second and the worst gap between two frames, per second.
+#[derive(Default)]
+struct Stats {
+    last: f64,
+    window_start: f64,
+    frames: u32,
+    worst: f64,
+    pub fps: u32,
+    pub worst_gap: f64,
+}
+
+pub struct GameApp {
+    files: Files,
+    content: Option<Arc<Content>>,
+    dex: Option<Arc<Dex>>,
+    party: Vec<MonSpec>,
+    /// the player's trainer picture, from the root
+    player_sprite: Option<String>,
+    options: Options,
+    screen: Screen,
+    input: Input,
+    stats: Stats,
+    icons: HashMap<String, egui::TextureHandle>,
+    error: Option<String>,
+    cli: Cli,
+    started_at: f64,
+    menu_sel: usize,
+    /// frames over 25 ms and what was going on (for the checks)
+    hitches: Vec<String>,
+}
+
+pub struct SceneCallback {
+    pub frame: Frame,
+}
+
+impl eframe::egui_wgpu::CallbackTrait for SceneCallback {
+    fn prepare(
+        &self,
+        device: &eframe::wgpu::Device,
+        queue: &eframe::wgpu::Queue,
+        screen: &eframe::egui_wgpu::ScreenDescriptor,
+        encoder: &mut eframe::wgpu::CommandEncoder,
+        resources: &mut eframe::egui_wgpu::CallbackResources,
+    ) -> Vec<eframe::wgpu::CommandBuffer> {
+        if let Some(r) = resources.get_mut::<SceneRenderer>() {
+            r.prepare(device, queue, encoder, &self.frame, screen.size_in_pixels);
+        }
+        vec![]
+    }
+
+    fn paint(&self, _info: egui::PaintCallbackInfo, pass: &mut eframe::wgpu::RenderPass<'static>, resources: &eframe::egui_wgpu::CallbackResources) {
+        if let Some(r) = resources.get::<SceneRenderer>() {
+            r.paint(pass);
+        }
+    }
+}
+
+fn decode(bytes: &[u8]) -> Result<(Vec<u8>, u32, u32), String> {
+    let img = image::load_from_memory(bytes).map_err(|e| e.to_string())?.to_rgba8();
+    let (w, h) = img.dimensions();
+    Ok((img.into_raw(), w, h))
+}
+
+impl GameApp {
+    pub fn new(cc: &eframe::CreationContext<'_>, cli: Cli) -> GameApp {
+        if let Some(rs) = cc.wgpu_render_state.as_ref() {
+            let scene = SceneRenderer::new(&rs.device, &rs.queue, rs.target_format);
+            rs.renderer.write().callback_resources.insert(scene);
+            let info = rs.adapter.get_info();
+            let backend = format!("{:?} on {}", info.backend, info.name);
+            platform::set_hook("backend", &backend);
+            log::info!("graphics: {backend}");
+        }
+        let mut style = (*cc.egui_ctx.global_style()).clone();
+        style.visuals = egui::Visuals::dark();
+        style.visuals.panel_fill = Color32::from_rgb(14, 20, 32);
+        cc.egui_ctx.set_global_style(style);
+        // the project folder on the desktop (content/ and temporary/ in it), the site's root in the browser
+        let root = if cfg!(target_arch = "wasm32") { ".".to_string() } else { std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()) };
+        let files = Files::new(&root);
+        if cfg!(target_arch = "wasm32") {
+            for space in Space::ALL {
+                files.request(&format!("{}/bundle.json", space.dir()));
+            }
+        }
+        let options = Options {
+            time: match cli.time.as_deref() {
+                Some("morning") => TimeChoice::Fixed(Period::Morning),
+                Some("day") => TimeChoice::Fixed(Period::Day),
+                Some("night") => TimeChoice::Fixed(Period::Night),
+                _ => TimeChoice::Clock,
+            },
+            difficulty: 1,
+            assist: true,
+            text: if cli.preset.is_some() { 0 } else { 1 },
+            match_level: true,
+            auto: cli.auto,
+        };
+        GameApp {
+            files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
+            stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
+        }
+    }
+
+    /// Both spaces: read from disk on the desktop, from their bundles in the browser.
+    fn load_content(&mut self) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
+            self.set_content(content::disk::load(&root));
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let mut texts = vec![];
+            for space in Space::ALL {
+                match self.files.get(&format!("{}/bundle.json", space.dir())) {
+                    Load::Pending => return,
+                    Load::Ready(b) => texts.push(String::from_utf8_lossy(&b).to_string()),
+                    Load::Failed(_) => {} // a space the site doesn't have
+                }
+            }
+            let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+            self.set_content(content::from_bundles(&refs));
+        }
+    }
+
+    fn set_content(&mut self, content: Content) {
+        match Dex::from_content(&content) {
+            Ok(dex) => {
+                if let Some(e) = content.parties.entry("player") {
+                    self.party = e.value.members.iter().map(|m| {
+                        let mut s = spec(m, 1);
+                        if let Some(lv) = self.cli.levels {
+                            s.move_levels = vec![lv; 4];
+                        } else if m.move_levels.is_empty() {
+                            s.move_levels.clear();
+                        }
+                        s
+                    }).collect();
+                    self.player_sprite = e.value.trainer_sprite.as_ref().map(|p| e.space.asset(p));
+                }
+                self.dex = Some(Arc::new(dex));
+                self.screen = Screen::Menu;
+            }
+            Err(e) => {
+                self.error = Some(format!("No battles yet: the content has no creatures ({e}). The editors work; add creatures to content/ (or local placeholders to temporary/)."));
+                self.screen = Screen::Menu;
+            }
+        }
+        self.content = Some(Arc::new(content));
+    }
+
+    fn period(&self) -> Period {
+        match self.options.time {
+            TimeChoice::Clock => Period::of_hour(platform::local_hour()),
+            TimeChoice::Fixed(p) => p,
+        }
+    }
+
+    fn config(&self) -> Config {
+        let mut c = Config::default();
+        let k = [1.6, 1.0, 0.65][self.options.difficulty];
+        c.timing.tap = (c.timing.tap * k).round();
+        c.timing.block = (c.timing.block * k).round();
+        c.timing.cast = (c.timing.cast * k).round();
+        c.timing.charge_window = (c.timing.charge_window * k).round();
+        c.timing.assist = self.options.assist;
+        c
+    }
+
+    /// The encounters in the menu's order: by region, then by their own order.
+    fn encounter_order(&self) -> Vec<usize> {
+        let Some(c) = &self.content else { return vec![] };
+        let entries = c.encounters.entries();
+        c.regions.iter().flat_map(|r| (0..entries.len()).filter(move |&i| entries[i].value.region == r.id)).collect()
+    }
+
+    fn start(&mut self, encounter: usize) {
+        let (Some(dex), Some(content)) = (self.dex.clone(), self.content.clone()) else { return };
+        let entry = &content.encounters.entries()[encounter];
+        let e = &entry.value;
+        let Some(region) = content.regions.entry(&e.region) else {
+            self.error = Some(format!("encounters/{}: no region {}", e.id, e.region));
+            return;
+        };
+        let map_dir = region.space.asset(&format!("maps/{}", region.value.map));
+        let period = self.period();
+        let mut keys: Vec<String> = self.party.iter().map(|s| s.species.clone()).collect();
+        keys.extend(e.party.iter().map(|m| m.creature.clone()));
+        for pool in e.pools.values() {
+            keys.extend(pool.iter().map(|(c, _)| c.clone()));
+        }
+        keys.sort();
+        keys.dedup();
+        let mut textures = vec![];
+        for k in &keys {
+            let Some(i) = dex.try_sp(k) else { continue };
+            let sp = &dex.species[i];
+            for (path, key) in [(&sp.front, format!("front/{k}")), (&sp.back, format!("back/{k}")), (&sp.icon, format!("icon:{k}"))] {
+                if let Some(p) = path {
+                    textures.push((p.clone(), key));
+                }
+            }
+        }
+        let player_key = self.player_sprite.clone();
+        let foe_key = e.trainer_sprite.as_ref().map(|p| entry.space.asset(p));
+        for p in player_key.iter().chain(foe_key.iter()) {
+            textures.push((p.clone(), p.clone()));
+        }
+        for (path, _) in &textures {
+            self.files.request(path);
+        }
+        self.files.request(&format!("{map_dir}/scene.json"));
+        self.screen = Screen::Loading(Loading { encounter, period, map_dir, scene: None, textures, player_key, foe_key });
+    }
+
+    /// Everything a battle needs is in: textures up, map built, battle made.
+    fn finish_loading(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) -> Result<bool, String> {
+        let Screen::Loading(load) = &mut self.screen else { return Ok(false) };
+        if load.scene.is_none() {
+            match self.files.get(&format!("{}/scene.json", load.map_dir)) {
+                Load::Ready(b) => {
+                    let scene = MapScene::parse(std::str::from_utf8(&b).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+                    for file in scene.sheets.values() {
+                        self.files.request(&format!("{}/{file}", load.map_dir));
+                    }
+                    load.scene = Some(scene);
+                }
+                Load::Failed(e) => return Err(e),
+                Load::Pending => return Ok(false),
+            }
+        }
+        let scene = load.scene.as_ref().unwrap();
+        let sheets: Vec<String> = scene.sheets.values().map(|f| format!("{}/{f}", load.map_dir)).collect();
+        for path in &sheets {
+            match self.files.get(path) {
+                Load::Pending => return Ok(false),
+                Load::Failed(e) => return Err(e),
+                _ => {}
+            }
+        }
+        for (path, _) in &load.textures {
+            if let Load::Pending = self.files.get(path) {
+                return Ok(false);
+            }
+        }
+        let rs = frame.wgpu_render_state().ok_or("no wgpu")?;
+        let mut guard = rs.renderer.write();
+        let renderer = guard.callback_resources.get_mut::<SceneRenderer>().ok_or("no scene renderer")?;
+        for (sheet, file) in &scene.sheets {
+            let key = format!("{}/{sheet}", scene.map);
+            if !renderer.has_texture(&key) {
+                if let Load::Ready(b) = self.files.get(&format!("{}/{file}", load.map_dir)) {
+                    let (rgba, w, h) = decode(&b)?;
+                    renderer.add_texture(&rs.device, &rs.queue, &key, &rgba, w, h, false);
+                }
+            }
+        }
+        for (path, key) in &load.textures {
+            let Load::Ready(b) = self.files.get(path) else { continue };
+            if let Some(species) = key.strip_prefix("icon:") {
+                if !self.icons.contains_key(species) {
+                    let (rgba, w, h) = decode(&b)?;
+                    let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                    self.icons.insert(species.to_string(), ctx.load_texture(format!("icon-{species}"), img, egui::TextureOptions::NEAREST));
+                }
+            } else if !renderer.has_texture(key) {
+                let (rgba, w, h) = decode(&b)?;
+                renderer.add_texture(&rs.device, &rs.queue, key, &rgba, w, h, false);
+            }
+        }
+        let spot = find_spot(scene);
+        if renderer.map_name.as_deref() != Some(scene.map.as_str()) {
+            renderer.clear_world();
+            renderer.load_map(&rs.device, scene, spot);
+        }
+        drop(guard);
+        let (encounter, period) = (load.encounter, load.period);
+        let (player_key, foe_key) = (load.player_key.clone(), load.foe_key.clone());
+        let director = self.make_battle(encounter, period, spot, player_key, foe_key);
+        self.screen = Screen::Battle(Box::new(director), encounter);
+        Ok(true)
+    }
+
+    fn make_battle(&self, encounter: usize, period: Period, spot: render::map::Spot, player_key: Option<String>, foe_key: Option<String>) -> Director {
+        let dex = self.dex.clone().unwrap();
+        let content = self.content.clone().unwrap();
+        let e = &content.encounters.entries()[encounter].value;
+        let cfg = self.config();
+        let mut rng = Rng::new((platform::now_ms() as u64 % 1_000_000_007) as u32 ^ 0x9e37_79b9);
+        let party: Vec<Mon> = self
+            .party
+            .iter()
+            .map(|s| {
+                let mut s = s.clone();
+                if self.options.match_level {
+                    s.level = e.level;
+                }
+                create_mon(&dex, &s, Some(&mut rng), &cfg)
+            })
+            .collect();
+        let kind = kind_of(e);
+        let mut wild_pool = vec![];
+        let foe_party: Vec<Mon> = if kind == BattleKind::Wild {
+            wild_pool = pool(e, period);
+            let (sp, lv) = rng.pick(&wild_pool).clone();
+            vec![create_mon(&dex, &MonSpec::new(&sp, lv), Some(&mut rng), &cfg)]
+        } else {
+            e.party.iter().map(|m| create_mon(&dex, &spec(m, e.move_level), Some(&mut rng), &cfg)).collect()
+        };
+        let battle = Battle::new(
+            dex,
+            BattleSetup {
+                kind, size: e.size.max(1) as usize, seed: rng.int(1, 1_000_000_000) as u32, config: cfg, period,
+                player_name: "You".into(), player_party: party, bag: BTreeMap::from(DEFAULT_BAG),
+                foe_name: e.name.clone(), foe_party, pool: wild_pool,
+            },
+        );
+        let mut stage = Stage::new(spot, period);
+        stage.add_people(player_key, foe_key);
+        let hud = Hud { icons: self.icons.clone(), ..Default::default() };
+        Director::new(battle, stage, hud, self.options.auto, [220.0, 420.0, 700.0][self.options.text])
+    }
+
+    /// The party keeps what its moves learned (XP), not the levels set for the encounter.
+    fn keep_xp(&mut self, battle: &Battle) {
+        for (i, spec) in self.party.iter_mut().enumerate() {
+            if let Some(m) = battle.side(Side::Player).party.get(i) {
+                spec.moves = m.moves.iter().map(|s| battle.dex.mv(s.id).key.clone()).collect();
+                spec.move_xp = m.moves.iter().map(|s| s.xp).collect();
+                spec.move_levels.clear();
+            }
+        }
+        for m in &battle.caught {
+            if self.party.len() < 6 {
+                self.party.push(MonSpec::new(&battle.dex.species[m.species].key, m.level));
+            }
+        }
+    }
+
+    fn commands(&mut self) {
+        let mut cmds: Vec<String> = vec![];
+        while let Some(c) = platform::take_command() {
+            cmds.extend(c.split(';').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()));
+        }
+        if let Some(p) = self.cli.preset.take() {
+            cmds.push(format!("start:{p}"));
+        }
+        if let Some(m) = self.cli.maps.take() {
+            cmds.push(if m.is_empty() { "maps".into() } else { format!("map:{m}") });
+        }
+        for c in cmds {
+            let (verb, arg) = c.split_once(':').unwrap_or((c.as_str(), ""));
+            match verb {
+                "start" => {
+                    let found = self.content.as_ref().and_then(|c| c.encounters.entries().iter().position(|e| e.value.id == arg));
+                    if let Some(i) = found {
+                        if matches!(self.screen, Screen::Menu | Screen::Results(..)) {
+                            self.start(i);
+                        }
+                    }
+                }
+                "auto" => {
+                    self.options.auto = arg == "1";
+                    if let Screen::Battle(d, _) = &mut self.screen {
+                        d.auto = self.options.auto;
+                    }
+                }
+                "time" => {
+                    self.options.time = match arg {
+                        "morning" => TimeChoice::Fixed(Period::Morning),
+                        "day" => TimeChoice::Fixed(Period::Day),
+                        "night" => TimeChoice::Fixed(Period::Night),
+                        _ => TimeChoice::Clock,
+                    }
+                }
+                "text" => self.options.text = match arg { "fast" => 0, "slow" => 2, _ => 1 },
+                "levels" => {
+                    if let Ok(lv) = arg.parse::<u8>() {
+                        for s in self.party.iter_mut() {
+                            s.move_xp.clear();
+                            s.move_levels = vec![lv; s.moves.len().max(4)];
+                        }
+                    }
+                }
+                "editor" => {
+                    if let (Screen::Menu, Some(c)) = (&self.screen, &self.content) {
+                        self.screen = Screen::Editor(Box::new(Browser::new(c.clone())));
+                    }
+                }
+                "maps" | "map" => {
+                    if let (Screen::Menu, Some(c)) = (&self.screen, &self.content) {
+                        let open = (!arg.is_empty()).then_some(arg);
+                        self.screen = Screen::Maps(Box::new(MapEditor::new(c.clone(), open, self.files.clone())));
+                    }
+                }
+                "view" => {
+                    if let Screen::Maps(ed) = &mut self.screen {
+                        ed.set_view(arg);
+                    }
+                }
+                "point" => {
+                    if let Screen::Maps(ed) = &mut self.screen {
+                        ed.probe(arg);
+                    }
+                }
+                "back" => {
+                    if let Screen::Maps(ed) = &self.screen {
+                        self.content = Some(ed.content());
+                    }
+                    if matches!(self.screen, Screen::Results(..) | Screen::Editor(_) | Screen::Maps(_)) {
+                        self.screen = Screen::Menu;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn frame_stats(&mut self, now: f64) {
+        let gap = now - self.stats.last;
+        if self.stats.last > 0.0 && gap > 25.0 {
+            let what = match &self.screen {
+                Screen::Battle(d, _) => format!("battle round {}", d.battle.round),
+                Screen::Results(..) => "results".into(),
+                Screen::Loading(_) => "loading".into(),
+                Screen::Editor(_) => "editor".into(),
+                Screen::Maps(_) => "map editor".into(),
+                _ => "menu".into(),
+            };
+            self.hitches.push(format!("{gap:.0}ms at {:.1}s {what}", (now - self.started_at) / 1000.0));
+            if self.hitches.len() > 30 {
+                self.hitches.remove(0);
+            }
+            platform::set_hook("hitches", &self.hitches.join("; "));
+            if self.cli.stats {
+                println!("hitch {}", self.hitches.last().unwrap());
+            }
+        }
+        let s = &mut self.stats;
+        if s.last > 0.0 {
+            s.worst = s.worst.max(now - s.last);
+        }
+        s.last = now;
+        s.frames += 1;
+        if now - s.window_start >= 1000.0 {
+            s.fps = s.frames;
+            s.worst_gap = s.worst;
+            s.frames = 0;
+            s.worst = 0.0;
+            s.window_start = now;
+            platform::set_hook("fps", &s.fps.to_string());
+            platform::set_hook("maxgap", &format!("{:.1}", s.worst_gap));
+            if self.cli.stats {
+                let state = match &self.screen {
+                    Screen::Battle(d, _) => format!("battle round {}", d.battle.round),
+                    Screen::Results(..) => "results".into(),
+                    Screen::Loading(_) => "loading".into(),
+                    Screen::Maps(_) => "map editor".into(),
+                    _ => "menu".into(),
+                };
+                println!("fps {} worst-gap-ms {:.1} {state}", s.fps, s.worst_gap);
+            }
+        }
+    }
+
+    fn menu_screen(&mut self, ui: &mut egui::Ui) {
+        let mut start = None;
+        let mut open_editor = false;
+        let mut open_maps = false;
+        let order = self.encounter_order();
+        let content = self.content.clone();
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28)).inner_margin(24.0)).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                ui.heading(RichText::new("Battle Frontier").size(28.0).strong().color(TEXT));
+                ui.label(RichText::new("Creature battles with timed hits and blocks, MP, moves that level up and change shape, locks on big attacks, rounds ordered by Speed. Each battle happens on its region's map.").color(MUTED));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Browse the content").clicked() {
+                        open_editor = true;
+                    }
+                    if ui.button("Edit maps").clicked() {
+                        open_maps = true;
+                    }
+                });
+                ui.add_space(10.0);
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Time of day").color(TEXT));
+                    let now = Period::of_hour(platform::local_hour()).name();
+                    for (label, t) in [(format!("Clock (now: {now})"), TimeChoice::Clock), ("Morning".into(), TimeChoice::Fixed(Period::Morning)), ("Day".into(), TimeChoice::Fixed(Period::Day)), ("Night".into(), TimeChoice::Fixed(Period::Night))] {
+                        ui.selectable_value(&mut self.options.time, t, label);
+                    }
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Timing windows").color(TEXT));
+                    for (i, l) in ["Easy", "Normal", "Hard"].iter().enumerate() {
+                        ui.selectable_value(&mut self.options.difficulty, i, *l);
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut self.options.assist, "Timing rings");
+                    ui.separator();
+                    ui.label(RichText::new("Text").color(TEXT));
+                    for (i, l) in ["Fast", "Normal", "Slow"].iter().enumerate() {
+                        ui.selectable_value(&mut self.options.text, i, *l);
+                    }
+                    ui.separator();
+                    ui.checkbox(&mut self.options.match_level, "Party matches each encounter's level");
+                    ui.checkbox(&mut self.options.auto, "AI plays your side");
+                });
+                ui.add_space(8.0);
+                let Some(content) = content else { return };
+                let names: Vec<String> = self.party.iter().map(|s| content.creatures.get(&s.species).map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone())).collect();
+                ui.label(RichText::new(format!("Your party: {}", names.join(", "))).color(MUTED));
+                ui.add_space(8.0);
+                let entries = content.encounters.entries();
+                for region in content.regions.iter() {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&region.name).size(18.0).strong().color(TEXT));
+                    ui.label(RichText::new(&region.note).color(MUTED).size(12.0));
+                    for (pos, &i) in order.iter().enumerate() {
+                        let e = &entries[i];
+                        if e.value.region != region.id {
+                            continue;
+                        }
+                        let sel = pos == self.menu_sel;
+                        let mut text = format!("{}   {}   Lv {}", kind_label(&e.value), e.value.name, e.value.level);
+                        if e.space == Space::Temporary {
+                            text += "   · temporary";
+                        }
+                        let b = egui::Button::new(RichText::new(text).size(14.0).color(TEXT)).fill(if sel { Color32::from_rgba_unmultiplied(255, 213, 74, 40) } else { Color32::from_white_alpha(10) }).min_size(Vec2::new(560.0, 30.0));
+                        if ui.add(b).clicked() {
+                            start = Some(i);
+                        }
+                        if !e.value.note.is_empty() {
+                            ui.label(RichText::new(&e.value.note).color(MUTED).size(11.5));
+                        }
+                    }
+                }
+                ui.add_space(12.0);
+                ui.label(RichText::new("A: Z / Space / Enter · B: X / Esc · d-pad: arrows · L / R: Q / E. Contact moves: press A at impact. Beams: hold A, release when the ring fills. Multi-hit: press A on every hit. Foe attacks: press A at impact to block.").color(MUTED).size(12.0));
+            });
+        });
+        // the keyboard picks an encounter too
+        let n = order.len().max(1);
+        if self.input.pressed(Button::Down) {
+            self.menu_sel = (self.menu_sel + 1) % n;
+        }
+        if self.input.pressed(Button::Up) {
+            self.menu_sel = (self.menu_sel + n - 1) % n;
+        }
+        if self.input.pressed(Button::A) && !order.is_empty() {
+            start = Some(order[self.menu_sel.min(order.len() - 1)]);
+        }
+        if open_editor {
+            if let Some(c) = &self.content {
+                self.screen = Screen::Editor(Box::new(Browser::new(c.clone())));
+                return;
+            }
+        }
+        if open_maps {
+            if let Some(c) = &self.content {
+                self.screen = Screen::Maps(Box::new(MapEditor::new(c.clone(), None, self.files.clone())));
+                return;
+            }
+        }
+        if let Some(i) = start {
+            self.start(i);
+        }
+    }
+
+    fn draw_scene(ui: &mut egui::Ui, director: &mut Director, now: f64) -> Rect {
+        let rect = ui.ctx().content_rect();
+        let frame = director.stage.frame(now, rect);
+        ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, SceneCallback { frame }));
+        rect
+    }
+
+    fn encounter_name(&self, i: usize) -> String {
+        self.content.as_ref().map(|c| c.encounters.entries()[i].value.name.clone()).unwrap_or_default()
+    }
+}
+
+impl eframe::App for GameApp {
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        let now = platform::now_ms();
+        let dt = ((now - self.stats.last).max(0.0) / 1000.0).min(0.05) as f32;
+        self.frame_stats(now);
+        let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
+        self.input.read(&ctx, now, timing_read);
+        if let Some(limit) = self.cli.exit_after {
+            if now - self.started_at > limit * 1000.0 {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
+        if self.content.is_none() {
+            self.load_content();
+        }
+        if self.content.is_some() {
+            self.commands();
+        }
+        let state = match &self.screen {
+            Screen::Boot => "boot",
+            Screen::Menu => "menu",
+            Screen::Editor(_) => "editor",
+            Screen::Maps(_) => "maps",
+            Screen::Loading(_) => "loading",
+            Screen::Battle(..) => "battle",
+            Screen::Results(..) => "results",
+        };
+        platform::set_hook("state", state);
+
+        if let Screen::Loading(_) = self.screen {
+            if let Err(e) = self.finish_loading(&ctx, frame) {
+                self.error = Some(e);
+                self.screen = Screen::Menu;
+            }
+        }
+
+        match &mut self.screen {
+            Screen::Boot | Screen::Loading(_) => {
+                egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28))).show(ui, |ui| {
+                    ui.centered_and_justified(|ui| ui.label(RichText::new("Loading…").color(MUTED).size(18.0)));
+                });
+            }
+            Screen::Menu => self.menu_screen(ui),
+            Screen::Editor(browser) => {
+                if browser.ui(ui, &self.files) || self.input.pressed(Button::B) && !ctx.egui_wants_keyboard_input() {
+                    self.screen = Screen::Menu;
+                }
+            }
+            Screen::Maps(ed) => {
+                if ed.ui(ui, frame.wgpu_render_state(), now) {
+                    self.content = Some(ed.content());
+                    self.screen = Screen::Menu;
+                }
+            }
+            Screen::Battle(director, encounter) => {
+                director.update(&ctx, &self.input, now, dt);
+                Self::draw_scene(ui, director, now);
+                director.hud.draw(&ctx, &director.battle, &director.stage, now);
+                let encounter = *encounter;
+                platform::set_hook("round", &director.battle.round.to_string());
+                platform::set_hook("menu", if director.menu_open() { "open" } else { "" });
+                if director.finished() {
+                    let Screen::Battle(director, _) = std::mem::replace(&mut self.screen, Screen::Menu) else { unreachable!() };
+                    self.keep_xp(&director.battle);
+                    let results = Results {
+                        encounter,
+                        outcome: director.outcome(),
+                        rounds: director.battle.round,
+                        level_ups: director.level_ups.clone(),
+                        caught: director.battle.caught.iter().map(|m| m.name.clone()).collect(),
+                        since: now,
+                    };
+                    platform::set_hook("outcome", match results.outcome { Some(Outcome::Win) => "win", Some(Outcome::Lose) => "lose", Some(Outcome::Ran) => "ran", None => "" });
+                    self.screen = Screen::Results(director, results);
+                }
+            }
+            Screen::Results(..) => {
+                let name = if let Screen::Results(_, r) = &self.screen { self.encounter_name(r.encounter) } else { String::new() };
+                let Screen::Results(director, results) = &mut self.screen else { unreachable!() };
+                director.stage.update(now, dt);
+                Self::draw_scene(ui, director, now);
+                let mut choice = None;
+                egui::Area::new(egui::Id::new("results")).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(&ctx, |ui| {
+                    egui::Frame::new().fill(Color32::from_rgb(20, 27, 41)).corner_radius(14.0).inner_margin(20.0).show(ui, |ui| {
+                        ui.set_width(480.0);
+                        let title = match results.outcome {
+                            Some(Outcome::Win) => "Victory!",
+                            Some(Outcome::Lose) => "Defeat",
+                            Some(Outcome::Ran) => "Got away",
+                            None => "Battle over",
+                        };
+                        ui.label(RichText::new(title).size(24.0).strong().color(TEXT));
+                        ui.label(RichText::new(format!("{name} · {} rounds", results.rounds)).color(MUTED));
+                        if !results.level_ups.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new("Moves that leveled up").strong().color(TEXT));
+                            for l in &results.level_ups {
+                                ui.label(RichText::new(format!("• {l}")).color(TEXT).size(12.5));
+                            }
+                        }
+                        if !results.caught.is_empty() {
+                            ui.label(RichText::new(format!("Caught: {}", results.caught.join(", "))).color(TEXT));
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if ui.add(egui::Button::new(RichText::new("Fight again (A)").color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
+                                choice = Some(true);
+                            }
+                            if ui.button("Back to the menu (B)").clicked() {
+                                choice = Some(false);
+                            }
+                        });
+                    });
+                });
+                if now - results.since > 500.0 {
+                    if self.input.pressed(Button::A) {
+                        choice = Some(true);
+                    }
+                    if self.input.pressed(Button::B) {
+                        choice = Some(false);
+                    }
+                }
+                let encounter = results.encounter;
+                match choice {
+                    Some(true) => self.start(encounter),
+                    Some(false) => self.screen = Screen::Menu,
+                    None => {}
+                }
+            }
+        }
+
+        // frame times, top right
+        let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("stats")));
+        let r = ctx.content_rect();
+        painter.text(
+            Pos2::new(r.right() - 10.0, r.top() + 8.0),
+            Align2::RIGHT_TOP,
+            format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap),
+            FontId::proportional(11.0),
+            Color32::from_white_alpha(150),
+        );
+        if let Some(e) = &self.error {
+            painter.text(Pos2::new(r.left() + 10.0, r.bottom() - 10.0), Align2::LEFT_BOTTOM, e, FontId::proportional(12.0), Color32::from_rgb(255, 120, 100));
+        }
+        ctx.request_repaint();
+    }
+}

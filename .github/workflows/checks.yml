@@ -1,0 +1,62 @@
+# Checks for every pull request and every push to main: original work (no other game's
+# brand names, every commit signed off), the tests and lints, the content check, and the
+# site built exactly as Cloudflare Pages builds it. Nothing is deployed here and no secret
+# is used, so pull requests from forks run safely; Cloudflare Pages deploys main and the
+# repository's own branches by itself.
+name: Checks
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  originality:
+    name: Original work
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: No other game's brand names
+        run: python3 tools/check-names.py
+      - name: Every commit signed off
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: bash tools/check-signoff.sh "$BASE" "$HEAD"
+
+  build:
+    name: Tests and site
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Rust, as rust-toolchain.toml asks
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> build/target"
+      - name: Tests
+        run: cargo test --workspace
+      - name: Lints
+        run: cargo clippy --workspace -- -D warnings
+      - name: Content check
+        run: cargo run -p engine-content --bin content -- check
+      - name: The site, as Cloudflare Pages builds it
+        run: bash tools/cloudflare-build.sh
+      - name: Nothing from temporary/ in the site
+        run: |
+          if find build/dist -path '*temporary*' | grep -q .; then
+            echo "build/dist holds files from temporary/" >&2
+            exit 1
+          fi
+          grep -q '"space":"content"' build/dist/content/bundle.json
+          echo "the site only holds content/"

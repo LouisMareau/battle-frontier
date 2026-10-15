@@ -1,0 +1,10 @@
+{
+  "id": "rug",
+  "name": "Rug",
+  "category": "furniture",
+  "footprint": [2, 1],
+  "height": 0.02,
+  "parts": [
+    { "shape": "box", "size": [1.8, 0.02, 0.9], "at": [0.0, 0.0, 0.0], "color": "#b8954f" }
+  ]
+}

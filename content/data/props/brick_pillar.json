@@ -1,0 +1,10 @@
+{
+  "id": "brick_pillar",
+  "name": "Brick pillar",
+  "category": "pillar",
+  "footprint": [1, 1],
+  "height": 2.0,
+  "parts": [
+    { "shape": "box", "size": [0.34, 2.0, 0.34], "at": [0.0, 0.0, 0.0], "color": "#9c4634" }
+  ]
+}

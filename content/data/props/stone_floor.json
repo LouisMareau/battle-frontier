@@ -1,0 +1,14 @@
+{
+  "id": "stone_floor",
+  "name": "Stone slabs",
+  "category": "floor",
+  "footprint": [1, 1],
+  "height": 0.05,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.0, 0.0], "color": "#8b857a" },
+    { "shape": "box", "size": [0.47, 0.05, 0.47], "at": [-0.25, 0.0, -0.25], "color": "#bdb6aa" },
+    { "shape": "box", "size": [0.47, 0.05, 0.47], "at": [0.25, 0.0, -0.25], "color": "#b3ac9f" },
+    { "shape": "box", "size": [0.47, 0.05, 0.47], "at": [-0.25, 0.0, 0.25], "color": "#b6afa3" },
+    { "shape": "box", "size": [0.47, 0.05, 0.47], "at": [0.25, 0.0, 0.25], "color": "#c2bbaf" }
+  ]
+}

@@ -1,0 +1,17 @@
+[package]
+name = "engine-render"
+description = "The 3D renderer on wgpu: world maps, battle maps, billboards, effects, shadows, day and night"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[lib]
+name = "render"
+
+[dependencies]
+# the version egui-wgpu 0.36 uses; webgl = the WebGL 2 fallback where the browser has no WebGPU
+wgpu = { version = "30", features = ["webgl"] }
+glam.workspace = true
+bytemuck.workspace = true
+serde.workspace = true
+serde_json.workspace = true

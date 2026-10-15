@@ -1,0 +1,10 @@
+{
+  "id": "wood_post",
+  "name": "Wooden post",
+  "category": "pillar",
+  "footprint": [1, 1],
+  "height": 2.0,
+  "parts": [
+    { "shape": "box", "size": [0.22, 2.0, 0.22], "at": [0.0, 0.0, 0.0], "color": "#7a5434" }
+  ]
+}

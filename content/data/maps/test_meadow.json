@@ -1,0 +1,261 @@
+{
+  "id": "test_meadow",
+  "name": "Test meadow",
+  "width": 40,
+  "height": 30,
+  "legend": {
+    "d": "dirt",
+    "g": "grass",
+    "m": "meadow",
+    "n": "sand",
+    "s": "stones",
+    "t": "tall_grass",
+    "w": "water"
+  },
+  "terrain": [
+    "gggggggggggggggggggggggggggggggggggggggg",
+    "gggggggggggggggggggggggggggggggggggggggg",
+    "gggggggggggggggggggggggggggggggggggggggg",
+    "gggggggggggggggggggggggggggggggggggggggg",
+    "gggggggggggggggssssssssssggggggggggggggg",
+    "gggggggggggggggssssssssssggggggggggggggg",
+    "gggggggggggggggssssssssssggggggggggggggg",
+    "gggggggggggggggssssssssssggggmmmmmgggggg",
+    "gggggggggggggggssssssssssgggmmmmmmmggggg",
+    "gggggggggggggggggggdddddddggmmmmmmmggggg",
+    "gggggggggggggggggggdddddddggmmmmmmmggggg",
+    "gggggggggggggggggggddggggggggmmmmmgggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggnnnnnnngggggddggggggggggggggggggg",
+    "ggggggnwwwwwwwnggggddggggggggggggggggggg",
+    "gggggnwwwwwwwwwngggddggggggggggggggggggg",
+    "ggggnnwwwwwwwwwnnggddggggggggggggggggggg",
+    "ggggnnwwwwwwwwwnnggddggggttttttttggggggg",
+    "ggggnnwwwwwwwwwnnggddggggttttttttggggggg",
+    "gggggnwwwwwwwwwngggddggggttttttttggggggg",
+    "ggggggnwwwwwwwnggggddggggttttttttggggggg",
+    "gggggggnnnnnnngggggddggggttttttttggggggg",
+    "gggggggggggggggggggddggggttttttttggggggg",
+    "gggggggggggggggggggddggggttttttttggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg",
+    "gggggggggggggggggggddggggggggggggggggggg"
+  ],
+  "levels": [
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000011111111110000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000"
+  ],
+  "areas": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aa....................................aa",
+    "aaaaaaaaaaaaaaaaaa....aaaaaaaaaaaaaaaaaa",
+    "aaaaaaaaaaaaaaaaaa....aaaaaaaaaaaaaaaaaa"
+  ],
+  "tree_areas": [
+    {
+      "mark": "a",
+      "name": "Forest edge",
+      "trees": ["pine_tree", "round_tree"],
+      "spacing": 1.1,
+      "height": [0.85, 1.2],
+      "density": 0.85,
+      "solid_edge": true,
+      "seed": 7
+    }
+  ],
+  "props": [
+    { "prop": "signpost", "at": [21.5, 25.5], "level": 0 },
+    { "prop": "lamp_post", "at": [14.5, 4.5], "level": 0 },
+    { "prop": "lamp_post", "at": [25.5, 4.5], "level": 0 },
+    { "prop": "bench", "at": [20.0, 4.5], "level": 0 },
+    { "prop": "crate", "at": [16.5, 8.5], "level": 0 },
+    { "prop": "barrel", "at": [15.5, 8.5], "level": 0, "turn": 30.0 },
+    { "prop": "boulder", "at": [6.0, 8.0], "level": 0 },
+    { "prop": "small_rock", "at": [33.5, 22.5], "level": 0 },
+    { "prop": "small_rock", "at": [14.5, 23.5], "level": 0, "turn": 70.0 },
+    { "prop": "bush", "at": [23.5, 13.5], "level": 0 },
+    { "prop": "bush", "at": [24.5, 14.5], "level": 0 },
+    { "prop": "flowers", "at": [29.5, 7.5], "level": 1 },
+    { "prop": "flowers", "at": [32.5, 10.5], "level": 1 },
+    { "prop": "round_tree", "at": [34.5, 6.5], "level": 1 },
+    { "prop": "fence", "at": [26.5, 13.5], "level": 0 },
+    { "prop": "fence", "at": [27.5, 13.5], "level": 0 },
+    { "prop": "fence", "at": [28.5, 13.5], "level": 0 }
+  ],
+  "buildings": [
+    {
+      "id": "cottage",
+      "name": "Cottage",
+      "at": [9, 9],
+      "level": 0,
+      "cells": ["####", "####", "####"],
+      "wall": "plaster_wall",
+      "roof": "red_tile_roof",
+      "floors": [
+        {
+          "tile": "wood_floor",
+          "openings": [
+            { "prop": "wooden_door", "cell": [1, 2], "side": "s", "width": 1 },
+            { "prop": "wide_window", "cell": [2, 2], "side": "s", "width": 2 },
+            { "prop": "small_window", "cell": [0, 1], "side": "w", "width": 1 },
+            { "prop": "small_window", "cell": [3, 1], "side": "e", "width": 1 }
+          ],
+          "props": [
+            { "prop": "table", "at": [1.5, 0.5], "level": 0 },
+            { "prop": "bed", "at": [3.5, 1.0], "level": 0 }
+          ]
+        }
+      ],
+      "anchors": [
+        { "prop": "flower_box", "cell": [2, 2], "side": "s", "height": 0.62 },
+        { "prop": "wall_lamp", "cell": [1, 2], "side": "s", "height": 1.75 }
+      ]
+    },
+    {
+      "id": "corner_shop",
+      "name": "Corner shop",
+      "at": [33, 23],
+      "level": 0,
+      "cells": ["##..", "####", "####"],
+      "wall": "brick_wall",
+      "roof": "slate_roof",
+      "floors": [
+        {
+          "tile": "checker_floor",
+          "openings": [
+            { "prop": "glass_door", "cell": [2, 2], "side": "s", "width": 1 },
+            { "prop": "wide_window", "cell": [0, 2], "side": "s", "width": 2 }
+          ],
+          "props": [
+            { "prop": "bookshelf", "at": [0.5, 0.5], "level": 0 }
+          ]
+        },
+        {
+          "tile": "wood_floor",
+          "openings": [
+            { "prop": "small_window", "cell": [0, 2], "side": "s", "width": 1 },
+            { "prop": "small_window", "cell": [2, 2], "side": "s", "width": 1 },
+            { "prop": "tall_window", "cell": [3, 1], "side": "e", "width": 1 }
+          ]
+        }
+      ],
+      "pillars": [
+        { "prop": "stone_column", "corner": [0, 3] },
+        { "prop": "stone_column", "corner": [4, 3] }
+      ],
+      "anchors": [
+        { "prop": "sign_board", "cell": [3, 2], "side": "s", "height": 1.1 },
+        { "prop": "awning", "cell": [1, 2], "side": "s", "height": 1.9 }
+      ]
+    }
+  ],
+  "zone_cells": [
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "...........................bbbbbbbb.....",
+    "...........................bbbbbbbb.....",
+    "...........................bbbbbbbb.....",
+    "...........................bbbbbbbb.....",
+    "...........................bbbbbbbb.....",
+    "...........................bbbbbbbb.....",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    ".........................aaaaaaaa.......",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................",
+    "........................................"
+  ],
+  "zones": [
+    { "mark": "a", "name": "Tall grass", "count": 4, "appear_inside": false, "stay": [18.0, 35.0] },
+    { "mark": "b", "name": "Plateau meadow", "count": 3, "appear_inside": true, "stay": [20.0, 45.0] }
+  ],
+  "links": [
+    {
+      "area": "a",
+      "treeline": [
+        [38, 17],
+        [38, 18],
+        [38, 19],
+        [38, 20],
+        [38, 21],
+        [38, 22]
+      ],
+      "zone": "a",
+      "every": 4.0,
+      "stay": [15.0, 30.0]
+    }
+  ]
+}

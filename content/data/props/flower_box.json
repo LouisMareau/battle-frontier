@@ -1,0 +1,13 @@
+{
+  "id": "flower_box",
+  "name": "Flower box",
+  "category": "wall_decoration",
+  "footprint": [1, 1],
+  "height": 0.32,
+  "parts": [
+    { "shape": "box", "size": [0.8, 0.18, 0.22], "at": [0.0, 0.0, 0.12], "color": "#8a5a34" },
+    { "shape": "sphere", "size": [0.18, 0.16, 0.18], "at": [-0.25, 0.16, 0.12], "color": "#e8534f" },
+    { "shape": "sphere", "size": [0.18, 0.16, 0.18], "at": [0.0, 0.16, 0.12], "color": "#f2d04a" },
+    { "shape": "sphere", "size": [0.18, 0.16, 0.18], "at": [0.25, 0.16, 0.12], "color": "#e8534f" }
+  ]
+}

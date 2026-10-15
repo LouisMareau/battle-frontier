@@ -1,0 +1,11 @@
+{
+  "id": "sign_board",
+  "name": "Sign board",
+  "category": "wall_decoration",
+  "footprint": [1, 1],
+  "height": 0.45,
+  "parts": [
+    { "shape": "box", "size": [0.8, 0.45, 0.06], "at": [0.0, 0.0, 0.04], "color": "#c99a5e" },
+    { "shape": "box", "size": [0.86, 0.05, 0.08], "at": [0.0, 0.45, 0.04], "color": "#8a5a34" }
+  ]
+}

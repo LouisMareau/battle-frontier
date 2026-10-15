@@ -1,0 +1,5 @@
+# Every build output stays under build/, and parallel rustc processes are limited
+# (too many at once can run out of memory).
+[build]
+target-dir = "build/target"
+jobs = 8

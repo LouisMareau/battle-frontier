@@ -1,0 +1,16 @@
+# trunk build --release  the site in build/dist/ (content/ only: never the temporary space)
+# node tools/serve.mjs   serves it, with temporary/ next to it, to play with the placeholders
+[build]
+target = "crates/game/index.html"
+dist = "build/dist"
+# relative addresses: the site works under any path
+public_url = "./"
+
+[watch]
+watch = ["crates", "content"]
+
+# content/bundle.json: the game's own records in one file, for the browser
+[[hooks]]
+stage = "pre_build"
+command = "cargo"
+command_arguments = ["run", "-q", "-p", "engine-content", "--bin", "content", "--", "bundle", "content"]

@@ -1,0 +1,11 @@
+{
+  "id": "tall_grass",
+  "name": "Tall grass",
+  "order": 3,
+  "color": "#3f9a3e",
+  "color2": "#2e7430",
+  "pattern": "tall",
+  "side": "#7a5d40",
+  "walk": "walk",
+  "priority": 2
+}

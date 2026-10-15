@@ -1,0 +1,11 @@
+{
+  "id": "meadow",
+  "name": "Meadow",
+  "order": 2,
+  "color": "#8fcd5d",
+  "color2": "#f4e8a6",
+  "pattern": "meadow",
+  "side": "#8a6a48",
+  "walk": "walk",
+  "priority": 1
+}

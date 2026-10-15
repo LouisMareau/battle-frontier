@@ -1,0 +1,10 @@
+/build/
+/screenshots/
+*.log
+# packed by `content bundle` (Trunk does it before each web build)
+/content/bundle.json
+# imported placeholders: never committed (see temporary/README.md)
+/temporary/*
+!/temporary/README.md
+# local-only tools and prototypes, never committed
+/private/

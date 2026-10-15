@@ -1,0 +1,6 @@
+{
+  "id": "world",
+  "character_height": 1.5,
+  "level_padding": 0.5,
+  "max_level": 9
+}

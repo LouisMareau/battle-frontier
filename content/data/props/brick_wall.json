@@ -1,0 +1,12 @@
+{
+  "id": "brick_wall",
+  "name": "Bricks",
+  "category": "wall",
+  "footprint": [1, 1],
+  "height": 2.0,
+  "pattern": "bricks",
+  "parts": [
+    { "shape": "box", "size": [1.0, 2.0, 0.12], "at": [0.0, 0.0, 0.0], "color": "#b5523b" },
+    { "shape": "box", "size": [1.0, 0.16, 0.14], "at": [0.0, 0.0, 0.0], "color": "#d8cbb8" }
+  ]
+}

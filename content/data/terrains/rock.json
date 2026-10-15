@@ -1,0 +1,11 @@
+{
+  "id": "rock",
+  "name": "Rocky ground",
+  "order": 7,
+  "color": "#a89a88",
+  "color2": "#867868",
+  "pattern": "rock",
+  "side": "#6f6255",
+  "walk": "walk",
+  "priority": 1
+}

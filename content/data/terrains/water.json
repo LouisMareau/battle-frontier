@@ -1,0 +1,11 @@
+{
+  "id": "water",
+  "name": "Water",
+  "order": 8,
+  "color": "#3f97d4",
+  "color2": "#8fd3f2",
+  "pattern": "water",
+  "side": "#5b7d8f",
+  "walk": "water",
+  "priority": -1
+}

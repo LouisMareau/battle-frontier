@@ -1,0 +1,11 @@
+{
+  "id": "stones",
+  "name": "Stone path",
+  "order": 6,
+  "color": "#bdb8ad",
+  "color2": "#8e897f",
+  "pattern": "stones",
+  "side": "#7d7870",
+  "walk": "walk",
+  "priority": 5
+}

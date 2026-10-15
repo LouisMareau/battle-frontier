@@ -1,0 +1,10 @@
+{
+  "id": "carpet_floor",
+  "name": "Carpet",
+  "category": "floor",
+  "footprint": [1, 1],
+  "height": 0.05,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.05, 1.0], "at": [0.0, 0.0, 0.0], "color": "#a8434a" }
+  ]
+}

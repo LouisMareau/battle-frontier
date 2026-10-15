@@ -1,0 +1,12 @@
+{
+  "id": "red_tile_roof",
+  "name": "Red tiles",
+  "category": "roof",
+  "footprint": [1, 1],
+  "height": 0.2,
+  "pattern": "tiles",
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.12, 1.0], "at": [0.0, 0.0, 0.0], "color": "#b5473a" },
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.12, 0.0], "color": "#8a3229" }
+  ]
+}

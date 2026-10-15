@@ -1,0 +1,11 @@
+{
+  "id": "crate",
+  "name": "Crate",
+  "category": "decoration",
+  "footprint": [1, 1],
+  "height": 0.8,
+  "blocks": true,
+  "parts": [
+    { "shape": "box", "size": [0.8, 0.8, 0.8], "at": [0.0, 0.0, 0.0], "color": "#b58650" }
+  ]
+}
