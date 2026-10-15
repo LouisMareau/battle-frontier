@@ -1,6 +1,7 @@
 //! glTF files for Blender (and anything else that reads glTF):
 //!   export-glb prop ID          one prop, at the origin (its stand-in, or its own model)
-//!   export-glb props            every prop
+//!   export-glb props            every prop, each its own file, and all of them laid out
+//!                               by category in props.glb
 //!   export-glb map ID           a whole map: ground, props and trees, buildings
 //!   export-glb building MAP ID  one building of a map
 //!   export-glb check FILE       reads a .glb as the engine does and says what's in it
@@ -8,8 +9,8 @@
 
 use std::path::PathBuf;
 
-use world::gltf_in::{load_disk_models, load_model};
-use world::gltf_out::{building_glb, map_glb, prop_glb};
+use world::gltf_in::{extras_note, load_disk_models, load_model};
+use world::gltf_out::{building_glb, map_glb, prop_glb, props_glb};
 
 fn main() {
     let root = PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
@@ -32,7 +33,11 @@ fn main() {
         let m = load_model(&bytes, file).unwrap_or_else(|e| fail(format!("{file}: {e}")));
         let tris = m.scene.plain.indices.len() / 3 + m.scene.textured.values().map(|t| t.indices.len() / 3).sum::<usize>();
         let size = m.max - m.min;
-        println!("{file}: {tris} triangles, {} textures, {:.2} x {:.2} x {:.2} (width, height, depth), from {:?} to {:?}", m.images.len(), size.x, size.y, size.z, m.min.to_array(), m.max.to_array());
+        let note = extras_note(&m);
+        println!("{file}: {tris} triangles, {} textures, {:.2} x {:.2} x {:.2} (width, height, depth), from {:?} to {:?}{}", m.images.len(), size.x, size.y, size.z, m.min.to_array(), m.max.to_array(), if note.is_empty() { String::new() } else { format!("; {note}") });
+        for l in &m.lights {
+            println!("  light: {} {} at {:?} aiming {:?}, intensity {}, range {}, cone {}", l.kind, l.color, l.at, l.aim, l.intensity, l.range, l.cone);
+        }
         return;
     }
     let content = content::disk::load(&root);
@@ -57,6 +62,7 @@ fn main() {
             for p in content.props.iter() {
                 write(format!("{}.glb", p.id), prop_glb(p, &models));
             }
+            write("props.glb".into(), props_glb(&content, &models));
         }
         (Some("map"), Some(id), _) => {
             let m = map(id);

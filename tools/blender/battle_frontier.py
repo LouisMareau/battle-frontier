@@ -56,7 +56,9 @@ CATEGORIES = [
     ("wall_decoration", "Wall decoration", "anchored on outside walls"),
     ("character", "Character", ""),
 ]
-PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "folders"]
+PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "sound", "folders"]
+# a prop's light in Blender's units: 1000 W is an intensity of 1
+WATTS_PER_INTENSITY = 1000.0
 SKIP = {"node_modules", ".git", "build", "target", "appdata", "windows", "program files", "program files (x86)",
         "programdata", "$recycle.bin", "system volume information", "library", "temporary", "private"}
 
@@ -339,6 +341,113 @@ def to_blender(p):
     return (p[0], -p[2], p[1])
 
 
+def to_engine(v):
+    """Blender's (x, y, z up) is the engine's (x, z, -y)."""
+    return (v[0], v[2], -v[1])
+
+
+def hex_to_linear(text):
+    """"#rrggbb" (sRGB, as the records write colours) as Blender's linear floats."""
+    try:
+        n = int(text.lstrip("#"), 16)
+    except ValueError:
+        n = 0xff00ff
+    out = []
+    for shift in (16, 8, 0):
+        s = ((n >> shift) & 255) / 255.0
+        out.append(s / 12.92 if s <= 0.04045 else ((s + 0.055) / 1.055) ** 2.4)
+    return tuple(out)
+
+
+def linear_to_hex(rgb):
+    """Blender's linear floats as "#rrggbb"."""
+    out = "#"
+    for v in rgb[:3]:
+        v = min(1.0, max(0.0, float(v)))
+        s = v * 12.92 if v <= 0.0031308 else 1.055 * v ** (1 / 2.4) - 0.055
+        out += f"{int(round(s * 255)):02x}"
+    return out
+
+
+def gltf_options(op, **wanted):
+    """Only the options this Blender's glTF add-on knows (the lighting mode came with 3.6:
+    "Raw" keeps a light's watts as they are, which is all Blender 3.1 to 3.5 ever did)."""
+    known = set(op.get_rna_type().properties.keys())
+    return {k: v for k, v in wanted.items() if k in known}
+
+
+def make_light(name, light, collection, parent=None):
+    """A prop's `light` as a light object, where the record puts it: a spot or a point,
+    its watts from the intensity, its cone from the spot size, its range as the custom
+    distance."""
+    kind = "POINT" if light.get("kind") == "point" else "SPOT"
+    data = bpy.data.lights.new(name, kind)
+    data.color = hex_to_linear(light.get("color", "#ffd59a"))
+    data.energy = float(light.get("intensity", 1.0)) * WATTS_PER_INTENSITY
+    data.use_custom_distance = True
+    data.cutoff_distance = float(light.get("range", 6.0))
+    if kind == "SPOT":
+        data.spot_size = math.radians(min(180.0, max(1.0, float(light.get("cone", 100.0)))))
+        data.spot_blend = 0.34
+    o = bpy.data.objects.new(name, data)
+    o.location = to_blender(light.get("at", [0.0, 2.0, 0.0]))
+    aim = Vector(to_blender(light.get("aim", [0.0, -1.0, 0.0])))
+    if aim.length > 1e-6:
+        o.rotation_euler = aim.to_track_quat("-Z", "Y").to_euler()
+    o["bf_light"] = True
+    if parent is not None:
+        o.parent = parent
+    collection.objects.link(o)
+    return o
+
+
+def light_record(o, offset, existing=None):
+    """A spot or point light object as a prop's `light`, from the prop's origin (`offset`,
+    in Blender): its watts over 1000, its colour, its spot size as the cone, its custom
+    distance as the range (else what the record had, or the engine's 6)."""
+    data = o.data
+    at = o.matrix_world.translation - offset
+    aim = o.matrix_world.to_3x3() @ Vector((0.0, 0.0, -1.0))
+    old = existing or {}
+    spot = data.type == "SPOT"
+    return {
+        "kind": "spot" if spot else "point",
+        "color": linear_to_hex(data.color),
+        "intensity": round(data.energy / WATTS_PER_INTENSITY, 2),
+        "range": round(float(data.cutoff_distance), 2) if data.use_custom_distance else float(old.get("range", 6.0)),
+        "cone": round(math.degrees(data.spot_size), 1) if spot else 180.0,
+        "at": [round(v, 2) for v in to_engine(at)],
+        "aim": [round(v, 2) for v in to_engine(aim)] if spot else [0.0, -1.0, 0.0],
+        "night": bool(old.get("night", True)),
+    }
+
+
+def sound_record(o, offset, root, aid):
+    """A speaker object as a prop's `sound`: its file copied to content/assets/sounds/, its
+    volume, its maximum distance as the range (the engine's 8 when it has none). None when
+    it plays nothing."""
+    data = o.data
+    if data.sound is None:
+        return None
+    src = Path(bpy.path.abspath(data.sound.filepath, library=data.sound.library))
+    name = f"{aid}_{slug(src.stem) or 'sound'}{src.suffix.lower() or '.ogg'}"
+    dst = root / "content" / "assets" / "sounds" / name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if data.sound.packed_file is not None:
+        dst.write_bytes(data.sound.packed_file.data)
+    elif src.is_file():
+        shutil.copyfile(src, dst)
+    else:
+        return None
+    at = o.matrix_world.translation - offset
+    return {
+        "file": f"sounds/{name}",
+        "volume": round(float(data.volume), 2),
+        "range": round(float(data.distance_max), 2) if data.distance_max < 1e6 else 8.0,
+        "at": [round(v, 2) for v in to_engine(at)],
+    }
+
+
 def build_stand_in(record, collection):
     """A prop's stand-in, exactly as the engine draws it, its parts in their colours."""
     bm = bmesh.new()
@@ -421,7 +530,8 @@ def tag(objects, record):
 
 def import_glb(path):
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.gltf(filepath=str(path))
+    # lights in their watts as the project writes them (1000 W = an intensity of 1)
+    bpy.ops.import_scene.gltf(filepath=str(path), **gltf_options(bpy.ops.import_scene.gltf, export_import_convert_lighting_mode="RAW"))
     return [o for o in bpy.data.objects if o not in before]
 
 
@@ -500,7 +610,10 @@ class BF_OT_import_prop(bpy.types.Operator):
             objects = [o for o in import_glb(root / "content" / "assets" / model) if not is_bounds(o)]
         else:
             objects = build_stand_in(record, context.collection)
-        tag(objects, record)
+        # its light, unless its model brought one along
+        if record.get("light") and not any(o.type == "LIGHT" for o in objects):
+            objects.append(make_light(f"{pid} light", record["light"], context.collection, parent=next((o for o in objects if o.type == "MESH"), None)))
+        tag([o for o in objects if o.type != "LIGHT"], record)
         make_bounds(f"{pid} bounds", record.get("footprint", [1, 1]), record.get("height", 1.0), context.collection)
         for o in context.view_layer.objects:
             o.select_set(False)
@@ -562,6 +675,34 @@ class BF_OT_export_map(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BF_OT_export_props(bpy.types.Operator):
+    """Have the project export every prop in one file (it needs Rust's cargo), then import it: a row per category, each prop with its cells and its light"""
+    bl_idname = "battle_frontier.export_props"
+    bl_label = "Export and import every prop"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root = project_root()
+        if not root:
+            self.report({"ERROR"}, "No Battle Frontier project found")
+            return {"CANCELLED"}
+        cargo = shutil.which("cargo")
+        if not cargo:
+            self.report({"ERROR"}, "Rust's cargo isn't installed here: use the asset browser's \"All props to Blender\" button, then import props.glb from the exports")
+            return {"CANCELLED"}
+        out = root / "build" / "exports"
+        run = subprocess.run([cargo, "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "props", "--out", str(out)],
+                             cwd=str(root), capture_output=True, text=True)
+        path = out / "props.glb"
+        if run.returncode != 0 or not path.is_file():
+            self.report({"ERROR"}, (run.stderr or run.stdout or "the export failed").strip()[-300:])
+            return {"CANCELLED"}
+        objects = import_glb(path)
+        props = sum(1 for o in objects if o.get("bf_prop"))
+        self.report({"INFO"}, f"{props} props, by category; select one and \"Add to the project\" sends it back")
+        return {"FINISHED"}
+
+
 class BF_OT_show_bounds(bpy.types.Operator):
     """Show the cells the selection would cover in the game, and its height"""
     bl_idname = "battle_frontier.show_bounds"
@@ -599,6 +740,8 @@ class BF_OT_add_to_project(bpy.types.Operator):
     sill: bpy.props.FloatProperty(name="Sill (windows)", default=0.0, min=0.0, max=4.0)
     recentre: bpy.props.BoolProperty(name="Stand it on the origin", default=True,
                                      description="Move it so its footprint's middle is at the origin and it stands on Z = 0")
+    apply_modifiers: bpy.props.BoolProperty(name="Apply modifiers", default=True,
+                                            description="Bake modifiers (not armatures) into the model; off keeps shape keys, which applying drops")
     replace: bpy.props.BoolProperty(name="Replace if it exists", default=False)
 
     def invoke(self, context, event):
@@ -619,11 +762,22 @@ class BF_OT_add_to_project(bpy.types.Operator):
         if not root:
             self.report({"ERROR"}, "No Battle Frontier project found")
             return {"CANCELLED"}
-        objects = [o for o in context.selected_objects if o.type in {"MESH", "EMPTY", "CURVE"} and not is_bounds(o)]
+        # the meshes, their rig, the lights and speakers on them; never a camera (the game
+        # has one of its own) nor the bounds
+        objects = [o for o in context.selected_objects if o.type in {"MESH", "EMPTY", "CURVE", "ARMATURE", "LIGHT", "SPEAKER"} and not is_bounds(o)]
         meshes = [o for o in objects if o.type == "MESH"]
         if not meshes:
             self.report({"ERROR"}, "Select the objects that make the asset")
             return {"CANCELLED"}
+        lights = [o for o in objects if o.type == "LIGHT" and o.data.type in {"SPOT", "POINT"}]
+        speakers = [o for o in objects if o.type == "SPEAKER"]
+        notes = []
+        if any(o.type == "LIGHT" and o.data.type not in {"SPOT", "POINT"} for o in objects):
+            notes.append("only a spot or a point light can be a prop's")
+        if len(lights) > 1:
+            notes.append(f"only the first of its {len(lights)} lights is kept")
+        if any(o.type == "CAMERA" for o in context.selected_objects):
+            notes.append("the camera stays behind (the game has one)")
         aid = slug(self.asset_id or meshes[0].name)
         model_rel = f"models/{aid}.glb"
         glb = root / "content" / "assets" / model_rel
@@ -647,7 +801,10 @@ class BF_OT_add_to_project(bpy.types.Operator):
         context.view_layer.update()
         try:
             glb.parent.mkdir(parents=True, exist_ok=True)
-            bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB", use_selection=True, export_apply=True, export_yup=True)
+            # materials, textures, vertex colours, rigs, animations and shape keys as
+            # Blender writes them; the lights in watts (1000 W = 1); never a camera
+            bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB", use_selection=True, export_apply=self.apply_modifiers, export_yup=True,
+                                      **gltf_options(bpy.ops.export_scene.gltf, export_cameras=False, export_lights=True, export_import_convert_lighting_mode="RAW"))
         finally:
             for o in tops:
                 o.location += offset
@@ -673,13 +830,24 @@ class BF_OT_add_to_project(bpy.types.Operator):
             "unstackable": bool(self.unstackable),
             "model": model_rel,
         })
+        # its light and its sound, from the prop's origin (a record's own stay when the
+        # selection has none)
+        if lights:
+            record["light"] = light_record(lights[0], offset, record.get("light"))
+        for s in speakers:
+            sound = sound_record(s, offset, root, aid)
+            if sound:
+                record["sound"] = sound
+                break
         record.setdefault("parts", [])
         record_path.parent.mkdir(parents=True, exist_ok=True)
         record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
         tag(meshes, record)
         make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection,
                     centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not self.recentre else (offset.x, offset.y, offset.z))
-        self.report({"INFO"}, f"{aid}: {glb.relative_to(root)} and {record_path.relative_to(root)}; check with `content check`")
+        extras = ", with its light" if lights else ""
+        extras += ", with its sound" if record.get("sound") and speakers else ""
+        self.report({"INFO"}, f"{aid}: {glb.relative_to(root)} and {record_path.relative_to(root)}{extras}; check with `content check`" + ("; " + "; ".join(notes) if notes else ""))
         return {"FINISHED"}
 
 
@@ -719,6 +887,7 @@ class BF_PT_panel(bpy.types.Panel):
         col.prop(wm, "bf_prop", text="")
         op = col.operator(BF_OT_import_prop.bl_idname, icon="IMPORT")
         op.prop_id = wm.bf_prop
+        col.operator(BF_OT_export_props.bl_idname, icon="FILE_REFRESH")
         layout.separator()
         col = layout.column(align=True)
         col.label(text="Your model", icon="EXPORT")
@@ -727,6 +896,7 @@ class BF_PT_panel(bpy.types.Panel):
         if context.scene.unit_settings.scale_length != 1.0:
             col.label(text="Unit scale isn't 1: sizes won't match", icon="ERROR")
         col.label(text="Stand it at the origin, front to -Y, 1 unit = 1 cell")
+        col.label(text="Select its rig, lights and speakers too; no camera")
         layout.separator()
         col = layout.column(align=True)
         col.label(text="Maps and buildings", icon="WORLD")
@@ -736,7 +906,7 @@ class BF_PT_panel(bpy.types.Panel):
         col.operator(BF_OT_import_export.bl_idname, icon="IMPORT").file = wm.bf_export
 
 
-CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_show_bounds, BF_OT_add_to_project, BF_PT_panel)
+CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_export_props, BF_OT_show_bounds, BF_OT_add_to_project, BF_PT_panel)
 
 
 def _auto_find():

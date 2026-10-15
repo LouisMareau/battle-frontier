@@ -478,6 +478,9 @@ impl Content {
             if let Some(l) = &p.light {
                 out.extend(l.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
             }
+            if let Some(s) = &p.sound {
+                out.extend(s.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
+            }
         }
         let world = self.world();
         for m in self.maps.iter() {
@@ -676,14 +679,15 @@ pub mod disk {
         content
     }
 
-    /// Files records name that aren't there (props' models), under `root`.
+    /// Files records name that aren't there (props' models and sounds), under `root`.
     pub fn missing_files(root: &Path, content: &Content) -> Vec<String> {
         let mut out = vec![];
         for e in content.props.entries() {
-            if let Some(m) = &e.value.model {
-                let rel = e.space.asset(m);
+            let files = [e.value.model.as_deref().map(|m| ("model", m)), e.value.sound.as_ref().map(|s| ("sound", s.file.as_str()))];
+            for (what, file) in files.into_iter().flatten() {
+                let rel = e.space.asset(file);
                 if !root.join(&rel).is_file() {
-                    out.push(format!("props/{}: its model {rel} isn't there", e.value.id));
+                    out.push(format!("props/{}: its {what} {rel} isn't there", e.value.id));
                 }
             }
         }

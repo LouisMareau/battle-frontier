@@ -377,6 +377,16 @@ pub fn color(hex: &str) -> [f32; 4] {
     [c(v >> 16), c(v >> 8), c(v), 1.0]
 }
 
+/// A linear colour as the records write it: "#rrggbb" (sRGB).
+pub fn hex_color(c: [f32; 3]) -> String {
+    let s = |v: f32| {
+        let v = v.clamp(0.0, 1.0);
+        let v = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
+        (v * 255.0).round() as u8
+    };
+    format!("#{:02x}{:02x}{:02x}", s(c[0]), s(c[1]), s(c[2]))
+}
+
 /// A map from the content, its chunk files read from disk under `root` when it's chunked.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn load_map(root: &std::path::Path, content: &Content, id: &str) -> Result<WorldMap, String> {

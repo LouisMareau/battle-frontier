@@ -2,10 +2,14 @@
 //! engine's meshes. One unit is one cell (a metre in Blender), Y is up and the front faces
 //! +Z (Blender's front view), the origin is the centre of the footprint on the ground.
 //! Colours come from the materials' base colour times the vertex colours; textured parts
-//! are kept apart by texture, named "<key>#<image>".
+//! are kept apart by texture, named "<key>#<image>". The file's lights
+//! (`KHR_lights_punctual`, Blender's spot and point lights) come out as a prop's `light`
+//! would hold them. Cameras are dropped (the game has one camera of its own); skins,
+//! animations and the rest of the materials stay in the file, unread for now.
 
 use std::collections::BTreeMap;
 
+use content::Light;
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::mesh::{Mesh, Scene, Vertex};
@@ -25,6 +29,42 @@ pub struct Model {
     pub images: BTreeMap<String, Image>,
     pub min: Vec3,
     pub max: Vec3,
+    /// its lights (spots and points), where they sit and point in the model's frame
+    pub lights: Vec<Light>,
+    /// what else the file holds: cameras (dropped), skins and animations (kept in the
+    /// file, not played yet)
+    pub cameras: usize,
+    pub skins: usize,
+    pub animations: usize,
+}
+
+/// Blender's own units through glTF: a light's watts in Blender go into the file as they
+/// are (its "Raw" lighting mode, and all Blender 3.1 to 3.5 does), and 1000 W is an
+/// intensity of 1 here.
+const WATTS_PER_INTENSITY: f32 = 1000.0;
+/// Blender 3.6 and newer export physical units unless told otherwise: candela = watts x
+/// 683 lumens per watt / 4 pi steradians, 54 times as much. An intensity past 10 (ten
+/// thousand watts) can only be that, and is brought back.
+const PHYSICAL_CANDELA_PER_WATT: f32 = 683.0 / (4.0 * std::f32::consts::PI);
+
+/// A glTF light as a record: `candela` as the file has it, `cone` a spot's outer cone (its
+/// half angle, radians), none for a point light.
+pub fn light_record(kind: &str, color: [f32; 3], candela: f32, range: Option<f32>, cone: Option<f32>, at: Vec3, aim: Vec3) -> Light {
+    let mut intensity = candela / WATTS_PER_INTENSITY;
+    if intensity > 10.0 {
+        intensity /= PHYSICAL_CANDELA_PER_WATT;
+    }
+    let round = |v: f32| (v as f64 * 100.0).round() / 100.0;
+    Light {
+        kind: kind.into(),
+        color: crate::hex_color(color),
+        intensity: round(intensity),
+        range: round(range.filter(|r| *r > 0.0).unwrap_or(Light::default().range as f32)),
+        cone: cone.map(|c| round((c * 2.0).to_degrees().clamp(1.0, 180.0))).unwrap_or(180.0),
+        at: at.to_array().map(round),
+        aim: aim.normalize_or(Vec3::NEG_Y).to_array().map(round),
+        ..Default::default()
+    }
 }
 
 fn rgba8(data: &gltf::image::Data) -> Option<Image> {
@@ -45,10 +85,23 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
     let (doc, buffers, images) = gltf::import_slice(bytes).map_err(|e| e.to_string())?;
     let mut model = Model { min: Vec3::splat(f32::MAX), max: Vec3::splat(f32::MIN), ..Default::default() };
     let scene = doc.default_scene().or_else(|| doc.scenes().next()).ok_or("the file has no scene")?;
+    model.cameras = doc.cameras().count();
+    model.skins = doc.skins().count();
+    model.animations = doc.animations().count();
     let mut stack: Vec<(gltf::Node, Mat4)> = scene.nodes().map(|n| (n, Mat4::IDENTITY)).collect();
     while let Some((node, parent)) = stack.pop() {
         let m = parent * Mat4::from_cols_array_2d(&node.transform().matrix());
         let normal_m = Mat3::from_mat4(m).inverse().transpose();
+        if let Some(light) = node.light() {
+            use gltf::khr_lights_punctual::Kind;
+            // a light points down its node's -z
+            let (at, aim) = (m.transform_point3(Vec3::ZERO), m.transform_vector3(Vec3::NEG_Z));
+            match light.kind() {
+                Kind::Spot { outer_cone_angle, .. } => model.lights.push(light_record("spot", light.color(), light.intensity(), light.range(), Some(outer_cone_angle), at, aim)),
+                Kind::Point => model.lights.push(light_record("point", light.color(), light.intensity(), light.range(), None, at, aim)),
+                Kind::Directional => {} // the sun is the world's
+            }
+        }
         if let Some(mesh) = node.mesh() {
             for prim in mesh.primitives() {
                 if prim.mode() != gltf::mesh::Mode::Triangles {
@@ -115,6 +168,29 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
         return Err("the file has no triangles".into());
     }
     Ok(model)
+}
+
+/// What a model holds besides its triangles, in a few words (nothing when nothing).
+pub fn extras_note(m: &Model) -> String {
+    let mut notes = vec![];
+    let count = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+    if !m.lights.is_empty() {
+        notes.push(count(m.lights.len(), "light", "lights"));
+    }
+    if m.cameras > 0 {
+        notes.push(format!("{} dropped (the game has its own)", count(m.cameras, "camera", "cameras")));
+    }
+    if m.skins > 0 || m.animations > 0 {
+        let mut kept = vec![];
+        if m.skins > 0 {
+            kept.push(count(m.skins, "rig", "rigs"));
+        }
+        if m.animations > 0 {
+            kept.push(count(m.animations, "animation", "animations"));
+        }
+        notes.push(format!("{} kept in the file, not played yet", kept.join(" and ")));
+    }
+    notes.join(", ")
 }
 
 /// Every prop's model file on disk under `root` (the project): the models that load, and

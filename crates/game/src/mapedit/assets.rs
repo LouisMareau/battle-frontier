@@ -216,6 +216,11 @@ impl MapEditor {
                 if save.clicked() {
                     self.save_assets();
                 }
+                let all = ui.button("All props to Blender").on_hover_text("One .glb with every prop laid out by category, each with its cells and its light");
+                mark("uiExportProps", &all);
+                if all.clicked() {
+                    self.export_props();
+                }
                 ui.checkbox(&mut self.assets.to_temporary, "Drops go to temporary/")
                     .on_hover_text("Placeholders, never committed. Off: the game's own content/ (only what you made or may share)");
             });
@@ -406,8 +411,18 @@ impl MapEditor {
         let mut light = p.light.clone().unwrap_or_default();
         let (mut changed, mut remove, mut open) = (false, false, true);
         egui::Window::new(format!("Light of {}", p.name)).id(egui::Id::new("light-edit")).open(&mut open).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
-            hint(ui, "A spot: a cone of light from where it sits, the way it points. It casts no shadow.");
+            hint(ui, "A spot is a cone of light from where it sits, the way it points; a point lights all around it. Neither casts a shadow.");
             egui::Grid::new("light-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                ui.label("Kind");
+                ui.horizontal(|ui| {
+                    for kind in ["spot", "point"] {
+                        if ui.selectable_label(light.kind == kind, kind).clicked() && light.kind != kind {
+                            light.kind = kind.into();
+                            changed = true;
+                        }
+                    }
+                });
+                ui.end_row();
                 ui.label("Colour");
                 let mut rgb = hex_rgb(&light.color);
                 if ui.color_edit_button_srgb(&mut rgb).changed() {
@@ -421,9 +436,11 @@ impl MapEditor {
                 ui.label("Range");
                 changed |= ui.add(egui::Slider::new(&mut light.range, 1.0..=24.0).suffix(" cells")).changed();
                 ui.end_row();
-                ui.label("Cone");
-                changed |= ui.add(egui::Slider::new(&mut light.cone, 10.0..=170.0).suffix("°")).changed();
-                ui.end_row();
+                if light.kind == "spot" {
+                    ui.label("Cone");
+                    changed |= ui.add(egui::Slider::new(&mut light.cone, 10.0..=170.0).suffix("°")).changed();
+                    ui.end_row();
+                }
                 ui.label("Sits at");
                 ui.horizontal(|ui| {
                     for v in light.at.iter_mut() {
@@ -431,13 +448,15 @@ impl MapEditor {
                     }
                 });
                 ui.end_row();
-                ui.label("Points");
-                ui.horizontal(|ui| {
-                    for v in light.aim.iter_mut() {
-                        changed |= ui.add(egui::DragValue::new(v).speed(0.05)).changed();
-                    }
-                });
-                ui.end_row();
+                if light.kind == "spot" {
+                    ui.label("Points");
+                    ui.horizontal(|ui| {
+                        for v in light.aim.iter_mut() {
+                            changed |= ui.add(egui::DragValue::new(v).speed(0.05)).changed();
+                        }
+                    });
+                    ui.end_row();
+                }
                 ui.label("");
                 changed |= ui.checkbox(&mut light.night, "At night only").changed();
                 ui.end_row();
@@ -575,9 +594,12 @@ impl MapEditor {
             height: ((size.y as f64 * 20.0).round() / 20.0).max(0.05),
             blocks: true,
             model: Some(file.clone()),
+            // its first light (a lamp made in Blender lights up here too)
+            light: model.lights.first().cloned(),
             folders: vec![folder.clone()],
             ..Default::default()
         };
+        let note = world::gltf_in::extras_note(&model);
         let path = space.asset(&file);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -599,6 +621,9 @@ impl MapEditor {
             self.status = format!("Added {} to {folder}: save to download its record and model", prop.name);
         }
         self.files.insert(&path, bytes);
+        if !note.is_empty() {
+            self.status = format!("{} · {note}", self.status);
+        }
         let mid = (model.min + model.max) * 0.5;
         if mid.x.abs() > 0.25 || mid.z.abs() > 0.25 || model.min.y.abs() > 0.1 {
             self.status = format!(

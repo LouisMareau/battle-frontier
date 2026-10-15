@@ -12,6 +12,7 @@ import shutil
 import struct
 import subprocess
 import sys
+import wave
 from pathlib import Path
 
 import bmesh
@@ -97,6 +98,27 @@ for pid in ("pine_tree", "round_tree", "boulder", "bench", "lamp_post"):
     far = max((min((a - b).length for b in theirs) for a in ours), default=1.0)
     back = max((min((a - b).length for b in ours) for a in theirs), default=1.0)
     check(f"{pid}: the same shape as in the game", far < 1e-4 and back < 1e-4, f"{len(ours)} vs {len(theirs)} points, off by {max(far, back):.6f}")
+# a lamp's light comes along, both ways, in Blender's watts (1000 W = an intensity of 1)
+lamp_record = json.loads((scratch / "content" / "data" / "props" / "lamp_post.json").read_text(encoding="utf-8"))
+wanted_watts = lamp_record["light"]["intensity"] * 1000.0
+lamp_lights = [o for o in bpy.data.objects if o.type == "LIGHT"]
+check("a lamp's light comes with its stand-in", len(lamp_lights) == 1 and abs(lamp_lights[0].data.energy - wanted_watts) < 1 and lamp_lights[0].data.type == "SPOT",
+      f"{[(o.data.type, o.data.energy) for o in lamp_lights]}")
+if lamp_lights:
+    at = lamp_lights[0].matrix_world.translation
+    check("  where the record puts it", max(abs(a - b) for a, b in zip(bf.to_engine(at), lamp_record["light"]["at"])) < 0.01, f"{tuple(round(v, 2) for v in bf.to_engine(at))} vs {lamp_record['light']['at']}")
+clear()
+engine_lights = [o for o in bf.import_glb(engine / "lamp_post.glb") if o.type == "LIGHT"]
+check("and with the game's export of it", len(engine_lights) == 1 and abs(engine_lights[0].data.energy - wanted_watts) < 1, f"{[o.data.energy for o in engine_lights]}")
+clear()
+
+# 2c. every prop in one file, each knowing which it is
+catalogue = bf.import_glb(engine / "props.glb")
+ids = {o.get("bf_prop") for o in catalogue if o.get("bf_prop")}
+known = {p.stem for p in (scratch / "content" / "data" / "props").glob("*.json")}
+check("every prop in one file", known <= ids, f"{len(ids)} props, missing {sorted(known - ids)[:5]}")
+check("  laid out apart", len({tuple(round(v, 1) for v in o.matrix_world.translation) for o in catalogue if o.get("bf_prop")}) == len(ids))
+check("  with their lights and their cells", sum(1 for o in catalogue if o.type == "LIGHT") >= 1 and sum(1 for o in catalogue if bf.is_bounds(o)) == len(ids))
 clear()
 
 # 3. an asset of one's own: a stone well with a roof and a painted sign, made off the origin
@@ -143,14 +165,42 @@ post_b = solid("well_post_b", lambda bm: bmesh.ops.create_cube(bm, size=1.0), (0
 post_b.scale = (0.12, 0.12, 1.4)
 plate = solid("well_sign", lambda bm: bmesh.ops.create_cube(bm, size=1.0), image=sign, location=(base[0], base[1] - 0.85, 0.5))
 plate.scale = (0.5, 0.04, 0.3)
+# a lamp over the well, aimed at its front and down (a light points down its -Z), a speaker
+# with a hum, and a camera that must stay behind
+lamp_data = bpy.data.lights.new("well_lamp", "SPOT")
+lamp_data.energy = 1500.0
+lamp_data.color = (1.0, 0.5, 0.25)
+lamp_data.spot_size = math.radians(90.0)
+lamp_data.use_custom_distance = True
+lamp_data.cutoff_distance = 5.0
+lamp = bpy.data.objects.new("well_lamp", lamp_data)
+lamp.location = (base[0], base[1] - 0.5, 1.8)
+lamp.rotation_euler = (math.radians(-45.0), 0.0, 0.0)
+bpy.context.collection.objects.link(lamp)
+hum = scratch / "hum.wav"
+with wave.open(str(hum), "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(8000)
+    w.writeframes(bytes(800))
+speaker = bpy.data.objects.new("well_hum", bpy.data.speakers.new("well_hum"))
+speaker.data.sound = bpy.data.sounds.load(str(hum))
+speaker.data.volume = 0.5
+speaker.data.distance_max = 7.0
+speaker.location = (base[0], base[1], 0.6)
+bpy.context.collection.objects.link(speaker)
+camera = bpy.data.objects.new("well_cam", bpy.data.cameras.new("well_cam"))
+camera.location = (base[0], base[1] - 6.0, 3.0)
+bpy.context.collection.objects.link(camera)
 parts = [ring, roof, post_a, post_b, plate]
+with_it = parts + [lamp, speaker, camera]
 for o in bpy.context.view_layer.objects:
-    o.select_set(o in parts)
+    o.select_set(o in with_it)
 bpy.context.view_layer.objects.active = ring
-before = [tuple(o.location) for o in parts]
+before = [tuple(o.location) for o in with_it]
 r = bpy.ops.battle_frontier.add_to_project(asset_id="test_well", asset_name="Test well", category="decoration", blocks=True, unstackable=True)
 check("adds it to the project", r == {"FINISHED"})
-check("leaves it where it was in Blender", [tuple(o.location) for o in parts] == before)
+check("leaves it where it was in Blender", [tuple(o.location) for o in with_it] == before)
 glb = scratch / "content" / "assets" / "models" / "test_well.glb"
 record_path = scratch / "content" / "data" / "props" / "test_well.json"
 check("writes the model", glb.is_file() and glb.read_bytes()[:4] == b"glTF", str(glb))
@@ -158,15 +208,25 @@ record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_f
 check("writes its record", record.get("model") == "models/test_well.glb" and record.get("category") == "decoration" and record.get("blocks") is True and record.get("unstackable") is True, json.dumps(record))
 
 
-def glb_names(path):
+def glb_doc(path):
     data = path.read_bytes()
     length = struct.unpack_from("<I", data, 12)[0]
-    doc = json.loads(data[20:20 + length])
-    return [n.get("name", "") for n in doc.get("nodes", [])]
+    return json.loads(data[20:20 + length])
 
 
-names = glb_names(glb) if glb.is_file() else []
+doc = glb_doc(glb) if glb.is_file() else {}
+names = [n.get("name", "") for n in doc.get("nodes", [])]
 check("the model leaves its bounds behind", names and not any("bounds" in n for n in names), str(names))
+check("and the camera: never one in a model", "cameras" not in doc and "well_cam" not in names and not any("camera" in n.keys() for n in doc.get("nodes", [])), str(names))
+check("its light goes into the model", len(doc.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])) == 1, str(doc.get("extensions")))
+well_lo, well_hi = bounds(parts)
+origin = ((well_lo.x + well_hi.x) / 2, (well_lo.y + well_hi.y) / 2, well_lo.z)
+light = record.get("light") or {}
+wanted_at = [round(v, 2) for v in bf.to_engine((lamp.location[0] - origin[0], lamp.location[1] - origin[1], lamp.location[2] - origin[2]))]
+check("and into the record: watts over 1000, colour, cone, range", light.get("kind") == "spot" and light.get("intensity") == 1.5 and light.get("color") == "#ffbc89" and light.get("cone") == 90.0 and light.get("range") == 5.0 and light.get("night") is True, json.dumps(light))
+check("  where it sits, where it points", max(abs(a - b) for a, b in zip(light.get("at", [9, 9, 9]), wanted_at)) < 0.011 and light.get("aim") == [0.0, -0.71, 0.71], f"{light.get('at')} vs {wanted_at}, {light.get('aim')}")
+sound = record.get("sound") or {}
+check("its sound into the record, the file into the project", sound.get("file") == "sounds/test_well_hum.wav" and sound.get("volume") == 0.5 and sound.get("range") == 7.0 and (scratch / "content" / "assets" / "sounds" / "test_well_hum.wav").is_file(), json.dumps(sound))
 check("shows the bounds in Blender", bpy.data.objects.get("test_well bounds") is not None)
 check("measures its footprint and height", record.get("footprint") == [2, 2] and abs(record.get("height", 0) - 2.2) < 0.05, f"{record.get('footprint')} {record.get('height')}")
 check("lays the record out as the project does", record_path.read_text(encoding="utf-8") == bf.to_text(bf.ordered_prop(record)))
@@ -181,6 +241,10 @@ if objs:
     check("standing on the origin", abs((lo.x + hi.x) / 2) < 0.02 and abs((lo.y + hi.y) / 2) < 0.02 and abs(lo.z) < 0.02, f"{lo[:]} {hi[:]}")
     textured = any(n.type == "TEX_IMAGE" and n.image for o in objs if o.type == "MESH" for m in o.data.materials if m and m.use_nodes for n in m.node_tree.nodes)
     check("with its painted sign", textured)
+    back_lights = [o for o in bpy.data.objects if o.type == "LIGHT"]
+    check("and its lamp, as it was", len(back_lights) == 1 and abs(back_lights[0].data.energy - 1500.0) < 1 and abs(math.degrees(back_lights[0].data.spot_size) - 90.0) < 0.5,
+          f"{[(o.data.energy, math.degrees(o.data.spot_size)) for o in back_lights]}")
+    check("no camera came along", not any(o.type == "CAMERA" for o in bpy.data.objects))
 
 # 5. no overwriting by accident
 for o in bpy.context.view_layer.objects:

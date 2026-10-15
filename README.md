@@ -195,13 +195,18 @@ changed there (the Blender add-on's Add to project, a re-export) shows within a 
 Props, buildings and maps go to Blender, and models made in Blender come into the game, as
 glTF (`.glb`). A prop with a `model` (a `.glb` under its space's `assets/models/`) is drawn
 with it, textures included; one without keeps its stand-in made of shapes. The map editor
-exports the map ("To Blender"), the selected prop (Place) and a building (its inspector) to
+exports the map ("To Blender"), the selected prop (Place), every prop in one file laid out
+by category (the asset browser's "All props to Blender") and a building (its inspector) to
 `build/exports/` (a download in the browser); so does `export-glb`. The Blender add-on in
 `tools/blender/` finds the project on the computer, imports its props (models, or stand-ins
-rebuilt from their shapes), exports and imports maps, and adds a selection to the project as
-a prop: the `.glb` and its record, measured and laid out as the project's own (see
-`tools/blender/README.md`). Same frame everywhere: one unit is a cell (a metre), the asset
-on the ground at the origin, its front to Blender's front view.
+rebuilt from their shapes, lamps with their lights) one at a time or all at once, exports
+and imports maps, and adds a selection to the project as a prop: the `.glb` and its
+record, measured and laid out as the project's own, its light read from a spot or point
+light object on it and its sound from a speaker (see `tools/blender/README.md`). The file
+keeps materials, rigs and animations as Blender writes them (the engine draws base colours
+and textures, in the rest pose, for now); a camera never goes into a model, the game has
+its own. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
+the origin, its front to Blender's front view.
 
 ## Layout
 

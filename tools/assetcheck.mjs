@@ -139,6 +139,13 @@ try {
       `${lamp.footprint} · ${lamp.height} high · ${lamp.model} · ${lamp.folders}`);
   }
   await expect('nothing left to save', 'assetsdirty', 0);
+
+  // 7. every prop to Blender, in one file
+  await press('uiExportProps');
+  for (let i = 0; i < 50 && !got('props.glb'); i++) await sleep(200);
+  const catalogue = got('props.glb') ? readFileSync(join(downloads, 'props.glb')) : Buffer.alloc(0);
+  check('every prop exported for Blender', catalogue.length > 10000 && catalogue.subarray(0, 4).toString() === 'glTF', `${catalogue.length} bytes`);
+  check('  with the lamps\' lights', catalogue.includes('KHR_lights_punctual') && catalogue.includes('lamp_post light'));
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

@@ -24,7 +24,7 @@ use content::{Chunk, Content, Placed, Space, TreeArea, CHUNK};
 use egui::{Color32, PointerButton, RichText, Sense};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::MapVertex;
-use render::scene::{Frame, Glow, Shape, ShapeKind, SpotLight, MAX_LIGHTS};
+use render::scene::{Frame, Glow, Shape, ShapeKind, MAX_LIGHTS};
 use rules::config::Period;
 use world::mesh;
 use world::WorldMap;
@@ -1675,8 +1675,7 @@ impl MapEditor {
         for (_, l) in lamps.into_iter().take(MAX_LIGHTS) {
             let k = l.light.intensity as f32 * if l.light.night { on } else { 1.0 };
             let c = world::color(&l.light.color);
-            let half = (l.light.cone as f32 / 2.0).to_radians();
-            light.lights.push(SpotLight { pos: l.pos, dir: l.dir, color: Vec3::new(c[0], c[1], c[2]) * k, range: l.light.range as f32, inner: half * 0.66, outer: half });
+            light.lights.push(crate::stage::spot_light(&l.light, l.pos, l.dir, k));
             glows.push(Glow { pos: l.pos, size: 0.3 + 0.15 * k, color: [c[0], c[1], c[2], (0.6 * k).min(1.0)] });
         }
         crate::platform::set_hook("lights", &light.lights.len().to_string());

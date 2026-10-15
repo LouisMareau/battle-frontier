@@ -1,12 +1,12 @@
 //! Props' real models (glTF files, from Blender or anything else) in the editor: loaded
 //! from the props' `model` paths, their textures handed to the renderer, used wherever the
-//! prop stands. And the way back to Blender: the map, a prop or a building as a `.glb`
-//! (written to build/exports/ on the desktop, downloaded in the browser).
+//! prop stands. And the way back to Blender: the map, a prop, every prop or a building as
+//! a `.glb` (written to build/exports/ on the desktop, downloaded in the browser).
 
 use render::map::MapVertex;
 use render::scene::{SceneRenderer, WHITE};
 use world::gltf_in::load_model;
-use world::gltf_out::{building_glb, map_glb, prop_glb};
+use world::gltf_out::{building_glb, map_glb, prop_glb, props_glb};
 use world::mesh::Scene;
 
 use super::{gpu, MapEditor};
@@ -93,6 +93,12 @@ impl MapEditor {
         let Some(p) = self.content.props.get(id).cloned() else { return };
         let bytes = prop_glb(&p, &self.models);
         self.deliver(&format!("{id}.glb"), bytes);
+    }
+
+    /// Every prop in one file, laid out by category.
+    pub(super) fn export_props(&mut self) {
+        let bytes = props_glb(&self.content, &self.models);
+        self.deliver("props.glb", bytes);
     }
 
     pub(super) fn export_building(&mut self, i: usize) {

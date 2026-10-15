@@ -408,27 +408,32 @@ pub struct Prop {
     /// a light it gives off (a lamp): see `Light`
     #[serde(skip_serializing_if = "Option::is_none")]
     pub light: Option<Light>,
+    /// a sound it plays where it stands: see `Sound`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound: Option<Sound>,
     /// the asset browser's folders it's in ("Nature", "Buildings/Inside"...); empty: the
     /// ones its category gives it (see `Prop::folders`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<String>,
 }
 
-/// A light a prop gives off: a spot (a cone of light) for now. `at` is where it sits, from
-/// the prop's origin (its footprint's centre on the ground: x, y up, z), before the prop is
-/// turned; `aim` is the way it points. It lights what's in its cone within `range`, fading
-/// to nothing at the edge, and casts no shadow.
+/// A light a prop gives off: a spot (a cone of light) or a point (light all around). `at`
+/// is where it sits, from the prop's origin (its footprint's centre on the ground: x, y up,
+/// z), before the prop is turned; `aim` is the way a spot points. It lights what's in its
+/// cone within `range`, fading to nothing at the edge, and casts no shadow. In Blender it's
+/// a spot or point light object on the prop: 1000 W is an intensity of 1, the spot size is
+/// the cone, a custom distance is the range.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Light {
-    /// "spot"
+    /// "spot" or "point"
     pub kind: String,
     /// "#rrggbb"
     pub color: String,
     pub intensity: f64,
     /// how far it reaches, in cells
     pub range: f64,
-    /// the cone's full angle, in degrees (the light fades over its outer third)
+    /// a spot's cone, its full angle in degrees (the light fades over its outer third)
     pub cone: f64,
     pub at: [f64; 3],
     pub aim: [f64; 3],
@@ -446,14 +451,48 @@ impl Light {
     /// What's wrong with it (empty when nothing).
     pub fn problems(&self) -> Vec<String> {
         let mut out = vec![];
-        if self.kind != "spot" {
-            out.push(format!("a light of kind \"{}\": only \"spot\" for now", self.kind));
+        if !matches!(self.kind.as_str(), "spot" | "point") {
+            out.push(format!("a light of kind \"{}\": \"spot\" or \"point\"", self.kind));
         }
         if !(self.range > 0.0 && self.intensity >= 0.0 && (1.0..=180.0).contains(&self.cone)) {
             out.push("a light needs a range over 0, an intensity of 0 or more and a cone of 1 to 180 degrees".into());
         }
         if self.color.len() != 7 || u32::from_str_radix(self.color.trim_start_matches('#'), 16).is_err() {
             out.push(format!("a light's colour \"{}\" isn't #rrggbb", self.color));
+        }
+        out
+    }
+}
+
+/// A sound a prop plays where it stands (a speaker object on it in Blender): a file under
+/// its space's `assets/` (`sounds/<name>.ogg`), looping, at `volume` (1 is as recorded) up
+/// close and fading to nothing `range` cells from `at` (from the prop's origin, like a
+/// light's). Not played by the engine yet: carried with the prop, for when it is.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sound {
+    pub file: String,
+    pub volume: f64,
+    /// how far it's heard, in cells
+    pub range: f64,
+    pub at: [f64; 3],
+}
+
+impl Default for Sound {
+    fn default() -> Self {
+        Sound { file: String::new(), volume: 1.0, range: 8.0, at: [0.0, 1.0, 0.0] }
+    }
+}
+
+impl Sound {
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if self.file.is_empty() || self.file.contains("..") || self.file.starts_with('/') {
+            out.push(format!("a sound's file \"{}\": a file under assets/, like sounds/hum.ogg", self.file));
+        }
+        if !(self.range > 0.0 && self.volume >= 0.0) {
+            out.push("a sound needs a range over 0 and a volume of 0 or more".into());
         }
         out
     }

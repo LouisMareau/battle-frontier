@@ -31,10 +31,16 @@ place maps as pieces on one grid of cells; pieces may touch (a seam, walked acro
 levels match) but never overlap.
 
 Props' real models are glTF files (`.glb`) in `assets/models/`, named by the prop's `model`
-field; the Blender add-on (`tools/blender/`) writes both. A prop without one is drawn from its
-`parts`, a stand-in made of simple shapes. A prop's `light` is a spot light it gives off
-(`kind` "spot", `color`, `intensity`, `range` in cells, `cone` in degrees, `at` and `aim` from
-its origin before it's turned, `night`: lit by night only). A creature's `light` is the same, carried from its feet with +z
+field; the Blender add-on (`tools/blender/`) writes both, and a `.glb` dropped on the
+editor's asset browser gets its record written. The file keeps everything Blender exports
+(materials, rigs, animations); the engine draws its triangles, base colours, textures and
+vertex colours, in the rest pose. A prop without one is drawn from its `parts`, a stand-in
+made of simple shapes. A prop's `light` is a light it gives off (`kind` "spot", a cone, or
+"point", all around; `color`, `intensity` (1 is 1000 W in Blender), `range` in cells, a
+spot's `cone` in degrees, `at` and `aim` from its origin before it's turned, `night`: lit by
+night only): in Blender, a spot or point light object on the prop. A prop's `sound` is a
+speaker on it (`file` under `assets/`, `volume`, `range` in cells, `at`), carried with the
+prop, not played yet. A creature's `light` is the same, carried from its feet with +z
 the way it faces (a tail light: `"at": [0, 0.5, -0.4]`, `"aim": [0, -0.3, 1]`). A prop's `unstackable` means nothing overlaps it
 and it overlaps nothing (stairs, beds, shelves); `folders` lists the asset browser's folders
 it's in (`Buildings/Inside` and `Buildings/Outside` are what the Build tool offers inside and

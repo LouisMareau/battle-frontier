@@ -918,8 +918,13 @@ impl eframe::App for GameApp {
                 painter.text(Pos2::new(box_rect.left() + 8.0, top + k as f32 * 15.0), Align2::LEFT_TOP, l, font.clone(), Color32::from_white_alpha(210));
             }
         }
-        if let Some(e) = &self.error {
-            painter.text(Pos2::new(r.left() + 10.0, r.bottom() - 10.0), Align2::LEFT_BOTTOM, e, FontId::proportional(12.0), Color32::from_rgb(255, 120, 100));
+        // what went wrong with the content or a battle's loading: a small box at the bottom
+        // of the landing page, and nowhere else (the editors have their own status lines)
+        if let (Some(e), Screen::Menu) = (&self.error, &self.screen) {
+            let galley = painter.layout(e.clone(), FontId::proportional(12.0), Color32::from_rgb(255, 150, 130), (r.width() - 40.0).max(120.0));
+            let text_rect = Rect::from_min_size(Pos2::new(r.left() + 16.0, r.bottom() - 16.0 - galley.size().y), galley.size());
+            painter.rect_filled(text_rect.expand(6.0), 4.0, Color32::from_black_alpha(180));
+            painter.galley(text_rect.min, galley, Color32::from_rgb(255, 150, 130));
         }
         ctx.request_repaint();
     }

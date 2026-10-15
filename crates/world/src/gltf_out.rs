@@ -1,19 +1,20 @@
 //! Writing glTF (`.glb`) for Blender: a prop (its stand-in's parts, one material per
-//! colour, or its own model with its textures), a building, or a whole map (the ground, the
-//! props and trees as linked copies, the buildings). Same frame as the engine and as
-//! Blender's glTF files: one unit is a cell (a metre), Y up, the front facing +Z.
+//! colour, or its own model with its textures; its light as a light object), every prop
+//! laid out in one file, a building, or a whole map (the ground, the props and trees as
+//! linked copies, the buildings). Same frame as the engine and as Blender's glTF files: one
+//! unit is a cell (a metre), Y up, the front facing +Z. Never a camera: the game has one.
 
 use std::collections::{BTreeMap, HashMap};
 
-use content::{Building, Content, Prop};
-use glam::{Mat4, Vec3};
+use content::{Building, Content, Light, Prop};
+use glam::{Mat4, Quat, Vec3};
 use serde_json::{json, Value};
 
 use crate::buildings::building;
 use crate::gltf_in::Image;
 use crate::mesh::{ground, part_mesh, placement, Mesh, Models, Scene};
 use crate::trees::trees;
-use crate::{color, WorldMap};
+use crate::{color, hex_color, WorldMap};
 
 #[derive(Default)]
 pub struct Glb {
@@ -25,16 +26,13 @@ pub struct Glb {
     nodes: Vec<Value>,
     images: Vec<Value>,
     textures: Vec<Value>,
+    /// KHR_lights_punctual
+    lights: Vec<Value>,
     material_by: HashMap<String, usize>,
 }
 
 fn hex(c: [f32; 4]) -> String {
-    let s = |v: f32| {
-        let v = v.clamp(0.0, 1.0);
-        let v = if v <= 0.0031308 { v * 12.92 } else { 1.055 * v.powf(1.0 / 2.4) - 0.055 };
-        (v * 255.0).round() as u8
-    };
-    format!("#{:02x}{:02x}{:02x}", s(c[0]), s(c[1]), s(c[2]))
+    hex_color([c[0], c[1], c[2]])
 }
 
 impl Glb {
@@ -184,6 +182,27 @@ impl Glb {
         i
     }
 
+    /// A light where a record puts it (`KHR_lights_punctual`, which Blender reads as a
+    /// light object): a spot or a point, pointing down its node's -z. Blender's units are
+    /// the record's backwards: 1000 W per intensity, written as they are (Blender's "Raw"
+    /// lighting mode, what Blender 3.1 to 3.5 always does).
+    pub fn light_node(&mut self, name: &str, light: &Light) -> usize {
+        let c = color(&light.color);
+        let candela = light.intensity as f32 * 1000.0;
+        let mut l = json!({ "name": name, "type": light.kind, "color": [c[0], c[1], c[2]], "intensity": candela, "range": light.range });
+        if light.kind == "spot" {
+            let outer = (light.cone as f32 / 2.0).to_radians().clamp(0.01, std::f32::consts::FRAC_PI_2);
+            l["spot"] = json!({ "innerConeAngle": outer * 0.66, "outerConeAngle": outer });
+        }
+        self.lights.push(l);
+        let at = Vec3::new(light.at[0] as f32, light.at[1] as f32, light.at[2] as f32);
+        let aim = Vec3::new(light.aim[0] as f32, light.aim[1] as f32, light.aim[2] as f32).normalize_or(Vec3::NEG_Y);
+        let turn = Mat4::from_rotation_translation(Quat::from_rotation_arc(Vec3::NEG_Z, aim), at);
+        let i = self.node(name, None, turn, vec![]);
+        self.nodes[i]["extensions"] = json!({ "KHR_lights_punctual": { "light": self.lights.len() - 1 } });
+        i
+    }
+
     pub fn node(&mut self, name: &str, mesh: Option<usize>, transform: Mat4, children: Vec<usize>) -> usize {
         let (s, r, t) = transform.to_scale_rotation_translation();
         let mut n = json!({ "name": name });
@@ -225,6 +244,10 @@ impl Glb {
         if !self.images.is_empty() {
             doc["images"] = json!(self.images);
             doc["textures"] = json!(self.textures);
+        }
+        if !self.lights.is_empty() {
+            doc["extensionsUsed"] = json!(["KHR_lights_punctual"]);
+            doc["extensions"] = json!({ "KHR_lights_punctual": { "lights": self.lights } });
         }
         let mut text = serde_json::to_vec(&doc).unwrap_or_default();
         while !text.len().is_multiple_of(4) {
@@ -305,13 +328,51 @@ pub fn building_bounds(b: &Building, level_height: f32) -> Vec<(Vec3, Vec3)> {
     out
 }
 
+/// A prop as a node: its mesh, its light under it, and what the add-on's "Add to the
+/// project" fills in from it (`extras`, custom properties in Blender).
+pub fn prop_node(glb: &mut Glb, prop: &Prop, models: &Models) -> usize {
+    let mesh = prop_mesh(glb, prop, models);
+    let children = prop.light.as_ref().map(|l| vec![glb.light_node(&format!("{} light", prop.id), l)]).unwrap_or_default();
+    let i = glb.node(&prop.id, mesh, Mat4::IDENTITY, children);
+    glb.nodes[i]["extras"] = json!({ "bf_prop": prop.id, "bf_name": prop.name, "bf_category": prop.category, "bf_blocks": prop.blocks, "bf_unstackable": prop.unstackable, "bf_sill": prop.sill });
+    i
+}
+
 /// One prop, standing at the origin, with its bounds.
 pub fn prop_glb(prop: &Prop, models: &Models) -> Vec<u8> {
     let mut glb = Glb::new();
-    let mesh = prop_mesh(&mut glb, prop, models);
-    let root = glb.node(&prop.id, mesh, Mat4::IDENTITY, vec![]);
+    let root = prop_node(&mut glb, prop, models);
     let bounds = glb.bounds_node(&format!("{} bounds", prop.id), &prop_bounds(prop));
     glb.finish(&[root, bounds])
+}
+
+/// Every prop in one file: a row per category, the props along it a cell apart, each
+/// standing on its own bounds (under a node named after the category).
+pub fn props_glb(content: &Content, models: &Models) -> Vec<u8> {
+    let mut glb = Glb::new();
+    let mut by_category: BTreeMap<&str, Vec<&Prop>> = BTreeMap::new();
+    for p in content.props.iter() {
+        by_category.entry(p.category.as_str()).or_default().push(p);
+    }
+    let mut rows = vec![];
+    let mut z = 0.0f32;
+    for (category, props) in by_category {
+        let depth = props.iter().map(|p| p.footprint[1].max(1) as f32).fold(1.0, f32::max);
+        let mut x = 0.0f32;
+        let mut nodes = vec![];
+        for p in props {
+            let (w, d) = (p.footprint[0].max(1) as f32, p.footprint[1].max(1) as f32);
+            let at = Mat4::from_translation(Vec3::new(x + w / 2.0, 0.0, z + d / 2.0));
+            let prop = prop_node(&mut glb, p, models);
+            let bounds = glb.bounds_node(&format!("{} bounds", p.id), &prop_bounds(p));
+            nodes.push(glb.node(&format!("{} ", p.id), None, at, vec![prop, bounds]));
+            x += w + 1.0;
+        }
+        rows.push(glb.node(category, None, Mat4::IDENTITY, nodes));
+        z += depth + 2.0;
+    }
+    let root = glb.node("Props", None, Mat4::IDENTITY, rows);
+    glb.finish(&[root])
 }
 
 fn all_images(models: &Models) -> BTreeMap<String, Image> {
@@ -381,7 +442,7 @@ pub fn map_glb(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gltf_in::load_model;
+    use crate::gltf_in::{light_record, load_model};
     use content::Part;
 
     fn prop() -> Prop {
@@ -393,6 +454,7 @@ mod tests {
             footprint: [1, 1],
             height: 2.4,
             parts: vec![part("cylinder", [0.2, 2.0, 0.2], [0.0, 0.0, 0.0], "#3c3f46"), part("sphere", [0.4, 0.4, 0.4], [0.0, 2.0, 0.0], "#ffe9a8")],
+            light: Some(Light { color: "#ffe9a8".into(), intensity: 1.5, range: 7.0, cone: 120.0, at: [0.0, 2.0, 0.3], aim: [0.0, -1.0, 1.0], ..Default::default() }),
             ..Default::default()
         }
     }
@@ -407,6 +469,7 @@ mod tests {
         assert_eq!(bounds.mesh().unwrap().primitives().next().unwrap().mode(), gltf::mesh::Mode::Lines);
         let colours: Vec<String> = doc.materials().filter_map(|m| m.name().map(String::from)).collect();
         assert_eq!(colours, vec!["#3c3f46", "#ffe9a8"]);
+        assert_eq!(doc.cameras().count(), 0, "never a camera");
         let model = load_model(&bytes, "lamp.glb").unwrap();
         assert!((model.max.y - 2.4).abs() < 0.02, "as tall as the prop: {}", model.max.y);
         assert!(model.min.y.abs() < 0.01, "standing on the ground: {}", model.min.y);
@@ -414,6 +477,52 @@ mod tests {
         // the sphere comes back in its colour
         let lit = color("#ffe9a8");
         assert!(model.scene.plain.vertices.iter().any(|v| (v.color[0] - lit[0]).abs() < 1e-4 && (v.color[2] - lit[2]).abs() < 1e-4));
+        // and its light, as the record had it: where it sits, where it points, how bright
+        assert_eq!(model.lights.len(), 1);
+        let l = &model.lights[0];
+        assert_eq!((l.kind.as_str(), l.color.as_str(), l.intensity, l.range, l.cone), ("spot", "#ffe9a8", 1.5, 7.0, 120.0));
+        assert_eq!(l.at, [0.0, 2.0, 0.3]);
+        assert_eq!(l.aim, [0.0, -0.71, 0.71]);
+        assert!(l.night, "lit by night, as a prop's lights are unless told otherwise");
+        assert_eq!(model.cameras, 0);
+    }
+
+    #[test]
+    fn blenders_physical_units_come_back_as_well() {
+        // Blender 3.6+ writes physical units unless told otherwise: a 1000 W lamp is 54,351
+        // candela there (683 lm/W over 4 pi steradians)
+        let physical = light_record("point", [1.0, 1.0, 1.0], 1000.0 * 683.0 / (4.0 * std::f32::consts::PI), None, None, Vec3::Y, Vec3::NEG_Y);
+        assert_eq!((physical.intensity, physical.kind.as_str(), physical.cone, physical.range), (1.0, "point", 180.0, 6.0));
+        // Blender 3.1 (and "Raw" later): the watts as they are
+        let raw = light_record("spot", [1.0, 0.5, 0.0], 500.0, Some(9.0), Some(0.5), Vec3::ZERO, Vec3::X);
+        assert_eq!((raw.intensity, raw.range, raw.cone, raw.aim), (0.5, 9.0, 57.3, [1.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn every_prop_in_one_file() {
+        let mut content = Content::default();
+        content.props.put(prop(), content::Space::Content);
+        content.props.put(Prop { id: "bench".into(), name: "Bench".into(), category: "furniture".into(), footprint: [2, 1], height: 0.9, ..Default::default() }, content::Space::Content);
+        content.props.put(Prop { id: "rock".into(), name: "Rock".into(), category: "rock".into(), footprint: [1, 1], height: 0.6, ..Default::default() }, content::Space::Content);
+        let bytes = props_glb(&content, &Models::new());
+        let (doc, _, _) = gltf::import_slice(&bytes).expect("a valid glb");
+        let names: Vec<&str> = doc.nodes().filter_map(|n| n.name()).collect();
+        for wanted in ["Props", "decoration", "furniture", "rock", "lamp", "bench", "rock bounds", "lamp light"] {
+            assert!(names.contains(&wanted), "{wanted} in {names:?}");
+        }
+        // a row per category, the props along it a cell apart
+        let row_of = |name: &str| {
+            let m = doc.nodes().find(|n| n.name() == Some(name)).unwrap().transform().matrix();
+            [m[3][0], m[3][1], m[3][2]]
+        };
+        let (lamp, bench, rock) = (row_of("lamp "), row_of("bench "), row_of("rock "));
+        assert_eq!(lamp, [0.5, 0.0, 0.5]);
+        assert_eq!(bench, [1.0, 0.0, 3.5]);
+        assert_eq!(rock, [0.5, 0.0, 6.5]);
+        // Blender's "Add to the project" finds the prop's facts on its node
+        let lamp_node = doc.nodes().find(|n| n.name() == Some("lamp")).unwrap();
+        assert!(lamp_node.extras().as_ref().map(|e| e.get().contains("\"bf_prop\":\"lamp\"")).unwrap_or(false));
+        assert_eq!(doc.lights().map(|l| l.count()).unwrap_or(0), 1);
     }
 
     #[test]

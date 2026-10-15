@@ -441,8 +441,7 @@ impl Stage {
                 let placed = world::lights::carried(l, v.pos + Vec3::Y * lift, forward);
                 let k = l.intensity as f32 * if l.night { lamps } else { 1.0 } * scale * fade;
                 let c = world::color(&l.color);
-                let half = (l.cone as f32 / 2.0).to_radians();
-                light.lights.push(SpotLight { pos: placed.pos, dir: placed.dir, color: Vec3::new(c[0], c[1], c[2]) * k, range: l.range as f32, inner: half * 0.66, outer: half });
+                light.lights.push(spot_light(l, placed.pos, placed.dir, k));
                 glows.push(Glow { pos: placed.pos, size: 0.25 + 0.12 * k, color: [c[0], c[1], c[2], (0.6 * k).min(1.0)] });
             }
             if let Some(mut color) = v.aura {
@@ -516,6 +515,16 @@ impl Stage {
         let v = self.vis.get(&uid)?;
         self.project(v.pos + Vec3::Z * 0.55)
     }
+}
+
+/// A record's light as the renderer's, placed and at `k` times its intensity. A point
+/// light is a cone of everything.
+pub fn spot_light(l: &content::Light, pos: Vec3, dir: Vec3, k: f32) -> SpotLight {
+    let c = world::color(&l.color);
+    let point = l.kind == "point";
+    let outer = if point { std::f32::consts::PI } else { (l.cone as f32 / 2.0).to_radians() };
+    let inner = if point { outer - 0.001 } else { outer * 0.66 };
+    SpotLight { pos, dir, color: Vec3::new(c[0], c[1], c[2]) * k, range: l.range as f32, inner, outer }
 }
 
 /// How lit the lamps are at a time of day: full by night, a little in the morning, off by
