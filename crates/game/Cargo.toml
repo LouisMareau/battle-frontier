@@ -19,6 +19,7 @@ egui.workspace = true
 image.workspace = true
 glam.workspace = true
 log = "0.4"
+serde.workspace = true
 serde_json.workspace = true
 
 # The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>
@@ -27,7 +28,7 @@ ehttp = "0.7"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "GainNode", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Performance", "Url", "Window"] }
+web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "GainNode", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Performance", "Storage", "Url", "Window"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }

@@ -642,7 +642,11 @@ impl MapEditor {
     /// The cells the edited building and what's in front of the picked wall cover: the
     /// part of the map that stays lit while it's edited.
     pub(super) fn focus_cells(&self) -> Option<Vec<(i32, i32)>> {
-        let d = self.draft.as_ref().filter(|d| d.step == super::build::Step::Design)?;
+        let Some(d) = self.draft.as_ref().filter(|d| d.step == super::build::Step::Design) else {
+            // the walker inside a building (or on the threshold, fading): the building
+            let i = self.fade.as_ref().map(|f| f.building).or_else(|| self.walker.as_ref().and_then(|w| w.inside).map(|(i, _)| i))?;
+            return self.map.buildings.get(i).map(|b| b.map_cells());
+        };
         let mut cells = d.b.map_cells();
         if let (Clicks::Outside, Some(w)) = (d.clicks, d.wall) {
             cells.extend(front_of(self, &d.b, &run_of(&d.b, w), w.2));

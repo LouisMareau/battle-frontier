@@ -1,7 +1,7 @@
 //! The game: one program for the browser (WebAssembly, WebGPU or WebGL 2) and the desktop.
 //!
 //! Desktop options: game [--preset ID] [--auto] [--time morning|day|night] [--levels 1-5]
-//!                       [--maps [ID]] [--exit-after SECONDS] [--stats] [--no-vsync]
+//!                       [--maps [ID]] [--explore [ID]] [--exit-after SECONDS] [--stats] [--no-vsync]
 //! (--stats prints frames per second and processor time each second; with --no-vsync the
 //! frame rate is uncapped: what the machine can do, not the screen's rate)
 //! (content from ./content and ./temporary, or under $GAME_ROOT)
@@ -39,6 +39,15 @@ fn main() -> eframe::Result {
                         i += 1;
                     }
                     None => cli.maps = Some(String::new()),
+                }
+            }
+            "--explore" => {
+                match next.filter(|n| !n.starts_with("--")) {
+                    Some(id) => {
+                        cli.explore = Some(id);
+                        i += 1;
+                    }
+                    None => cli.explore = Some(String::new()),
                 }
             }
             "--time" => {

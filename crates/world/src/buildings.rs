@@ -171,6 +171,22 @@ pub struct Cut {
 }
 
 pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<Cut>, models: &Models) -> Scene {
+    let shown = match cut {
+        Some(c) => (c.top + 1).min(b.floors.len()),
+        None => b.floors.len(),
+    };
+    build(b, content, level_height, 0..shown, cut.is_none(), true, models)
+}
+
+/// What a cut takes away: the floors above `top` and the roof (what fades out when the
+/// player walks in, and back when they leave).
+pub fn building_above(b: &Building, content: &Content, level_height: f32, top: usize, models: &Models) -> Scene {
+    build(b, content, level_height, (top + 1).min(b.floors.len())..b.floors.len(), true, false, models)
+}
+
+/// A building's floors in `floors`, its roof when `with_roof`, and when `grounds` what
+/// stands outside it and its pillars (as high as the floors shown).
+fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::Range<usize>, with_roof: bool, grounds: bool, models: &Models) -> Scene {
     let mut m = Mesh::default();
     let lh = level_height;
     let base = b.level as f32 * lh;
@@ -180,10 +196,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
     let trim = color(wall.map(|w| w.color(1)).unwrap_or("#b89f7e"));
     let kind = wall.map(|w| w.pattern.as_str()).unwrap_or("plaster");
     let body = if matches!(kind, "plaster" | "") { main } else { trim };
-    let shown = match cut {
-        Some(c) => (c.top + 1).min(b.floors.len()),
-        None => b.floors.len(),
-    };
+    let shown = floors.end;
     let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
     let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
     // a low rim around an opening in a floor or the roof (where stairs come up)
@@ -240,7 +253,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         }
     }
 
-    for f in 0..shown {
+    for f in floors {
         let floor = &b.floors[f];
         let y0 = base + f as f32 * lh;
         // the floor, open where stairs come up from below
@@ -323,7 +336,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         }
     }
     // what stands outside it
-    for p in &b.outside {
+    for p in b.outside.iter().filter(|_| grounds) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let Some(model) = model(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
@@ -331,14 +344,14 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
     }
     // pillars, as high as what's shown
-    for p in &b.pillars {
+    for p in b.pillars.iter().filter(|_| grounds) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let Some(model) = model(&p.prop) else { continue };
         let stretch = shown as f32 * lh / (prop.height as f32).max(0.1);
         let at = Vec3::new(ox + p.corner[0] as f32, base, oz + p.corner[1] as f32);
         put(&mut m, &mut textured, &model, Mat4::from_translation(at) * Mat4::from_scale(Vec3::new(1.0, stretch, 1.0)));
     }
-    if cut.is_none() && !b.floors.is_empty() {
+    if with_roof && !b.floors.is_empty() {
         let top = base + b.floors.len() as f32 * lh;
         let holes = b.stairwells(b.floors.len(), &stairs);
         roof(&mut m, b, content, top, main, &holes);

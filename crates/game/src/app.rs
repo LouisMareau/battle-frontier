@@ -18,7 +18,7 @@ use crate::director::Director;
 use crate::editor::Browser;
 use crate::hud::{Hud, ACCENT, MUTED, TEXT};
 use crate::input::{Button, Input};
-use crate::mapedit::MapEditor;
+use crate::mapedit::{MapEditor, SaveGame, SAVE_NAME};
 use crate::platform::{self, Files, Load};
 use crate::presets::{kind_label, kind_of, pool, spec, DEFAULT_BAG};
 use crate::stage::Stage;
@@ -76,6 +76,8 @@ pub struct Cli {
     pub levels: Option<u8>,
     /// open the map editor (on that map, if not empty)
     pub maps: Option<String>,
+    /// walk a map in the game (the saved one, or the first, if empty)
+    pub explore: Option<String>,
     /// draw as fast as possible, not at the screen's rate (to measure; the desktop only)
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub no_vsync: bool,
@@ -107,6 +109,8 @@ enum Screen {
     Menu,
     Editor(Box<Browser>),
     Maps(Box<MapEditor>),
+    /// the overworld: a map walked in the game
+    Overworld(Box<MapEditor>),
     Loading(Loading),
     Battle(Box<Director>, usize),
     Results(Box<Director>, Results),
@@ -152,9 +156,13 @@ pub struct GameApp {
     /// the frame-time details (F3)
     perf_panel: bool,
     audio: crate::audio::Audio,
-    /// the map editor, kept while a battle it asked for plays
+    /// the map editor (or the overworld), kept while a battle it asked for plays
     parked: Option<Box<MapEditor>>,
     pending: Option<crate::mapedit::Request>,
+    /// the overworld asks to leave, and what it last saved (and when)
+    leaving: bool,
+    last_save: Option<SaveGame>,
+    last_save_at: f64,
 }
 
 pub struct SceneCallback {
@@ -228,7 +236,7 @@ impl GameApp {
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
-            draws: DrawStats::default(), perf_panel: false, audio: crate::audio::Audio::new(), parked: None, pending: None,
+            draws: DrawStats::default(), perf_panel: false, audio: crate::audio::Audio::new(), parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
         }
     }
 
@@ -298,13 +306,35 @@ impl GameApp {
         c
     }
 
-    /// A battle a map's script asked for: the editor waits, parked, and gets the player
-    /// back after the results.
+    /// The map editor or the overworld, whichever is up.
+    fn editor_mut(&mut self) -> Option<&mut MapEditor> {
+        match &mut self.screen {
+            Screen::Maps(ed) | Screen::Overworld(ed) => Some(ed),
+            _ => None,
+        }
+    }
+
+    /// The screen a map editor goes back to: the overworld when it's playing.
+    fn screen_of(ed: Box<MapEditor>) -> Screen {
+        if ed.playing() { Screen::Overworld(ed) } else { Screen::Maps(ed) }
+    }
+
+    /// A battle a map's script asked for: the editor (or the overworld) waits, parked, and
+    /// gets the player back after the results.
     fn battle_from_map(&mut self, id: &str) {
         let index = self.content.as_ref().and_then(|c| c.encounters.entries().iter().position(|e| e.value.id == id));
-        let Screen::Maps(mut ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { return };
+        let mut ed = match std::mem::replace(&mut self.screen, Screen::Menu) {
+            Screen::Maps(ed) | Screen::Overworld(ed) => ed,
+            other => {
+                self.screen = other;
+                return;
+            }
+        };
         match index {
             Some(i) if self.dex.is_some() => {
+                if ed.playing() {
+                    self.save_story(&ed.save_game(), true);
+                }
                 self.content = Some(ed.content());
                 self.parked = Some(ed);
                 self.audio.stop_all();
@@ -312,9 +342,56 @@ impl GameApp {
             }
             _ => {
                 ed.resume_after_battle();
-                self.screen = Screen::Maps(ed);
+                self.screen = Self::screen_of(ed);
             }
         }
+    }
+
+    /// The overworld: the saved map (or `map`, or the first), walked from where the save
+    /// left off, with the story's flags.
+    fn explore(&mut self, map: Option<&str>) {
+        let Some(c) = self.content.clone() else { return };
+        let save: Option<SaveGame> = platform::stored_text(SAVE_NAME).and_then(|t| serde_json::from_str(&t).ok());
+        let map = map
+            .map(String::from)
+            .or_else(|| save.as_ref().map(|s| s.map.clone()).filter(|m| c.maps.contains(m)))
+            .or_else(|| c.maps.iter().next().map(|m| m.id.clone()));
+        let Some(map) = map.filter(|m| c.maps.contains(m)) else {
+            self.error = Some("No map to explore: make one in the map editor first.".into());
+            return;
+        };
+        self.last_save = save.clone();
+        self.screen = Screen::Overworld(Box::new(MapEditor::new_play(c, &map, self.files.clone(), save.as_ref())));
+    }
+
+    /// Keeps the story between runs: when the map or the flags change, where the player
+    /// stands every couple of seconds, and whenever `force` says so.
+    fn save_story(&mut self, s: &SaveGame, force: bool) {
+        let now = platform::now_ms();
+        let changed = match &self.last_save {
+            Some(last) => last.map != s.map || last.flags != s.flags || (last.at != s.at && now - self.last_save_at > 2000.0),
+            None => true,
+        };
+        if changed || force {
+            match serde_json::to_string(s) {
+                Ok(text) => {
+                    if let Err(e) = platform::store_text(SAVE_NAME, &text) {
+                        log::warn!("the story wasn't saved: {e}");
+                    }
+                }
+                Err(e) => log::warn!("the story wasn't saved: {e}"),
+            }
+            self.last_save = Some(s.clone());
+            self.last_save_at = now;
+        }
+    }
+
+    /// Out of the overworld, the story kept.
+    fn leave_overworld(&mut self) {
+        let Screen::Overworld(ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { return };
+        self.save_story(&ed.save_game(), true);
+        self.content = Some(ed.content());
+        self.audio.stop_all();
     }
 
     /// The encounters in the menu's order: by region, then by their own order.
@@ -498,6 +575,9 @@ impl GameApp {
         if let Some(m) = self.cli.maps.take() {
             cmds.push(if m.is_empty() { "maps".into() } else { format!("map:{m}") });
         }
+        if let Some(m) = self.cli.explore.take() {
+            cmds.push(if m.is_empty() { "explore".into() } else { format!("explore:{m}") });
+        }
         for c in cmds {
             let (verb, arg) = c.split_once(':').unwrap_or((c.as_str(), ""));
             match verb {
@@ -549,34 +629,47 @@ impl GameApp {
                         self.screen = Screen::Maps(Box::new(MapEditor::new(c.clone(), open, self.files.clone())));
                     }
                 }
+                "explore" => {
+                    if matches!(self.screen, Screen::Menu) {
+                        self.explore((!arg.is_empty()).then_some(arg));
+                    }
+                }
+                "forget" => {
+                    platform::forget_text(SAVE_NAME);
+                    self.last_save = None;
+                }
                 "view" => {
-                    if let Screen::Maps(ed) = &mut self.screen {
+                    if let Some(ed) = self.editor_mut() {
                         ed.set_view(arg);
                     }
                 }
                 "period" => {
-                    if let Screen::Maps(ed) = &mut self.screen {
+                    if let Some(ed) = self.editor_mut() {
                         ed.set_period(arg);
                     }
                 }
                 "point" => {
-                    if let Screen::Maps(ed) = &mut self.screen {
+                    if let Some(ed) = self.editor_mut() {
                         ed.probe(arg);
                     }
                 }
                 "walkto" => {
-                    if let (Screen::Maps(ed), Some((x, z))) = (&mut self.screen, arg.split_once(',')) {
+                    if let (Some(ed), Some((x, z))) = (self.editor_mut(), arg.split_once(',')) {
                         if let (Ok(x), Ok(z)) = (x.trim().parse(), z.trim().parse()) {
                             ed.walk_to(x, z);
                         }
                     }
                 }
                 "back" => {
-                    if let Screen::Maps(ed) = &self.screen {
-                        self.content = Some(ed.content());
-                    }
-                    if matches!(self.screen, Screen::Results(..) | Screen::Editor(_) | Screen::Maps(_)) {
-                        self.screen = Screen::Menu;
+                    if matches!(self.screen, Screen::Overworld(_)) {
+                        self.leaving = true;
+                    } else {
+                        if let Screen::Maps(ed) = &self.screen {
+                            self.content = Some(ed.content());
+                        }
+                        if matches!(self.screen, Screen::Results(..) | Screen::Editor(_) | Screen::Maps(_)) {
+                            self.screen = Screen::Menu;
+                        }
                     }
                 }
                 _ => {}
@@ -593,6 +686,7 @@ impl GameApp {
                 Screen::Loading(_) => "loading".into(),
                 Screen::Editor(_) => "editor".into(),
                 Screen::Maps(_) => "map editor".into(),
+                Screen::Overworld(_) => "overworld".into(),
                 _ => "menu".into(),
             };
             self.hitches.push(format!("{gap:.0}ms at {:.1}s {what}", (now - self.started_at) / 1000.0));
@@ -639,6 +733,7 @@ impl GameApp {
                     Screen::Results(..) => "results".into(),
                     Screen::Loading(_) => "loading".into(),
                     Screen::Maps(_) => "map editor".into(),
+                    Screen::Overworld(_) => "overworld".into(),
                     _ => "menu".into(),
                 };
                 println!("fps {} worst-gap-ms {:.1} cpu-ms {:.2} (worst {:.2}) {state}", s.fps, s.worst_gap, s.cpu, s.cpu_peak);
@@ -650,6 +745,9 @@ impl GameApp {
         let mut start = None;
         let mut open_editor = false;
         let mut open_maps = false;
+        let mut open_explore = false;
+        let mut forget = false;
+        let has_save = platform::stored_text(SAVE_NAME).is_some();
         let order = self.encounter_order();
         let content = self.content.clone();
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28)).inner_margin(24.0)).show(ui, |ui| {
@@ -663,6 +761,15 @@ impl GameApp {
                     }
                     if ui.button("Edit maps").clicked() {
                         open_maps = true;
+                    }
+                    ui.separator();
+                    let explore = ui.add(egui::Button::new(RichText::new("Explore").strong())).on_hover_text("Walk the maps: the arrows move, A speaks to what's in front, Esc comes back. The story is kept.");
+                    platform::set_hook("ui-explore", &format!("{:.0},{:.0}", explore.rect.center().x, explore.rect.center().y));
+                    if explore.clicked() {
+                        open_explore = true;
+                    }
+                    if has_save && ui.button("Forget the story").on_hover_text("Starts the story over: the flags and where you stood").clicked() {
+                        forget = true;
                     }
                 });
                 ui.add_space(10.0);
@@ -758,6 +865,14 @@ impl GameApp {
                 return;
             }
         }
+        if forget {
+            platform::forget_text(SAVE_NAME);
+            self.last_save = None;
+        }
+        if open_explore {
+            self.explore(None);
+            return;
+        }
         if let Some(i) = start {
             self.start(i);
         }
@@ -812,6 +927,7 @@ impl eframe::App for GameApp {
             Screen::Menu => "menu",
             Screen::Editor(_) => "editor",
             Screen::Maps(_) => "maps",
+            Screen::Overworld(_) => "explore",
             Screen::Loading(_) => "loading",
             Screen::Battle(..) => "battle",
             Screen::Results(..) => "results",
@@ -826,6 +942,7 @@ impl eframe::App for GameApp {
             }
         }
 
+        let period = self.period();
         match &mut self.screen {
             Screen::Boot | Screen::Loading(_) => {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28))).show(ui, |ui| {
@@ -850,6 +967,29 @@ impl eframe::App for GameApp {
                     self.audio.stop_all();
                 } else if request.is_some() {
                     self.pending = request;
+                }
+            }
+            Screen::Overworld(ed) => {
+                let leave = ed.play_ui(ui, frame.wgpu_render_state(), now, &mut self.audio, period);
+                let request = ed.take_request();
+                let save = ed.save_game();
+                if leave {
+                    self.leaving = true;
+                } else if request.is_some() {
+                    self.pending = request;
+                } else {
+                    let changed = match &self.last_save {
+                        Some(last) => last.map != save.map || last.flags != save.flags || (last.at != save.at && now - self.last_save_at > 2000.0),
+                        None => true,
+                    };
+                    if changed {
+                        self.last_save_at = now;
+                        let text = serde_json::to_string(&save).unwrap_or_default();
+                        if let Err(e) = platform::store_text(SAVE_NAME, &text) {
+                            log::warn!("the story wasn't saved: {e}");
+                        }
+                        self.last_save = Some(save);
+                    }
                 }
             }
             Screen::Battle(director, encounter) => {
@@ -916,7 +1056,7 @@ impl eframe::App for GameApp {
                             if ui.add(egui::Button::new(RichText::new("Fight again (A)").color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
                                 choice = Some(true);
                             }
-                            if ui.button(if self.parked.is_some() { "Back to the map (B)" } else { "Back to the menu (B)" }).clicked() {
+                            if ui.button(match &self.parked { Some(ed) if ed.playing() => "Back to the map (B)", Some(_) => "Back to the editor (B)", None => "Back to the menu (B)" }).clicked() {
                                 choice = Some(false);
                             }
                         });
@@ -936,7 +1076,7 @@ impl eframe::App for GameApp {
                     Some(false) => match self.parked.take() {
                         Some(mut ed) => {
                             ed.resume_after_battle();
-                            self.screen = Screen::Maps(ed);
+                            self.screen = Self::screen_of(ed);
                         }
                         None => self.screen = Screen::Menu,
                     },
@@ -948,12 +1088,15 @@ impl eframe::App for GameApp {
         if let Some(crate::mapedit::Request::Battle(id)) = self.pending.take() {
             self.battle_from_map(&id);
         }
+        if std::mem::take(&mut self.leaving) {
+            self.leave_overworld();
+        }
 
         // frame times, top right; F3: the details
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("stats")));
         let r = ctx.content_rect();
         // (at the bottom in the map editor, whose top bar is full)
-        let (at, align) = if matches!(self.screen, Screen::Maps(_)) { (Pos2::new(r.right() - 10.0, r.bottom() - 7.0), Align2::RIGHT_BOTTOM) } else { (Pos2::new(r.right() - 10.0, r.top() + 8.0), Align2::RIGHT_TOP) };
+        let (at, align) = if matches!(self.screen, Screen::Maps(_) | Screen::Overworld(_)) { (Pos2::new(r.right() - 10.0, r.bottom() - 7.0), Align2::RIGHT_BOTTOM) } else { (Pos2::new(r.right() - 10.0, r.top() + 8.0), Align2::RIGHT_TOP) };
         painter.text(at, align, format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap), FontId::proportional(11.0), Color32::from_white_alpha(150));
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.perf_panel = !self.perf_panel;

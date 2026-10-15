@@ -214,6 +214,8 @@ pub struct Frame {
     /// an editor's focus: the world's cells outside it are darkened (the cells texture's
     /// blue channel says which are in), and what stands outside this box (x0, z0, x1, z1)
     pub focus: Option<[f32; 4]>,
+    /// how dark the outside of the focus goes, 0 (not at all) to 1
+    pub dim: f32,
     /// shapes drawn over everything (an editor's cursors), whatever is in front of them
     pub overlays: Vec<Shape>,
 }
@@ -422,6 +424,8 @@ pub struct SceneRenderer {
 
 pub const WHITE: &str = "#white";
 pub const GLOW: &str = "#glow";
+/// white too, but drawn with cut-outs: vertex alpha under 1 dissolves the mesh (a fade)
+pub const FADE: &str = "#fade";
 
 impl SceneRenderer {
     /// `output` is the format of the pass the scene is blitted into.
@@ -657,6 +661,7 @@ impl SceneRenderer {
             output_srgb: output.is_srgb(),
         };
         r.add_texture(device, queue, WHITE, &[255, 255, 255, 255], 1, 1, false);
+        r.add_texture(device, queue, FADE, &[255, 255, 255, 255], 1, 1, false);
         let mut glow = vec![0u8; 64 * 64 * 4];
         for y in 0..64 {
             for x in 0..64 {
@@ -1031,7 +1036,7 @@ impl SceneRenderer {
                 Some(w) => [w.size[0] as f32, w.size[1] as f32, w.level_height, frame.time],
                 None => [0.0, 0.0, 2.0, frame.time],
             },
-            editor: [frame.grid as u32 as f32, frame.focus.is_some() as u32 as f32, 0.0, 0.0],
+            editor: [frame.grid as u32 as f32, if frame.focus.is_some() { frame.dim.clamp(0.0, 1.0) } else { 0.0 }, 0.0, 0.0],
             shadow: shadow_params(&light_view_proj, self.shadow_size),
             focus: frame.focus.unwrap_or([0.0; 4]),
             light_count: [l.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],

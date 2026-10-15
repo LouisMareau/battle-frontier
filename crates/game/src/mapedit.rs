@@ -34,6 +34,19 @@ use world::WorldMap;
 
 pub use events::Request;
 
+/// The story as it's kept between runs: where the player stands, and the flags.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct SaveGame {
+    pub map: String,
+    pub at: [i32; 2],
+    pub facing: f64,
+    pub flags: std::collections::BTreeMap<String, i64>,
+}
+
+/// The save's name (`platform::store_text`).
+pub const SAVE_NAME: &str = "story";
+
 use crate::stage::period_lighting;
 
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
@@ -81,12 +94,14 @@ struct Camera {
     /// degrees above the ground
     pitch: f32,
     distance: f32,
+    /// closer for a while (inside a building): times the distance
+    zoom: f32,
 }
 
 impl Camera {
     fn eye(&self) -> Vec3 {
         let (y, p) = (self.yaw.to_radians(), self.pitch.to_radians());
-        self.target + Vec3::new(y.sin() * p.cos(), p.sin(), y.cos() * p.cos()) * self.distance
+        self.target + Vec3::new(y.sin() * p.cos(), p.sin(), y.cos() * p.cos()) * self.distance * self.zoom
     }
 
     fn view_proj(&self, aspect: f32) -> Mat4 {
@@ -183,6 +198,8 @@ pub struct MapEditor {
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
+    /// a building's upper part fading as the walker goes in or out
+    fade: Option<walk::Fade>,
     /// which cells block on foot (until the map changes)
     blocked: Option<Vec<bool>>,
     /// the moving things' mesh must be sent again
@@ -224,6 +241,8 @@ pub struct MapEditor {
     animated_n: usize,
     /// this frame's time, for the scripts' host
     now: f64,
+    /// the game's overworld: the map walked, no editing (`play_ui`)
+    play: bool,
 }
 
 fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
@@ -327,7 +346,7 @@ impl MapEditor {
         let mut ed = MapEditor {
             level_height: world.level_height() as f32,
             max_level: world.max_level,
-            cam: Camera { target: Vec3::ZERO, yaw: 0.0, pitch: 52.0, distance: 40.0 },
+            cam: Camera { target: Vec3::ZERO, yaw: 0.0, pitch: 52.0, distance: 40.0, zoom: 1.0 },
             period: Period::Day,
             grid: true,
             lamps: false,
@@ -368,6 +387,7 @@ impl MapEditor {
             assets: assets::Assets::default(),
             probe: None,
             walker: None,
+            fade: None,
             blocked: None,
             extra_changed: false,
             files,
@@ -399,6 +419,7 @@ impl MapEditor {
             animate: true,
             animated_n: 0,
             now: 0.0,
+            play: false,
             dirty: false,
             space,
             map,
@@ -411,6 +432,53 @@ impl MapEditor {
             ed.open(&id);
         }
         ed
+    }
+
+    /// The game's overworld on a map: walking from where the save left off (on that map),
+    /// else from the middle, with the story's flags.
+    pub fn new_play(content: Arc<Content>, map: &str, files: crate::platform::Files, save: Option<&SaveGame>) -> MapEditor {
+        let mut ed = MapEditor::new(content, Some(map), files);
+        ed.play = true;
+        ed.creatures_on = true;
+        ed.grid = false;
+        if let Some(s) = save {
+            ed.story.flags = s.flags.clone();
+            if s.map == ed.map.id && ed.map.index(s.at[0], s.at[1]).is_some() {
+                ed.arrive = Some(((s.at[0], s.at[1]), s.facing as f32));
+            }
+        }
+        if ed.loading.is_none() {
+            // a map held as rows is up already: stand on it now
+            ed.finish_arrival();
+            if ed.walker.is_none() {
+                ed.start_walk();
+            }
+            ed.play_camera();
+        }
+        ed
+    }
+
+    pub fn playing(&self) -> bool {
+        self.play
+    }
+
+    /// The overworld's view: close, over the walker's shoulder.
+    fn play_camera(&mut self) {
+        self.cam.distance = 16.0;
+        self.cam.pitch = 50.0;
+        self.cam.yaw = 0.0;
+        if let Some(w) = &self.walker {
+            self.cam.target = w.pos(self.now);
+        }
+    }
+
+    /// The story as it stands, to keep between runs.
+    pub fn save_game(&self) -> SaveGame {
+        let (at, facing) = match &self.walker {
+            Some(w) => ([w.cell.0, w.cell.1], w.facing as f64),
+            None => ([self.cam.target.x.floor() as i32, self.cam.target.z.floor() as i32], 0.0),
+        };
+        SaveGame { map: self.map.id.clone(), at, facing, flags: self.story.flags.clone() }
     }
 
     fn first_terrain(content: &Content) -> String {
@@ -523,12 +591,20 @@ impl MapEditor {
         self.width_edit = self.map.width as u16;
         self.height_edit = self.map.height as u16;
         self.worlds.levels.clear();
+        let flags = std::mem::take(&mut self.story.flags);
         self.story = Default::default();
+        self.story.flags = flags;
         self.evt = Default::default();
         self.rebuild_actors();
         self.everything_changed();
         self.recentre();
         self.finish_arrival();
+        if self.play {
+            if self.walker.is_none() {
+                self.start_walk();
+            }
+            self.play_camera();
+        }
     }
 
     fn everything_changed(&mut self) {
@@ -849,18 +925,81 @@ impl MapEditor {
     // ------------------------------------------------------------ the screen
 
     /// Draws the editor; true when the player asks to go back.
-    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio) -> bool {
-        let ctx = ui.ctx().clone();
+    /// What every frame does first, editing or playing: walking, the creatures, the actors,
+    /// the story, the GPU, a map on its way.
+    fn begin_frame(&mut self, ctx: &egui::Context, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64) {
         self.now = now;
-        self.walk(&ctx, now);
+        self.walk(ctx, now);
         self.tick(now);
         self.tick_actors(now);
-        self.step_story(&ctx, now);
+        self.step_story(ctx, now);
         if let Some(rs) = rs {
             self.sync(rs, now);
         }
-        let mut back = false;
         self.poll_loading();
+    }
+
+    /// What every frame does last: the dialog box over the view, what's heard, the hooks.
+    fn end_frame(&mut self, ctx: &egui::Context, audio: &mut crate::audio::Audio, now: f64) {
+        self.dialog_ui(ctx, now);
+        let wants = self.sound_wants(now);
+        audio.update(&self.files, self.listener(now), &wants, now);
+        let shots = std::mem::take(&mut self.story.shots);
+        for (file, volume) in shots {
+            let space = self.content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
+            audio.play_once(&self.files, &space.asset(&file), None, volume, 0.0, now);
+        }
+        crate::platform::set_hook("sounds", &audio.playing().to_string());
+        crate::platform::set_hook("audio", audio.state());
+        crate::platform::set_hook("animated", &self.animated_n.to_string());
+        crate::platform::set_hook("map", &self.map.id);
+        crate::platform::set_hook("loading", if self.loading.is_some() { "1" } else { "0" });
+        crate::platform::set_hook("status", &self.status);
+    }
+
+    /// The game's overworld: the map walked, full window, no editing. Says whether the
+    /// player leaves (Esc, with no dialog up).
+    pub fn play_ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio, period: Period) -> bool {
+        let ctx = ui.ctx().clone();
+        self.period = period;
+        self.begin_frame(&ctx, rs, now);
+        let leave = !ctx.egui_wants_keyboard_input() && self.story.dialog.is_none() && self.story.machine.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
+            let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
+            self.viewport = rect;
+            self.play_input(ui, &response);
+            let frame = self.frame(now, rect);
+            ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
+            // the place and the keys, bottom left; what a script said, above
+            let p = ui.painter();
+            let font = egui::FontId::proportional(12.0);
+            p.text(rect.left_bottom() + egui::vec2(12.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("{} · arrows move · A speaks · Esc leaves", self.map.name), font.clone(), Color32::from_white_alpha(170));
+            if self.loading.is_some() {
+                p.text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(18.0), Color32::from_white_alpha(200));
+            }
+        });
+        self.end_frame(&ctx, audio, now);
+        leave
+    }
+
+    /// The overworld's pointer: the wheel zooms, the middle button turns the view.
+    fn play_input(&mut self, ui: &egui::Ui, response: &egui::Response) {
+        let (scroll, delta) = ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.delta()));
+        if response.hovered() && scroll != 0.0 {
+            self.cam.distance = (self.cam.distance * (-scroll * 0.0015).exp()).clamp(6.0, 40.0);
+        }
+        if response.dragged_by(PointerButton::Middle) {
+            self.cam.yaw = (self.cam.yaw - delta.x * 0.3).rem_euclid(360.0);
+            self.cam.pitch = (self.cam.pitch + delta.y * 0.2).clamp(25.0, 80.0);
+        }
+        self.plane_hit = None;
+        self.ground_hit = None;
+    }
+
+    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio) -> bool {
+        let ctx = ui.ctx().clone();
+        self.begin_frame(&ctx, rs, now);
+        let mut back = false;
         self.take_drops(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.watch_assets(now);
@@ -1006,22 +1145,9 @@ impl MapEditor {
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
-        self.dialog_ui(&ctx, now);
-        // what's heard from here
-        let wants = self.sound_wants(now);
-        audio.update(&self.files, self.listener(now), &wants, now);
-        let shots = std::mem::take(&mut self.story.shots);
-        for (file, volume) in shots {
-            let space = self.content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
-            audio.play_once(&self.files, &space.asset(&file), None, volume, 0.0, now);
-        }
-        crate::platform::set_hook("sounds", &audio.playing().to_string());
-        crate::platform::set_hook("audio", audio.state());
-        crate::platform::set_hook("animated", &self.animated_n.to_string());
-        crate::platform::set_hook("map", &self.map.id);
+        self.end_frame(&ctx, audio, now);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
         crate::platform::set_hook("chunked", if self.map.chunk > 0 { "1" } else { "0" });
-        crate::platform::set_hook("loading", if self.loading.is_some() { "1" } else { "0" });
         crate::platform::set_hook("props", &self.map.props.len().to_string());
         crate::platform::set_hook("areas", &self.map.tree_areas.len().to_string());
         crate::platform::set_hook("level", &self.level.to_string());
@@ -1048,7 +1174,6 @@ impl MapEditor {
             format!("wall:{wall};inner:{inner};outer:{};outside:{};holes:{holes};roof:{roof};sel:{:?}", d.b.anchors.len() - inner, d.b.outside.len(), d.sel)
         });
         crate::platform::set_hook("rooms", &rooms.unwrap_or_default());
-        crate::platform::set_hook("status", &self.status);
         let selection = match (self.selected, self.selected_building) {
             (_, Some(i)) => format!("building:{i}"),
             (Some(i), None) => format!("prop:{i}"),
@@ -1834,6 +1959,7 @@ impl MapEditor {
             time: (now / 1000.0) as f32,
             grid: self.grid,
             focus: self.focus_box(),
+            dim: self.focus_dim(now),
             overlays,
         }
     }

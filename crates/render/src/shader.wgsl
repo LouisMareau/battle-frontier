@@ -33,12 +33,21 @@ fn fog(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     return mix(rgb, g.fog_color.rgb, f);
 }
 
-// darker outside the editor's focus box
+// darker outside the editor's focus box, by g.editor.y (0: not at all)
 fn focus_dim(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
-    if (g.editor.y > 0.5 && (world.x < g.focus.x || world.z < g.focus.y || world.x > g.focus.z || world.z > g.focus.w)) {
-        return rgb * 0.16;
+    if (g.editor.y > 0.001 && (world.x < g.focus.x || world.z < g.focus.y || world.x > g.focus.z || world.z > g.focus.w)) {
+        return rgb * mix(1.0, 0.16, g.editor.y);
     }
     return rgb;
+}
+
+// a mesh fading: vertex alpha under 1 dissolves it, speck by speck, in the world
+fn dissolved(world: vec3<f32>, alpha: f32) -> bool {
+    if (alpha >= 0.999) {
+        return false;
+    }
+    let cell = floor(world * 24.0);
+    return hash2(cell.xz + vec2<f32>(cell.y * 7.31, cell.y * 1.17)) > alpha;
 }
 
 fn lit_by_sun(light_pos: vec4<f32>) -> f32 {
@@ -121,10 +130,11 @@ fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32
 
 @fragment
 fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv) * i.color;
-    if (c.a < 0.5) {
+    let t = textureSample(tex, samp, i.uv);
+    if (t.a < 0.5 || dissolved(i.world, i.color.a)) {
         discard;
     }
+    let c = t * i.color;
     return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
 }
 

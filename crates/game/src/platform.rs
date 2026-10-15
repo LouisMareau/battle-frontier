@@ -212,6 +212,51 @@ pub fn download_bytes(name: &str, bytes: &[u8], mime: &str) -> Result<(), String
     Ok(())
 }
 
+/// A small text kept between runs (a save): the browser's localStorage, or a file under
+/// build/save/ on the desktop.
+#[cfg(target_arch = "wasm32")]
+pub fn store_text(name: &str, text: &str) -> Result<(), String> {
+    let storage = web_sys::window().and_then(|w| w.local_storage().ok().flatten()).ok_or("no storage")?;
+    storage.set_item(name, text).map_err(|e| format!("{e:?}"))
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn stored_text(name: &str) -> Option<String> {
+    web_sys::window()?.local_storage().ok()??.get_item(name).ok()?
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn forget_text(name: &str) {
+    if let Some(s) = web_sys::window().and_then(|w| w.local_storage().ok().flatten()) {
+        let _ = s.remove_item(name);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn store_path(name: &str) -> std::path::PathBuf {
+    let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
+    root.join("build").join("save").join(format!("{name}.json"))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn store_text(name: &str, text: &str) -> Result<(), String> {
+    let path = store_path(name);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn stored_text(name: &str) -> Option<String> {
+    std::fs::read_to_string(store_path(name)).ok()
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn forget_text(name: &str) {
+    let _ = std::fs::remove_file(store_path(name));
+}
+
 /// A command left by a test in `<body data-cmd>` (taken once).
 #[cfg(target_arch = "wasm32")]
 pub fn take_command() -> Option<String> {

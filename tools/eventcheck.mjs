@@ -91,11 +91,6 @@ try {
   check('remembered', (await data('flags')).includes('met_bo=1'), await data('flags'));
   check('Bo faces the player', true);
   // Pip knows, now
-  await cmd('walkto:20,4');
-  await sleep(300);
-  await browser.evaluate('document.body.dataset.pipwas = ""');
-  // Pip wanders: not a sure thing to be in front; the script's branch is the thing checked
-  // through the sign of the flag above
 
   // 4. the well's cells, once
   await cmd('walkto:11,9');

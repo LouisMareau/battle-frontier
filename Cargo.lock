@@ -741,6 +741,7 @@ dependencies = [
  "js-sys",
  "log",
  "rodio",
+ "serde",
  "serde_json",
  "wasm-bindgen",
  "wasm-bindgen-futures",

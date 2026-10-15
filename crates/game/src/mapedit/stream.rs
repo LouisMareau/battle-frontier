@@ -146,7 +146,6 @@ impl MapEditor {
     /// walker's floor, left out while it's edited (the draft takes its place).
     fn building_digests(&self) -> BTreeMap<(i32, i32), u64> {
         let editing = self.draft.as_ref().and_then(|d| d.editing);
-        let inside = self.walker.as_ref().and_then(|w| w.inside);
         let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
         for (i, b) in self.map.buildings.iter().enumerate() {
             let h = by.entry(square(b.at[0], b.at[1])).or_default();
@@ -154,7 +153,7 @@ impl MapEditor {
                 "editing".hash(h);
                 continue;
             }
-            let cut = inside.filter(|(w, _)| *w == i).map(|(_, f)| f);
+            let cut = self.building_cut(i);
             format!("{b:?} {cut:?}").hash(h);
         }
         if let Some(d) = self.draft.as_ref().filter(|d| d.step == build::Step::Design) {
@@ -189,11 +188,10 @@ impl MapEditor {
             }
             _ => {
                 let editing = self.draft.as_ref().and_then(|d| d.editing);
-                let inside = self.walker.as_ref().and_then(|w| w.inside);
                 let mut m = Scene::default();
                 for (i, b) in self.map.buildings.iter().enumerate().filter(|(_, b)| square(b.at[0], b.at[1]) == s) {
                     if Some(i) != editing {
-                        let cut = inside.filter(|(w, _)| *w == i).map(|(_, f)| Cut { top: f });
+                        let cut = self.building_cut(i).map(|top| Cut { top });
                         m.append(&building(b, &self.content, lh, cut, &self.models), glam::Mat4::IDENTITY);
                     }
                 }
@@ -322,8 +320,8 @@ impl MapEditor {
             }
         }
         if self.extra_changed {
-            let extra = self.extra_mesh(now);
-            r.set_world_extra(&rs.device, &models::batches(&extra));
+            let extra = self.extra_batches(now);
+            r.set_world_extra(&rs.device, &extra);
             self.extra_changed = false;
         }
         let held = self.gpu.built.get("ground").map(|b| b.len()).unwrap_or(0);

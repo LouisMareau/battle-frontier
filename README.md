@@ -21,6 +21,7 @@ cargo run -p engine-content --bin content -- check   # what's in content/ and te
 cargo test -p engine-core              # the battle rules on their own fixtures: 15 tests, incl. 60 simulated battles and every mechanic
 cargo test -p engine-world             # maps: records round-trip, tree areas
 cargo run -p engine-game --release     # the desktop game (run from this folder, or set GAME_ROOT)
+cargo run -p engine-game --release -- --explore [ID]   # straight into the overworld (the saved map, or ID)
 trunk build --release                  # the site in build/dist/ (content/ only, never temporary/)
 node tools/serve.mjs                   # serves the site at http://localhost:8080, with temporary/ next to it
 node tools/check.mjs [seconds=60]      # plays battles in a headless Chrome (needs creatures and encounters), frame times -> screenshots/
@@ -172,6 +173,13 @@ small one.
 - **Animation**: a prop whose model has a rig plays its "idle" animation (else its first)
   where it stands, skinned on the GPU with shadows (`crates/world/src/anim.rs` samples the
   pose, the renderer's skinned pipelines draw it; the flag pole's flag waves).
+- **Explore** (the menu, or `--explore [ID]`) is the overworld in the game itself: the map
+  walked full screen with its actors, events, sounds, lamps and animated props, no editing
+  (the same code as the editor's Walk, without its panels: `MapEditor::play_ui`). The story
+  is kept between runs, one slot: the map, where you stood and which way you faced, and the
+  flags (the browser's storage; `build/save/story.json` on the desktop), saved as they
+  change; "Forget the story" in the menu starts over. Warps, seams and a script's battle
+  work there (the battle plays, then it's back to the map); Esc leaves for the menu.
 
 The editor (menu: "Edit maps", or `--maps`): the tools and the level (PageUp/PageDown) are
 at the top of the left panel, the tool's settings under them; the right panel inspects what's
@@ -192,8 +200,10 @@ front of it. Click a placed thing to select it: Q/E turn it, Delete (or its "rem
 removes it; unstackable props never overlap anything. Then "Confirm the building". A
 building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag),
 delete. **Walk** puts a stand-in character on the map: the
-arrows move it cell by cell, the building it enters is cut away above it, and A speaks to
-what's in front (an actor, a sign: its events) while cells stepped on set off theirs.
+arrows move it cell by cell, and A speaks to what's in front (an actor, a sign: its events)
+while cells stepped on set off theirs. Walking into a building, the floors above and the
+roof dissolve away over half a second, the rest of the map darkens and the view comes a
+little closer; walking out brings them back the same way.
 **Events** (7) is the actors and events: add an actor (click a cell) and give it a look, its
 ways (still, an area to wander, a path of cells) and events; add an event (drag cells) and
 write its script in the inspector, which names what's wrong as you type and runs it on the
@@ -252,7 +262,7 @@ the origin, its front to Blender's front view.
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -261,7 +271,7 @@ windows run on a millisecond clock (`performance.now()` in the browser), so the 
 looks and plays the same at 60 or 120 Hz. Timing presses are stamped with the time of the
 frame that sees them (at most one frame late, against windows of ±110 ms or more). The
 renderer reuses its buffers (the sprite buffer only grows), so a frame allocates very little.
-The overworld, when it comes, will step its movement at a fixed 60 Hz. Every pipeline draws
+The overworld walks cell by cell at a fixed pace, whatever the screen's rate. Every pipeline draws
 once offscreen at startup, so a browser that compiles shaders on first use doesn't do it
 mid-battle.
 
@@ -332,8 +342,8 @@ a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whol
   floors aren't reachable on foot), no interiors as separate maps; most props are still
   stand-in shapes (samples made in Blender: `stone_well`, `flag_pole`).
 - Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
-- No overworld in the game itself yet: walking, scripts, actors and sounds live in the map
-  editor's Walk for now; flags aren't saved.
+- The overworld (Explore) has no doors into interiors as separate maps: buildings are
+  walked into in place; no stairs between levels; the save is one slot.
 - Sprites are battle pictures on billboards. The renderer can take 3D models later
   (glTF), the battle code doesn't care.
 - No gamepad or touch yet (keyboard and mouse); no music.

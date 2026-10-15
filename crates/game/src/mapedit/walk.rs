@@ -7,14 +7,29 @@
 use std::collections::VecDeque;
 
 use glam::Vec3;
+use render::map::MapVertex;
+use render::scene::FADE;
 use world::mesh::{placement, prop_scene, Scene};
 
 use super::actors::facing_of;
-use super::MapEditor;
+use super::{gpu, models, MapEditor};
 
 /// One cell's walk, in milliseconds.
 const STEP_MS: f64 = 210.0;
 const CHARACTER: &str = "stand_in_character";
+/// A building's upper floors and roof fading, in milliseconds.
+const FADE_MS: f64 = 450.0;
+/// How dark the outside goes while inside, and how much closer the view comes.
+const INSIDE_DIM: f32 = 0.75;
+const INSIDE_ZOOM: f32 = 0.8;
+
+/// A building's upper floors and roof on their way out (walking in) or back (walking out).
+pub(super) struct Fade {
+    pub building: usize,
+    pub top: usize,
+    pub t0: f64,
+    pub entering: bool,
+}
 
 pub(super) struct Walker {
     pub cell: (i32, i32),
@@ -48,7 +63,8 @@ impl MapEditor {
 
     fn stand(&mut self, cell: (i32, i32), facing: f32) {
         let pos = self.cell_pos(cell);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside: None, route: VecDeque::new() });
+        let inside = self.walker.as_ref().and_then(|w| w.inside);
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside, route: VecDeque::new() });
         self.blocked = Some(self.map.blocked(&self.content));
         self.story.started = false;
         // standing on cells counts as entering them
@@ -84,13 +100,12 @@ impl MapEditor {
         self.status = "Walking: the arrows move, A speaks to what's in front, Esc stops".into();
     }
 
-    /// Puts the walker on a cell (a check's `walkto:x,z`, a warp's landing).
+    /// Puts the walker on a cell, facing south (a check's `walkto:x,z`).
     pub fn walk_to(&mut self, x: i32, z: i32) {
         if self.map.index(x, z).is_none() {
             return;
         }
-        let facing = self.walker.as_ref().map(|w| w.facing).unwrap_or(0.0);
-        self.stand((x, z), facing);
+        self.stand((x, z), 0.0);
         self.story.started = true;
         self.cam.target = self.cell_pos((x, z));
     }
@@ -106,6 +121,8 @@ impl MapEditor {
 
     pub(super) fn stop_walk(&mut self) {
         if self.walker.take().is_some() {
+            self.fade = None;
+            self.cam.zoom = 1.0;
             self.need_buildings = true;
             self.extra_changed = true;
             self.story.machine = None;
@@ -190,9 +207,24 @@ impl MapEditor {
         let level = self.map.level_at(cell.0, cell.1).unwrap_or(0);
         let inside = self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize));
         if inside != was {
+            // the floors above and the roof fade out on the way in, back on the way out
+            self.fade = match (was, inside) {
+                (_, Some((i, f))) => Some(Fade { building: i, top: f, t0: now, entering: true }),
+                (Some((i, f)), None) => Some(Fade { building: i, top: f, t0: now, entering: false }),
+                _ => None,
+            };
             self.walker.as_mut().unwrap().inside = inside;
             self.need_buildings = true;
         }
+        if self.fade.as_ref().map(|f| now - f.t0 >= FADE_MS).unwrap_or(false) {
+            self.fade = None;
+            self.need_buildings = true;
+        }
+        // the view comes a little closer inside
+        let k = self.inside_amount(now);
+        self.cam.zoom = 1.0 - (1.0 - INSIDE_ZOOM) * k * k * (3.0 - 2.0 * k);
+        crate::platform::set_hook("inside", &self.walker.as_ref().and_then(|w| w.inside).map(|(i, _)| self.map.buildings[i].id.clone()).unwrap_or_default());
+        crate::platform::set_hook("dim", &format!("{:.2}", self.focus_dim(now)));
         // the camera follows, unless a script holds it somewhere
         match self.story.cam_hold {
             Some(h) => self.cam.target = self.cam.target.lerp(h, 0.08),
@@ -201,6 +233,58 @@ impl MapEditor {
         }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
+    }
+
+    /// How a building shows for the walker: cut above the floor they're on, also while
+    /// its upper part fades.
+    pub(super) fn building_cut(&self, i: usize) -> Option<usize> {
+        if let Some(f) = self.fade.as_ref().filter(|f| f.building == i) {
+            return Some(f.top);
+        }
+        self.walker.as_ref().and_then(|w| w.inside).filter(|(b, _)| *b == i).map(|(_, f)| f)
+    }
+
+    /// How far inside a building the view is, 0 to 1: rising on the way in, falling on
+    /// the way out.
+    pub(super) fn inside_amount(&self, now: f64) -> f32 {
+        match &self.fade {
+            Some(f) => {
+                let k = ((now - f.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
+                if f.entering { k } else { 1.0 - k }
+            }
+            None => self.walker.as_ref().and_then(|w| w.inside).map(|_| 1.0).unwrap_or(0.0),
+        }
+    }
+
+    /// How dark the rest of the map goes: fully while a building is designed, somewhat
+    /// while the walker is inside one.
+    pub(super) fn focus_dim(&self, now: f64) -> f32 {
+        if self.draft.as_ref().map(|d| d.step == super::build::Step::Design).unwrap_or(false) {
+            return 1.0;
+        }
+        INSIDE_DIM * self.inside_amount(now)
+    }
+
+    /// The moving things as the renderer's batches: the walker and the actors, and the
+    /// building part fading (its own key: drawn with cut-outs, so its alpha dissolves it).
+    pub(super) fn extra_batches(&self, now: f64) -> Vec<(String, Vec<MapVertex>, Vec<u32>)> {
+        let mut out = models::batches(&self.extra_mesh(now));
+        if let Some(f) = &self.fade {
+            let Some(b) = self.map.buildings.get(f.building) else { return out };
+            let k = ((now - f.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
+            let alpha = if f.entering { 1.0 - k } else { k };
+            let mut part = world::buildings::building_above(b, &self.content, self.level_height, f.top, &self.models);
+            for v in part.plain.vertices.iter_mut().chain(part.textured.values_mut().flat_map(|m| m.vertices.iter_mut())) {
+                v.color[3] = alpha;
+            }
+            if !part.plain.indices.is_empty() {
+                out.push((FADE.to_string(), gpu(&part.plain.vertices), part.plain.indices));
+            }
+            for (key, mesh) in part.textured {
+                out.push((key, gpu(&mesh.vertices), mesh.indices));
+            }
+        }
+        out
     }
 
     /// The things that move: the walker and the actors drawn as props.
