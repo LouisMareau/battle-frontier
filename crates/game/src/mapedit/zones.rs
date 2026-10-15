@@ -4,13 +4,13 @@
 //! creatures roam the map while "Creatures" is on; "Debug" shows every area, link and path.
 
 use content::{Space, SpawnLink, Zone};
-use egui::{Color32, RichText};
+use egui::RichText;
 use glam::{Vec2, Vec3};
 use render::scene::{Billboard, SceneRenderer, Shape, ShapeKind};
 use rules::config::Period;
 use world::spawn::{Phase, Pools};
 
-use super::{mark, MapEditor};
+use super::{hint, mark, section, MapEditor};
 use crate::platform::Load;
 
 const ZONE_COLORS: [[f32; 4]; 6] = [
@@ -95,21 +95,22 @@ impl MapEditor {
     // ------------------------------------------------------------ the panel
 
     pub(super) fn zones_panel(&mut self, ui: &mut egui::Ui) {
+        section(ui, "Zones");
         ui.horizontal(|ui| {
             mark("uiPaintZones", &ui.radio_value(&mut self.linking, false, "Paint zones"));
             mark("uiLinkMode", &ui.radio_value(&mut self.linking, true, "Link treelines"));
         });
         if self.linking {
-            ui.label(RichText::new("Drag from the edge of a tree area onto a zone: creatures will come out of those trees, roam the zone, then go back.").color(Color32::GRAY));
+            hint(ui, "Drag from the edge of a tree area onto a zone: creatures come out of those trees, roam the zone, then go back.");
         } else {
             ui.horizontal(|ui| {
                 ui.radio_value(&mut self.remove_cells, false, "Add cells");
                 ui.radio_value(&mut self.remove_cells, true, "Remove");
             });
-            ui.add(egui::Slider::new(&mut self.brush, 0..=4).text("brush").custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+            ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+            hint(ui, "Alt: the other way. Painting with no zone picked makes one.");
         }
-        ui.add_space(6.0);
-        ui.label(RichText::new("Zones").strong());
+        ui.add_space(4.0);
         for i in 0..self.map.zones.len() {
             let z = &self.map.zones[i];
             let cells = self.map.zone.iter().filter(|&&c| c as usize == i + 1).count();
@@ -117,19 +118,19 @@ impl MapEditor {
                 self.zone_sel = Some(i);
             }
         }
-        if ui.button("New zone").clicked() {
+        if ui.small_button("New zone").clicked() {
             self.checkpoint();
             self.new_zone();
         }
         if let Some(i) = self.zone_sel.filter(|&i| i < self.map.zones.len()) {
-            ui.add_space(6.0);
+            section(ui, "Zone");
             let before = self.map.zones[i].clone();
             let mut remove = false;
             {
                 let z = &mut self.map.zones[i];
                 ui.horizontal(|ui| {
                     ui.label("Name");
-                    ui.text_edit_singleline(&mut z.name);
+                    ui.add(egui::TextEdit::singleline(&mut z.name).desired_width(f32::INFINITY));
                 });
                 ui.add(egui::Slider::new(&mut z.count, 1..=12).text("at once"));
                 ui.checkbox(&mut z.appear_inside, "Creatures appear inside").on_hover_text("Off: they only come from linked treelines");
@@ -137,7 +138,7 @@ impl MapEditor {
                 ui.add(egui::Slider::new(&mut lo, 5.0..=120.0).text("stay at least").suffix(" s"));
                 ui.add(egui::Slider::new(&mut hi, 5.0..=120.0).text("at most").suffix(" s"));
                 z.stay = [lo.min(hi), hi.max(lo)];
-                if ui.button("Remove this zone").clicked() {
+                if ui.small_button("Remove this zone").clicked() {
                     remove = true;
                 }
             }
@@ -155,22 +156,26 @@ impl MapEditor {
             }
             self.pool_panel(ui, i);
         }
-        ui.add_space(8.0);
-        ui.label(RichText::new("Links").strong());
+        section(ui, "Links");
+        if self.map.links.is_empty() {
+            hint(ui, "None yet: in Link treelines, drag a forest's edge onto a zone.");
+        }
         let mut remove = None;
         let mut changed = false;
         for (k, l) in self.map.links.iter_mut().enumerate() {
             let from = self.map.tree_areas.iter().find(|a| a.mark == l.area).map(|a| a.name.clone()).unwrap_or_else(|| l.area.clone());
             let to = self.map.zones.iter().find(|z| z.mark == l.zone).map(|z| z.name.clone()).unwrap_or_else(|| l.zone.clone());
-            ui.label(format!("{from} ({} cells) to {to}", l.treeline.len()));
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("{from} ({} cells) to {to}", l.treeline.len())).size(12.5));
+                if ui.small_button("remove").clicked() {
+                    remove = Some(k);
+                }
+            });
             changed |= ui.add(egui::Slider::new(&mut l.every, 1.0..=60.0).text("every").suffix(" s")).changed();
             let (mut lo, mut hi) = (l.stay[0], l.stay[1]);
             changed |= ui.add(egui::Slider::new(&mut lo, 5.0..=120.0).text("stay at least").suffix(" s")).changed();
             changed |= ui.add(egui::Slider::new(&mut hi, 5.0..=120.0).text("at most").suffix(" s")).changed();
             l.stay = [lo.min(hi), hi.max(lo)];
-            if ui.small_button("remove").clicked() {
-                remove = Some(k);
-            }
             ui.add_space(4.0);
         }
         if changed {
@@ -184,8 +189,7 @@ impl MapEditor {
     }
 
     fn pool_panel(&mut self, ui: &mut egui::Ui, zone: usize) {
-        ui.add_space(4.0);
-        ui.label(RichText::new("Who lives here").strong());
+        section(ui, "Who lives here");
         ui.horizontal(|ui| {
             for p in ["morning", "day", "night"] {
                 if ui.selectable_label(self.pool_period == p, p).clicked() {
@@ -219,7 +223,7 @@ impl MapEditor {
             self.pool_mut(zone).remove(k);
             changed = true;
         }
-        let filter = ui.add(egui::TextEdit::singleline(&mut self.creature_filter).hint_text("Add a creature: type a name"));
+        let filter = ui.add(egui::TextEdit::singleline(&mut self.creature_filter).hint_text("Add a creature: type a name").desired_width(f32::INFINITY));
         mark("uiCreatureFilter", &filter);
         let f = self.creature_filter.to_lowercase();
         if !f.is_empty() {
@@ -231,7 +235,7 @@ impl MapEditor {
                 .map(|c| (c.id.clone(), c.name.clone()))
                 .collect();
             for (k, (id, name)) in found.into_iter().enumerate() {
-                let b = ui.button(format!("+ {name}"));
+                let b = ui.small_button(format!("+ {name}"));
                 if k == 0 {
                     mark("uiAddFirst", &b);
                 }

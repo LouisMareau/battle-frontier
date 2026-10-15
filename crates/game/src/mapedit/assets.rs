@@ -17,7 +17,7 @@ use egui::{Color32, RichText, Sense};
 use world::gltf_in::load_model;
 
 use super::build::Clicks;
-use super::{mark, MapEditor, OWN, TEMP};
+use super::{badge, hint, mark, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
@@ -102,15 +102,6 @@ fn category_for(folder: &str) -> &'static str {
     } else {
         "decoration"
     }
-}
-
-fn badge(space: Space) -> RichText {
-    match space {
-        Space::Temporary => RichText::new("TEMPORARY").color(Color32::BLACK).background_color(TEMP),
-        Space::Content => RichText::new("GAME").color(Color32::BLACK).background_color(OWN),
-    }
-    .size(9.5)
-    .strong()
 }
 
 impl MapEditor {
@@ -295,7 +286,7 @@ impl MapEditor {
             .collect();
         crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
         if rows.is_empty() {
-            ui.label(RichText::new("Nothing here yet: drag rows from another folder, or drop .glb files on this one.").color(Color32::GRAY));
+            hint(ui, "Nothing here yet: drag rows from another folder, or drop .glb files on this one.");
             return;
         }
         let mut picked = None;
@@ -317,7 +308,7 @@ impl MapEditor {
                     picked = Some(p.id.clone());
                 }
                 ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
-                ui.label(badge(e.space));
+                badge(ui, e.space);
                 let mut category = p.category.clone();
                 egui::ComboBox::from_id_salt(("asset-category", &p.id)).selected_text(&category).width(104.0).show_ui(ui, |ui| {
                     for c in CATEGORIES {

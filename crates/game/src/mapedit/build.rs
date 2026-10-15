@@ -8,11 +8,11 @@
 //! moved, turned, edited and deleted from the Select tool.
 
 use content::{segment_ends, Building, Floor, Opening, Pillar, INSIDE, OUTSIDE};
-use egui::{Color32, RichText};
+use egui::RichText;
 use glam::Vec3;
 use render::scene::{Shape, ShapeKind};
 
-use super::{hex, MapEditor};
+use super::{hint, pick, section, warn, MapEditor};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Step {
@@ -86,6 +86,7 @@ fn default_of(ed: &MapEditor, category: &str, wanted: &str) -> String {
     first_of(ed, category).unwrap_or_default()
 }
 
+/// The props of some categories: (id, name, footprint, colour).
 fn ids_of(ed: &MapEditor, categories: &[&str]) -> Vec<(String, String, [u8; 2], String)> {
     ed.content
         .props
@@ -95,9 +96,9 @@ fn ids_of(ed: &MapEditor, categories: &[&str]) -> Vec<(String, String, [u8; 2], 
         .collect()
 }
 
-fn swatch(ui: &mut egui::Ui, color: &str) {
-    let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-    ui.painter().rect_filled(r, 3.0, hex(color));
+/// The props of a category as a picker's choices: (id, name, colour).
+fn choices(ed: &MapEditor, category: &str) -> Vec<(String, String, String)> {
+    ids_of(ed, &[category]).into_iter().map(|(id, name, _, color)| (id, name, color)).collect()
 }
 
 /// Shifts everything a building holds when its corner moves from `old` to its `at`, and
@@ -229,7 +230,7 @@ impl MapEditor {
         let taken = self.taken(self.draft.as_ref().and_then(|d| d.editing));
         let Some(d) = &mut self.draft else { return };
         let content = self.content.clone();
-        let prop = |id: &str| content.props.get(id).map(|p| (p.category.clone(), p.footprint[0]));
+        let prop = |id: &str| content.props.get(id).map(|p| (p.category.clone(), p.footprint));
         let mut problems = d.b.problems(&prop);
         let cells = d.b.map_cells();
         if cells.iter().any(|&(x, z)| !self.map.inside(x, z)) {
@@ -239,6 +240,7 @@ impl MapEditor {
             problems.push("another building is already there".into());
         }
         if !problems.is_empty() {
+            self.status = format!("Not confirmed: {}", problems.join("; "));
             d.problems = problems;
             return;
         }
@@ -257,8 +259,19 @@ impl MapEditor {
             }
         };
         self.settle(i);
+        // on the map and selected: move it, turn it or edit it again from Select
         self.selected_building = Some(i);
+        self.tool = super::Tool::Select;
         self.status = format!("{} is on the map: walls block, doors let you in", self.map.buildings[i].name);
+    }
+
+    /// Drops the draft: an edit leaves the building as it was, selected.
+    fn cancel_building(&mut self) {
+        if let Some(i) = self.draft.take().and_then(|d| d.editing) {
+            self.selected_building = Some(i);
+            self.tool = super::Tool::Select;
+        }
+        self.need_buildings = true;
     }
 
     /// Levels the ground under a building to its floor and clears tree areas from it.
@@ -500,7 +513,8 @@ impl MapEditor {
 
     pub(super) fn build_panel(&mut self, ui: &mut egui::Ui) {
         let Some(step) = self.draft.as_ref().map(|d| d.step) else {
-            ui.label(RichText::new("Click the map to start a building, then draw its cells.").color(Color32::GRAY));
+            section(ui, "Build");
+            hint(ui, "Click the map to start a building and draw its cells.");
             if ui.button("New building").clicked() {
                 self.start_building(None);
             }
@@ -513,61 +527,71 @@ impl MapEditor {
     }
 
     fn footprint_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("1. The footprint").strong());
-        ui.label(RichText::new(format!("Paint the cells it stands on, at level {}. Any shape, in one piece.", self.level)).color(Color32::GRAY));
+        section(ui, "Footprint");
+        hint(ui, &format!("Paint the cells it stands on, at level {}: any shape, in one piece.", self.level));
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.remove_cells, false, "Add cells");
             ui.radio_value(&mut self.remove_cells, true, "Remove");
         });
-        ui.add(egui::Slider::new(&mut self.brush, 0..=2).text("brush").custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+        ui.add(egui::Slider::new(&mut self.brush, 0..=2).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
         let d = self.draft.as_ref().unwrap();
         let (at, rows) = Building::rows_for(&d.cells);
         let whole = Building { at, cells: rows, ..Default::default() }.connected();
         ui.label(format!("{} cells", d.cells.len()));
         if !d.cells.is_empty() && !whole {
-            ui.label(RichText::new("Not one piece yet: every cell must touch another").color(Color32::from_rgb(255, 120, 100)));
+            warn(ui, "Not one piece yet: every cell must touch another.");
         }
         let ok = !d.cells.is_empty() && whole;
         ui.horizontal(|ui| {
-            let next = ui.add_enabled(ok, egui::Button::new("Next: the building"));
+            let next = ui.add_enabled(ok, egui::Button::new(RichText::new("Next: the building").strong()));
             super::mark("uiNext", &next);
             if next.clicked() {
                 self.open_design();
             }
             if ui.button("Cancel").clicked() {
-                self.draft = None;
-                self.need_buildings = true;
+                self.cancel_building();
             }
         });
     }
 
     fn design_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("2. The building").strong());
         let mut changed = false;
-        let mut confirm = false;
-        let mut cancel = false;
-        let mut reshape = false;
+        let (mut confirm, mut cancel, mut reshape) = (false, false, false);
         {
             let d = self.draft.as_mut().unwrap();
+            section(ui, if d.editing.is_some() { "Building" } else { "New building" });
             ui.horizontal(|ui| {
-                ui.label("Name");
-                changed |= ui.text_edit_singleline(&mut d.b.name).changed();
+                let c = ui.button(RichText::new("Confirm").strong()).on_hover_text("Put it on the map");
+                super::mark("uiConfirm", &c);
+                confirm = c.clicked();
+                reshape = ui.button("Footprint").on_hover_text("Change the cells it stands on").clicked();
+                let c = ui.button("Cancel").on_hover_text("Drop the changes");
+                super::mark("uiCancelBuilding", &c);
+                cancel = c.clicked();
             });
-            ui.add_space(4.0);
-            ui.label(RichText::new("Floors").strong());
-            for f in 0..d.b.floors.len() {
-                let label = if f == 0 { "Floor 1 (ground)".to_string() } else { format!("Floor {}", f + 1) };
-                if ui.selectable_label(d.floor == f, label).clicked() && d.floor != f {
-                    d.floor = f;
-                    d.span = None;
-                    if matches!(d.sel, Some(Sel::Floor(_))) {
-                        d.sel = None;
-                    }
-                    changed = true;
-                }
+            for p in &d.problems {
+                warn(ui, p);
             }
             ui.horizontal(|ui| {
-                let add = ui.button("Add a floor").on_hover_text("A new floor on top, with the same flooring: a floor is never empty");
+                ui.label("Name");
+                changed |= ui.add(egui::TextEdit::singleline(&mut d.b.name).desired_width(f32::INFINITY)).changed();
+            });
+            section(ui, "Floor");
+            ui.horizontal_wrapped(|ui| {
+                for f in 0..d.b.floors.len() {
+                    let about = if f == 0 { "The ground floor".to_string() } else { format!("Floor {}: the floors above are cut away while you work on it", f + 1) };
+                    let r = ui.selectable_label(d.floor == f, (f + 1).to_string()).on_hover_text(about);
+                    super::mark(&format!("uiFloor{}", f + 1), &r);
+                    if r.clicked() && d.floor != f {
+                        d.floor = f;
+                        d.span = None;
+                        if matches!(d.sel, Some(Sel::Floor(_))) {
+                            d.sel = None;
+                        }
+                        changed = true;
+                    }
+                }
+                let add = ui.small_button("+ floor").on_hover_text("A floor on top, with the same flooring");
                 super::mark("uiAddFloor", &add);
                 if add.clicked() {
                     let tile = d.b.floors.last().map(|f| f.tile.clone()).unwrap_or_default();
@@ -576,7 +600,7 @@ impl MapEditor {
                     d.sel = None;
                     changed = true;
                 }
-                if ui.add_enabled(d.b.floors.len() > 1, egui::Button::new("Remove the top floor")).clicked() {
+                if ui.add_enabled(d.b.floors.len() > 1, egui::Button::new("− top").small()).on_hover_text("Remove the top floor").clicked() {
                     d.b.floors.pop();
                     d.floor = d.floor.min(d.b.floors.len() - 1);
                     let floors = d.b.floors.len();
@@ -585,19 +609,19 @@ impl MapEditor {
                     changed = true;
                 }
             });
-            ui.add_space(6.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                let s = ui.selectable_label(d.clicks.structure(), RichText::new("Structure").strong());
+                let s = ui.selectable_label(d.clicks.structure(), "Structure").on_hover_text("Flooring, doors and windows, pillars, walls and roof");
                 super::mark("uiStructure", &s);
                 if s.clicked() && !d.clicks.structure() {
                     d.clicks = Clicks::Openings;
                 }
-                let i = ui.selectable_label(d.clicks == Clicks::Inside, RichText::new("Inside").strong());
+                let i = ui.selectable_label(d.clicks == Clicks::Inside, "Inside").on_hover_text("What stands on this floor and hangs on its walls");
                 super::mark("uiInside", &i);
                 if i.clicked() {
                     d.clicks = Clicks::Inside;
                 }
-                let o = ui.selectable_label(d.clicks == Clicks::Outside, RichText::new("Outside").strong());
+                let o = ui.selectable_label(d.clicks == Clicks::Outside, "Outside").on_hover_text("What hangs on a wall outside, or stands in front of it");
                 super::mark("uiOutside", &o);
                 if o.clicked() && d.clicks != Clicks::Outside {
                     d.clicks = Clicks::Outside;
@@ -607,27 +631,12 @@ impl MapEditor {
             if d.sel.is_some() && d.clicks.structure() {
                 d.sel = None;
             }
-            ui.separator();
         }
         let clicks = self.draft.as_ref().unwrap().clicks;
         match clicks {
             Clicks::Inside => self.inside_panel(ui),
             Clicks::Outside => self.outside_panel(ui),
             Clicks::Openings | Clicks::Pillars => changed |= self.structure_panel(ui),
-        }
-        {
-            let d = self.draft.as_mut().unwrap();
-            ui.add_space(6.0);
-            for p in &d.problems {
-                ui.label(RichText::new(p).color(Color32::from_rgb(255, 120, 100)));
-            }
-            ui.horizontal(|ui| {
-                let c = ui.button(RichText::new("Confirm the building").strong());
-                super::mark("uiConfirm", &c);
-                confirm = c.clicked();
-                reshape = ui.button("Change the footprint").clicked();
-                cancel = ui.button("Cancel").clicked();
-            });
         }
         if changed {
             self.need_buildings = true;
@@ -646,33 +655,38 @@ impl MapEditor {
             self.confirm_building();
         }
         if cancel {
-            self.draft = None;
-            self.need_buildings = true;
+            self.cancel_building();
         }
     }
 
-    /// Flooring, doors and windows, pillars, the walls' and the roof's styles.
+    /// Flooring, walls and roof; then doors and windows, or pillars.
     fn structure_panel(&mut self, ui: &mut egui::Ui) -> bool {
-        let walls = ids_of(self, &["wall"]);
-        let roofs = ids_of(self, &["roof"]);
-        let tiles = ids_of(self, &["floor"]);
+        let (tiles, walls, roofs, pillars) = (choices(self, "floor"), choices(self, "wall"), choices(self, "roof"), choices(self, "pillar"));
         let doors = ids_of(self, &["door"]);
         let windows = ids_of(self, &["window"]);
-        let pillars = ids_of(self, &["pillar"]);
         let content = self.content.clone();
         let mut changed = false;
         let d = self.draft.as_mut().unwrap();
-        ui.label(RichText::new(format!("Flooring (floor {})", d.floor + 1)).strong());
-        for (id, name, _, color) in &tiles {
-            ui.horizontal(|ui| {
-                swatch(ui, color);
-                if ui.selectable_label(d.b.floors[d.floor].tile == *id, name).clicked() {
-                    d.b.floors[d.floor].tile = id.clone();
-                    changed = true;
-                }
-            });
+        section(ui, "Style");
+        egui::Grid::new("building-style").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+            ui.label("Floor");
+            changed |= pick(ui, "tile", &mut d.b.floors[d.floor].tile, &tiles);
+            ui.end_row();
+            ui.label("Walls");
+            changed |= pick(ui, "wall", &mut d.b.wall, &walls);
+            ui.end_row();
+            ui.label("Roof");
+            changed |= pick(ui, "roof", &mut d.b.roof, &roofs);
+            ui.end_row();
+        });
+        if d.b.is_rectangle() {
+            let flat = ui.checkbox(&mut d.b.flat_roof, "Flat roof").on_hover_text("A terrace with a parapet instead of a gabled roof: stairs on the top floor come up to it");
+            super::mark("uiFlatRoof", &flat);
+            changed |= flat.changed();
+        } else {
+            hint(ui, "A flat roof (the outline isn't a rectangle): stairs can come up to it.");
         }
-        ui.add_space(4.0);
+        section(ui, "Clicking places");
         ui.horizontal(|ui| {
             super::mark("uiOpenings", &ui.radio_value(&mut d.clicks, Clicks::Openings, "Doors & windows"));
             super::mark("uiPillars", &ui.radio_value(&mut d.clicks, Clicks::Pillars, "Pillars"));
@@ -695,14 +709,14 @@ impl MapEditor {
                         }
                     }
                 });
-                ui.label(RichText::new("Drag along an outside wall: the span sets the width.").color(Color32::GRAY));
+                hint(ui, "Drag along an outside wall: the span is the width.");
                 if let Some(span) = d.span.clone() {
                     let wall = match span.side.as_str() { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
                     ui.label(format!("{} cell{} of the {wall} wall", span.width, if span.width == 1 { "" } else { "s" }));
                     let list = if d.doors { &doors } else { &windows };
                     let fitting: Vec<&(String, String, [u8; 2], String)> = list.iter().filter(|(_, _, fp, _)| fp[0] == span.width).collect();
                     if fitting.is_empty() {
-                        ui.label(RichText::new(format!("No {} {} cells wide: drag a different span", if d.doors { "door" } else { "window" }, span.width)).color(Color32::from_rgb(255, 170, 90)));
+                        warn(ui, &format!("No {} {} cells wide: drag a different span.", if d.doors { "door" } else { "window" }, span.width));
                     }
                     for (k, (id, name, _, _)) in fitting.into_iter().enumerate() {
                         let put = ui.button(format!("Put a {name} here"));
@@ -724,8 +738,9 @@ impl MapEditor {
                 for (i, o) in d.b.floors[d.floor].openings.iter().enumerate() {
                     ui.horizontal(|ui| {
                         let name = content.props.get(&o.prop).map(|p| p.name.clone()).unwrap_or_else(|| o.prop.clone());
-                        ui.label(format!("{name} · {:?} {}", o.cell, o.side));
-                        if ui.small_button("remove").on_hover_text("Remove").clicked() {
+                        let wall = match o.side.as_str() { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
+                        ui.label(format!("{name} · {wall} wall"));
+                        if ui.small_button("remove").clicked() {
                             remove = Some(i);
                         }
                     });
@@ -736,38 +751,13 @@ impl MapEditor {
                 }
             }
             Clicks::Pillars => {
-                ui.label(RichText::new("Click a point of the outline to put or take away a pillar.").color(Color32::GRAY));
-                for (id, name, _, color) in &pillars {
-                    ui.horizontal(|ui| {
-                        swatch(ui, color);
-                        if ui.selectable_label(d.pillar_prop.as_deref() == Some(id.as_str()), name).clicked() {
-                            d.pillar_prop = Some(id.clone());
-                        }
-                    });
+                hint(ui, "Click a point of the outline to put or take away a pillar.");
+                let mut current = d.pillar_prop.clone().unwrap_or_default();
+                if pick(ui, "pillar", &mut current, &pillars) {
+                    d.pillar_prop = Some(current);
                 }
             }
             Clicks::Inside | Clicks::Outside => {}
-        }
-        ui.add_space(4.0);
-        ui.label(RichText::new("Walls").strong());
-        for (id, name, _, color) in &walls {
-            ui.horizontal(|ui| {
-                swatch(ui, color);
-                if ui.selectable_label(d.b.wall == *id, name).clicked() {
-                    d.b.wall = id.clone();
-                    changed = true;
-                }
-            });
-        }
-        ui.label(RichText::new("Roof").strong());
-        for (id, name, _, color) in &roofs {
-            ui.horizontal(|ui| {
-                swatch(ui, color);
-                if ui.selectable_label(d.b.roof == *id, name).clicked() {
-                    d.b.roof = id.clone();
-                    changed = true;
-                }
-            });
         }
         changed
     }
@@ -777,18 +767,19 @@ impl MapEditor {
     /// The selected building's inspector.
     pub(super) fn building_inspector(&mut self, ui: &mut egui::Ui, i: usize) {
         let b = self.map.buildings[i].clone();
-        ui.heading(&b.name);
-        ui.label(RichText::new(format!("{} · {} cells · {} floor{}", b.id, b.cells().len(), b.floors.len(), if b.floors.len() == 1 { "" } else { "s" })).color(Color32::GRAY));
+        ui.label(RichText::new(&b.name).size(16.0).strong());
+        hint(ui, &format!("{} · {} cells · {} floor{}", b.id, b.cells().len(), b.floors.len(), if b.floors.len() == 1 { "" } else { "s" }));
         let inside: usize = b.floors.iter().map(|f| f.props.len()).sum::<usize>() + b.anchors.iter().filter(|a| a.inside).count();
         let outside = b.outside.len() + b.anchors.iter().filter(|a| !a.inside).count();
-        ui.label(RichText::new(format!("{inside} thing{} inside, {outside} outside", if inside == 1 { "" } else { "s" })).color(Color32::GRAY));
-        ui.horizontal(|ui| {
+        hint(ui, &format!("{inside} thing{} inside, {outside} outside", if inside == 1 { "" } else { "s" }));
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
             let edit = ui.button("Edit").on_hover_text("Its structure, what's inside, what's outside");
             super::mark("uiEditBuilding", &edit);
             if edit.clicked() {
                 self.start_building(Some(i));
             }
-            if ui.button("Turn 90°").on_hover_text("Q / E").clicked() {
+            if ui.button("Turn").on_hover_text("A quarter turn (Q / E)").clicked() {
                 self.turn_building(i);
             }
             let export = ui.button("To Blender").on_hover_text("This building as a .glb");
@@ -796,13 +787,14 @@ impl MapEditor {
             if export.clicked() {
                 self.export_building(i);
             }
-            if ui.button("Delete").clicked() {
+            if ui.button("Delete").on_hover_text("Delete").clicked() {
                 self.checkpoint();
                 self.map.buildings.remove(i);
                 self.selected_building = None;
                 self.need_buildings = true;
             }
         });
+        hint(ui, "Drag it on the map to move it.");
     }
 
     pub(super) fn turn_building(&mut self, i: usize) {

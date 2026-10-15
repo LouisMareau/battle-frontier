@@ -412,6 +412,25 @@ pub const INSIDE: &str = "Buildings/Inside";
 /// The folder of what can go outside buildings, on their walls or next to them.
 pub const OUTSIDE: &str = "Buildings/Outside";
 
+/// The cells something placed at `at` covers: its footprint turned by quarter turns (and
+/// `scale` of it), centred there.
+pub fn footprint_cells(at: [f64; 2], turn: f64, footprint: [u8; 2], scale: f64) -> Vec<(i32, i32)> {
+    let quarter = ((turn / 90.0).round() as i64).rem_euclid(2) == 1;
+    let (fw, fd) = if quarter { (footprint[1], footprint[0]) } else { (footprint[0], footprint[1]) };
+    let (fw, fd) = (fw.max(1) as f64 * scale, fd.max(1) as f64 * scale);
+    let x0 = (at[0] - fw / 2.0 + 0.01).floor() as i32;
+    let z0 = (at[1] - fd / 2.0 + 0.01).floor() as i32;
+    let x1 = (at[0] + fw / 2.0 - 0.01).floor() as i32;
+    let z1 = (at[1] + fd / 2.0 - 0.01).floor() as i32;
+    let mut out = vec![];
+    for z in z0..=z1 {
+        for x in x0..=x1 {
+            out.push((x, z));
+        }
+    }
+    out
+}
+
 impl Prop {
     /// Trees and flora keep their size when placed; everything else can be scaled down.
     pub fn scalable(&self) -> bool {

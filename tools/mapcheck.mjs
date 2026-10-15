@@ -21,6 +21,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = await serve(0);
 const browser = await Browser.launch({ width: 1400, height: 900, port: 9481, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu'] });
 const data = (key) => browser.evaluate(`document.body.dataset.${key} ?? ''`);
+// a widget the editor marked, pressed
+const press = async (name) => {
+  const [x, y] = (await data(name)).split(',').map(Number);
+  await browser.click(x, y);
+};
 let failed = 0;
 const expect = async (what, key, want) => {
   const got = await data(key);
@@ -46,14 +51,14 @@ try {
   // a dirt path across the grass (Ground tool, terrain from the panel)
   await browser.key('2');
   await expect('tool 2', 'tool', 'ground');
-  await browser.click(61, 272); // Dirt path
+  await press('uiTerrain_dirt');
   await browser.drag([[300, 705], [400, 705], [500, 705], [600, 705], [700, 705], [760, 705]]);
   await shot('1-paint');
 
   // one level up: a ridge
   await browser.key('PageUp');
   await expect('PageUp', 'level', 1);
-  await browser.click(61, 209); // Grass
+  await press('uiTerrain_grass');
   await browser.drag([[1010, 470], [1060, 470], [1110, 470], [1160, 470], [1160, 500], [1010, 500]]);
   await shot('2-level');
   await browser.key('PageDown');
@@ -88,11 +93,11 @@ try {
   await expect('unsaved', 'dirty', 1);
 
   // night
-  await browser.click(791, 17);
+  await press('uiNight');
   await shot('7-night');
 
   // the download (the browser's save)
-  await browser.click(525, 17);
+  await press('uiSave');
   await sleep(1500);
   const file = join(downloads, `${map}.json`);
   const saved = JSON.parse(readFileSync(file, 'utf8'));

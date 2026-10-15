@@ -201,6 +201,64 @@ fn mark(name: &str, r: &egui::Response) {
     crate::platform::set_hook(name, &format!("{:.0},{:.0}", c.x, c.y));
 }
 
+// The panels' look, shared by every tool: sections, hints, warnings, swatches, tags and
+// pickers, so the editor reads the same everywhere.
+
+/// A section's title in a panel.
+fn section(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(8.0);
+    ui.label(RichText::new(text.to_uppercase()).size(10.5).strong().color(Color32::from_gray(150)));
+    ui.add_space(2.0);
+}
+
+/// A quiet line under a control: what it does, or a key.
+fn hint(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).size(11.5).color(Color32::from_gray(140)));
+}
+
+/// Something that needs attention.
+fn warn(ui: &mut egui::Ui, text: &str) {
+    ui.label(RichText::new(text).size(11.5).color(Color32::from_rgb(255, 170, 90)));
+}
+
+/// A square of colour.
+fn swatch(ui: &mut egui::Ui, color: &str) {
+    let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());
+    ui.painter().rect_filled(r, 3.0, hex(color));
+}
+
+/// The space a record lives in, as a tag.
+fn badge(ui: &mut egui::Ui, space: Space) {
+    let (text, color) = match space {
+        Space::Temporary => ("TEMPORARY", TEMP),
+        Space::Content => ("GAME", OWN),
+    };
+    ui.label(RichText::new(text).size(9.5).strong().color(Color32::BLACK).background_color(color));
+}
+
+/// A drop-down of (id, name, colour) choices, the chosen one's swatch next to it; true when
+/// the choice changed.
+fn pick(ui: &mut egui::Ui, salt: &str, current: &mut String, choices: &[(String, String, String)]) -> bool {
+    let chosen = choices.iter().find(|(id, _, _)| id == current);
+    let shown = chosen.map(|(_, n, _)| n.clone()).unwrap_or_else(|| if current.is_empty() { "none".to_string() } else { current.clone() });
+    let color = chosen.map(|(_, _, c)| c.clone());
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        if let Some(c) = &color {
+            swatch(ui, c);
+        }
+        egui::ComboBox::from_id_salt(salt).selected_text(shown).width(150.0).show_ui(ui, |ui| {
+            for (id, name, c) in choices {
+                ui.horizontal(|ui| {
+                    swatch(ui, c);
+                    changed |= ui.selectable_value(current, id.clone(), name).changed();
+                });
+            }
+        });
+    });
+    changed
+}
+
 fn slug_ok(id: &str) -> bool {
     !id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
 }
@@ -752,41 +810,46 @@ impl MapEditor {
         self.watch_assets(now);
         self.keys(&ctx);
         egui::Panel::top("maps-top").show(ui, |ui| {
-            ui.add_space(5.0);
+            ui.add_space(4.0);
             ui.horizontal(|ui| {
-                ui.heading(RichText::new("Maps").strong());
+                ui.label(RichText::new("Maps").size(16.0).strong());
                 if ui.button("Back to the game").clicked() {
                     back = true;
                 }
                 ui.separator();
                 self.map_picker(ui);
                 ui.separator();
-                let save = if cfg!(target_arch = "wasm32") { "Download" } else { "Save" };
-                if ui.add_enabled(true, egui::Button::new(if self.dirty { format!("{save} *") } else { save.to_string() })).on_hover_text("Ctrl+S. Saves into content/ (the game's own)").clicked() {
+                let (save, about) = if cfg!(target_arch = "wasm32") {
+                    ("Download", "Ctrl+S · downloads the map: put it in content/data/maps/")
+                } else {
+                    ("Save", "Ctrl+S · writes content/data/maps/<id>.json")
+                };
+                let s = ui.button(if self.dirty { format!("{save} •") } else { save.to_string() }).on_hover_text(about);
+                mark("uiSave", &s);
+                if s.clicked() {
                     self.save();
                 }
-                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Undo (Ctrl+Z)").clicked() {
+                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
                     self.undo();
                 }
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Redo (Ctrl+Y)").clicked() {
+                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
                     self.redo();
                 }
                 ui.separator();
                 for (p, label) in [(Period::Morning, "Morning"), (Period::Day, "Day"), (Period::Night, "Night")] {
-                    if ui.selectable_label(self.period == p, label).clicked() {
+                    let r = ui.selectable_label(self.period == p, label).on_hover_text("The light to preview");
+                    mark(&format!("ui{label}"), &r);
+                    if r.clicked() {
                         self.period = p;
                     }
                 }
-                ui.checkbox(&mut self.grid, "Grid");
-                if ui.button("Reset view").on_hover_text("Home").clicked() {
+                if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
+                    self.grid = !self.grid;
+                }
+                if ui.button("Reset view").on_hover_text("The whole map (Home)").clicked() {
                     self.recentre();
                 }
                 ui.separator();
-                let export = ui.button("To Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
-                mark("uiExportMap", &export);
-                if export.clicked() {
-                    self.export_map();
-                }
                 let creatures = ui.selectable_label(self.creatures_on, "Creatures").on_hover_text("Creatures roam their zones");
                 mark("uiCreatures", &creatures);
                 if creatures.clicked() {
@@ -798,11 +861,6 @@ impl MapEditor {
                 if debug.clicked() {
                     self.debug = !self.debug;
                 }
-                let assets = ui.selectable_label(self.assets.open, "Assets").on_hover_text("Every prop by folder; drop .glb files here");
-                mark("uiAssets", &assets);
-                if assets.clicked() {
-                    self.assets.open = !self.assets.open;
-                }
                 let walk = ui.selectable_label(self.walker.is_some(), "Walk").on_hover_text("Try the map on foot: the arrows move, Esc stops");
                 mark("uiWalk", &walk);
                 if walk.clicked() {
@@ -812,44 +870,38 @@ impl MapEditor {
                         self.start_walk();
                     }
                 }
+                let assets = ui.selectable_label(self.assets.open, "Assets").on_hover_text("Every prop by folder; drop .glb files on the window to add them");
+                mark("uiAssets", &assets);
+                if assets.clicked() {
+                    self.assets.open = !self.assets.open;
+                }
+                ui.separator();
+                let export = ui.button("To Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
+                mark("uiExportMap", &export);
+                if export.clicked() {
+                    self.export_map();
+                }
             });
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Level").strong());
-                for l in 0..=self.max_level {
-                    let text = RichText::new(format!(" {l} ")).strong();
-                    if ui.selectable_label(self.level == l, text).clicked() {
-                        self.level = l;
-                    }
-                }
-                ui.label(
-                    RichText::new(format!(
-                        "{:.1} cells up · a level is {:.1} cells: the character's height and some room (PageUp / PageDown)",
-                        self.level as f32 * self.level_height,
-                        self.level_height
-                    ))
-                    .color(Color32::GRAY),
-                );
-            });
-            ui.add_space(5.0);
         });
         egui::Panel::bottom("maps-status").show(ui, |ui| {
             ui.horizontal(|ui| {
-                let badge = match self.space {
-                    Space::Temporary => RichText::new("TEMPORARY").color(Color32::BLACK).background_color(TEMP),
-                    Space::Content => RichText::new("GAME").color(Color32::BLACK).background_color(OWN),
-                };
-                ui.label(badge.size(10.0).strong());
-                ui.label(format!("{} · {}×{}", self.map.id, self.map.width, self.map.height));
-                if self.debug {
-                    ui.label(RichText::new(self.roamer_summary()).color(Color32::from_rgb(255, 170, 90)));
-                }
+                badge(ui, self.space);
+                ui.label(RichText::new(format!("{} · {}×{}", self.map.id, self.map.width, self.map.height)).size(12.0));
                 if let Some((x, z)) = self.ground_hit {
                     let t = self.map.terrain_at(x, z).unwrap_or("?");
                     let l = self.map.level_at(x, z).unwrap_or(0);
-                    ui.label(RichText::new(format!("cell {x}, {z}: {t}, level {l}")).color(Color32::GRAY));
+                    ui.separator();
+                    ui.label(RichText::new(format!("{x}, {z} · {t} · level {l}")).size(12.0).color(Color32::from_gray(150)));
                 }
-                ui.label(RichText::new(&self.status).color(Color32::LIGHT_GRAY));
+                if self.debug {
+                    ui.separator();
+                    ui.label(RichText::new(self.roamer_summary()).size(12.0).color(Color32::from_rgb(255, 170, 90)));
+                }
+                if !self.status.is_empty() {
+                    ui.separator();
+                    ui.add(egui::Label::new(RichText::new(&self.status).size(12.0).color(Color32::LIGHT_GRAY)).truncate());
+                }
             });
         });
         // the asset browser across the window, under the side panels
@@ -857,9 +909,13 @@ impl MapEditor {
             egui::Panel::bottom("maps-assets").resizable(true).default_size(300.0).min_size(140.0).show(ui, |ui| self.assets_panel(ui));
         }
         egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
+            ui.add_space(6.0);
+            self.toolbar(ui);
             egui::ScrollArea::vertical().show(ui, |ui| self.tools_panel(ui));
         });
-        egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| self.inspector(ui));
+        egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+        });
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -890,7 +946,9 @@ impl MapEditor {
         let rooms = self.draft.as_ref().map(|d| {
             let wall = d.wall.map(|w| format!("{},{},{}", w.0, w.1, w.2)).unwrap_or_default();
             let inner = d.b.anchors.iter().filter(|a| a.inside).count();
-            format!("wall:{wall};inner:{inner};outer:{};outside:{};sel:{:?}", d.b.anchors.len() - inner, d.b.outside.len(), d.sel)
+            let stairs = |id: &str| self.stairs_footprint(id);
+            let (holes, roof) = (d.b.stairwells(d.floor, &stairs).len(), d.b.stairwells(d.b.floors.len(), &stairs).len());
+            format!("wall:{wall};inner:{inner};outer:{};outside:{};holes:{holes};roof:{roof};sel:{:?}", d.b.anchors.len() - inner, d.b.outside.len(), d.sel)
         });
         crate::platform::set_hook("rooms", &rooms.unwrap_or_default());
         crate::platform::set_hook("status", &self.status);
@@ -922,77 +980,57 @@ impl MapEditor {
         });
         if let Some(id) = open {
             if self.dirty {
-                self.status = format!("Unsaved changes on {}: save them, or click it again to drop them", self.map.id);
+                self.status = format!("Unsaved changes on {}: save them, or pick it again to drop them", self.map.id);
                 self.dirty = false;
             } else {
                 self.open(&id);
             }
         }
-        if ui.button("New map").clicked() {
+        if ui.button("New").on_hover_text("A new map").clicked() {
             self.new_map = Some(NewMap { id: String::new(), name: String::new(), width: 32, height: 24, terrain: self.terrain.clone() });
         }
     }
 
-    fn tools_panel(&mut self, ui: &mut egui::Ui) {
-        ui.add_space(6.0);
-        if let Some(nm) = &mut self.new_map {
-            let mut create = false;
-            let mut cancel = false;
-            ui.group(|ui| {
-                ui.label(RichText::new("New map").strong());
-                ui.horizontal(|ui| {
-                    ui.label("Id");
-                    ui.text_edit_singleline(&mut nm.id);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Name");
-                    ui.text_edit_singleline(&mut nm.name);
-                });
-                ui.horizontal(|ui| {
-                    ui.label("Size");
-                    ui.add(egui::DragValue::new(&mut nm.width).range(4..=256));
-                    ui.label("×");
-                    ui.add(egui::DragValue::new(&mut nm.height).range(4..=256));
-                });
-                egui::ComboBox::from_id_salt("new-terrain").selected_text(nm.terrain.clone()).show_ui(ui, |ui| {
-                    for t in self.content.terrains.iter() {
-                        ui.selectable_value(&mut nm.terrain, t.id.clone(), &t.name);
+    /// The tools and the level, at the top of the left panel.
+    fn toolbar(&mut self, ui: &mut egui::Ui) {
+        for row in Tool::ALL.chunks(3) {
+            ui.horizontal(|ui| {
+                for (tool, name, help) in row {
+                    let n = Tool::ALL.iter().position(|t| t.0 == *tool).unwrap_or(0) + 1;
+                    let r = ui.add_sized([72.0, 22.0], egui::Button::selectable(self.tool == *tool, *name)).on_hover_text(format!("{n} · {help}"));
+                    if r.clicked() {
+                        self.tool = *tool;
                     }
-                });
-                let taken = self.content.maps.contains(&nm.id);
-                if taken {
-                    ui.label(RichText::new("That id is taken").color(TEMP));
-                } else if !nm.id.is_empty() && !slug_ok(&nm.id) {
-                    ui.label(RichText::new("Ids are lowercase letters, digits, _ and -").color(TEMP));
                 }
-                ui.horizontal(|ui| {
-                    create = ui.add_enabled(slug_ok(&nm.id) && !taken, egui::Button::new("Create")).clicked();
-                    cancel = ui.button("Cancel").clicked();
-                });
             });
-            if create {
-                let name = if nm.name.is_empty() { nm.id.clone() } else { nm.name.clone() };
-                self.map = WorldMap::new(&nm.id, &name, nm.width as usize, nm.height as usize, &nm.terrain);
-                self.space = Space::Content;
-                self.new_map = None;
-                self.after_load();
-                self.dirty = true;
-                self.status = "New map: save it to keep it".into();
-            } else if cancel {
-                self.new_map = None;
-            }
-            ui.add_space(8.0);
         }
-        ui.label(RichText::new("Tools").strong());
-        for (i, (tool, name, help)) in Tool::ALL.iter().enumerate() {
-            if ui.selectable_label(self.tool == *tool, format!("{}  {name}", i + 1)).on_hover_text(*help).clicked() {
-                self.tool = *tool;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+            ui.spacing_mut().button_padding = egui::vec2(5.0, 1.0);
+            let about = format!(
+                "The level the tools work on: {:.1} cells up. A level is {:.1} cells, the character's height and some room. PageUp / PageDown",
+                self.level as f32 * self.level_height,
+                self.level_height
+            );
+            ui.label(RichText::new("Level").size(11.5).color(Color32::from_gray(150))).on_hover_text(&about);
+            for l in 0..=self.max_level {
+                if ui.selectable_label(self.level == l, RichText::new(l.to_string()).size(11.5)).on_hover_text(&about).clicked() {
+                    self.level = l;
+                }
             }
+        });
+        ui.add_space(2.0);
+        ui.separator();
+    }
+
+    fn tools_panel(&mut self, ui: &mut egui::Ui) {
+        if self.new_map.is_some() {
+            self.new_map_panel(ui);
         }
-        ui.add_space(8.0);
         match self.tool {
             Tool::Select => {
-                ui.label(RichText::new("Click a prop to select it, drag to move it.").color(Color32::GRAY));
+                section(ui, "Select");
+                hint(ui, "Click a prop or a building: the inspector shows it. Drag moves it, Q/E turn it, Delete removes it.");
             }
             Tool::Ground => self.ground_panel(ui),
             Tool::Place => self.place_panel(ui),
@@ -1000,89 +1038,130 @@ impl MapEditor {
             Tool::Build => self.build_panel(ui),
             Tool::Zones => self.zones_panel(ui),
         }
-        ui.add_space(12.0);
-        ui.collapsing("Map", |ui| {
+        ui.add_space(8.0);
+    }
+
+    fn new_map_panel(&mut self, ui: &mut egui::Ui) {
+        let Some(nm) = &mut self.new_map else { return };
+        let mut create = false;
+        let mut cancel = false;
+        ui.group(|ui| {
+            ui.label(RichText::new("New map").strong());
+            ui.horizontal(|ui| {
+                ui.label("Id");
+                ui.text_edit_singleline(&mut nm.id);
+            });
             ui.horizontal(|ui| {
                 ui.label("Name");
-                if ui.text_edit_singleline(&mut self.map.name).changed() {
-                    self.dirty = true;
-                }
+                ui.text_edit_singleline(&mut nm.name);
             });
             ui.horizontal(|ui| {
                 ui.label("Size");
-                ui.add(egui::DragValue::new(&mut self.width_edit).range(4..=256));
+                ui.add(egui::DragValue::new(&mut nm.width).range(4..=256));
                 ui.label("×");
-                ui.add(egui::DragValue::new(&mut self.height_edit).range(4..=256));
-                if ui.button("Apply").on_hover_text("New cells get the ground terrain you picked").clicked() {
-                    self.checkpoint();
-                    let fill = self.terrain.clone();
-                    self.map.resize(self.width_edit as usize, self.height_edit as usize, &fill);
-                    self.everything_changed();
+                ui.add(egui::DragValue::new(&mut nm.height).range(4..=256));
+            });
+            egui::ComboBox::from_id_salt("new-terrain").selected_text(nm.terrain.clone()).show_ui(ui, |ui| {
+                for t in self.content.terrains.iter() {
+                    ui.selectable_value(&mut nm.terrain, t.id.clone(), &t.name);
                 }
             });
+            let taken = self.content.maps.contains(&nm.id);
+            if taken {
+                warn(ui, "That id is taken.");
+            } else if !nm.id.is_empty() && !slug_ok(&nm.id) {
+                warn(ui, "Ids are lowercase letters, digits, _ and -.");
+            }
+            ui.horizontal(|ui| {
+                create = ui.add_enabled(slug_ok(&nm.id) && !taken, egui::Button::new("Create")).clicked();
+                cancel = ui.button("Cancel").clicked();
+            });
         });
+        if create {
+            let name = if nm.name.is_empty() { nm.id.clone() } else { nm.name.clone() };
+            self.map = WorldMap::new(&nm.id, &name, nm.width as usize, nm.height as usize, &nm.terrain);
+            self.space = Space::Content;
+            self.new_map = None;
+            self.after_load();
+            self.dirty = true;
+            self.status = "New map: save it to keep it".into();
+        } else if cancel {
+            self.new_map = None;
+        }
+        ui.add_space(8.0);
     }
 
     fn ground_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Terrain").strong());
+        section(ui, "Terrain");
         let terrains: Vec<(String, String, String, String)> = self.content.terrains.iter().map(|t| (t.id.clone(), t.name.clone(), t.color.clone(), t.walk.clone())).collect();
         for (id, name, color, walk) in terrains {
             ui.horizontal(|ui| {
-                let (r, _) = ui.allocate_exact_size(egui::vec2(16.0, 16.0), Sense::hover());
-                ui.painter().rect_filled(r, 3.0, hex(&color));
-                let extra = if walk == "walk" { String::new() } else { format!("  ({walk})") };
-                if ui.selectable_label(self.terrain == id, format!("{name}{extra}")).clicked() {
+                swatch(ui, &color);
+                let extra = if walk == "walk" || name.to_lowercase().contains(&walk) { String::new() } else { format!(" · {walk}") };
+                let r = ui.selectable_label(self.terrain == id, format!("{name}{extra}"));
+                mark(&format!("uiTerrain_{id}"), &r);
+                if r.clicked() {
                     self.terrain = id.clone();
                 }
             });
         }
-        ui.add_space(6.0);
-        ui.add(egui::Slider::new(&mut self.brush, 0..=4).text("brush").custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
-        ui.checkbox(&mut self.set_level, format!("Set the level ({})", self.level)).on_hover_text("Painted cells rise or sink to the chosen level; off: only the terrain changes");
-        ui.label(RichText::new("Right-click: pick a cell's terrain and level.").color(Color32::GRAY));
+        section(ui, "Brush");
+        ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+        ui.checkbox(&mut self.set_level, format!("Set the level to {}", self.level)).on_hover_text("Painted cells rise or sink to the chosen level; off: only the terrain changes");
+        hint(ui, "Right-click picks a cell's terrain and level.");
     }
 
     fn place_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Props").strong());
-        ui.add(egui::TextEdit::singleline(&mut self.prop_filter).hint_text("Filter"));
+        if let Some(id) = self.prop.clone() {
+            section(ui, "Prop");
+            let p = self.content.props.get(&id).cloned();
+            ui.label(RichText::new(p.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| id.clone())).strong());
+            let about = match &p {
+                Some(p) => {
+                    let model = match &p.model {
+                        Some(_) if self.models.contains_key(&id) => "its own model".to_string(),
+                        Some(_) => "its own model (not loaded yet)".to_string(),
+                        None => format!("a stand-in of {} shape{}", p.parts.len(), if p.parts.len() == 1 { "" } else { "s" }),
+                    };
+                    format!("{}×{} · {:.1} high · {model}", p.footprint[0], p.footprint[1], p.height)
+                }
+                None => "no such prop".into(),
+            };
+            hint(ui, &about);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Turned {:.0}°", self.turn)).size(11.5));
+                let export = ui.small_button("To Blender").on_hover_text("A .glb of it, standing at the origin");
+                mark("uiExportProp", &export);
+                if export.clicked() {
+                    self.export_prop(&id);
+                }
+            });
+        }
+        section(ui, "Props");
+        ui.add(egui::TextEdit::singleline(&mut self.prop_filter).hint_text("Filter").desired_width(f32::INFINITY));
         let f = self.prop_filter.to_lowercase();
         let mut last = String::new();
-        let props: Vec<(String, String, String, [u8; 2], f64)> =
-            self.content.props.iter().map(|p| (p.id.clone(), p.name.clone(), p.category.clone(), p.footprint, p.height)).collect();
-        for (id, name, category, fp, h) in props {
+        let props: Vec<(String, String, String, [u8; 2])> = self.content.props.iter().map(|p| (p.id.clone(), p.name.clone(), p.category.clone(), p.footprint)).collect();
+        for (id, name, category, fp) in props {
             if category == "character" || !f.is_empty() && !id.contains(&f) && !name.to_lowercase().contains(&f) && !category.contains(&f) {
                 continue;
             }
             if category != last {
-                ui.label(RichText::new(category.clone()).size(11.0).color(Color32::GRAY));
+                ui.add_space(3.0);
+                ui.label(RichText::new(category.replace('_', " ")).size(10.5).color(Color32::from_gray(130)));
                 last = category.clone();
             }
-            let text = format!("{name}  {}×{} · {h:.1} high", fp[0], fp[1]);
-            if ui.selectable_label(self.prop.as_deref() == Some(id.as_str()), text).clicked() {
+            if ui.selectable_label(self.prop.as_deref() == Some(id.as_str()), format!("{name}  {}×{}", fp[0], fp[1])).clicked() {
                 self.prop = Some(id);
             }
         }
-        ui.add_space(6.0);
-        if let Some(id) = self.prop.clone() {
-            let has_model = self.content.props.get(&id).and_then(|p| p.model.clone());
-            let label = match &has_model {
-                Some(_) => format!("{id}: its own model (loaded: {})", if self.models.contains_key(&id) { "yes" } else { "not yet" }),
-                None => format!("{id}: a stand-in made of shapes"),
-            };
-            ui.label(RichText::new(label).size(11.0).color(Color32::GRAY));
-            let export = ui.button("This prop to Blender").on_hover_text("A .glb of it, standing at the origin");
-            mark("uiExportProp", &export);
-            if export.clicked() {
-                self.export_prop(&id);
-            }
-        }
-        ui.label(format!("Turned {:.0}° (Q / E, Shift: 90°)", self.turn));
-        ui.label(RichText::new(format!("Placed on level {}. Shift: off the grid.", self.level)).color(Color32::GRAY));
+        ui.add_space(4.0);
+        hint(ui, &format!("Placed on level {}. Q/E turn it (Shift: by 90°); Shift places it off the grid. Every prop, by folder: Assets.", self.level));
     }
 
     fn trees_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Tree areas").strong());
-        ui.label(RichText::new("Cells the player can't cross, filled with trees.").color(Color32::GRAY));
+        section(ui, "Tree areas");
+        hint(ui, "Cells the player can't cross, filled with trees.");
         for i in 0..self.map.tree_areas.len() {
             let a = &self.map.tree_areas[i];
             let cells = self.map.area.iter().filter(|&&c| c as usize == i + 1).count();
@@ -1090,19 +1169,19 @@ impl MapEditor {
                 self.area = Some(i);
             }
         }
-        if ui.button("New area").clicked() {
+        if ui.small_button("New area").clicked() {
             self.checkpoint();
             self.new_area();
         }
-        ui.add_space(4.0);
+        section(ui, "Paint");
         ui.horizontal(|ui| {
             ui.radio_value(&mut self.remove_cells, false, "Add cells");
             ui.radio_value(&mut self.remove_cells, true, "Remove");
         });
-        ui.add(egui::Slider::new(&mut self.brush, 0..=4).text("brush").custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
-        ui.label(RichText::new("Alt: the other way.").color(Color32::GRAY));
+        ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
+        hint(ui, "Alt: the other way. Painting with no area picked makes one.");
         let Some(i) = self.area.filter(|&i| i < self.map.tree_areas.len()) else { return };
-        ui.add_space(8.0);
+        section(ui, "Area");
         let before = self.map.tree_areas[i].clone();
         let tree_props: Vec<(String, String)> = self.content.props.iter().filter(|p| matches!(p.category.as_str(), "tree" | "flora")).map(|p| (p.id.clone(), p.name.clone())).collect();
         let mut remove = false;
@@ -1110,9 +1189,9 @@ impl MapEditor {
             let a = &mut self.map.tree_areas[i];
             ui.horizontal(|ui| {
                 ui.label("Name");
-                ui.text_edit_singleline(&mut a.name);
+                ui.add(egui::TextEdit::singleline(&mut a.name).desired_width(f32::INFINITY));
             });
-            ui.label("Trees");
+            ui.label(RichText::new("Trees").size(11.5));
             for (id, name) in &tree_props {
                 let mut on = a.trees.contains(id);
                 if ui.checkbox(&mut on, name).changed() {
@@ -1133,11 +1212,11 @@ impl MapEditor {
             ui.horizontal(|ui| {
                 ui.label("Seed");
                 ui.add(egui::DragValue::new(&mut a.seed));
-                if ui.button("Reroll").clicked() {
+                if ui.small_button("Reroll").clicked() {
                     a.seed = (crate::platform::now_ms() as u32).wrapping_mul(2654435761) % 100_000;
                 }
             });
-            if ui.button("Remove this area").clicked() {
+            if ui.small_button("Remove this area").clicked() {
                 remove = true;
             }
         }
@@ -1160,6 +1239,7 @@ impl MapEditor {
         }
     }
 
+    /// The right panel: the selected building or prop, else the map itself.
     fn inspector(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
         if let Some(i) = self.selected_building.filter(|&i| i < self.map.buildings.len()) {
@@ -1167,33 +1247,32 @@ impl MapEditor {
             return;
         }
         let Some(i) = self.selected.filter(|&i| i < self.map.props.len()) else {
-            ui.label(RichText::new("Nothing selected.").color(Color32::GRAY));
+            self.map_inspector(ui);
             return;
         };
         let prop = self.content.props.get(&self.map.props[i].prop).cloned();
         let name = prop.as_ref().map(|p| p.name.clone()).unwrap_or_else(|| self.map.props[i].prop.clone());
-        ui.heading(name);
+        ui.label(RichText::new(name).size(16.0).strong());
         if let Some(p) = &prop {
-            ui.label(RichText::new(format!("{} · {}×{} cells · {:.1} high", p.category, p.footprint[0], p.footprint[1], p.height)).color(Color32::GRAY));
+            hint(ui, &format!("{} · {}×{} cells · {:.1} high", p.category.replace('_', " "), p.footprint[0], p.footprint[1], p.height));
         }
         let before = self.map.props[i].clone();
         let mut delete = false;
         {
             let p = &mut self.map.props[i];
+            section(ui, "Placed");
             ui.horizontal(|ui| {
                 ui.label("At");
                 ui.add(egui::DragValue::new(&mut p.at[0]).speed(0.05).range(0.0..=self.map.width as f64));
                 ui.add(egui::DragValue::new(&mut p.at[1]).speed(0.05).range(0.0..=self.map.height as f64));
-            });
-            ui.horizontal(|ui| {
-                ui.label("Level");
+                ui.label("level");
                 ui.add(egui::DragValue::new(&mut p.level).range(0..=self.max_level));
             });
             ui.add(egui::Slider::new(&mut p.turn, 0.0..=360.0).step_by(15.0).text("turn").suffix("°"));
             let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
-            ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale"))
-                .on_disabled_hover_text("Trees and flora keep their size");
-            if ui.button("Delete (Del)").clicked() {
+            ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size");
+            ui.add_space(4.0);
+            if ui.button("Delete").on_hover_text("Delete").clicked() {
                 delete = true;
             }
         }
@@ -1210,6 +1289,49 @@ impl MapEditor {
         if delete {
             self.delete_selected();
         }
+    }
+
+    /// The map's own settings and what's on it, when nothing is selected.
+    fn map_inspector(&mut self, ui: &mut egui::Ui) {
+        ui.label(RichText::new(self.map.name.clone()).size(16.0).strong());
+        ui.horizontal(|ui| {
+            badge(ui, self.space);
+            hint(ui, &format!("{} · {}×{} cells", self.map.id, self.map.width, self.map.height));
+        });
+        section(ui, "Map");
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            if ui.add(egui::TextEdit::singleline(&mut self.map.name).desired_width(f32::INFINITY)).changed() {
+                self.dirty = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Size");
+            ui.add(egui::DragValue::new(&mut self.width_edit).range(4..=256));
+            ui.label("×");
+            ui.add(egui::DragValue::new(&mut self.height_edit).range(4..=256));
+            let same = self.width_edit as usize == self.map.width && self.height_edit as usize == self.map.height;
+            if ui.add_enabled(!same, egui::Button::new("Apply").small()).on_hover_text("New cells get the terrain picked in Ground").clicked() {
+                self.checkpoint();
+                let fill = self.terrain.clone();
+                self.map.resize(self.width_edit as usize, self.height_edit as usize, &fill);
+                self.everything_changed();
+            }
+        });
+        section(ui, "On it");
+        let m = &self.map;
+        let rows = [
+            ("props", m.props.len()),
+            ("buildings", m.buildings.len()),
+            ("tree areas", m.tree_areas.len()),
+            ("zones", m.zones.len()),
+            ("links", m.links.len()),
+        ];
+        for (what, n) in rows {
+            ui.label(RichText::new(format!("{n} {what}")).size(12.5));
+        }
+        ui.add_space(6.0);
+        hint(ui, "Select a prop or a building to see it here.");
     }
 
     fn keys(&mut self, ctx: &egui::Context) {

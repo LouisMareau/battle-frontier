@@ -107,10 +107,12 @@ list (`prop`, `at` in cells, `level`, `turn`, `scale`).
   (each with its flooring, never empty), walls along the outline in a style (plaster,
   planks, bricks, stone, logs), doors and windows in them (an opening is as wide, in cells,
   as its asset: a 2-cell span only offers 2-cell doors), what stands inside each floor,
-  pillars on points of the outline, a roof (gabled on a rectangle, flat with a parapet on
-  any other shape), things hung on its walls (`anchors`, outside or `inside`) and what
-  stands outside next to it (`outside`). Walls block and doors let the player through; a
-  building flattens the ground under it and clears trees.
+  pillars on points of the outline, a roof (gabled on a rectangle unless `flat_roof` asks
+  for a flat one; flat with a parapet on any other shape), things hung on its walls
+  (`anchors`, outside or `inside`) and what stands outside next to it (`outside`). Stairs
+  on a floor open the floor above over them (nothing stands there) or, on the top floor, a
+  flat roof; under a gabled roof they're refused. Walls block and doors let the player
+  through; a building flattens the ground under it and clears trees.
 
 - **Zones** are areas creatures roam (`zone_cells` rows, `zones`), and **links** send
   creatures out of a treeline (edge cells of a tree area) to a zone: they walk out of the
@@ -121,14 +123,18 @@ list (`prop`, `at` in cells, `level`, `turn`, `scale`).
   saves it in `temporary/` while it names placeholders, in `content/` once it only names
   the game's own creatures (the check refuses a `content/` record naming a placeholder).
 
-The editor (menu: "Edit maps", or `--maps`): pick the level at the top (PageUp/PageDown);
+The editor (menu: "Edit maps", or `--maps`): the tools and the level (PageUp/PageDown) are
+at the top of the left panel, the tool's settings under them; the right panel inspects what's
+selected (a prop, a building), or the map itself (name, size, what's on it); the bar at the
+bottom shows the cell under the pointer and the last message.
 **Ground** paints terrain and, with "set the level", raises or lowers cells to it
 (right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
 it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props;
 **Trees** paints tree areas and edits their settings; **Build** draws a building's
 footprint, then designs it floor by floor: the floors above are cut away and the rest of the
-map is darkened, and nothing lands outside the building. *Structure* is flooring, doors and
-windows (drag along an outside wall, then pick an asset that wide), pillars, walls and roof;
+map is darkened, and nothing lands outside the building. *Structure* is flooring, walls and
+roof (a flat roof for a rectangle, if you want one), doors and windows (drag along an outside
+wall, then pick an asset that wide) and pillars;
 *Inside* places what the `Buildings/Inside` folder holds on the floor being designed (on its
 inner walls for things that hang); *Outside* asks for a wall first (a court's walls count),
 then hangs what `Buildings/Outside` holds on it or stands it on the ground up to two cells in

@@ -294,21 +294,8 @@ impl WorldMap {
     /// The cells a placed prop covers (its footprint, turned by quarter turns).
     pub fn footprint(&self, p: &Placed, content: &Content) -> Vec<(i32, i32)> {
         let Some(prop) = content.props.get(&p.prop) else { return vec![] };
-        let quarter = ((p.turn / 90.0).round() as i64).rem_euclid(2) == 1;
-        let (fw, fd) = if quarter { (prop.footprint[1], prop.footprint[0]) } else { (prop.footprint[0], prop.footprint[1]) };
         let s = if prop.scalable() { p.scale.clamp(0.5, 1.0) } else { 1.0 };
-        let (fw, fd) = (fw.max(1) as f64 * s, fd.max(1) as f64 * s);
-        let x0 = (p.at[0] - fw / 2.0 + 0.01).floor() as i32;
-        let z0 = (p.at[1] - fd / 2.0 + 0.01).floor() as i32;
-        let x1 = (p.at[0] + fw / 2.0 - 0.01).floor() as i32;
-        let z1 = (p.at[1] + fd / 2.0 - 0.01).floor() as i32;
-        let mut out = vec![];
-        for z in z0..=z1 {
-            for x in x0..=x1 {
-                out.push((x, z));
-            }
-        }
-        out
+        content::footprint_cells(p.at, p.turn, prop.footprint, s)
     }
 
     /// Which cells the player can't walk on (on foot): tree areas, blocking terrain and

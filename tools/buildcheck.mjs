@@ -1,9 +1,12 @@
 // The Build tool, driven with the mouse and keys in a headless Chrome: draws an L-shaped
 // footprint, puts a double door and a window on the ground floor, adds a floor and, Inside,
 // a bed (a table on it is refused: neither stacks), a table placed then deleted, a lamp on
-// an inner wall, a pillar; confirms; edits it again and, Outside, picks a wall, hangs a
-// flower box on it and puts a barrel in front of it (not further away); walks in through
-// the door (and into walls), turns and moves the building, undoes, and downloads the map.
+// an inner wall, stairs (up to the flat roof, and from the ground floor up through floor 2,
+// where nothing may stand over them), a pillar; confirms; edits it again and, Outside, picks
+// a wall, hangs a flower box on it and puts a barrel in front of it (not further away);
+// tries stairs in the cottage (refused under its gabled roof, allowed once it's flat); walks
+// in through the door (and into walls), turns and moves the building, undoes, and downloads
+// the map.
 // Screenshots go to screenshots/build-*.png.
 //     node tools/buildcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -111,10 +114,25 @@ try {
   await press('uiPick_wall_lamp');
   await browser.click(...(await at(22.5, 3.3, 17.12)));
   check('a lamp on the inner north wall', (await data('rooms')).includes('inner:1;outer:0'), await data('rooms'));
+  // stairs on the top floor: an L has a flat roof, so they come up to it (an opening)
+  await press('uiPick_stairs');
+  await browser.click(...(await at(21.5, 2.0, 17.6)));
+  await expect('stairs on the top floor', 'draft', 'floors:2;floor:2;openings:0;inside:2;pillars:0');
+  check('  the roof open over them', (await data('rooms')).includes('roof:2'), await data('rooms'));
+  // stairs on the ground floor open floor 2 over them, and nothing goes there
+  await press('uiFloor1');
+  await browser.click(...(await at(23.5, 0, 17.6)));
+  await expect('stairs on the ground floor', 'draft', 'floors:2;floor:1;openings:2;inside:1;pillars:0');
+  await press('uiFloor2');
+  check('floor 2 open over them', (await data('rooms')).includes('holes:2'), await data('rooms'));
+  await press('uiPick_table');
+  await browser.click(...(await at(23.5, 2.0, 17.5)));
+  await expect('a table over the stairwell: refused', 'draft', 'floors:2;floor:2;openings:0;inside:2;pillars:0');
+  check('  and why', (await data('status')).startsWith("That's open"), await data('status'));
   await press('uiStructure');
   await press('uiPillars');
   await browser.click(...(await at(21.0, 2.0, 17.0)));
-  await expect('the second floor', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:1');
+  await expect('the second floor', 'draft', 'floors:2;floor:2;openings:0;inside:2;pillars:1');
   await shot('4-second-floor');
 
   // 4. confirmed: on the map
@@ -149,6 +167,28 @@ try {
   await expect('decorations', 'anchors', 2);
   await browser.key('1');
 
+  // 6. the cottage has a gabled roof: stairs on its only floor are refused until it's flat
+  await cmd('view:11,10.5,14,0,58');
+  await browser.click(...(await at(11.0, 1.0, 10.5)));
+  await expect('the cottage selected', 'selection', 'building:0');
+  await press('uiEditBuilding');
+  await press('uiInside');
+  await press('uiPick_stairs');
+  await browser.click(...(await at(9.5, 0, 10.6)));
+  check('refused under its gabled roof', (await data('status')).startsWith('Stairs on the top floor need a flat roof'), await data('status'));
+  await press('uiStructure');
+  await press('uiFlatRoof');
+  await press('uiInside');
+  await browser.click(...(await at(9.5, 0, 10.6)));
+  check('allowed once the roof is flat', (await data('rooms')).includes('roof:2'), await data('rooms'));
+  await shot('7-stairs-to-the-roof');
+  await press('uiCancelBuilding');
+  await expect('the cottage left as it was', 'build', '');
+  await expect('  and selected, in Select', 'tool', 'select');
+  await cmd('view:22.5,18.5,15,0,58');
+  await browser.click(...(await at(22.5, 1.0, 18.0)));
+  await expect('the new building selected again', 'selection', `building:${buildings0}`);
+
   // 6. on foot: in through the door, not through walls
   await press('uiWalk');
   const start = await data('walker');
@@ -162,7 +202,7 @@ try {
   await step('ArrowLeft', '22,19', 'the wall stops it');
   await step('ArrowUp', '22,18', 'back in');
   await step('ArrowUp', '22,17', 'inside');
-  await shot('7-walking-inside');
+  await shot('8-walking-inside');
   await step('ArrowUp', '22,17', 'the north wall stops it');
   await browser.key('Escape');
 
@@ -174,20 +214,19 @@ try {
   await browser.drag([await at(22.5, 1.0, 18.0), await at(23.0, 0, 18.0), await at(24.0, 0, 18.0), await at(24.5, 0, 18.0)]);
   const moved = await data('bat');
   check('moved', moved !== before, `${before} -> ${moved}`);
-  await shot('8-moved');
+  await shot('9-moved');
   await browser.key('z', { ctrl: true });
   await expect('the move undone', 'bat', before);
 
   // 8. the download has it
   await press('uiWalk'); // walking again then stopping: no effect on the map
   await browser.key('Escape');
-  const [dx, dy] = [525, 17];
-  await browser.click(dx, dy);
+  await press('uiSave');
   await sleep(1500);
   const saved = JSON.parse(readFileSync(join(downloads, 'test_meadow.json'), 'utf8'));
   const b = saved.buildings?.[buildings0];
   check('downloaded', !!b && b.floors.length === 2 && b.floors[0].openings.length === 2 && b.pillars.length === 1 && b.anchors.length === 2
-    && b.anchors.filter((a) => a.inside).length === 1 && b.outside?.length === 1 && b.floors[1].props.length === 1,
+    && b.anchors.filter((a) => a.inside).length === 1 && b.outside?.length === 1 && b.floors[1].props.length === 2 && b.floors[0].props.length === 1,
     b ? `${b.id}: ${b.floors.length} floors, ${b.floors[0].openings.length} openings, ${b.pillars.length} pillar, ${b.anchors.length} on walls, ${b.outside?.length ?? 0} outside` : 'no building');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {

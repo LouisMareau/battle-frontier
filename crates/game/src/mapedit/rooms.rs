@@ -7,13 +7,13 @@
 //! selected (a click), turned (Q/E) and removed (Delete, or its button).
 
 use content::{segment_ends, side_step, Anchor, Building, Placed, INSIDE, OUTSIDE};
-use egui::{Color32, RichText};
+use egui::RichText;
 use glam::{Vec2, Vec3};
 use render::scene::{Shape, ShapeKind};
 use world::buildings::WALL;
 
 use super::build::{Clicks, Sel};
-use super::MapEditor;
+use super::{hint, section, warn, MapEditor};
 
 /// How far in front of a wall outside things may stand, in cells.
 const FRONT: i32 = 2;
@@ -200,13 +200,8 @@ impl MapEditor {
                 let turn = self.turn as f64;
                 let at = self.snap(&prop, turn as f32, Vec3::new(r.x, 0.0, r.y), false);
                 let placed = Placed { prop: prop.clone(), at, level: 0, turn, scale: 1.0 };
-                let cells = cells_of(self, &on_map(&b, std::slice::from_ref(&placed), b.level)[0]);
-                if cells.iter().any(|&(x, z)| !b.has(x - b.at[0], z - b.at[1])) {
-                    self.status = "Inside the building only: it would stick out".into();
-                    return;
-                }
-                if let Some(other) = clash(self, &prop, &cells, &on_map(&b, &b.floors[floor].props, b.level)) {
-                    self.status = format!("No room: {other} is there, and one of them doesn't stack");
+                if let Err(why) = self.inside_ok(&b, floor, &placed, None) {
+                    self.status = why;
                     return;
                 }
                 let d = self.draft.as_mut().unwrap();
@@ -317,9 +312,47 @@ impl MapEditor {
             }
             cells.iter().all(|c| front.contains(c)) && clash(self, &prop, &cells, &others).is_none()
         } else {
-            cells.iter().all(|&(x, z)| b.has(x - b.at[0], z - b.at[1])) && clash(self, &prop, &cells, &on_map(b, &b.floors[d.floor].props, b.level)).is_none()
+            let rel = Placed { at: [snapped[0] - b.at[0] as f64, snapped[1] - b.at[1] as f64], level: 0, ..placed.clone() };
+            self.inside_ok(b, d.floor, &rel, None).is_ok()
         };
         Some((cells, ok))
+    }
+
+    /// A stairs prop's footprint (nothing for other props).
+    pub(super) fn stairs_footprint(&self, id: &str) -> Option<[u8; 2]> {
+        self.content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint)
+    }
+
+    /// May this stand on `floor` of the building (`placed` from the building's `at`)? Inside
+    /// the outline; over no stairwell (the floor is open there); overlapping nothing on the
+    /// floor when either is unstackable (but `except`, the item being moved); and stairs
+    /// only with the floor above clear over them, or a flat roof when there's no floor above.
+    pub(super) fn inside_ok(&self, b: &Building, floor: usize, placed: &Placed, except: Option<usize>) -> Result<(), String> {
+        let cells = cells_of(self, placed);
+        if cells.iter().any(|&(x, z)| !b.has(x, z)) {
+            return Err("Inside the building only: it would stick out".into());
+        }
+        let stairs = |id: &str| self.stairs_footprint(id);
+        if cells.iter().any(|c| b.stairwells(floor, &stairs).contains(c)) {
+            return Err("That's open: the stairs from below come up there".into());
+        }
+        let others: Vec<Placed> = b.floors[floor].props.iter().enumerate().filter(|(i, _)| Some(*i) != except).map(|(_, p)| p.clone()).collect();
+        if let Some(other) = clash(self, &placed.prop, &cells, &others) {
+            return Err(format!("No room: {other} is there, and one of them doesn't stack"));
+        }
+        if stairs(&placed.prop).is_some() {
+            match b.floors.get(floor + 1) {
+                Some(above) => {
+                    let name = |id: &str| self.content.props.get(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string());
+                    if let Some(p) = above.props.iter().find(|p| cells_of(self, p).iter().any(|c| cells.contains(c))) {
+                        return Err(format!("Stairs need the floor above clear over them: {} is there", name(&p.prop)));
+                    }
+                }
+                None if !b.roof_is_flat() => return Err("Stairs on the top floor need a flat roof (Structure: Flat roof), or a floor above".into()),
+                None => {}
+            }
+        }
+        Ok(())
     }
 
     /// Highlights, drawn over everything so floors and walls never hide them.
@@ -340,6 +373,11 @@ impl MapEditor {
         };
         match d.clicks {
             Clicks::Inside => {
+                // open to the floor below: the stairs come up there
+                let stairs = |id: &str| self.stairs_footprint(id);
+                for (x, z) in b.stairwells(d.floor, &stairs) {
+                    out.push(rect((b.at[0] + x) as f32 + 0.5, floor_y - 0.02, (b.at[1] + z) as f32 + 0.5, 0.9, 0.9, [0.05, 0.05, 0.1, 0.55]));
+                }
                 if let Some((cells, ok)) = self.hover_cells() {
                     let c = if ok { [0.4, 1.0, 0.5, 0.55] } else { [1.0, 0.3, 0.25, 0.6] };
                     for (x, z) in cells {
@@ -436,9 +474,9 @@ impl MapEditor {
                 rows.push((Sel::Outside(i), format!("{} · on the ground", name(&p.prop))));
             }
         }
-        ui.label(RichText::new(if inside { format!("On floor {}", floor + 1) } else { "Outside".to_string() }).strong());
+        section(ui, &if inside { format!("On floor {}", floor + 1) } else { "Outside".to_string() });
         if rows.is_empty() {
-            ui.label(RichText::new("Nothing yet.").color(Color32::GRAY));
+            hint(ui, "Nothing yet.");
         }
         let mut remove = None;
         let mut pick = None;
@@ -483,9 +521,8 @@ impl MapEditor {
     }
 
     pub(super) fn inside_panel(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Click inside this floor to place; on a wall for things that hang. Click something to select it: Q/E turn it, Delete removes it.").color(Color32::GRAY));
+        hint(ui, "Click the floor to place it, or an inside wall for things that hang. Click a thing to select it: Q/E turn it, Delete removes it.");
         self.prop_picker(ui, INSIDE, true);
-        ui.add_space(6.0);
         self.placed_list(ui, true);
     }
 
@@ -493,14 +530,14 @@ impl MapEditor {
         let Some(d) = &self.draft else { return };
         match d.wall {
             None => {
-                ui.label(RichText::new("Click one of its walls first: outside things go on it, or on the ground in front of it (a court's walls too).").color(Color32::from_rgb(255, 190, 110)));
+                warn(ui, "Click one of its walls first (a court's walls count): things go on it, or on the ground in front of it.");
             }
             Some(w) => {
                 let n = run_of(&d.b, w).len();
                 let facing = match w.2 { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
                 ui.horizontal(|ui| {
-                    ui.label(format!("The {facing} wall, {n} cell{}", if n == 1 { "" } else { "s" }));
-                    let other = ui.small_button("another wall");
+                    ui.label(RichText::new(format!("The {facing} wall · {n} cell{}", if n == 1 { "" } else { "s" })).strong());
+                    let other = ui.small_button("Another wall");
                     super::mark("uiOtherWall", &other);
                     if other.clicked() {
                         let d = self.draft.as_mut().unwrap();
@@ -508,19 +545,19 @@ impl MapEditor {
                         d.sel = None;
                     }
                 });
+                hint(ui, "Things hang on it, or stand on the ground up to two cells in front of it.");
                 self.prop_picker(ui, OUTSIDE, false);
             }
         }
-        ui.add_space(6.0);
         self.placed_list(ui, false);
     }
 
     /// The props of a folder to pick from.
     fn prop_picker(&mut self, ui: &mut egui::Ui, folder: &str, inside: bool) {
         let props = self.folder_props(folder);
-        ui.label(RichText::new(folder).strong());
+        section(ui, folder);
         if props.is_empty() {
-            ui.label(RichText::new("The folder is empty: add props to it in the Assets browser.").color(Color32::GRAY));
+            hint(ui, "Empty: put props in this folder from Assets.");
         }
         for (k, (id, name, fp, solid, walls)) in props.into_iter().enumerate() {
             let d = self.draft.as_mut().unwrap();
@@ -562,27 +599,29 @@ impl MapEditor {
         };
         let Some(p) = list.get(i) else { return false };
         let turned = Placed { turn: ((p.turn as f32 + turn).rem_euclid(360.0)) as f64, ..p.clone() };
-        let level = b.level;
-        let cells = cells_of(self, &on_map(b, std::slice::from_ref(&turned), level)[0]);
-        let mut others = on_map(b, list, level);
-        others.remove(i);
-        let fits = if outside {
+        if !outside {
+            if let Err(why) = self.inside_ok(b, d.floor, &turned, Some(i)) {
+                self.status = format!("No room to turn it: {why}");
+                return true;
+            }
+        } else {
+            let level = b.level;
+            let cells = cells_of(self, &on_map(b, std::slice::from_ref(&turned), level)[0]);
+            let mut others = on_map(b, list, level);
+            others.remove(i);
             for o in self.map.buildings.iter().filter(|o| o.id != b.id && o.level == level) {
                 others.extend(on_map(o, &o.outside, o.level));
             }
             others.extend(self.map.props.iter().filter(|q| q.level == level).cloned());
             let taken: Vec<(i32, i32)> = self.map.buildings.iter().filter(|o| o.id != b.id).flat_map(|o| o.map_cells()).collect();
-            cells.iter().all(|&(x, z)| self.map.inside(x, z) && !b.has(x - b.at[0], z - b.at[1]) && !taken.contains(&(x, z)))
-        } else {
-            cells.iter().all(|&(x, z)| b.has(x - b.at[0], z - b.at[1]))
-        };
-        if !fits {
-            self.status = "No room to turn it there".into();
-            return true;
-        }
-        if let Some(other) = clash(self, &turned.prop, &cells, &others) {
-            self.status = format!("No room to turn it: {other} is in the way, and one of them doesn't stack");
-            return true;
+            if !cells.iter().all(|&(x, z)| self.map.inside(x, z) && !b.has(x - b.at[0], z - b.at[1]) && !taken.contains(&(x, z))) {
+                self.status = "No room to turn it there".into();
+                return true;
+            }
+            if let Some(other) = clash(self, &turned.prop, &cells, &others) {
+                self.status = format!("No room to turn it: {other} is in the way, and one of them doesn't stack");
+                return true;
+            }
         }
         let d = self.draft.as_mut().unwrap();
         let list = if outside { &mut d.b.outside } else { &mut d.b.floors[d.floor].props };

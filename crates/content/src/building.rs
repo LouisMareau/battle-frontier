@@ -5,7 +5,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::Placed;
+use crate::model::{footprint_cells, Placed};
 
 fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
@@ -27,6 +27,10 @@ pub struct Building {
     pub wall: String,
     /// a "roof" prop
     pub roof: String,
+    /// flat with a parapet whatever the outline (else a rectangle gets a gabled roof): a
+    /// terrace, which stairs on the top floor come up to
+    #[serde(skip_serializing_if = "is_default")]
+    pub flat_roof: bool,
     /// the ground floor first, one level each; never empty
     pub floors: Vec<Floor>,
     /// on grid points of the outline, as high as the building
@@ -129,6 +133,9 @@ pub fn segment_ends(x: i32, z: i32, side: &str) -> ([i32; 2], [i32; 2]) {
     }
 }
 
+/// What a check knows of a prop: its category and footprint (nothing: no such prop).
+pub type PropFacts = Option<(String, [u8; 2])>;
+
 fn turned_side(side: &str) -> &'static str {
     match side {
         "n" => "e",
@@ -142,6 +149,25 @@ impl Building {
     /// Its rows' size: (along x, along z).
     pub fn size(&self) -> (i32, i32) {
         (self.cells.iter().map(|r| r.chars().count()).max().unwrap_or(0) as i32, self.cells.len() as i32)
+    }
+
+    /// Its outline fills its rows (a gabled roof fits it).
+    pub fn is_rectangle(&self) -> bool {
+        let (w, h) = self.size();
+        self.cells().len() as i32 == w * h
+    }
+
+    /// Is its roof flat (a terrace)? By choice, or because the outline isn't a rectangle.
+    pub fn roof_is_flat(&self) -> bool {
+        self.flat_roof || !self.is_rectangle()
+    }
+
+    /// The cells of `floor` left open because stairs stand under them, on the floor below
+    /// (`stairs`: a stairs prop's footprint, nothing for other props); `floor` past the top
+    /// floor gives the roof's openings. From `at`.
+    pub fn stairwells(&self, floor: usize, stairs: &dyn Fn(&str) -> Option<[u8; 2]>) -> Vec<(i32, i32)> {
+        let Some(below) = floor.checked_sub(1).and_then(|f| self.floors.get(f)) else { return vec![] };
+        below.props.iter().filter_map(|p| stairs(&p.prop).map(|fp| footprint_cells(p.at, p.turn, fp, 1.0))).flatten().collect()
     }
 
     /// Is this cell (from `at`) inside?
@@ -281,8 +307,9 @@ impl Building {
         b
     }
 
-    /// What's wrong with it (empty when nothing), checked against the props' categories.
-    pub fn problems(&self, prop: &dyn Fn(&str) -> Option<(String, u8)>) -> Vec<String> {
+    /// What's wrong with it (empty when nothing), checked against the props' categories
+    /// and footprints.
+    pub fn problems(&self, prop: &dyn Fn(&str) -> PropFacts) -> Vec<String> {
         let mut out = vec![];
         let at = format!("building \"{}\"", self.id);
         if self.cells.iter().flat_map(|r| r.chars()).any(|c| c != '#' && c != '.') {
@@ -303,14 +330,18 @@ impl Building {
         };
         want(&self.wall, &["wall"], "wall", &mut out);
         want(&self.roof, &["roof"], "roof", &mut out);
+        let stairs = |id: &str| match prop(id) {
+            Some((cat, fp)) if cat == "stairs" => Some(fp),
+            _ => None,
+        };
         for (f, floor) in self.floors.iter().enumerate() {
             want(&floor.tile, &["floor"], &format!("floor {} tile", f + 1), &mut out);
             let mut used: Vec<(i32, i32, String)> = vec![];
             for o in &floor.openings {
                 want(&o.prop, &["door", "window"], &format!("floor {} opening", f + 1), &mut out);
                 if let Some((_, w)) = prop(&o.prop) {
-                    if w != o.width {
-                        out.push(format!("{at}: \"{}\" is {w} cells wide, its opening {}", o.prop, o.width));
+                    if w[0] != o.width {
+                        out.push(format!("{at}: \"{}\" is {} cells wide, its opening {}", o.prop, w[0], o.width));
                     }
                 }
                 if !self.fits(o) {
@@ -323,10 +354,20 @@ impl Building {
                     used.push((x, z, o.side.clone()));
                 }
             }
+            // nothing over the stairs from below, and stairs with somewhere to go
+            let holes = self.stairwells(f, &stairs);
             for p in &floor.props {
-                if prop(&p.prop).is_none() {
-                    out.push(format!("{at}: floor {}: \"{}\", no such prop", f + 1, p.prop));
+                match prop(&p.prop) {
+                    None => out.push(format!("{at}: floor {}: \"{}\", no such prop", f + 1, p.prop)),
+                    Some((_, fp)) => {
+                        if footprint_cells(p.at, p.turn, fp, 1.0).iter().any(|c| holes.contains(c)) {
+                            out.push(format!("{at}: floor {}: \"{}\" stands over the stairs from below", f + 1, p.prop));
+                        }
+                    }
                 }
+            }
+            if f + 1 == self.floors.len() && !self.roof_is_flat() && !self.stairwells(f + 1, &stairs).is_empty() {
+                out.push(format!("{at}: stairs on the top floor need a flat roof (or a floor above)"));
             }
         }
         let corners = self.corners();
@@ -383,6 +424,40 @@ mod tests {
         assert!(!b.fits(&bad), "the east side of (0, 1) is inside");
         let apart = Building { cells: vec!["#.#".into()], ..Default::default() };
         assert!(!apart.connected());
+    }
+
+    #[test]
+    fn stairs_open_the_floor_above_or_a_flat_roof() {
+        let stairs = |id: &str| (id == "stairs").then_some([1, 2]);
+        let prop = |id: &str| match id {
+            "stairs" => Some(("stairs".to_string(), [1, 2])),
+            "table" => Some(("furniture".to_string(), [1, 1])),
+            _ => None,
+        };
+        let about_stairs = |b: &Building| b.problems(&prop).into_iter().filter(|p| p.contains("stairs")).collect::<Vec<_>>();
+        let place = |id: &str, x: f64, z: f64| Placed { prop: id.into(), at: [x, z], level: 0, turn: 0.0, scale: 1.0 };
+        // an L: a flat roof, so stairs on its only floor come up to it
+        let mut b = l_shape();
+        b.floors[0].props.push(place("stairs", 0.5, 1.0));
+        assert!(b.roof_is_flat());
+        assert!(b.stairwells(0, &stairs).is_empty(), "nothing under the ground floor");
+        assert_eq!(b.stairwells(1, &stairs), vec![(0, 0), (0, 1)], "the roof's opening");
+        assert!(about_stairs(&b).is_empty(), "{:?}", about_stairs(&b));
+        // a floor above: open over the stairs, and nothing may stand there
+        b.floors.push(Floor { tile: "wood".into(), props: vec![place("table", 0.5, 0.5)], ..Default::default() });
+        assert_eq!(b.stairwells(1, &stairs), vec![(0, 0), (0, 1)]);
+        assert_eq!(about_stairs(&b).len(), 1, "{:?}", about_stairs(&b));
+        b.floors[1].props[0].at = [1.5, 1.5];
+        assert!(about_stairs(&b).is_empty());
+        // a rectangle has a gabled roof: no stairs on its top floor until it's made flat
+        let mut square = Building { id: "s".into(), cells: vec!["##".into(), "##".into()], floors: vec![Floor { tile: "wood".into(), ..Default::default() }], ..Default::default() };
+        square.floors[0].props.push(place("stairs", 0.5, 1.0));
+        assert!(!square.roof_is_flat());
+        assert!(about_stairs(&square).iter().any(|p| p.contains("flat roof")), "{:?}", about_stairs(&square));
+        square.flat_roof = true;
+        assert!(square.roof_is_flat());
+        assert!(about_stairs(&square).is_empty());
+        assert!(square.turned().flat_roof);
     }
 
     #[test]

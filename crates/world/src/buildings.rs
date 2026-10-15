@@ -185,6 +185,25 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         None => b.floors.len(),
     };
     let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
+    let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
+    // a low rim around an opening in a floor or the roof (where stairs come up)
+    let rim = |m: &mut Mesh, holes: &[(i32, i32)], y: f32, color: [f32; 4]| {
+        for &(x, z) in holes {
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                if holes.contains(&(x + dx, z + dz)) {
+                    continue;
+                }
+                let (cx, cz) = (ox + x as f32, oz + z as f32);
+                let (lo, hi) = match (dx, dz) {
+                    (1, 0) => (Vec3::new(cx + 0.96, y, cz), Vec3::new(cx + 1.0, y + 0.12, cz + 1.0)),
+                    (-1, 0) => (Vec3::new(cx, y, cz), Vec3::new(cx + 0.04, y + 0.12, cz + 1.0)),
+                    (0, 1) => (Vec3::new(cx, y, cz + 0.96), Vec3::new(cx + 1.0, y + 0.12, cz + 1.0)),
+                    _ => (Vec3::new(cx, y, cz), Vec3::new(cx + 1.0, y + 0.12, cz + 0.04)),
+                };
+                aabb(m, lo, hi, color);
+            }
+        }
+    };
     // the models' textured parts (the plain ones go into m)
     let mut textured = Scene::default();
     let put = |m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4| {
@@ -224,13 +243,15 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
     for f in 0..shown {
         let floor = &b.floors[f];
         let y0 = base + f as f32 * lh;
-        // the floor
+        // the floor, open where stairs come up from below
+        let holes = b.stairwells(f, &stairs);
         if let Some(tile) = model(&floor.tile) {
-            for (x, z) in b.cells() {
+            for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c)) {
                 let at = Vec3::new(ox + x as f32 + 0.5, y0 + if f == 0 { 0.02 } else { 0.0 }, oz + z as f32 + 0.5);
                 put(&mut m, &mut textured, &tile, Mat4::from_translation(at));
             }
         }
+        rim(&mut m, &holes, y0, trim);
         // the walls, with their doors and windows
         for &(side, l, p0, p1) in &runs {
             let inside_row = match side {
@@ -326,23 +347,29 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         put(&mut m, &mut textured, &model, Mat4::from_translation(at) * Mat4::from_scale(Vec3::new(1.0, stretch, 1.0)));
     }
     if cut.is_none() && !b.floors.is_empty() {
-        roof(&mut m, b, content, base + b.floors.len() as f32 * lh, main);
+        let top = base + b.floors.len() as f32 * lh;
+        let holes = b.stairwells(b.floors.len(), &stairs);
+        roof(&mut m, b, content, top, main, &holes);
+        if b.roof_is_flat() {
+            rim(&mut m, &holes, top + 0.14, trim);
+        }
     }
     textured.plain = m;
     textured
 }
 
-fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4]) {
+/// Gabled on a rectangle (unless it asks for a flat one), flat with a parapet otherwise;
+/// `holes`: cells of a flat roof left open (stairs come up there).
+fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4], holes: &[(i32, i32)]) {
     let prop = content.props.get(&b.roof);
     let main = color(prop.map(|p| p.color(0)).unwrap_or("#b5473a"));
     let trim = color(prop.map(|p| p.color(1)).unwrap_or("#8a3229"));
     let kind = prop.map(|p| p.pattern.as_str()).unwrap_or("tiles");
     let (w, h) = b.size();
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
-    let rectangle = b.cells().len() as i32 == w * h;
-    if !rectangle {
+    if b.roof_is_flat() {
         // flat, with a parapet
-        for (x, z) in b.cells() {
+        for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c)) {
             let k = 0.92 + 0.12 * hash(x, z, 17);
             aabb(m, Vec3::new(ox + x as f32, top, oz + z as f32), Vec3::new(ox + x as f32 + 1.0, top + 0.14, oz + z as f32 + 1.0), shade(main, k));
         }

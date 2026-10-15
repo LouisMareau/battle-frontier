@@ -90,7 +90,7 @@ try {
   await shot('3-new-link');
 
   // 4. the download: the map, and who lives where apart
-  await browser.click(525, 17);
+  await press('uiSave');
   await sleep(1500);
   const map = JSON.parse(readFileSync(join(downloads, 'test_meadow.json'), 'utf8'));
   check('the map keeps zones and links', map.zones.length === zones0 + 1 && map.links.length === links0 + 1 && map.zone_cells.length === map.height,

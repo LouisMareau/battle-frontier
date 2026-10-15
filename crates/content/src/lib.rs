@@ -575,7 +575,7 @@ impl Content {
                 out.push(format!("{at}: a link to \"{}\" with no treeline", l.zone));
             }
         }
-        let prop = |id: &str| self.props.get(id).map(|p| (p.category.clone(), p.footprint[0]));
+        let prop = |id: &str| self.props.get(id).map(|p| (p.category.clone(), p.footprint));
         let mut taken: BTreeMap<(i32, i32), String> = BTreeMap::new();
         for b in &m.buildings {
             out.extend(b.problems(&prop).into_iter().map(|p| format!("{at}: {p}")));
