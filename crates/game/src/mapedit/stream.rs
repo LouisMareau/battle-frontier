@@ -1,8 +1,9 @@
 //! The world map on the GPU, square by square (CHUNK cells a side): the squares within
-//! reach of the camera are built and sent, nearest first and a few per frame, the far ones
-//! dropped; and an edit rebuilds the squares it touched and no more, since every layer
-//! keeps a digest of what each square was built from. A map of any size costs what's in
-//! reach, not its size.
+//! reach of the camera are built in full and sent, nearest first and a few per frame; the
+//! rest get a cheap stand-in (the ground in blocks, a canopy over the woods, a box per
+//! building) so a map of any size shows whole from afar, and a square swaps between the
+//! two as the camera moves. An edit rebuilds the squares it touched and no more, since
+//! every layer keeps a digest of what each square was built from.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -15,8 +16,10 @@ use world::trees::{trees, Tree};
 
 use super::{build, gpu, models, MapEditor};
 
-/// The layers built square by square.
+/// The layers built square by square, in full.
 const LAYERS: [&str; 4] = ["ground", "props", "trees", "buildings"];
+/// The stand-in of a square out of reach: `mesh::far_region`.
+const FAR: &str = "far";
 /// How much of a frame building squares may take, in milliseconds.
 const BUDGET_MS: f64 = 6.0;
 
@@ -71,19 +74,31 @@ impl MapEditor {
         (out.into_iter().map(|(_, s)| s).collect(), reach + CHUNK as f32)
     }
 
-    /// Takes a layer's digests: the squares whose digest changed lose their built mesh, so
-    /// they're built again when wanted.
+    /// Takes a layer's digests: the squares whose digest changed lose their built mesh (and
+    /// their far stand-in, which shows the ground, the woods and the buildings), so they're
+    /// built again when wanted.
     fn refresh(&mut self, layer: &'static str, digests: BTreeMap<(i32, i32), u64>) {
         let squares = self.squares();
         let old = self.gpu.sources.entry(layer).or_default();
+        let changed: Vec<(i32, i32)> = squares.into_iter().filter(|s| old.get(s) != Some(&digests.get(s).copied().unwrap_or(0))).collect();
+        for s in &changed {
+            old.insert(*s, digests.get(s).copied().unwrap_or(0));
+        }
         let built = self.gpu.built.entry(layer).or_default();
-        for s in squares {
-            let d = digests.get(&s).copied().unwrap_or(0);
-            if old.get(&s) != Some(&d) {
-                built.remove(&s);
-                old.insert(s, d);
+        for s in &changed {
+            built.remove(s);
+        }
+        if layer != "props" {
+            let far = self.gpu.built.entry(FAR).or_default();
+            for s in &changed {
+                far.remove(s);
             }
         }
+    }
+
+    /// Is a square's layer on the GPU?
+    fn built(&self, layer: &str, s: (i32, i32)) -> bool {
+        self.gpu.built.get(layer).map(|b| b.contains(&s)).unwrap_or(false)
     }
 
     /// The ground: each square's levels and terrains, and its neighbours' (the cliff faces
@@ -167,6 +182,11 @@ impl MapEditor {
                 let scene = mesh::trees_from(&self.gpu.trees, &self.content, &self.models, reg);
                 r.set_chunk(&rs.device, "trees", s, &models::batches(&scene));
             }
+            "far" => {
+                let (tops, plain) = mesh::far_region(&self.map, &self.content, lh, reg);
+                r.set_chunk(&rs.device, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
+                r.set_chunk(&rs.device, FAR, s, &models::batches(&Scene::from(plain)));
+            }
             _ => {
                 let editing = self.draft.as_ref().and_then(|d| d.editing);
                 let inside = self.walker.as_ref().and_then(|w| w.inside);
@@ -186,7 +206,7 @@ impl MapEditor {
     }
 
     /// Every frame: the ground's texture, the squares that changed or came within reach
-    /// (a few per frame), the far ones dropped, and what moves.
+    /// (a few per frame, in full), the stand-ins of the rest, and what moves.
     pub(super) fn sync(&mut self, rs: &eframe::egui_wgpu::RenderState, now: f64) {
         let focus = self.focus_cells();
         if focus != self.focus_sent {
@@ -251,32 +271,55 @@ impl MapEditor {
             self.refresh("buildings", d);
             self.need_buildings = false;
         }
-        // the squares in reach, nearest first, as many as the frame's budget allows
         let (wanted, keep) = self.wanted();
+        let near: BTreeSet<(i32, i32)> = wanted.iter().copied().collect();
+        let t = self.cam.target;
+        let all = self.squares();
+        // the squares that left the camera's reach: their full layers go, a stand-in follows
+        let demote: Vec<(i32, i32)> = all.iter().copied().filter(|&s| distance(s, t.x, t.z) > keep && self.built("ground", s)).collect();
+        for s in demote {
+            for layer in ["cliffs", "props", "trees", "buildings"] {
+                r.set_chunk(&rs.device, layer, s, &[]);
+            }
+            for layer in LAYERS {
+                if let Some(b) = self.gpu.built.get_mut(layer) {
+                    b.remove(&s);
+                }
+            }
+        }
+        // the squares in reach, nearest first and in full, as many as the frame's budget allows
         let start = crate::platform::now_ms();
+        let over = || crate::platform::now_ms() - start > BUDGET_MS;
         'build: for &s in &wanted {
             for layer in LAYERS {
-                if self.gpu.built.get(layer).map(|b| b.contains(&s)).unwrap_or(false) {
+                if self.built(layer, s) {
                     continue;
                 }
                 self.build_square(r, rs, layer, s);
                 self.gpu.built.entry(layer).or_default().insert(s);
-                if crate::platform::now_ms() - start > BUDGET_MS {
+                if layer == "ground" {
+                    // the full ground took the stand-in's place
+                    r.set_chunk(&rs.device, FAR, s, &[]);
+                    if let Some(f) = self.gpu.built.get_mut(FAR) {
+                        f.remove(&s);
+                    }
+                }
+                if over() {
                     break 'build;
                 }
             }
         }
-        // the far squares go
-        let t = self.cam.target;
-        let near = move |s: (i32, i32)| distance(s, t.x, t.z) <= keep;
-        let mut dropped = false;
-        for b in self.gpu.built.values_mut() {
-            let before = b.len();
-            b.retain(|&s| near(s));
-            dropped |= b.len() != before;
-        }
-        if dropped {
-            r.keep_chunks(&near);
+        // the rest as stand-ins, nearest first, with what's left of the budget
+        if !over() {
+            let mut far: Vec<(f32, (i32, i32))> = all.iter().copied().filter(|&s| !near.contains(&s) && !self.built("ground", s) && !self.built(FAR, s)).map(|s| (distance(s, t.x, t.z), s)).collect();
+            far.sort_by(|a, b| a.0.total_cmp(&b.0));
+            for (_, s) in far {
+                self.build_square(r, rs, FAR, s);
+                self.gpu.built.entry(FAR).or_default().insert(s);
+                if over() {
+                    break;
+                }
+            }
         }
         if self.extra_changed {
             let extra = self.extra_mesh(now);
@@ -284,6 +327,7 @@ impl MapEditor {
             self.extra_changed = false;
         }
         let held = self.gpu.built.get("ground").map(|b| b.len()).unwrap_or(0);
-        crate::platform::set_hook("squares", &format!("{held}/{}", self.squares().len()));
+        crate::platform::set_hook("squares", &format!("{held}/{}", all.len()));
+        crate::platform::set_hook("far", &self.gpu.built.get(FAR).map(|b| b.len()).unwrap_or(0).to_string());
     }
 }

@@ -7,7 +7,9 @@
 //
 //     trunk build --release && node tools/perf.mjs [map=test_meadow] [tile=1] [seconds=4] [size=1400x900] [only=NAME]
 // tile=N plays a map made of N x N copies of `map` (props, buildings and all), to see how
-// the drawing holds up on big maps; it's added to the served bundle, nothing is written. profile=NAME also samples where the
+// the drawing holds up on big maps; it's added to the served bundle, nothing is written. shot=1
+// also saves the whole-map view to screenshots/perf-whole-map[-xN].png; creatures=0 keeps the
+// creatures off (on a huge map their path-finding is what costs, not the drawing). profile=NAME also samples where the
 // processor's time goes in the scenes whose names contain NAME (the 25 functions taking most).
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -112,6 +114,7 @@ try {
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
   await sleep(1500);
   const [w, h] = (await data('mapsize') || '40x30').split('x').map(Number);
+  if (opt.creatures === '0') await press('uiCreatures'); // off: a huge map's roaming creatures cost the processor, not the GPU
   const [cx, cz] = [w / 2, h / 2];
   await cmd(`view:${cx},${cz},14,30,40`);
   await measure('maps: close');
@@ -119,6 +122,18 @@ try {
   await measure('maps: mid');
   await cmd(`view:${cx},${cz},${Math.max(w, h) * 1.6},30,50`);
   await measure('maps: whole map');
+  if (opt.shot) {
+    await sleep(1500);
+    await browser.screenshot(join(root, 'screenshots', `perf-whole-map${tile > 1 ? `-x${tile}` : ''}.png`));
+    console.log('squares near/far:', await data('squares'), await data('far'));
+    // and from the west edge looking east, where the far squares show as stand-ins
+    await cmd(`view:40,${cz},220,270,20`);
+    await sleep(3000);
+    await browser.screenshot(join(root, 'screenshots', `perf-far-view${tile > 1 ? `-x${tile}` : ''}.png`));
+    console.log('squares near/far from the edge:', await data('squares'), await data('far'));
+    await cmd(`view:${cx},${cz},${Math.max(w, h) * 1.6},30,50`);
+    await sleep(1500);
+  }
   await cmd('scale:50');
   await measure('maps: whole map, 50% resolution');
   await cmd('scale:100;shadows:off');
@@ -126,9 +141,11 @@ try {
   await cmd('shadows:high');
   await measure('maps: whole map, high shadows');
   await cmd('shadows:medium');
-  await press('uiCreatures');
-  await measure('maps: whole map, no creatures');
-  await press('uiCreatures');
+  if (opt.creatures !== '0') {
+    await press('uiCreatures');
+    await measure('maps: whole map, no creatures');
+    await press('uiCreatures');
+  }
   // editing: props placed one after the other (each rebuilds what changed): the worst frame
   if (!opt.only || 'editing'.includes(opt.only)) {
     await cmd(`view:${cx},${cz},22,30,45`);

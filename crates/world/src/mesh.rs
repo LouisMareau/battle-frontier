@@ -444,6 +444,64 @@ pub fn trees_from(trees: &[Tree], content: &Content, models: &Models, region: [i
     out
 }
 
+/// How many cells a far square's blocks are a side.
+pub const FAR_STEP: i32 = 4;
+
+/// A region as seen from afar: the ground as one quad per FAR_STEP x FAR_STEP block, its
+/// corners at the corner cells' levels (slopes instead of cliffs, and no gaps), drawn by
+/// the terrain shader like the cell tops; and, plain, a canopy over the blocks that are
+/// mostly tree area and a box per building. Cheap enough for a whole map at once.
+pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4]) -> (Mesh, Mesh) {
+    let (w, h) = (map.width as i32, map.height as i32);
+    let (x0, z0) = (region[0].max(0), region[1].max(0));
+    let (x1, z1) = (region[2].min(w), region[3].min(h));
+    let mut tops = Mesh::default();
+    let mut plain = Mesh::default();
+    if x1 <= x0 || z1 <= z0 {
+        return (tops, plain);
+    }
+    let white = [1.0, 1.0, 1.0, 1.0];
+    let level = |x: i32, z: i32| map.level_at(x.min(w - 1), z.min(h - 1)).unwrap_or(0) as f32 * level_height;
+    let canopy = color("#2d6a38");
+    let mut z = z0;
+    while z < z1 {
+        let zb = (z + FAR_STEP).min(z1);
+        let mut x = x0;
+        while x < x1 {
+            let xb = (x + FAR_STEP).min(x1);
+            let i = tops.vertices.len() as u32;
+            for (px, pz) in [(x, z), (x, zb), (xb, zb), (xb, z)] {
+                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: white });
+            }
+            tops.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+            let (mut n, mut forest, mut sum) = (0, 0, 0.0f32);
+            for cz in z..zb {
+                for cx in x..xb {
+                    if let Some(idx) = map.index(cx, cz) {
+                        n += 1;
+                        forest += (map.area[idx] > 0) as i32;
+                        sum += map.level[idx] as f32;
+                    }
+                }
+            }
+            if n > 0 && forest * 2 >= n {
+                let y = sum / n as f32 * level_height + 1.7;
+                plain.quad([Vec3::new(x as f32, y, z as f32), Vec3::new(x as f32, y, zb as f32), Vec3::new(xb as f32, y, zb as f32), Vec3::new(xb as f32, y, z as f32)], canopy);
+            }
+            x = xb;
+        }
+        z = zb;
+    }
+    for b in map.buildings.iter().filter(|b| b.at[0] >= region[0] && b.at[1] >= region[1] && b.at[0] < region[2] && b.at[1] < region[3]) {
+        let wall = content.props.get(&b.wall).map(|p| color(p.color(0))).unwrap_or([0.9, 0.86, 0.8, 1.0]);
+        let (bw, bh) = b.size();
+        let y0 = b.level as f32 * level_height;
+        let y1 = y0 + b.floors.len().max(1) as f32 * level_height + 0.5;
+        crate::buildings::aabb(&mut plain, Vec3::new(b.at[0] as f32, y0, b.at[1] as f32), Vec3::new((b.at[0] + bw) as f32, y1, (b.at[1] + bh) as f32), wall);
+    }
+    (tops, plain)
+}
+
 /// Props and trees together.
 pub fn objects(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
     let mut out = props(map, content, level_height, models);
