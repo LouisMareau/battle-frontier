@@ -72,6 +72,8 @@ pub struct Species {
     pub learnset: Vec<(u8, u16)>,
     pub front_box: [i32; 4],
     pub back_box: [i32; 4],
+    /// a light it carries
+    pub light: Option<content::Light>,
     /// asset paths from the project root (space folder included)
     pub front: Option<String>,
     pub back: Option<String>,
@@ -173,6 +175,7 @@ impl Dex {
                 elevation: cr.sprites.elevation,
                 learnset,
                 front_box: cr.sprites.front_box,
+                light: cr.light.clone(),
                 back_box: cr.sprites.back_box,
                 front: path(&cr.sprites.front),
                 back: path(&cr.sprites.back),

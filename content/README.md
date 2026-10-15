@@ -34,7 +34,8 @@ Props' real models are glTF files (`.glb`) in `assets/models/`, named by the pro
 field; the Blender add-on (`tools/blender/`) writes both. A prop without one is drawn from its
 `parts`, a stand-in made of simple shapes. A prop's `light` is a spot light it gives off
 (`kind` "spot", `color`, `intensity`, `range` in cells, `cone` in degrees, `at` and `aim` from
-its origin before it's turned, `night`: lit by night only). A prop's `unstackable` means nothing overlaps it
+its origin before it's turned, `night`: lit by night only). A creature's `light` is the same, carried from its feet with +z
+the way it faces (a tail light: `"at": [0, 0.5, -0.4]`, `"aim": [0, -0.3, 1]`). A prop's `unstackable` means nothing overlaps it
 and it overlaps nothing (stairs, beds, shelves); `folders` lists the asset browser's folders
 it's in (`Buildings/Inside` and `Buildings/Outside` are what the Build tool offers inside and
 outside a building), its category's folder when left out.

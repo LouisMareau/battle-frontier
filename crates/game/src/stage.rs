@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::Spot;
-use render::scene::{Billboard, Frame, Glow, Lighting, Shape, ShapeKind};
+use render::scene::{Billboard, Frame, Glow, Lighting, Shape, ShapeKind, SpotLight, MAX_LIGHTS};
 use rules::battle::{Side, Uid, WeatherKind};
 use rules::config::Period;
 
@@ -33,6 +33,9 @@ fn smoothstep(t: f32) -> f32 {
 
 /// A creature on the field.
 pub struct Vis {
+    pub side: Side,
+    /// a light it carries
+    pub light: Option<content::Light>,
     pub texture: String,
     pub bbox: [i32; 4],
     pub lift: f32,
@@ -154,11 +157,13 @@ impl Stage {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn add_battler(&mut self, uid: Uid, side: Side, species: &str, front_box: [i32; 4], back_box: [i32; 4], elevation: u16, now: f64) {
+    pub fn add_battler(&mut self, uid: Uid, side: Side, species: &str, front_box: [i32; 4], back_box: [i32; 4], elevation: u16, light: Option<content::Light>, now: f64) {
         let back = side == Side::Player;
         let lift = if back { 0.0 } else { elevation as f32 * PX * 1.6 };
         let phase = self.rand() * 6.0;
         self.vis.insert(uid, Vis {
+            side,
+            light,
             texture: format!("{}/{species}", if back { "back" } else { "front" }),
             bbox: if back { back_box } else { front_box },
             lift, float: lift > 0.0, phase, home: Vec3::ZERO, pos: Vec3::ZERO, placed: false, spawn: Some(now),
@@ -378,11 +383,12 @@ impl Stage {
         self.viewport = viewport;
         let (view_proj, eye) = self.camera(now, viewport.width() / viewport.height().max(1.0));
         self.view_proj = view_proj;
-        let (light, tint) = self.lighting();
+        let (mut light, tint) = self.lighting();
         let mut billboards = vec![];
         let mut shapes = vec![];
         let mut glows = vec![];
         let tint4 = [tint.x, tint.y, tint.z, 1.0];
+        let lamps = lamps_on(self.period);
         for person in &self.people {
             billboards.push(Billboard {
                 texture: person.texture.clone(), pos: person.pos, size: Vec2::new(1.0, 2.0), offset: Vec2::ZERO,
@@ -429,6 +435,16 @@ impl Stage {
             });
             let r = (((x1 - x0) as f32) * PX * 0.45).max(0.35) * scale;
             shapes.push(Shape { kind: ShapeKind::Disc { radius: r, squash: 0.6 }, center: v.pos + Vec3::Y * 0.03, color: [0.0, 0.0, 0.0, 0.3 * fade], additive: false });
+            // the light it carries: the player's side faces the foes (away from the camera)
+            if let Some(l) = v.light.as_ref().filter(|l| (!l.night || lamps > 0.0) && light.lights.len() < MAX_LIGHTS) {
+                let forward = if v.side == Side::Player { Vec3::NEG_Z } else { Vec3::Z };
+                let placed = world::lights::carried(l, v.pos + Vec3::Y * lift, forward);
+                let k = l.intensity as f32 * if l.night { lamps } else { 1.0 } * scale * fade;
+                let c = world::color(&l.color);
+                let half = (l.cone as f32 / 2.0).to_radians();
+                light.lights.push(SpotLight { pos: placed.pos, dir: placed.dir, color: Vec3::new(c[0], c[1], c[2]) * k, range: l.range as f32, inner: half * 0.66, outer: half });
+                glows.push(Glow { pos: placed.pos, size: 0.25 + 0.12 * k, color: [c[0], c[1], c[2], (0.6 * k).min(1.0)] });
+            }
             if let Some(mut color) = v.aura {
                 let k = 1.0 + ((now / 180.0) as f32).sin() * 0.12;
                 color[3] = 0.7;

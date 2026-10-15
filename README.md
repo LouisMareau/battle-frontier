@@ -257,7 +257,9 @@ What keeps it fast:
   prop doesn't send the forest again.
 - Test hooks on `<body>` are written only when they change.
 - Lamps are spot lights in the shader, the 32 nearest the camera each frame (no shadows from
-  them); a light carried by a moving creature fits the same way, since the list is per frame.
+  them). Creatures carry lights the same way (`light` on a creature record, from its feet and
+  the way it faces): battlers on the stage and creatures roaming the editor's maps. Billboards
+  are lit by the lamps too, as if they faced them.
 
 Shadows are looked up a little off each surface, along its normal (1.5 shadow texels), with
 a margin of half a texel: both in world units, so shadows start at their casters' feet at any

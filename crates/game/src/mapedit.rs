@@ -1662,7 +1662,11 @@ impl MapEditor {
         // first; each glows where it sits
         let on = if self.lamps { 1.0 } else { crate::stage::lamps_on(self.period) };
         let mut glows = vec![];
-        let mut lamps: Vec<(f32, world::lights::PlacedLight)> = world::lights::lights(&self.map, &self.content, lh)
+        let mut all = world::lights::lights(&self.map, &self.content, lh);
+        if self.creatures_on {
+            all.extend(self.creature_lights());
+        }
+        let mut lamps: Vec<(f32, world::lights::PlacedLight)> = all
             .into_iter()
             .filter(|l| !l.light.night || on > 0.0)
             .map(|l| (l.pos.distance(self.cam.target), l))

@@ -418,6 +418,20 @@ impl MapEditor {
 
     // ------------------------------------------------------------ the creatures
 
+    /// The lights the roaming creatures carry, where they are and the way they face (as
+    /// much of each as there is of its creature).
+    pub(super) fn creature_lights(&self) -> Vec<world::lights::PlacedLight> {
+        let mut out = vec![];
+        for r in &self.spawner.roamers {
+            let Some(l) = self.content.creatures.get(&r.creature).and_then(|c| c.light.as_ref()) else { continue };
+            let feet = Vec3::new(r.pos.x, self.cell_y(r.pos.x.floor() as i32, r.pos.y.floor() as i32), r.pos.y);
+            let mut placed = world::lights::carried(l, feet, Vec3::new(r.heading.x, 0.0, r.heading.y));
+            placed.light.intensity *= r.presence.clamp(0.0, 1.0) as f64;
+            out.push(placed);
+        }
+        out
+    }
+
     /// The roaming creatures as pictures standing on the map (and their shadows).
     pub(super) fn creature_billboards(&mut self, tint: [f32; 4], billboards: &mut Vec<Billboard>, shapes: &mut Vec<Shape>) {
         if !self.creatures_on {

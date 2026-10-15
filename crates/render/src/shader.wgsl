@@ -403,14 +403,20 @@ fn vs_sprite_shadow(v: SpriteIn) -> SpriteOut {
     return o;
 }
 
-// billboards: alpha-tested, unlit, tinted (a tint over 1 flashes them white)
+// billboards: alpha-tested, tinted (a tint over 1 flashes them white), and lit by the
+// lamps as if they faced them and up (they turn with the camera)
 @fragment
 fn fs_sprite_cutout(i: SpriteOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv);
     if (c.a < 0.4) {
         discard;
     }
-    return vec4<f32>(fog(focus_dim(c.rgb * i.color.rgb, i.world), i.world), 1.0);
+    let n = normalize(vec3<f32>(0.0, 1.0, 0.0) + normalize(g.camera.xyz - i.world));
+    var lamps = vec3<f32>(0.0);
+    for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
+        lamps = lamps + lamp(k, i.world, n);
+    }
+    return vec4<f32>(fog(focus_dim(c.rgb * (i.color.rgb + lamps), i.world), i.world), 1.0);
 }
 
 @fragment

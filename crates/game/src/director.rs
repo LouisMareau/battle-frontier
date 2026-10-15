@@ -196,7 +196,7 @@ impl Director {
             Event::Enter { uid, side, .. } => {
                 let m = b.mon(uid);
                 let sp = &b.dex.species[m.species];
-                self.stage.add_battler(uid, side, &sp.key, sp.front_box, sp.back_box, sp.elevation, now);
+                self.stage.add_battler(uid, side, &sp.key, sp.front_box, sp.back_box, sp.elevation, sp.light.clone(), now);
                 self.hud.shown.insert(uid, (m.hp, m.mp));
                 let fields = [b.field(Side::Player).to_vec(), b.field(Side::Foe).to_vec()];
                 self.stage.layout([&fields[0], &fields[1]], now);

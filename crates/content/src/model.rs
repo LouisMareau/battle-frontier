@@ -141,6 +141,10 @@ pub struct Creature {
     pub sprites: Sprites,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cry: Option<String>,
+    /// a light it carries (a tail light, a lantern): see `Light`; `at` and `aim` are from
+    /// its feet, +z the way it faces
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light: Option<Light>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -435,6 +439,23 @@ pub struct Light {
 impl Default for Light {
     fn default() -> Self {
         Light { kind: "spot".into(), color: "#ffd59a".into(), intensity: 1.0, range: 6.0, cone: 100.0, at: [0.0, 2.0, 0.0], aim: [0.0, -1.0, 0.0], night: true }
+    }
+}
+
+impl Light {
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if self.kind != "spot" {
+            out.push(format!("a light of kind \"{}\": only \"spot\" for now", self.kind));
+        }
+        if !(self.range > 0.0 && self.intensity >= 0.0 && (1.0..=180.0).contains(&self.cone)) {
+            out.push("a light needs a range over 0, an intensity of 0 or more and a cone of 1 to 180 degrees".into());
+        }
+        if self.color.len() != 7 || u32::from_str_radix(self.color.trim_start_matches('#'), 16).is_err() {
+            out.push(format!("a light's colour \"{}\" isn't #rrggbb", self.color));
+        }
+        out
     }
 }
 

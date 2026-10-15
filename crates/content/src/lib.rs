@@ -403,6 +403,9 @@ impl Content {
         }
         for c in self.creatures.iter() {
             let at = format!("creatures/{}", c.id);
+            for e in c.light.iter().flat_map(|l| l.problems()) {
+                need(false, format!("{at}: {e}"));
+            }
             need(!c.types.is_empty() && c.types.len() <= 2, format!("{at}: needs 1 or 2 types"));
             for t in &c.types {
                 need(self.types.contains(t), format!("{at}: type \"{t}\", no such type"));
@@ -473,15 +476,7 @@ impl Content {
                 out.push(format!("props/{}: an empty footprint", p.id));
             }
             if let Some(l) = &p.light {
-                if l.kind != "spot" {
-                    out.push(format!("props/{}: a light of kind \"{}\": only \"spot\" for now", p.id, l.kind));
-                }
-                if !(l.range > 0.0 && l.intensity >= 0.0 && (1.0..=180.0).contains(&l.cone)) {
-                    out.push(format!("props/{}: its light needs a range over 0, an intensity of 0 or more and a cone of 1 to 180 degrees", p.id));
-                }
-                if l.color.len() != 7 || u32::from_str_radix(l.color.trim_start_matches('#'), 16).is_err() {
-                    out.push(format!("props/{}: its light's colour \"{}\" isn't #rrggbb", p.id, l.color));
-                }
+                out.extend(l.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
             }
         }
         let world = self.world();

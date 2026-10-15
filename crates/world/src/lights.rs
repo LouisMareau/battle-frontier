@@ -25,6 +25,15 @@ fn put(out: &mut Vec<PlacedLight>, light: &Light, m: Mat4) {
     out.push(PlacedLight { pos: m.transform_point3(at), dir: m.transform_vector3(aim).normalize_or(Vec3::NEG_Y), light: light.clone() });
 }
 
+/// A light carried by something standing at `feet` and facing `forward` (along the
+/// ground): the light's `at` and `aim` are from the feet, +z the way it faces.
+pub fn carried(light: &Light, feet: Vec3, forward: Vec3) -> PlacedLight {
+    let f = Vec3::new(forward.x, 0.0, forward.z).normalize_or(Vec3::Z);
+    let mut out = vec![];
+    put(&mut out, light, Mat4::from_translation(feet) * Mat4::from_rotation_y(f.x.atan2(f.z)));
+    out.remove(0)
+}
+
 /// Every light on the map, where its prop stands.
 pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<PlacedLight> {
     let mut out = vec![];
@@ -89,5 +98,10 @@ mod tests {
         let on_wall = &all[1];
         assert!((on_wall.pos - Vec3::new(4.5, 3.0, 6.5)).length() < 1e-4, "{:?}", on_wall.pos);
         assert!(on_wall.dir.z > 0.5 && on_wall.dir.y < 0.0, "{:?}", on_wall.dir);
+        // a tail light behind something walking west: behind it is east, and it points west
+        let tail = Light { at: [0.0, 0.5, -0.4], aim: [0.0, -0.3, 1.0], ..Default::default() };
+        let c = carried(&tail, Vec3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, 0.0));
+        assert!((c.pos - Vec3::new(10.4, 0.5, 10.0)).length() < 1e-4, "{:?}", c.pos);
+        assert!(c.dir.x < -0.9, "{:?}", c.dir);
     }
 }
