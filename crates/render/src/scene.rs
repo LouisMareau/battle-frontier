@@ -331,6 +331,8 @@ struct WorldGpu {
     layers: BTreeMap<String, Squares>,
     /// things that move (the walker, creatures): small, replaced often
     extra: Vec<(String, GpuMesh)>,
+    /// things fading (a building's upper floors): drawn see-through, by their vertex alpha
+    fade: Vec<(String, GpuMesh)>,
     cells: wgpu::Texture,
     size: [u32; 2],
     bind: wgpu::BindGroup,
@@ -384,6 +386,9 @@ pub struct SceneRenderer {
     empty_bind: wgpu::BindGroup,
     skinned_pipeline: wgpu::RenderPipeline,
     skinned_shadow_pipeline: wgpu::RenderPipeline,
+    /// a fading mesh: its depth first, then its colour blended
+    fade_depth_pipeline: wgpu::RenderPipeline,
+    fade_pipeline: wgpu::RenderPipeline,
     /// skinned models by key: their parts by texture
     skinned: HashMap<String, Vec<(String, GpuMesh)>>,
     nearest: wgpu::Sampler,
@@ -424,8 +429,6 @@ pub struct SceneRenderer {
 
 pub const WHITE: &str = "#white";
 pub const GLOW: &str = "#glow";
-/// white too, but drawn with cut-outs: vertex alpha under 1 dissolves the mesh (a fade)
-pub const FADE: &str = "#fade";
 
 impl SceneRenderer {
     /// `output` is the format of the pass the scene is blitted into.
@@ -641,6 +644,22 @@ impl SceneRenderer {
         let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, None, Some(shadow_depth.clone()));
         let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, Some((COLOR, None)), Some(depth(true)));
         let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, None, Some(shadow_depth.clone()));
+        // depth only, in the scene pass: a colour target it never writes to
+        let fade_depth_pipeline = {
+            let targets = [Some(wgpu::ColorTargetState { format: COLOR, blend: None, write_mask: wgpu::ColorWrites::empty() })];
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("fade depth"),
+                layout: Some(&main_layout),
+                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_map"), buffers: &map_buffers, compilation_options: Default::default() },
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_map_depth"), targets: &targets, compilation_options: Default::default() }),
+                primitive,
+                depth_stencil: Some(depth(true)),
+                multisample: Default::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let fade_pipeline = pipeline("fade", &main_layout, "vs_map", "fs_map_fade", &map_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
         let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, Some((COLOR, None)), Some(depth(true)));
         let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, None, Some(shadow_depth));
         let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
@@ -651,7 +670,7 @@ impl SceneRenderer {
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, Some((COLOR, None)), Some(depth(true)));
 
         let mut r = SceneRenderer {
-            globals, globals_bind, texture_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, skinned: HashMap::new(),
+            globals, globals_bind, texture_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
@@ -661,7 +680,6 @@ impl SceneRenderer {
             output_srgb: output.is_srgb(),
         };
         r.add_texture(device, queue, WHITE, &[255, 255, 255, 255], 1, 1, false);
-        r.add_texture(device, queue, FADE, &[255, 255, 255, 255], 1, 1, false);
         let mut glow = vec![0u8; 64 * 64 * 4];
         for y in 0..64 {
             for x in 0..64 {
@@ -738,6 +756,10 @@ impl SceneRenderer {
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_pipeline);
             pass.draw(0..3, 0..1);
+            for p in [&self.fade_depth_pipeline, &self.fade_pipeline] {
+                pass.set_pipeline(p);
+                pass.draw(0..3, 0..1);
+            }
             pass.set_bind_group(1, &ground.1, &[]);
             pass.set_pipeline(&self.ground_pipeline);
             pass.draw(0..3, 0..1);
@@ -911,7 +933,7 @@ impl SceneRenderer {
             Some(w) if w.size == g.size => (w.tops, w.layers, w.extra),
             _ => (BTreeMap::new(), BTreeMap::new(), vec![]),
         };
-        self.world = Some(WorldGpu { tops, layers, extra, cells, size: g.size, bind, level_height: g.level_height });
+        self.world = Some(WorldGpu { tops, layers, extra, fade: vec![], cells, size: g.size, bind, level_height: g.level_height });
     }
 
     /// Repaints the cells only (same size): what painting terrain changes.
@@ -966,6 +988,14 @@ impl SceneRenderer {
     pub fn set_world_extra(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
         if let Some(w) = &mut self.world {
             w.extra = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
+        }
+    }
+
+    /// What fades this frame: drawn after everything opaque, as see-through as its
+    /// vertices' alpha, each pixel once (its nearest surface).
+    pub fn set_world_fade(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
+        if let Some(w) = &mut self.world {
+            w.fade = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
         }
     }
 
@@ -1217,7 +1247,7 @@ impl SceneRenderer {
             }
             if let Some(w) = &self.world {
                 pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-                let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+                let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).chain(&w.fade).map(|(k, m)| (k.as_str(), m));
                 let mut bound = WHITE;
                 for (key, m) in objects {
                     if !sun.sees(m.lo, m.hi) {
@@ -1339,6 +1369,20 @@ impl SceneRenderer {
                 m.draw(&mut pass);
                 stats.draws += 1;
                 stats.triangles += m.count / 3;
+            }
+            // what fades: its nearest surfaces' depth first, then each pixel blended once
+            if !w.fade.is_empty() {
+                for (blend, pipeline) in [(false, &self.fade_depth_pipeline), (true, &self.fade_pipeline)] {
+                    pass.set_pipeline(pipeline);
+                    for (key, m) in &w.fade {
+                        pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                        m.draw(&mut pass);
+                        if blend {
+                            stats.draws += 1;
+                            stats.triangles += m.count / 3;
+                        }
+                    }
+                }
             }
         }
         pass.set_vertex_buffer(0, sprite_buffer.slice(..));

@@ -320,8 +320,9 @@ impl MapEditor {
             }
         }
         if self.extra_changed {
-            let extra = self.extra_batches(now);
+            let (extra, fade) = self.extra_batches(now);
             r.set_world_extra(&rs.device, &extra);
+            r.set_world_fade(&rs.device, &fade);
             self.extra_changed = false;
         }
         let held = self.gpu.built.get("ground").map(|b| b.len()).unwrap_or(0);

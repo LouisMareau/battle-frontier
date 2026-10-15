@@ -202,8 +202,9 @@ building on the map is selected with Select: Edit (the same modes), turn (Q/E), 
 delete. **Walk** puts a stand-in character on the map: the
 arrows move it cell by cell, and A speaks to what's in front (an actor, a sign: its events)
 while cells stepped on set off theirs. Walking into a building, the floors above and the
-roof dissolve away over half a second, the rest of the map darkens and the view comes a
-little closer; walking out brings them back the same way.
+roof fade away over half a second (a blended pass drawn after everything else, each pixel
+once), the rest of the map darkens and the view comes a little closer; walking out brings
+them back the same way.
 **Events** (7) is the actors and events: add an actor (click a cell) and give it a look, its
 ways (still, an area to wander, a path of cells) and events; add an event (drag cells) and
 write its script in the inspector, which names what's wrong as you type and runs it on the

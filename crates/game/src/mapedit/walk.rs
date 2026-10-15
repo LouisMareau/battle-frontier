@@ -8,7 +8,6 @@ use std::collections::VecDeque;
 
 use glam::Vec3;
 use render::map::MapVertex;
-use render::scene::FADE;
 use world::mesh::{placement, prop_scene, Scene};
 
 use super::actors::facing_of;
@@ -22,6 +21,9 @@ const FADE_MS: f64 = 450.0;
 /// How dark the outside goes while inside, and how much closer the view comes.
 const INSIDE_DIM: f32 = 0.75;
 const INSIDE_ZOOM: f32 = 0.8;
+
+/// Meshes for the renderer, by texture.
+pub(super) type Batches = Vec<(String, Vec<MapVertex>, Vec<u32>)>;
 
 /// A building's upper floors and roof on their way out (walking in) or back (walking out).
 pub(super) struct Fade {
@@ -265,12 +267,13 @@ impl MapEditor {
         INSIDE_DIM * self.inside_amount(now)
     }
 
-    /// The moving things as the renderer's batches: the walker and the actors, and the
-    /// building part fading (its own key: drawn with cut-outs, so its alpha dissolves it).
-    pub(super) fn extra_batches(&self, now: f64) -> Vec<(String, Vec<MapVertex>, Vec<u32>)> {
-        let mut out = models::batches(&self.extra_mesh(now));
+    /// The moving things as the renderer's batches (the walker and the actors), and apart
+    /// from them the building part fading, as see-through as the fade says.
+    pub(super) fn extra_batches(&self, now: f64) -> (Batches, Batches) {
+        let moving = models::batches(&self.extra_mesh(now));
+        let mut out = vec![];
         if let Some(f) = &self.fade {
-            let Some(b) = self.map.buildings.get(f.building) else { return out };
+            let Some(b) = self.map.buildings.get(f.building) else { return (moving, out) };
             let k = ((now - f.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
             let alpha = if f.entering { 1.0 - k } else { k };
             let mut part = world::buildings::building_above(b, &self.content, self.level_height, f.top, &self.models);
@@ -278,13 +281,13 @@ impl MapEditor {
                 v.color[3] = alpha;
             }
             if !part.plain.indices.is_empty() {
-                out.push((FADE.to_string(), gpu(&part.plain.vertices), part.plain.indices));
+                out.push((render::scene::WHITE.to_string(), gpu(&part.plain.vertices), part.plain.indices));
             }
             for (key, mesh) in part.textured {
                 out.push((key, gpu(&mesh.vertices), mesh.indices));
             }
         }
-        out
+        (moving, out)
     }
 
     /// The things that move: the walker and the actors drawn as props.

@@ -41,7 +41,7 @@ fn focus_dim(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     return rgb;
 }
 
-// a mesh fading: vertex alpha under 1 dissolves it, speck by speck, in the world
+// a fading mesh's shadow: vertex alpha under 1 thins it, speck by speck, in the world
 fn dissolved(world: vec3<f32>, alpha: f32) -> bool {
     if (alpha >= 0.999) {
         return false;
@@ -130,11 +130,10 @@ fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32
 
 @fragment
 fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
-    let t = textureSample(tex, samp, i.uv);
-    if (t.a < 0.5 || dissolved(i.world, i.color.a)) {
+    let c = textureSample(tex, samp, i.uv) * i.color;
+    if (c.a < 0.5) {
         discard;
     }
-    let c = t * i.color;
     return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
 }
 
@@ -144,6 +143,26 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
 fn fs_map_opaque(i: MapOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * i.color;
     return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
+}
+
+// a fading mesh: its depth alone first (its nearest surfaces, so each pixel blends once)
+@fragment
+fn fs_map_depth(i: MapOut) -> @location(0) vec4<f32> {
+    if (textureSample(tex, samp, i.uv).a < 0.5) {
+        discard;
+    }
+    return vec4<f32>(0.0);
+}
+
+// then its colour, as see-through as its vertex alpha says
+@fragment
+fn fs_map_fade(i: MapOut) -> @location(0) vec4<f32> {
+    let t = textureSample(tex, samp, i.uv);
+    if (t.a < 0.5) {
+        discard;
+    }
+    let c = t.rgb * i.color.rgb;
+    return vec4<f32>(fog(focus_dim(c * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), i.color.a);
 }
 
 // ---------------------------------------------------------------- the world's ground
