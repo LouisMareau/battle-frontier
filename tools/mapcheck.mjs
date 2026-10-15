@@ -33,6 +33,10 @@ const expect = async (what, key, want) => {
   if (!ok) failed++;
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}: ${key} = ${got}${ok ? '' : ` (wanted ${want})`}`);
 };
+const check = (what, ok, detail = '') => {
+  if (!ok) failed++;
+  console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${detail ? `: ${detail}` : ''}`);
+};
 const shot = async (name) => {
   await sleep(400);
   await browser.screenshot(join(shots, `maps-${name}.png`));
@@ -94,6 +98,8 @@ try {
 
   // night
   await press('uiNight');
+  await sleep(300);
+  check('the lamps lit by night', Number(await data('lights')) >= 3, `${await data('lights')} lamps`);
   await shot('7-night');
 
   // the download (the browser's save)

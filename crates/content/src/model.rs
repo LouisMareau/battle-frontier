@@ -401,10 +401,41 @@ pub struct Prop {
     /// a real model (glTF), when it has one
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// a light it gives off (a lamp): see `Light`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub light: Option<Light>,
     /// the asset browser's folders it's in ("Nature", "Buildings/Inside"...); empty: the
     /// ones its category gives it (see `Prop::folders`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<String>,
+}
+
+/// A light a prop gives off: a spot (a cone of light) for now. `at` is where it sits, from
+/// the prop's origin (its footprint's centre on the ground: x, y up, z), before the prop is
+/// turned; `aim` is the way it points. It lights what's in its cone within `range`, fading
+/// to nothing at the edge, and casts no shadow.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Light {
+    /// "spot"
+    pub kind: String,
+    /// "#rrggbb"
+    pub color: String,
+    pub intensity: f64,
+    /// how far it reaches, in cells
+    pub range: f64,
+    /// the cone's full angle, in degrees (the light fades over its outer third)
+    pub cone: f64,
+    pub at: [f64; 3],
+    pub aim: [f64; 3],
+    /// lit at night (and dimly in the morning) only; else always
+    pub night: bool,
+}
+
+impl Default for Light {
+    fn default() -> Self {
+        Light { kind: "spot".into(), color: "#ffd59a".into(), intensity: 1.0, range: 6.0, cone: 100.0, at: [0.0, 2.0, 0.0], aim: [0.0, -1.0, 0.0], night: true }
+    }
 }
 
 /// The folder of what can go inside buildings (the Build tool's Inside list).

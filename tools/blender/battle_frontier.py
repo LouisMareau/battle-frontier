@@ -56,7 +56,7 @@ CATEGORIES = [
     ("wall_decoration", "Wall decoration", "anchored on outside walls"),
     ("character", "Character", ""),
 ]
-PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "folders"]
+PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "folders"]
 SKIP = {"node_modules", ".git", "build", "target", "appdata", "windows", "program files", "program files (x86)",
         "programdata", "$recycle.bin", "system volume information", "library", "temporary", "private"}
 

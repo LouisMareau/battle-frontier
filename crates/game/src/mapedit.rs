@@ -24,7 +24,7 @@ use content::{Chunk, Content, Placed, Space, TreeArea, CHUNK};
 use egui::{Color32, PointerButton, RichText, Sense};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::MapVertex;
-use render::scene::{Frame, Shape, ShapeKind};
+use render::scene::{Frame, Glow, Shape, ShapeKind, SpotLight, MAX_LIGHTS};
 use rules::config::Period;
 use world::mesh;
 use world::WorldMap;
@@ -121,6 +121,8 @@ pub struct MapEditor {
     cam: Camera,
     period: Period,
     grid: bool,
+    /// the lamps lit whatever the time (a preview)
+    lamps: bool,
     tool: Tool,
     /// the level tools work on
     level: u8,
@@ -308,6 +310,7 @@ impl MapEditor {
             cam: Camera { target: Vec3::ZERO, yaw: 0.0, pitch: 52.0, distance: 40.0 },
             period: Period::Day,
             grid: true,
+            lamps: false,
             tool: Tool::Ground,
             level: 0,
             brush: 0,
@@ -396,6 +399,15 @@ impl MapEditor {
     pub fn probe(&mut self, args: &str) {
         let v: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse().ok()).collect();
         self.probe = (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2]));
+    }
+
+    /// The time of day to preview (tests and screenshots): "morning", "day" or "night".
+    pub fn set_period(&mut self, arg: &str) {
+        self.period = match arg {
+            "morning" => Period::Morning,
+            "night" => Period::Night,
+            _ => Period::Day,
+        };
     }
 
     /// Points the camera (tests and screenshots): "x,z[,distance[,yaw[,pitch]]]".
@@ -850,6 +862,11 @@ impl MapEditor {
                     if r.clicked() {
                         self.period = p;
                     }
+                }
+                let lamps = ui.selectable_label(self.lamps, "Lamps").on_hover_text("The lamps lit whatever the time (they light up by night on their own)");
+                mark("uiLamps", &lamps);
+                if lamps.clicked() {
+                    self.lamps = !self.lamps;
                 }
                 if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
                     self.grid = !self.grid;
@@ -1636,11 +1653,29 @@ impl MapEditor {
         let aspect = rect.width() / rect.height().max(1.0);
         self.view_proj = self.cam.view_proj(aspect);
         let radius = (self.cam.distance * 0.9).max(16.0);
-        let (light, tint) = period_lighting(self.period, None, self.cam.target, radius);
+        let (mut light, tint) = period_lighting(self.period, None, self.cam.target, radius);
         let mut billboards = vec![];
         let mut shapes = vec![];
         let mut overlays = vec![];
         let lh = self.level_height;
+        // the lamps: lit by night (or always, with Lamps on), the nearest to the camera
+        // first; each glows where it sits
+        let on = if self.lamps { 1.0 } else { crate::stage::lamps_on(self.period) };
+        let mut glows = vec![];
+        let mut lamps: Vec<(f32, world::lights::PlacedLight)> = world::lights::lights(&self.map, &self.content, lh)
+            .into_iter()
+            .filter(|l| !l.light.night || on > 0.0)
+            .map(|l| (l.pos.distance(self.cam.target), l))
+            .collect();
+        lamps.sort_by(|a, b| a.0.total_cmp(&b.0));
+        for (_, l) in lamps.into_iter().take(MAX_LIGHTS) {
+            let k = l.light.intensity as f32 * if l.light.night { on } else { 1.0 };
+            let c = world::color(&l.light.color);
+            let half = (l.light.cone as f32 / 2.0).to_radians();
+            light.lights.push(SpotLight { pos: l.pos, dir: l.dir, color: Vec3::new(c[0], c[1], c[2]) * k, range: l.light.range as f32, inner: half * 0.66, outer: half });
+            glows.push(Glow { pos: l.pos, size: 0.3 + 0.15 * k, color: [c[0], c[1], c[2], (0.6 * k).min(1.0)] });
+        }
+        crate::platform::set_hook("lights", &light.lights.len().to_string());
         let rect_at = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
         match self.tool {
             Tool::Ground | Tool::Trees => {
@@ -1714,7 +1749,7 @@ impl MapEditor {
             shadows: true,
             billboards,
             shapes,
-            glows: vec![],
+            glows,
             streaks: vec![],
             time: (now / 1000.0) as f32,
             grid: self.grid,

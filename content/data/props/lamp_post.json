@@ -11,5 +11,15 @@
     { "shape": "cylinder", "size": [0.12, 2.1, 0.12], "at": [0.0, 0.0, 0.0], "color": "#3c3f46" },
     { "shape": "sphere", "size": [0.34, 0.34, 0.34], "at": [0.0, 2.1, 0.0], "color": "#ffe9a8" }
   ],
+  "light": {
+    "kind": "spot",
+    "color": "#ffd59a",
+    "intensity": 1.4,
+    "range": 7.0,
+    "cone": 120.0,
+    "at": [0.0, 2.3, 0.0],
+    "aim": [0.0, -1.0, 0.0],
+    "night": true
+  },
   "folders": ["Town", "Buildings/Outside"]
 }

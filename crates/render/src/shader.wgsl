@@ -17,6 +17,8 @@ struct Globals {
     editor: vec4<f32>,       // x: grid lines on, y: darken cells outside the focus
     shadow: vec4<f32>,       // x: normal offset (world), y: depth margin (light depth), z: a texel (uv)
     focus: vec4<f32>,        // the editor's focus box: x0, z0, x1, z1 (when editor.y is on)
+    light_count: vec4<f32>,  // x: how many lamps
+    lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -90,11 +92,31 @@ fn vs_map(v: MapIn) -> MapOut {
     return o;
 }
 
-fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>) -> vec3<f32> {
+// a lamp's light on a point: by how far it is and how far off the lamp's axis
+fn lamp(k: i32, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    let p = g.lights[k * 3];
+    let d = g.lights[k * 3 + 1];
+    let c = g.lights[k * 3 + 2];
+    let to = p.xyz - world;
+    let dist = length(to);
+    if (dist >= p.w) {
+        return vec3<f32>(0.0);
+    }
+    let l = to / max(dist, 0.001);
+    let falloff = pow(1.0 - dist / p.w, 1.5);
+    let cone = smoothstep(d.w, c.w, dot(-l, d.xyz));
+    return c.rgb * falloff * cone * max(dot(n, l), 0.0);
+}
+
+fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32> {
     let n = normalize(normal);
     let ndl = max(dot(n, g.sun_dir.xyz), 0.0);
     let hemi = mix(g.hemi_ground.rgb, g.hemi_sky.rgb, n.y * 0.5 + 0.5);
-    return g.ambient.rgb + hemi + g.sun_color.rgb * ndl * lit_by_sun(light_pos);
+    var lit = g.ambient.rgb + hemi + g.sun_color.rgb * ndl * lit_by_sun(light_pos);
+    for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
+        lit = lit + lamp(k, world, n);
+    }
+    return lit;
 }
 
 @fragment
@@ -103,7 +125,7 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
     if (c.a < 0.5) {
         discard;
     }
-    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos), i.world), i.world), 1.0);
+    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
 }
 
 // the same without cut-outs (vertex colours on white): with no discard, the GPU can skip
@@ -111,7 +133,7 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_map_opaque(i: MapOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * i.color;
-    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos), i.world), i.world), 1.0);
+    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
 }
 
 // ---------------------------------------------------------------- the world's ground
@@ -323,7 +345,7 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
     }
-    return vec4<f32>(fog(col * sunlit(i.normal, i.light_pos), i.world), 1.0);
+    return vec4<f32>(fog(col * sunlit(i.normal, i.light_pos, i.world), i.world), 1.0);
 }
 
 

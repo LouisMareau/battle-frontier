@@ -112,7 +112,9 @@ small one.
   cobbles, rock, water) are procedural for now. Raised cells get cliff faces.
 - **Props** are the asset database: footprint in cells, height, whether they block, whether
   they are `unstackable` (nothing overlaps them and they overlap nothing: stairs, beds,
-  shelves, wells...), the asset browser's `folders` they're in, and a stand-in model made of
+  shelves, wells...), the asset browser's `folders` they're in, a `light` they give off (a
+  spot: colour, intensity, range, cone, where it sits and points from the prop's origin,
+  at night only or always; lamp posts and wall lamps have one), and a stand-in model made of
   simple shapes (`parts`) until a real model (glTF, `model`) comes. Trees and flora can't be
   scaled; the rest can be scaled down.
 - **Tree areas** are cells the player can't cross. The engine fills them with trees from
@@ -166,8 +168,8 @@ arrows move it cell by cell, and the building it enters is cut away above it. **
 paints zones (and who lives there: morning, day, night) or, in "Link treelines", takes a
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
 every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
-the view, the wheel zooms; Morning/Day/Night preview the light; Ctrl+Z/Ctrl+Y undo and
-redo. **World** opens the World view across the window: the world this map is part of as
+the view, the wheel zooms; Morning/Day/Night preview the light, and the lamps light up by
+night (Lamps lights them whatever the time); Ctrl+Z/Ctrl+Y undo and redo. **World** opens the World view across the window: the world this map is part of as
 pieces on a grid (the map being edited lit), seams green where the levels match and crimson
 where they don't; drag a map in from the list, drag pieces into place (they snap to cells),
 double-click a piece to edit that map, "New world" starts one with this map, "Save world"
@@ -181,7 +183,8 @@ stand-in, what it does (blocks, unstackable, on walls) and folders, shown by fol
 (`Buildings/Inside`, `Buildings/Outside`, `Nature`, `Town`...: a prop's `folders`, or its
 category's). Drag a row onto a folder to put the prop there too (a chip's × takes it out);
 click a row to use it (the Place tool, or a building's Inside or Outside list when it's in
-that folder); drop `.glb` files on a folder and each becomes a prop there, its footprint and
+that folder); "light" on a row opens the prop's light (colour, intensity, range, cone, where
+it sits and points) or gives it one; drop `.glb` files on a folder and each becomes a prop there, its footprint and
 height measured from the model: written at once on the desktop (`content/`, or `temporary/`
 with the box ticked), kept until Save in the browser (its record and model download). On the
 desktop, `data/props` and `assets/models` of both spaces are watched: a record or model
@@ -253,6 +256,8 @@ What keeps it fast:
 - The map editor sends props, trees and buildings to the GPU as separate layers: placing a
   prop doesn't send the forest again.
 - Test hooks on `<body>` are written only when they change.
+- Lamps are spot lights in the shader, the 32 nearest the camera each frame (no shadows from
+  them); a light carried by a moving creature fits the same way, since the list is per frame.
 
 Shadows are looked up a little off each surface, along its normal (1.5 shadow texels), with
 a margin of half a texel: both in world units, so shadows start at their casters' feet at any

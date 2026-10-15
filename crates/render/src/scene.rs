@@ -78,6 +78,27 @@ struct Globals {
     editor: [f32; 4],
     shadow: [f32; 4],
     focus: [f32; 4],
+    /// x: how many lights
+    light_count: [f32; 4],
+    /// per light: position + range, direction + cos of the outer angle, colour + cos of
+    /// the inner angle
+    lights: [[f32; 4]; MAX_LIGHTS * 3],
+}
+
+/// How many lights a frame can hold: the nearest ones.
+pub const MAX_LIGHTS: usize = 32;
+
+/// A spot light: a cone of light from `pos` along `dir`, `range` long.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpotLight {
+    pub pos: Vec3,
+    pub dir: Vec3,
+    /// linear colour, times the intensity
+    pub color: Vec3,
+    pub range: f32,
+    /// the cone's half angles, in radians: full light within `inner`, none past `outer`
+    pub inner: f32,
+    pub outer: f32,
 }
 
 #[repr(C)]
@@ -89,7 +110,7 @@ pub struct SpriteVertex {
 }
 
 /// The light of a frame, in linear colours.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Lighting {
     /// towards the sun
     pub sun_dir: Vec3,
@@ -101,6 +122,8 @@ pub struct Lighting {
     pub fog_near: f32,
     pub fog_far: f32,
     pub light_view_proj: Mat4,
+    /// the lamps lit this frame (the first MAX_LIGHTS count)
+    pub lights: Vec<SpotLight>,
 }
 
 /// An upright picture: a creature, a person. Turns with the camera around the vertical axis.
@@ -883,6 +906,17 @@ impl SceneRenderer {
             editor: [frame.grid as u32 as f32, frame.focus.is_some() as u32 as f32, 0.0, 0.0],
             shadow: shadow_params(&light_view_proj, self.shadow_size),
             focus: frame.focus.unwrap_or([0.0; 4]),
+            light_count: [l.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            lights: {
+                let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
+                for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
+                    let d = s.dir.normalize_or(Vec3::NEG_Y);
+                    out[k * 3] = [s.pos.x, s.pos.y, s.pos.z, s.range.max(0.01)];
+                    out[k * 3 + 1] = [d.x, d.y, d.z, s.outer.cos()];
+                    out[k * 3 + 2] = [s.color.x, s.color.y, s.color.z, s.inner.cos()];
+                }
+                out
+            },
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 

@@ -531,6 +531,11 @@ impl GameApp {
                         ed.set_view(arg);
                     }
                 }
+                "period" => {
+                    if let Screen::Maps(ed) = &mut self.screen {
+                        ed.set_period(arg);
+                    }
+                }
                 "point" => {
                     if let Screen::Maps(ed) = &mut self.screen {
                         ed.probe(arg);

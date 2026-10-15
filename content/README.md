@@ -32,7 +32,9 @@ levels match) but never overlap.
 
 Props' real models are glTF files (`.glb`) in `assets/models/`, named by the prop's `model`
 field; the Blender add-on (`tools/blender/`) writes both. A prop without one is drawn from its
-`parts`, a stand-in made of simple shapes. A prop's `unstackable` means nothing overlaps it
+`parts`, a stand-in made of simple shapes. A prop's `light` is a spot light it gives off
+(`kind` "spot", `color`, `intensity`, `range` in cells, `cone` in degrees, `at` and `aim` from
+its origin before it's turned, `night`: lit by night only). A prop's `unstackable` means nothing overlaps it
 and it overlaps nothing (stairs, beds, shelves); `folders` lists the asset browser's folders
 it's in (`Buildings/Inside` and `Buildings/Outside` are what the Build tool offers inside and
 outside a building), its category's folder when left out.

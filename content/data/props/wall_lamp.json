@@ -8,5 +8,15 @@
     { "shape": "box", "size": [0.06, 0.06, 0.24], "at": [0.0, 0.24, 0.12], "color": "#2f3238" },
     { "shape": "sphere", "size": [0.2, 0.2, 0.2], "at": [0.0, 0.1, 0.24], "color": "#ffe9a8" }
   ],
+  "light": {
+    "kind": "spot",
+    "color": "#ffcf8a",
+    "intensity": 1.2,
+    "range": 5.0,
+    "cone": 110.0,
+    "at": [0.0, 0.1, 0.3],
+    "aim": [0.0, -0.75, 0.65],
+    "night": true
+  },
   "folders": ["Buildings/Outside", "Buildings/Inside"]
 }

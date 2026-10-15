@@ -502,6 +502,16 @@ impl Stage {
     }
 }
 
+/// How lit the lamps are at a time of day: full by night, a little in the morning, off by
+/// day.
+pub fn lamps_on(period: Period) -> f32 {
+    match period {
+        Period::Night => 1.0,
+        Period::Morning => 0.35,
+        Period::Day => 0.0,
+    }
+}
+
 /// The light of a time of day and weather, with the sun's shadow covering `radius` around
 /// `target` (and fog starting past it); also the tint for pictures.
 pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec3, radius: f32) -> (Lighting, Vec3) {
@@ -536,6 +546,7 @@ pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec
             fog_near: 30.0 * far,
             fog_far: 70.0 * far,
             light_view_proj: light_proj * light_view,
+            lights: vec![],
         },
         srgb_to_linear(p.tint),
     )

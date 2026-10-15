@@ -4,7 +4,7 @@
 //! rectangle, a flat one with a parapet on any other shape; decorations on the walls.
 //! A building can be cut away above a floor, for editing it.
 
-use content::{segment_ends, side_turn, Building, Content};
+use content::{segment_ends, side_turn, Anchor, Building, Content};
 use glam::{Mat4, Vec3};
 
 use crate::mesh::{placement, prop_scene, Mesh, Models, Scene};
@@ -319,15 +319,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         // on the walls: outside facing out, inside (past the wall's thickness) facing in
         for a in b.anchors.iter().filter(|a| a.floor as usize == f) {
             let Some(model) = model(&a.prop) else { continue };
-            let (p, q) = segment_ends(a.cell[0], a.cell[1], &a.side);
-            let mut mid = Vec3::new(ox + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, oz + (p[1] + q[1]) as f32 / 2.0);
-            let mut turn = side_turn(&a.side) as f32;
-            if a.inside {
-                let out = Line { side: &a.side, at: 0.0 }.out();
-                mid -= out * WALL;
-                turn += 180.0;
-            }
-            put(&mut m, &mut textured, &model, placement(mid, turn, 1.0));
+            put(&mut m, &mut textured, &model, anchor_placement(b, a, lh));
         }
     }
     // what stands outside it
@@ -426,6 +418,20 @@ fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4],
         tri_facing(m, a, bb, c, out, wall);
         tri_facing(m, a, bb, c, -out, shade(wall, 0.8));
     }
+}
+
+/// Where something hung on a wall stands: on the wall's outside face, facing out, or
+/// (inside) a wall's thickness in, facing in.
+pub fn anchor_placement(b: &Building, a: &Anchor, level_height: f32) -> Mat4 {
+    let (p, q) = segment_ends(a.cell[0], a.cell[1], &a.side);
+    let y0 = (b.level as usize + a.floor as usize) as f32 * level_height;
+    let mut mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
+    let mut turn = side_turn(&a.side) as f32;
+    if a.inside {
+        mid -= Line { side: &a.side, at: 0.0 }.out() * WALL;
+        turn += 180.0;
+    }
+    placement(mid, turn, 1.0)
 }
 
 /// Every building on a map; the one being edited (index, floor) cut away above that floor.

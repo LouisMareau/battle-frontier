@@ -472,6 +472,17 @@ impl Content {
             if p.footprint[0] == 0 || p.footprint[1] == 0 {
                 out.push(format!("props/{}: an empty footprint", p.id));
             }
+            if let Some(l) = &p.light {
+                if l.kind != "spot" {
+                    out.push(format!("props/{}: a light of kind \"{}\": only \"spot\" for now", p.id, l.kind));
+                }
+                if !(l.range > 0.0 && l.intensity >= 0.0 && (1.0..=180.0).contains(&l.cone)) {
+                    out.push(format!("props/{}: its light needs a range over 0, an intensity of 0 or more and a cone of 1 to 180 degrees", p.id));
+                }
+                if l.color.len() != 7 || u32::from_str_radix(l.color.trim_start_matches('#'), 16).is_err() {
+                    out.push(format!("props/{}: its light's colour \"{}\" isn't #rrggbb", p.id, l.color));
+                }
+            }
         }
         let world = self.world();
         for m in self.maps.iter() {

@@ -5,6 +5,7 @@
 pub mod buildings;
 pub mod gltf_in;
 pub mod gltf_out;
+pub mod lights;
 pub mod mesh;
 pub mod spawn;
 pub mod trees;

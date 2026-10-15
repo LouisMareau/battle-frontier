@@ -26,6 +26,12 @@ const CATEGORIES: [&str; 18] = [
     "sign", "light", "other",
 ];
 
+/// "#rrggbb" as bytes (magenta when it isn't one).
+fn hex_rgb(hex: &str) -> [u8; 3] {
+    let v = u32::from_str_radix(hex.trim_start_matches('#'), 16).unwrap_or(0xff00ff);
+    [(v >> 16) as u8, (v >> 8) as u8, v as u8]
+}
+
 /// A change to a prop, made once the list is drawn.
 type Change = Box<dyn FnOnce(&mut Prop)>;
 
@@ -53,6 +59,8 @@ pub(super) struct Assets {
     rows: Vec<(String, egui::Rect)>,
     /// files hovering over the window
     hovering: bool,
+    /// the prop whose light is being edited
+    light_edit: Option<String>,
     /// models dropped in the browser (file name, bytes): downloaded with the records on save
     #[cfg(target_arch = "wasm32")]
     new_models: Vec<(String, Vec<u8>)>,
@@ -293,6 +301,7 @@ impl MapEditor {
             return;
         }
         let mut picked = None;
+        let mut light_edit = None;
         let mut changes: Vec<(String, Change)> = vec![];
         let mut out_of: Option<(String, String)> = None;
         egui::Grid::new("asset-grid").striped(true).num_columns(8).spacing([14.0, 5.0]).show(ui, |ui| {
@@ -352,6 +361,11 @@ impl MapEditor {
                     if p.on_walls() {
                         ui.label(RichText::new("on walls").color(Color32::GRAY));
                     }
+                    let lit = ui.selectable_label(p.light.is_some(), "light").on_hover_text(if p.light.is_some() { "The light it gives off: click to change it" } else { "Give it a light (a lamp)" });
+                    mark(&format!("uiLight_{}", p.id), &lit);
+                    if lit.clicked() {
+                        light_edit = Some(p.id.clone());
+                    }
                 });
                 ui.horizontal(|ui| {
                     let own = !p.folders.is_empty();
@@ -375,6 +389,78 @@ impl MapEditor {
         }
         if let Some(id) = picked {
             self.use_prop(&id);
+        }
+        if light_edit.is_some() {
+            self.assets.light_edit = light_edit;
+        }
+        self.light_window(ui);
+    }
+
+    /// The window where a prop's light is set.
+    fn light_window(&mut self, ui: &mut egui::Ui) {
+        let Some(id) = self.assets.light_edit.clone() else { return };
+        let Some(p) = self.content.props.get(&id).cloned() else {
+            self.assets.light_edit = None;
+            return;
+        };
+        let mut light = p.light.clone().unwrap_or_default();
+        let (mut changed, mut remove, mut open) = (false, false, true);
+        egui::Window::new(format!("Light of {}", p.name)).id(egui::Id::new("light-edit")).open(&mut open).collapsible(false).resizable(false).show(ui.ctx(), |ui| {
+            hint(ui, "A spot: a cone of light from where it sits, the way it points. It casts no shadow.");
+            egui::Grid::new("light-grid").num_columns(2).spacing([8.0, 4.0]).show(ui, |ui| {
+                ui.label("Colour");
+                let mut rgb = hex_rgb(&light.color);
+                if ui.color_edit_button_srgb(&mut rgb).changed() {
+                    light.color = format!("#{:02x}{:02x}{:02x}", rgb[0], rgb[1], rgb[2]);
+                    changed = true;
+                }
+                ui.end_row();
+                ui.label("Intensity");
+                changed |= ui.add(egui::Slider::new(&mut light.intensity, 0.0..=4.0)).changed();
+                ui.end_row();
+                ui.label("Range");
+                changed |= ui.add(egui::Slider::new(&mut light.range, 1.0..=24.0).suffix(" cells")).changed();
+                ui.end_row();
+                ui.label("Cone");
+                changed |= ui.add(egui::Slider::new(&mut light.cone, 10.0..=170.0).suffix("°")).changed();
+                ui.end_row();
+                ui.label("Sits at");
+                ui.horizontal(|ui| {
+                    for v in light.at.iter_mut() {
+                        changed |= ui.add(egui::DragValue::new(v).speed(0.05)).changed();
+                    }
+                });
+                ui.end_row();
+                ui.label("Points");
+                ui.horizontal(|ui| {
+                    for v in light.aim.iter_mut() {
+                        changed |= ui.add(egui::DragValue::new(v).speed(0.05)).changed();
+                    }
+                });
+                ui.end_row();
+                ui.label("");
+                changed |= ui.checkbox(&mut light.night, "At night only").changed();
+                ui.end_row();
+            });
+            hint(ui, "x, y (up) and z from the prop's origin, before it's turned. Lamps light the Night preview, or always with Lamps on.");
+            ui.horizontal(|ui| {
+                if p.light.is_none() {
+                    let give = ui.button("Give it this light");
+                    mark("uiLightGive", &give);
+                    changed |= give.clicked();
+                } else if ui.button("Remove the light").clicked() {
+                    remove = true;
+                }
+            });
+        });
+        if remove {
+            self.change_prop(&id, |p| p.light = None);
+            self.assets.light_edit = None;
+        } else if changed {
+            self.change_prop(&id, move |p| p.light = Some(light));
+        }
+        if !open {
+            self.assets.light_edit = None;
         }
     }
 
