@@ -76,6 +76,17 @@ impl Files {
         }
     }
 
+    /// Puts a file in by hand (one dropped on the page): `get` hands it out from now on.
+    pub fn insert(&self, path: &str, bytes: Vec<u8>) {
+        self.done(path, Ok(bytes));
+    }
+
+    /// Forgets a file, so the next `get` reads it again (it changed on disk).
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
+    pub fn forget(&self, path: &str) {
+        self.slots.lock().unwrap().remove(path);
+    }
+
     fn done(&self, path: &str, result: Result<Vec<u8>, String>) {
         let slot = match result {
             Ok(b) => Slot::Ready(Arc::new(b)),
@@ -103,6 +114,26 @@ impl Files {
             };
             me.done(&key, result);
         });
+    }
+}
+
+/// Files dropped on the window, read: (file name, its bytes or why not). On the desktop at
+/// once, in the browser when the page has read them.
+pub type Dropped = Arc<Mutex<Vec<(String, Result<Vec<u8>, String>)>>>;
+
+pub fn read_dropped(files: Vec<egui::DroppedFileHandle>, out: &Dropped) {
+    for f in files {
+        let name = f.path().file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        #[cfg(not(target_arch = "wasm32"))]
+        out.lock().unwrap().push((name, f.bytes()));
+        #[cfg(target_arch = "wasm32")]
+        {
+            let out = out.clone();
+            wasm_bindgen_futures::spawn_local(async move {
+                let bytes = f.bytes_async().await;
+                out.lock().unwrap().push((name, bytes));
+            });
+        }
     }
 }
 

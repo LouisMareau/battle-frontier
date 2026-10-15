@@ -56,7 +56,7 @@ CATEGORIES = [
     ("wall_decoration", "Wall decoration", "anchored on outside walls"),
     ("character", "Character", ""),
 ]
-PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "parts", "model"]
+PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "folders"]
 SKIP = {"node_modules", ".git", "build", "target", "appdata", "windows", "program files", "program files (x86)",
         "programdata", "$recycle.bin", "system volume information", "library", "temporary", "private"}
 
@@ -210,7 +210,9 @@ def ordered_prop(record):
             continue
         if k == "pattern" and not v:
             continue
-        if k == "blocks" and not v:
+        if k in ("blocks", "unstackable") and not v:
+            continue
+        if k == "folders" and not v:
             continue
         if k == "model" and not v:
             continue
@@ -250,42 +252,160 @@ def colour_material(hex_colour):
     return mat
 
 
+class Rng:
+    """The engine's generator (mulberry32), for the same rocks."""
+
+    def __init__(self, seed):
+        self.s = seed & 0xFFFFFFFF
+
+    def next(self):
+        self.s = (self.s + 0x6D2B79F5) & 0xFFFFFFFF
+        t = self.s
+        t = ((t ^ (t >> 15)) * (t | 1)) & 0xFFFFFFFF
+        t ^= (t + (((t ^ (t >> 7)) * (t | 61)) & 0xFFFFFFFF)) & 0xFFFFFFFF
+        return ((t ^ (t >> 14)) & 0xFFFFFFFF) / 4294967296.0
+
+    def range(self, lo, hi):
+        return lo + (hi - lo) * self.next()
+
+
+def shape(kind, size, seed):
+    """A part's geometry exactly as the engine makes it (crates/world/src/mesh.rs), in the
+    engine's frame (x, up, south): (vertices, faces)."""
+    sx, sy, sz = size
+    if kind in ("cylinder", "cone"):
+        segments, top = 10, (1.0 if kind == "cylinder" else 0.0)
+        rx, rz = sx / 2.0, sz / 2.0
+        ring = lambda k, y, r: (math.cos(k / segments * math.tau) * rx * r, y, math.sin(k / segments * math.tau) * rz * r)
+        verts = [ring(k, 0.0, 1.0) for k in range(segments)]
+        faces = []
+        if top > 0.0:
+            verts += [ring(k, sy, top) for k in range(segments)] + [(0.0, sy, 0.0)]
+            centre = len(verts) - 1
+            for k in range(segments):
+                k1 = (k + 1) % segments
+                faces.append((segments + k, segments + k1, k1, k))
+                faces.append((centre, segments + k1, segments + k))
+        else:
+            verts.append((0.0, sy, 0.0))
+            apex = len(verts) - 1
+            for k in range(segments):
+                faces.append((apex, (k + 1) % segments, k))
+        return verts, faces
+    if kind == "sphere":
+        rings, segments = 6, 10
+        r = (sx / 2.0, sy / 2.0, sz / 2.0)
+
+        def point(i, k):
+            v, a = i / rings * math.pi, k / segments * math.tau
+            u = (math.sin(v) * math.cos(a), -math.cos(v), math.sin(v) * math.sin(a))
+            return (u[0] * r[0], r[1] + u[1] * r[1], u[2] * r[2])
+        verts = [point(0, 0)] + [point(i, k) for i in range(1, rings) for k in range(segments)] + [point(rings, 0)]
+        at = lambda i, k: 0 if i == 0 else (len(verts) - 1 if i == rings else 1 + (i - 1) * segments + k % segments)
+        faces = []
+        for i in range(rings):
+            for k in range(segments):
+                a, b, c, d = at(i, k), at(i + 1, k), at(i + 1, k + 1), at(i, k + 1)
+                if i == 0:
+                    faces.append((a, b, c))
+                elif i == rings - 1:
+                    faces.append((a, b, d))
+                else:
+                    faces.append((a, b, c, d))
+        return verts, faces
+    if kind == "rock":
+        t = (1.0 + math.sqrt(5.0)) / 2.0
+        base = [(-1, t, 0), (1, t, 0), (-1, -t, 0), (1, -t, 0), (0, -1, t), (0, 1, t), (0, -1, -t), (0, 1, -t), (t, 0, -1), (t, 0, 1), (-t, 0, -1), (-t, 0, 1)]
+        faces = [(0, 11, 5), (0, 5, 1), (0, 1, 7), (0, 7, 10), (0, 10, 11), (1, 5, 9), (5, 11, 4), (11, 10, 2), (10, 7, 6), (7, 1, 8),
+                 (3, 9, 4), (3, 4, 2), (3, 2, 6), (3, 6, 8), (3, 8, 9), (4, 9, 5), (2, 4, 11), (6, 2, 10), (8, 6, 7), (9, 8, 1)]
+        rng = Rng(seed)
+        verts = []
+        for x, y, z in base:
+            n = math.sqrt(x * x + y * y + z * z)
+            k = rng.range(0.82, 1.08)
+            px, py, pz = x / n * k, y / n * k, z / n * k
+            py = max(py, -0.35)
+            verts.append((px * sx / 2.0, (py + 0.35) / 1.35 * sy, pz * sz / 2.0))
+        return verts, faces
+    # a box: no bottom face, as in the engine
+    x, y, z = sx / 2.0, sy, sz / 2.0
+    verts = [(-x, 0, -z), (x, 0, -z), (x, 0, z), (-x, 0, z), (-x, y, -z), (x, y, -z), (x, y, z), (-x, y, z)]
+    faces = [(7, 3, 2, 6), (5, 1, 0, 4), (6, 2, 1, 5), (4, 0, 3, 7), (4, 7, 6, 5)]
+    return verts, faces
+
+
+def to_blender(p):
+    """The engine's (x, up, south) is Blender's (x, -y, z)."""
+    return (p[0], -p[2], p[1])
+
+
 def build_stand_in(record, collection):
-    """A prop's stand-in, its shapes in their colours, as one object."""
+    """A prop's stand-in, exactly as the engine draws it, its parts in their colours."""
     bm = bmesh.new()
     mesh = bpy.data.meshes.new(record["id"])
-    for part in record.get("parts", []):
-        before = set(bm.verts)
-        shape = part.get("shape", "box")
-        if shape == "cylinder":
-            bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=16, radius1=0.5, radius2=0.5, depth=1.0)
-        elif shape == "cone":
-            bmesh.ops.create_cone(bm, cap_ends=True, cap_tris=False, segments=16, radius1=0.5, radius2=0.0, depth=1.0)
-        elif shape == "sphere":
-            bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=0.5)
-        elif shape == "rock":
-            bmesh.ops.create_icosphere(bm, subdivisions=1, radius=0.5)
-        else:
-            bmesh.ops.create_cube(bm, size=1.0)
-        new = [v for v in bm.verts if v not in before]
-        sx, sy, sz = part.get("size", [1, 1, 1])
+    for i, part in enumerate(record.get("parts", [])):
+        seed = (7 + i * 31 + len(record["id"])) & 0xFFFFFFFF
+        verts, faces = shape(part.get("shape", "box"), part.get("size", [1, 1, 1]), seed)
         ax, ay, az = part.get("at", [0, 0, 0])
-        # the engine's (x, up, south) is Blender's (x, -y, z)
-        m = (Matrix.Translation(Vector((ax, -az, ay + sy / 2.0)))
-             @ Matrix.Rotation(-math.radians(part.get("turn", 0.0)), 4, "Z")
-             @ Matrix.Diagonal(Vector((sx, sz, sy, 1.0))))
-        bmesh.ops.transform(bm, matrix=m, verts=new)
+        turn = -math.radians(part.get("turn", 0.0))
+        c, s_ = math.cos(turn), math.sin(turn)
+        made = []
+        for vx, vy, vz in verts:
+            # turned about the vertical (the engine's rotation_y), then moved
+            px, pz = c * vx + s_ * vz, -s_ * vx + c * vz
+            made.append(bm.verts.new(to_blender((px + ax, vy + ay, pz + az))))
         mat = colour_material(part.get("color", "#888888"))
         if mat.name not in mesh.materials:
             mesh.materials.append(mat)
         index = list(mesh.materials).index(mat)
-        for f in {f for v in new for f in v.link_faces}:
-            f.material_index = index
+        for f in faces:
+            try:
+                face = bm.faces.new([made[k] for k in f])
+                face.material_index = index
+            except ValueError:
+                continue  # a face the rock's flattening made twice
     bm.to_mesh(mesh)
     bm.free()
     obj = bpy.data.objects.new(record["id"], mesh)
     collection.objects.link(obj)
     return [obj]
+
+
+def make_bounds(name, footprint, height, collection, centre=(0.0, 0.0, 0.0)):
+    """The cells an asset may cover and how high it goes, as a wireframe: the footprint's
+    cells on the ground, the box above them. Never exported with the asset."""
+    old = bpy.data.objects.get(name)
+    if old is not None and old.get("bf_bounds"):
+        bpy.data.objects.remove(old, do_unlink=True)
+    w, d = max(1, int(footprint[0])), max(1, int(footprint[1]))
+    h = max(0.05, float(height))
+    cx, cy, cz = centre
+    x0, y0 = cx - w / 2.0, cy - d / 2.0
+    verts, edges = [], []
+
+    def line(a, b):
+        verts.extend([a, b])
+        edges.append((len(verts) - 2, len(verts) - 1))
+    for k in range(w + 1):
+        line((x0 + k, y0, cz), (x0 + k, y0 + d, cz))
+    for k in range(d + 1):
+        line((x0, y0 + k, cz), (x0 + w, y0 + k, cz))
+    for x, y in ((x0, y0), (x0 + w, y0), (x0 + w, y0 + d), (x0, y0 + d)):
+        line((x, y, cz), (x, y, cz + h))
+    for (ax_, ay_), (bx_, by_) in (((x0, y0), (x0 + w, y0)), ((x0 + w, y0), (x0 + w, y0 + d)), ((x0 + w, y0 + d), (x0, y0 + d)), ((x0, y0 + d), (x0, y0))):
+        line((ax_, ay_, cz + h), (bx_, by_, cz + h))
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(verts, edges, [])
+    obj = bpy.data.objects.new(name, mesh)
+    obj["bf_bounds"] = True
+    obj.display_type = "WIRE"
+    obj.hide_render = True
+    collection.objects.link(obj)
+    return obj
+
+
+def is_bounds(o):
+    return bool(o.get("bf_bounds")) or o.name.endswith(" bounds")
 
 
 def tag(objects, record):
@@ -294,6 +414,7 @@ def tag(objects, record):
         o["bf_name"] = record.get("name") or record["id"]
         o["bf_category"] = record.get("category", "decoration")
         o["bf_blocks"] = bool(record.get("blocks", False))
+        o["bf_unstackable"] = bool(record.get("unstackable", False))
         if record.get("sill"):
             o["bf_sill"] = record["sill"]
 
@@ -376,10 +497,11 @@ class BF_OT_import_prop(bpy.types.Operator):
         record = json.loads(path.read_text(encoding="utf-8"))
         model = record.get("model")
         if model and (root / "content" / "assets" / model).is_file():
-            objects = import_glb(root / "content" / "assets" / model)
+            objects = [o for o in import_glb(root / "content" / "assets" / model) if not is_bounds(o)]
         else:
             objects = build_stand_in(record, context.collection)
         tag(objects, record)
+        make_bounds(f"{pid} bounds", record.get("footprint", [1, 1]), record.get("height", 1.0), context.collection)
         for o in context.view_layer.objects:
             o.select_set(False)
         for o in objects:
@@ -440,6 +562,28 @@ class BF_OT_export_map(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BF_OT_show_bounds(bpy.types.Operator):
+    """Show the cells the selection would cover in the game, and its height"""
+    bl_idname = "battle_frontier.show_bounds"
+    bl_label = "Show its cells"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        meshes = [o for o in context.selected_objects if o.type == "MESH" and not is_bounds(o)]
+        if not meshes:
+            self.report({"ERROR"}, "Select the objects that make the asset")
+            return {"CANCELLED"}
+        corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+        lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
+        hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
+        size = hi - lo
+        footprint = [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))]
+        name = (context.active_object or meshes[0]).name
+        make_bounds(f"{name} bounds", footprint, size.z, context.collection, centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
+        self.report({"INFO"}, f"{footprint[0]} x {footprint[1]} cells, {size.z:.2f} high")
+        return {"FINISHED"}
+
+
 class BF_OT_add_to_project(bpy.types.Operator):
     """Add the selected objects to the project as a prop: a .glb model and its record"""
     bl_idname = "battle_frontier.add_to_project"
@@ -450,6 +594,8 @@ class BF_OT_add_to_project(bpy.types.Operator):
     asset_name: bpy.props.StringProperty(name="Name")
     category: bpy.props.EnumProperty(name="Category", items=CATEGORIES)
     blocks: bpy.props.BoolProperty(name="Blocks the way", default=True)
+    unstackable: bpy.props.BoolProperty(name="Unstackable", default=False,
+                                        description="Nothing can go on it or overlap its cells (stairs, shelves, beds...)")
     sill: bpy.props.FloatProperty(name="Sill (windows)", default=0.0, min=0.0, max=4.0)
     recentre: bpy.props.BoolProperty(name="Stand it on the origin", default=True,
                                      description="Move it so its footprint's middle is at the origin and it stands on Z = 0")
@@ -463,6 +609,7 @@ class BF_OT_add_to_project(bpy.types.Operator):
             if obj.get("bf_category") in {c[0] for c in CATEGORIES}:
                 self.category = obj["bf_category"]
             self.blocks = bool(obj.get("bf_blocks", True))
+            self.unstackable = bool(obj.get("bf_unstackable", False))
             self.sill = float(obj.get("bf_sill", 0.0))
             self.replace = "bf_prop" in obj
         return context.window_manager.invoke_props_dialog(self)
@@ -472,7 +619,7 @@ class BF_OT_add_to_project(bpy.types.Operator):
         if not root:
             self.report({"ERROR"}, "No Battle Frontier project found")
             return {"CANCELLED"}
-        objects = [o for o in context.selected_objects if o.type in {"MESH", "EMPTY", "CURVE"}]
+        objects = [o for o in context.selected_objects if o.type in {"MESH", "EMPTY", "CURVE"} and not is_bounds(o)]
         meshes = [o for o in objects if o.type == "MESH"]
         if not meshes:
             self.report({"ERROR"}, "Select the objects that make the asset")
@@ -492,6 +639,11 @@ class BF_OT_add_to_project(bpy.types.Operator):
         tops = [o for o in objects if o.parent not in objects]
         for o in tops:
             o.location -= offset
+        # only the asset goes out: its bounds and anything else stay behind
+        selected = list(context.selected_objects)
+        for o in selected:
+            if o not in objects:
+                o.select_set(False)
         context.view_layer.update()
         try:
             glb.parent.mkdir(parents=True, exist_ok=True)
@@ -499,6 +651,8 @@ class BF_OT_add_to_project(bpy.types.Operator):
         finally:
             for o in tops:
                 o.location += offset
+            for o in selected:
+                o.select_set(True)
             context.view_layer.update()
         size = hi - lo
         record = {}
@@ -516,12 +670,15 @@ class BF_OT_add_to_project(bpy.types.Operator):
             "height": round(float(size.z), 2),
             "sill": round(float(self.sill), 2),
             "blocks": bool(self.blocks),
+            "unstackable": bool(self.unstackable),
             "model": model_rel,
         })
         record.setdefault("parts", [])
         record_path.parent.mkdir(parents=True, exist_ok=True)
         record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
         tag(meshes, record)
+        make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection,
+                    centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not self.recentre else (offset.x, offset.y, offset.z))
         self.report({"INFO"}, f"{aid}: {glb.relative_to(root)} and {record_path.relative_to(root)}; check with `content check`")
         return {"FINISHED"}
 
@@ -565,7 +722,10 @@ class BF_PT_panel(bpy.types.Panel):
         layout.separator()
         col = layout.column(align=True)
         col.label(text="Your model", icon="EXPORT")
+        col.operator(BF_OT_show_bounds.bl_idname, icon="MESH_GRID")
         col.operator(BF_OT_add_to_project.bl_idname, icon="ADD")
+        if context.scene.unit_settings.scale_length != 1.0:
+            col.label(text="Unit scale isn't 1: sizes won't match", icon="ERROR")
         col.label(text="Stand it at the origin, front to -Y, 1 unit = 1 cell")
         layout.separator()
         col = layout.column(align=True)
@@ -576,7 +736,7 @@ class BF_PT_panel(bpy.types.Panel):
         col.operator(BF_OT_import_export.bl_idname, icon="IMPORT").file = wm.bf_export
 
 
-CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_add_to_project, BF_PT_panel)
+CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_show_bounds, BF_OT_add_to_project, BF_PT_panel)
 
 
 def _auto_find():

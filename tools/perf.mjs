@@ -53,7 +53,7 @@ const rewrite = (path, body) => {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = await serve(0, { rewrite });
-const browser = await Browser.launch({ width, height, port: 9483, profiles: join(root, 'build', 'chrome'), args: [...gpu, ...uncapped] });
+const browser = await Browser.launch({ width, height, port: 9487, profiles: join(root, 'build', 'chrome'), args: [...gpu, ...uncapped] });
 const data = (key) => browser.evaluate(`document.body.dataset.${key} ?? ''`);
 const cmd = (c) => browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringify(c)}, true)`);
 const press = async (name) => {

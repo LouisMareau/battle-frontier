@@ -9,6 +9,8 @@ import json
 import math
 import os
 import shutil
+import struct
+import subprocess
 import sys
 from pathlib import Path
 
@@ -65,6 +67,36 @@ check("imports a stand-in from its shapes", r == {"FINISHED"} and pine is not No
 if pine:
     check("as tall as the prop", abs(hi.z - 3.3) < 0.05 and abs(lo.z) < 0.01, f"{lo.z:.2f} to {hi.z:.2f}")
     check("a material per colour", len(pine.data.materials) == 4, str([m.name for m in pine.data.materials]))
+box = bpy.data.objects.get("pine_tree bounds")
+check("with its bounds: its cells and its height", box is not None and box.get("bf_bounds") and abs(box.dimensions.z - 3.4) < 0.01 and abs(box.dimensions.x - 1.0) < 0.01,
+      f"{box.dimensions[:] if box else None}")
+clear()
+
+# 2b. exactly the engine's shapes: the stand-ins against the engine's own export
+engine = scratch / "engine"
+run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "props", "--out", str(engine)], cwd=str(project), capture_output=True, text=True)
+check("the engine exports every prop", run.returncode == 0, run.stderr[-300:])
+
+
+def points(objects):
+    out = []
+    for o in objects:
+        if o.type != "MESH" or bf.is_bounds(o):
+            continue
+        for v in o.data.vertices:
+            out.append(o.matrix_world @ v.co)
+    return out
+
+
+for pid in ("pine_tree", "round_tree", "boulder", "bench", "lamp_post"):
+    clear()
+    theirs = points(bf.import_glb(engine / f"{pid}.glb"))
+    clear()
+    bpy.ops.battle_frontier.import_prop(prop_id=pid)
+    ours = points(list(bpy.data.objects))
+    far = max((min((a - b).length for b in theirs) for a in ours), default=1.0)
+    back = max((min((a - b).length for b in ours) for a in theirs), default=1.0)
+    check(f"{pid}: the same shape as in the game", far < 1e-4 and back < 1e-4, f"{len(ours)} vs {len(theirs)} points, off by {max(far, back):.6f}")
 clear()
 
 # 3. an asset of one's own: a stone well with a roof and a painted sign, made off the origin
@@ -116,20 +148,32 @@ for o in bpy.context.view_layer.objects:
     o.select_set(o in parts)
 bpy.context.view_layer.objects.active = ring
 before = [tuple(o.location) for o in parts]
-r = bpy.ops.battle_frontier.add_to_project(asset_id="stone_well", asset_name="Stone well", category="decoration", blocks=True)
+r = bpy.ops.battle_frontier.add_to_project(asset_id="test_well", asset_name="Test well", category="decoration", blocks=True, unstackable=True)
 check("adds it to the project", r == {"FINISHED"})
 check("leaves it where it was in Blender", [tuple(o.location) for o in parts] == before)
-glb = scratch / "content" / "assets" / "models" / "stone_well.glb"
-record_path = scratch / "content" / "data" / "props" / "stone_well.json"
+glb = scratch / "content" / "assets" / "models" / "test_well.glb"
+record_path = scratch / "content" / "data" / "props" / "test_well.json"
 check("writes the model", glb.is_file() and glb.read_bytes()[:4] == b"glTF", str(glb))
 record = json.loads(record_path.read_text(encoding="utf-8")) if record_path.is_file() else {}
-check("writes its record", record.get("model") == "models/stone_well.glb" and record.get("category") == "decoration" and record.get("blocks") is True, json.dumps(record))
+check("writes its record", record.get("model") == "models/test_well.glb" and record.get("category") == "decoration" and record.get("blocks") is True and record.get("unstackable") is True, json.dumps(record))
+
+
+def glb_names(path):
+    data = path.read_bytes()
+    length = struct.unpack_from("<I", data, 12)[0]
+    doc = json.loads(data[20:20 + length])
+    return [n.get("name", "") for n in doc.get("nodes", [])]
+
+
+names = glb_names(glb) if glb.is_file() else []
+check("the model leaves its bounds behind", names and not any("bounds" in n for n in names), str(names))
+check("shows the bounds in Blender", bpy.data.objects.get("test_well bounds") is not None)
 check("measures its footprint and height", record.get("footprint") == [2, 2] and abs(record.get("height", 0) - 2.2) < 0.05, f"{record.get('footprint')} {record.get('height')}")
 check("lays the record out as the project does", record_path.read_text(encoding="utf-8") == bf.to_text(bf.ordered_prop(record)))
 
 # 4. back from its .glb, standing on the origin
 clear()
-r = bpy.ops.battle_frontier.import_prop(prop_id="stone_well")
+r = bpy.ops.battle_frontier.import_prop(prop_id="test_well")
 objs = list(bpy.context.selected_objects)
 lo, hi = bounds(objs) if objs else (None, None)
 check("imports it back from its model", r == {"FINISHED"} and len(objs) >= 1, f"{len(objs)} objects")
@@ -142,7 +186,7 @@ if objs:
 for o in bpy.context.view_layer.objects:
     o.select_set(True)
 try:
-    r = bpy.ops.battle_frontier.add_to_project(asset_id="stone_well", category="decoration")
+    r = bpy.ops.battle_frontier.add_to_project(asset_id="test_well", category="decoration")
 except RuntimeError:  # Blender raises when an operator reports an error
     r = {"CANCELLED"}
 check("won't replace it unasked", r == {"CANCELLED"})

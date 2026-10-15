@@ -77,6 +77,7 @@ struct Globals {
     world: [f32; 4],
     editor: [f32; 4],
     shadow: [f32; 4],
+    focus: [f32; 4],
 }
 
 #[repr(C)]
@@ -163,8 +164,9 @@ pub struct Frame {
     pub time: f32,
     /// grid lines on the world's ground (the map editor)
     pub grid: bool,
-    /// darken the world's cells outside the focus (the cells texture's blue channel)
-    pub focus: bool,
+    /// an editor's focus: the world's cells outside it are darkened (the cells texture's
+    /// blue channel says which are in), and what stands outside this box (x0, z0, x1, z1)
+    pub focus: Option<[f32; 4]>,
     /// shapes drawn over everything (an editor's cursors), whatever is in front of them
     pub overlays: Vec<Shape>,
 }
@@ -869,8 +871,9 @@ impl SceneRenderer {
                 Some(w) => [w.size[0] as f32, w.size[1] as f32, w.level_height, frame.time],
                 None => [0.0, 0.0, 2.0, frame.time],
             },
-            editor: [frame.grid as u32 as f32, frame.focus as u32 as f32, 0.0, 0.0],
+            editor: [frame.grid as u32 as f32, frame.focus.is_some() as u32 as f32, 0.0, 0.0],
             shadow: shadow_params(&light_view_proj, self.shadow_size),
+            focus: frame.focus.unwrap_or([0.0; 4]),
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 

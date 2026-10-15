@@ -5,6 +5,7 @@
   "footprint": [1, 1],
   "height": 0.6,
   "blocks": true,
+  "unstackable": true,
   "parts": [
     { "shape": "rock", "size": [0.9, 0.6, 0.8], "at": [0.0, 0.0, 0.0], "color": "#9a948a" }
   ]

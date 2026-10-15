@@ -163,6 +163,27 @@ impl Glb {
         self.mesh(name, &prims)
     }
 
+    /// A mesh of lines (only seen, never part of a model: a model's loader skips them).
+    pub fn lines(&mut self, name: &str, segments: &[(Vec3, Vec3)]) -> Option<usize> {
+        if segments.is_empty() {
+            return None;
+        }
+        let pos: Vec<f32> = segments.iter().flat_map(|(a, b)| [a.x, a.y, a.z, b.x, b.y, b.z]).collect();
+        let position = self.floats(&pos, "VEC3", 3, true);
+        let idx: Vec<u32> = (0..segments.len() as u32 * 2).collect();
+        let indices = self.indices(&idx);
+        self.meshes.push(json!({ "name": name, "primitives": [{ "attributes": { "POSITION": position }, "indices": indices, "mode": 1 }] }));
+        Some(self.meshes.len() - 1)
+    }
+
+    /// A node marked as an asset's bounds (Blender reads `extras` as custom properties).
+    pub fn bounds_node(&mut self, name: &str, segments: &[(Vec3, Vec3)]) -> usize {
+        let mesh = self.lines(name, segments);
+        let i = self.node(name, mesh, Mat4::IDENTITY, vec![]);
+        self.nodes[i]["extras"] = json!({ "bf_bounds": true });
+        i
+    }
+
     pub fn node(&mut self, name: &str, mesh: Option<usize>, transform: Mat4, children: Vec<usize>) -> usize {
         let (s, r, t) = transform.to_scale_rotation_translation();
         let mut n = json!({ "name": name });
@@ -243,12 +264,54 @@ pub fn prop_mesh(glb: &mut Glb, prop: &Prop, models: &Models) -> Option<usize> {
     glb.mesh(&prop.id, &prims)
 }
 
-/// One prop, standing at the origin.
+/// The cells a prop may cover and its height: its footprint's cells on the ground, the box
+/// above them.
+pub fn prop_bounds(prop: &Prop) -> Vec<(Vec3, Vec3)> {
+    let (w, d) = (prop.footprint[0].max(1) as f32, prop.footprint[1].max(1) as f32);
+    let h = (prop.height as f32).max(0.05);
+    let (x0, z0) = (-w / 2.0, -d / 2.0);
+    let mut out = vec![];
+    for k in 0..=w as i32 {
+        out.push((Vec3::new(x0 + k as f32, 0.0, z0), Vec3::new(x0 + k as f32, 0.0, z0 + d)));
+    }
+    for k in 0..=d as i32 {
+        out.push((Vec3::new(x0, 0.0, z0 + k as f32), Vec3::new(x0 + w, 0.0, z0 + k as f32)));
+    }
+    let corners = [(x0, z0), (x0 + w, z0), (x0 + w, z0 + d), (x0, z0 + d)];
+    for (i, &(x, z)) in corners.iter().enumerate() {
+        let (nx, nz) = corners[(i + 1) % 4];
+        out.push((Vec3::new(x, 0.0, z), Vec3::new(x, h, z)));
+        out.push((Vec3::new(x, h, z), Vec3::new(nx, h, nz)));
+    }
+    out
+}
+
+/// A building's outline on the ground and at every floor, and its corners.
+pub fn building_bounds(b: &Building, level_height: f32) -> Vec<(Vec3, Vec3)> {
+    let base = b.level as f32 * level_height;
+    let top = base + b.floors.len() as f32 * level_height;
+    let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
+    let mut out = vec![];
+    for (x, z, side) in b.edges() {
+        let (p, q) = content::segment_ends(x, z, side);
+        for f in 0..=b.floors.len() {
+            let y = base + f as f32 * level_height;
+            out.push((Vec3::new(ox + p[0] as f32, y, oz + p[1] as f32), Vec3::new(ox + q[0] as f32, y, oz + q[1] as f32)));
+        }
+    }
+    for c in b.corners() {
+        out.push((Vec3::new(ox + c[0] as f32, base, oz + c[1] as f32), Vec3::new(ox + c[0] as f32, top, oz + c[1] as f32)));
+    }
+    out
+}
+
+/// One prop, standing at the origin, with its bounds.
 pub fn prop_glb(prop: &Prop, models: &Models) -> Vec<u8> {
     let mut glb = Glb::new();
     let mesh = prop_mesh(&mut glb, prop, models);
     let root = glb.node(&prop.id, mesh, Mat4::IDENTITY, vec![]);
-    glb.finish(&[root])
+    let bounds = glb.bounds_node(&format!("{} bounds", prop.id), &prop_bounds(prop));
+    glb.finish(&[root, bounds])
 }
 
 fn all_images(models: &Models) -> BTreeMap<String, Image> {
@@ -261,7 +324,8 @@ pub fn building_glb(b: &Building, content: &Content, level_height: f32, models: 
     let scene = building(b, content, level_height, None, models);
     let mesh = glb.scene_mesh(&b.id, &scene, &all_images(models));
     let root = glb.node(&b.name, mesh, Mat4::IDENTITY, vec![]);
-    glb.finish(&[root])
+    let bounds = glb.bounds_node(&format!("{} bounds", b.name), &building_bounds(b, level_height));
+    glb.finish(&[root, bounds])
 }
 
 /// A whole map: the ground (cell tops in their terrain's colour, cliffs, tall grass), the
@@ -339,6 +403,8 @@ mod tests {
         let (doc, _, _) = gltf::import_slice(&bytes).expect("a valid glb");
         let mesh = doc.meshes().next().unwrap();
         assert_eq!(mesh.primitives().count(), 2, "a primitive per part");
+        let bounds = doc.nodes().find(|n| n.name() == Some("lamp bounds")).expect("its bounds");
+        assert_eq!(bounds.mesh().unwrap().primitives().next().unwrap().mode(), gltf::mesh::Mode::Lines);
         let colours: Vec<String> = doc.materials().filter_map(|m| m.name().map(String::from)).collect();
         assert_eq!(colours, vec!["#3c3f46", "#ffe9a8"]);
         let model = load_model(&bytes, "lamp.glb").unwrap();

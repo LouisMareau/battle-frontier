@@ -295,13 +295,27 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
             let at = Vec3::new(ox + p.at[0] as f32, y0 + 0.05, oz + p.at[1] as f32);
             put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
         }
-        // on the walls
+        // on the walls: outside facing out, inside (past the wall's thickness) facing in
         for a in b.anchors.iter().filter(|a| a.floor as usize == f) {
             let Some(model) = model(&a.prop) else { continue };
             let (p, q) = segment_ends(a.cell[0], a.cell[1], &a.side);
-            let mid = Vec3::new(ox + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, oz + (p[1] + q[1]) as f32 / 2.0);
-            put(&mut m, &mut textured, &model, placement(mid, side_turn(&a.side) as f32, 1.0));
+            let mut mid = Vec3::new(ox + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, oz + (p[1] + q[1]) as f32 / 2.0);
+            let mut turn = side_turn(&a.side) as f32;
+            if a.inside {
+                let out = Line { side: &a.side, at: 0.0 }.out();
+                mid -= out * WALL;
+                turn += 180.0;
+            }
+            put(&mut m, &mut textured, &model, placement(mid, turn, 1.0));
         }
+    }
+    // what stands outside it
+    for p in &b.outside {
+        let Some(prop) = content.props.get(&p.prop) else { continue };
+        let Some(model) = model(&p.prop) else { continue };
+        let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
+        let at = Vec3::new(ox + p.at[0] as f32, base, oz + p.at[1] as f32);
+        put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
     }
     // pillars, as high as what's shown
     for p in &b.pillars {

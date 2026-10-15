@@ -1,13 +1,15 @@
 //! The Build tool: a building is drawn as a footprint of cells (any shape, one piece), then
-//! designed floor by floor (flooring, doors and windows along the outside walls, what
-//! stands inside, pillars, the walls' and the roof's styles), then confirmed into the map,
-//! where it blocks and its doors let the player through. Buildings already on the map are
-//! moved, turned, edited and deleted from the Select tool, which also anchors decorations
-//! on their outside walls.
+//! designed floor by floor, then confirmed into the map, where it blocks and its doors let
+//! the player through. Designing has three modes: Structure (flooring, doors and windows
+//! along the outside walls, pillars, the walls' and the roof's styles), Inside (what stands
+//! on the floor being designed and hangs on its inner walls) and Outside (a wall first, then
+//! what hangs on it and stands in front of it): see `rooms.rs`. While it's designed the rest
+//! of the map is darkened and nothing lands outside it. Buildings already on the map are
+//! moved, turned, edited and deleted from the Select tool.
 
-use content::{segment_ends, Anchor, Building, Floor, Opening, Pillar, Placed};
+use content::{segment_ends, Building, Floor, Opening, Pillar, INSIDE, OUTSIDE};
 use egui::{Color32, RichText};
-use glam::{Vec2, Vec3};
+use glam::Vec3;
 use render::scene::{Shape, ShapeKind};
 
 use super::{hex, MapEditor};
@@ -18,12 +20,28 @@ pub(super) enum Step {
     Design,
 }
 
-/// What a click does while designing.
+/// What a click does while designing: the first two are the Structure mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Clicks {
     Openings,
-    Inside,
     Pillars,
+    Inside,
+    Outside,
+}
+
+impl Clicks {
+    fn structure(self) -> bool {
+        matches!(self, Clicks::Openings | Clicks::Pillars)
+    }
+}
+
+/// Something placed in the building being designed: on the floor being designed, hung on
+/// one of its walls (inside or out: `Building::anchors`), or standing outside it.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Sel {
+    Floor(usize),
+    Wall(usize),
+    Outside(usize),
 }
 
 pub(super) struct Draft {
@@ -44,17 +62,16 @@ pub(super) struct Draft {
     pub hover_edge: Option<(i32, i32, &'static str)>,
     pub hover_point: Option<[i32; 2]>,
     pub inside_prop: Option<String>,
+    pub outside_prop: Option<String>,
     pub pillar_prop: Option<String>,
-    /// the inside item selected on this floor
-    pub item: Option<usize>,
+    /// Outside: the wall picked (one of its edges; the straight run it's on counts)
+    pub wall: Option<(i32, i32, &'static str)>,
+    /// Inside / Outside: where the pointer is on a wall, or on the ground (from `b.at`)
+    pub hover_face: Option<super::rooms::WallHit>,
+    pub hover_at: Option<[f64; 2]>,
+    /// what's selected (Q/E turn it, Delete removes it)
+    pub sel: Option<Sel>,
     pub problems: Vec<String>,
-}
-
-/// Decorating a selected building's walls.
-pub(super) struct Decorate {
-    pub prop: Option<String>,
-    /// where the pointer is on a wall: (cell, side, floor, height)
-    pub hover: Option<([i32; 2], &'static str, usize, f64)>,
 }
 
 fn first_of(ed: &MapEditor, category: &str) -> Option<String> {
@@ -102,6 +119,9 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
     for a in b.anchors.iter_mut() {
         a.cell = [a.cell[0] + dx, a.cell[1] + dz];
     }
+    for p in b.outside.iter_mut() {
+        p.at = [p.at[0] + dx as f64, p.at[1] + dz as f64];
+    }
     let copy = b.clone();
     for f in b.floors.iter_mut() {
         let before = f.openings.len() + f.props.len();
@@ -110,16 +130,22 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
         dropped += before - f.openings.len() - f.props.len();
     }
     let corners = copy.corners();
-    let before = b.pillars.len() + b.anchors.len();
+    let before = b.pillars.len() + b.anchors.len() + b.outside.len();
     b.pillars.retain(|p| corners.contains(&p.corner));
     b.anchors.retain(|a| copy.is_edge(a.cell[0], a.cell[1], &a.side));
-    dropped + before - b.pillars.len() - b.anchors.len()
+    b.outside.retain(|p| !copy.has(p.at[0].floor() as i32, p.at[1].floor() as i32));
+    dropped + before - b.pillars.len() - b.anchors.len() - b.outside.len()
 }
 
 impl MapEditor {
     /// The map cells every building but `except` covers.
     fn taken(&self, except: Option<usize>) -> Vec<(i32, i32)> {
         self.map.buildings.iter().enumerate().filter(|(i, _)| Some(*i) != except).flat_map(|(_, b)| b.map_cells()).collect()
+    }
+
+    /// The first prop of a folder that stands on the ground (or, `walls`, hangs).
+    fn first_in(&self, folder: &str, walls: bool) -> Option<String> {
+        self.folder_props(folder).into_iter().find(|p| p.4 == walls).or_else(|| self.folder_props(folder).into_iter().next()).map(|p| p.0)
     }
 
     pub(super) fn start_building(&mut self, editing: Option<usize>) {
@@ -150,9 +176,13 @@ impl MapEditor {
             drag_from: None,
             hover_edge: None,
             hover_point: None,
-            inside_prop: first_of(self, "furniture"),
+            inside_prop: self.first_in(INSIDE, false),
+            outside_prop: self.first_in(OUTSIDE, true),
             pillar_prop: first_of(self, "pillar"),
-            item: None,
+            wall: None,
+            hover_face: None,
+            hover_at: None,
+            sel: None,
             problems: vec![],
             b,
         });
@@ -190,6 +220,8 @@ impl MapEditor {
         }
         d.step = Step::Design;
         d.span = None;
+        d.wall = None;
+        d.sel = None;
         self.need_buildings = true;
     }
 
@@ -249,7 +281,7 @@ impl MapEditor {
     // ------------------------------------------------------------ picking walls
 
     /// The outline edge nearest a point on the floor's plane (within 0.6 cells).
-    fn nearest_edge(b: &Building, p: Vec3) -> Option<(i32, i32, &'static str)> {
+    pub(super) fn nearest_edge(b: &Building, p: Vec3) -> Option<(i32, i32, &'static str)> {
         let (px, pz) = (p.x - b.at[0] as f32, p.z - b.at[1] as f32);
         let mut best: Option<(f32, (i32, i32, &'static str))> = None;
         for (x, z, side) in b.edges() {
@@ -284,39 +316,6 @@ impl MapEditor {
         }
         let start = cell(s);
         Opening { prop: String::new(), cell: [start.0, start.1], side: side.into(), width: (e - s + 1) as u8 }
-    }
-
-    /// The building's wall under a ray: (cell, side, floor, height above that floor).
-    pub(super) fn pick_wall(&self, b: &Building, origin: Vec3, dir: Vec3) -> Option<(f32, [i32; 2], &'static str, usize, f64)> {
-        let lh = self.level_height;
-        let mut best: Option<(f32, [i32; 2], &'static str, usize, f64)> = None;
-        for (x, z, side) in b.edges() {
-            let (p, q) = segment_ends(x, z, side);
-            let (p, q) = ([p[0] + b.at[0], p[1] + b.at[1]], [q[0] + b.at[0], q[1] + b.at[1]]);
-            let along_x = matches!(side, "n" | "s");
-            let (plane, d, o) = if along_x { (p[1] as f32, dir.z, origin.z) } else { (p[0] as f32, dir.x, origin.x) };
-            if d.abs() < 1e-5 {
-                continue;
-            }
-            let t = (plane - o) / d;
-            if t <= 0.0 {
-                continue;
-            }
-            let hit = origin + dir * t;
-            let a = if along_x { hit.x } else { hit.z };
-            let (a0, a1) = if along_x { (p[0] as f32, q[0] as f32) } else { (p[1] as f32, q[1] as f32) };
-            let base = b.level as f32 * lh;
-            let top = base + b.floors.len() as f32 * lh;
-            if a < a0 || a > a1 || hit.y < base || hit.y > top {
-                continue;
-            }
-            if best.map(|bb| t < bb.0).unwrap_or(true) {
-                let floor = (((hit.y - base) / lh).floor() as usize).min(b.floors.len() - 1);
-                let height = ((hit.y - base - floor as f32 * lh) as f64 * 20.0).round() / 20.0;
-                best = Some((t, [x, z], side, floor, height));
-            }
-        }
-        best
     }
 
     /// The nearest building along a ray (by its cells' columns).
@@ -379,9 +378,13 @@ impl MapEditor {
             }
             Step::Design => {
                 let Some(d) = &self.draft else { return };
+                let clicks = d.clicks;
+                if !clicks.structure() {
+                    self.rooms_view(origin, dir, pressed && over_view);
+                    return;
+                }
                 let y = (d.b.level as usize + d.floor) as f32 * lh;
                 let Some(p) = Self::plane(origin, dir, y) else { return };
-                let clicks = d.clicks;
                 match clicks {
                     Clicks::Openings => {
                         let d = self.draft.as_mut().unwrap();
@@ -405,30 +408,6 @@ impl MapEditor {
                             d.drag_from = None;
                         }
                     }
-                    Clicks::Inside => {
-                        if !(pressed && over_view) {
-                            return;
-                        }
-                        let d = self.draft.as_ref().unwrap();
-                        let rel = Vec2::new(p.x - d.b.at[0] as f32, p.z - d.b.at[1] as f32);
-                        let floor = &d.b.floors[d.floor];
-                        let hit = floor.props.iter().position(|q| (Vec2::new(q.at[0] as f32, q.at[1] as f32) - rel).length() < 0.5);
-                        if let Some(i) = hit {
-                            self.draft.as_mut().unwrap().item = Some(i);
-                            return;
-                        }
-                        let Some(prop) = d.inside_prop.clone() else { return };
-                        let at = self.snap(&prop, 0.0, Vec3::new(rel.x, 0.0, rel.y), false);
-                        if !d.b.has(at[0].floor() as i32, at[1].floor() as i32) {
-                            self.status = "Inside the building's cells only".into();
-                            return;
-                        }
-                        let d = self.draft.as_mut().unwrap();
-                        let floor = &mut d.b.floors[d.floor];
-                        floor.props.push(Placed { prop, at, level: 0, turn: 0.0, scale: 1.0 });
-                        d.item = Some(floor.props.len() - 1);
-                        self.need_buildings = true;
-                    }
                     Clicks::Pillars => {
                         let d = self.draft.as_mut().unwrap();
                         let rel = (p.x - d.b.at[0] as f32, p.z - d.b.at[1] as f32);
@@ -445,12 +424,15 @@ impl MapEditor {
                             }
                         }
                     }
+                    Clicks::Inside | Clicks::Outside => {}
                 }
             }
         }
     }
 
-    pub(super) fn build_shapes(&self, shapes: &mut Vec<Shape>) {
+    /// The Build tool's marks: on the ground while the footprint is drawn; over everything
+    /// while designing (`overlays`), so floors and walls never hide where things go.
+    pub(super) fn build_shapes(&self, shapes: &mut Vec<Shape>, overlays: &mut Vec<Shape>) {
         let lh = self.level_height;
         let rect = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
         let Some(d) = &self.draft else {
@@ -475,42 +457,40 @@ impl MapEditor {
                 }
             }
             Step::Design => {
-                let y = (d.b.level as usize + d.floor) as f32 * lh + 0.06;
+                let y = (d.b.level as usize + d.floor) as f32 * lh + 0.1;
                 let (ox, oz) = (d.b.at[0] as f32, d.b.at[1] as f32);
-                let edge = |x: i32, z: i32, side: &str, color: [f32; 4], shapes: &mut Vec<Shape>| {
+                let edge = |x: i32, z: i32, side: &str, color: [f32; 4], out: &mut Vec<Shape>| {
                     let (p, q) = segment_ends(x, z, side);
                     let (mx, mz) = (ox + (p[0] + q[0]) as f32 / 2.0, oz + (p[1] + q[1]) as f32 / 2.0);
                     let (dx, dz) = content::side_step(side).unwrap_or((0, 0));
                     let (w, dd) = if matches!(side, "n" | "s") { (1.0, 0.3) } else { (0.3, 1.0) };
-                    shapes.push(rect(mx + dx as f32 * 0.2, y, mz + dz as f32 * 0.2, w, dd, color));
+                    out.push(rect(mx + dx as f32 * 0.2, y, mz + dz as f32 * 0.2, w, dd, color));
                 };
-                if d.clicks == Clicks::Openings {
-                    for o in &d.b.floors[d.floor].openings {
-                        for (x, z) in Building::segments(o) {
-                            edge(x, z, &o.side, [0.3, 0.85, 0.4, 0.55], shapes);
+                match d.clicks {
+                    Clicks::Openings => {
+                        for o in &d.b.floors[d.floor].openings {
+                            for (x, z) in Building::segments(o) {
+                                edge(x, z, &o.side, [0.3, 0.85, 0.4, 0.55], overlays);
+                            }
+                        }
+                        if let Some((x, z, side)) = d.hover_edge {
+                            edge(x, z, side, [1.0, 1.0, 1.0, 0.5], overlays);
+                        }
+                        if let Some(s) = &d.span {
+                            for (x, z) in Building::segments(s) {
+                                edge(x, z, &s.side, [1.0, 0.6, 0.15, 0.75], overlays);
+                            }
                         }
                     }
-                    if let Some((x, z, side)) = d.hover_edge {
-                        edge(x, z, side, [1.0, 1.0, 1.0, 0.5], shapes);
-                    }
-                    if let Some(s) = &d.span {
-                        for (x, z) in Building::segments(s) {
-                            edge(x, z, &s.side, [1.0, 0.6, 0.15, 0.75], shapes);
+                    Clicks::Pillars => {
+                        for c in d.b.corners() {
+                            let on = d.b.pillars.iter().any(|p| p.corner == c);
+                            let hover = d.hover_point == Some(c);
+                            let color = if hover { [1.0, 1.0, 1.0, 0.8] } else if on { [0.3, 0.85, 0.4, 0.6] } else { [1.0, 1.0, 1.0, 0.25] };
+                            overlays.push(rect(ox + c[0] as f32, y + 0.01, oz + c[1] as f32, 0.3, 0.3, color));
                         }
                     }
-                }
-                if d.clicks == Clicks::Pillars {
-                    for c in d.b.corners() {
-                        let on = d.b.pillars.iter().any(|p| p.corner == c);
-                        let hover = d.hover_point == Some(c);
-                        let color = if hover { [1.0, 1.0, 1.0, 0.8] } else if on { [0.3, 0.85, 0.4, 0.6] } else { [1.0, 1.0, 1.0, 0.25] };
-                        shapes.push(rect(ox + c[0] as f32, y + 0.01, oz + c[1] as f32, 0.3, 0.3, color));
-                    }
-                }
-                if let (Clicks::Inside, Some(i)) = (d.clicks, d.item) {
-                    if let Some(p) = d.b.floors[d.floor].props.get(i) {
-                        shapes.push(rect(ox + p.at[0] as f32, y, oz + p.at[1] as f32, 1.0, 1.0, [1.0, 0.85, 0.2, 0.45]));
-                    }
+                    Clicks::Inside | Clicks::Outside => self.rooms_overlays(overlays),
                 }
             }
         }
@@ -563,14 +543,6 @@ impl MapEditor {
 
     fn design_panel(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new("2. The building").strong());
-        let walls = ids_of(self, &["wall"]);
-        let roofs = ids_of(self, &["roof"]);
-        let tiles = ids_of(self, &["floor"]);
-        let doors = ids_of(self, &["door"]);
-        let windows = ids_of(self, &["window"]);
-        let inside = ids_of(self, &["furniture", "decoration", "stairs", "flora"]);
-        let pillars = ids_of(self, &["pillar"]);
-        let content = self.content.clone();
         let mut changed = false;
         let mut confirm = false;
         let mut cancel = false;
@@ -588,7 +560,9 @@ impl MapEditor {
                 if ui.selectable_label(d.floor == f, label).clicked() && d.floor != f {
                     d.floor = f;
                     d.span = None;
-                    d.item = None;
+                    if matches!(d.sel, Some(Sel::Floor(_))) {
+                        d.sel = None;
+                    }
                     changed = true;
                 }
             }
@@ -599,6 +573,7 @@ impl MapEditor {
                     let tile = d.b.floors.last().map(|f| f.tile.clone()).unwrap_or_default();
                     d.b.floors.push(Floor { tile, ..Default::default() });
                     d.floor = d.b.floors.len() - 1;
+                    d.sel = None;
                     changed = true;
                 }
                 if ui.add_enabled(d.b.floors.len() > 1, egui::Button::new("Remove the top floor")).clicked() {
@@ -606,126 +581,42 @@ impl MapEditor {
                     d.floor = d.floor.min(d.b.floors.len() - 1);
                     let floors = d.b.floors.len();
                     d.b.anchors.retain(|a| (a.floor as usize) < floors);
+                    d.sel = None;
                     changed = true;
                 }
             });
-            ui.add_space(4.0);
-            ui.label(RichText::new(format!("Flooring (floor {})", d.floor + 1)).strong());
-            for (id, name, _, color) in &tiles {
-                ui.horizontal(|ui| {
-                    swatch(ui, color);
-                    if ui.selectable_label(d.b.floors[d.floor].tile == *id, name).clicked() {
-                        d.b.floors[d.floor].tile = id.clone();
-                        changed = true;
-                    }
-                });
-            }
-            ui.add_space(4.0);
-            ui.label(RichText::new("Clicking places").strong());
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                super::mark("uiOpenings", &ui.radio_value(&mut d.clicks, Clicks::Openings, "Doors & windows"));
-                super::mark("uiInside", &ui.radio_value(&mut d.clicks, Clicks::Inside, "Inside"));
-                super::mark("uiPillars", &ui.radio_value(&mut d.clicks, Clicks::Pillars, "Pillars"));
+                let s = ui.selectable_label(d.clicks.structure(), RichText::new("Structure").strong());
+                super::mark("uiStructure", &s);
+                if s.clicked() && !d.clicks.structure() {
+                    d.clicks = Clicks::Openings;
+                }
+                let i = ui.selectable_label(d.clicks == Clicks::Inside, RichText::new("Inside").strong());
+                super::mark("uiInside", &i);
+                if i.clicked() {
+                    d.clicks = Clicks::Inside;
+                }
+                let o = ui.selectable_label(d.clicks == Clicks::Outside, RichText::new("Outside").strong());
+                super::mark("uiOutside", &o);
+                if o.clicked() && d.clicks != Clicks::Outside {
+                    d.clicks = Clicks::Outside;
+                    d.wall = None;
+                }
             });
-            match d.clicks {
-                Clicks::Openings => {
-                    ui.horizontal(|ui| {
-                        if ui.radio(d.doors, "Doors").clicked() {
-                            d.doors = true;
-                            if let Some(s) = &mut d.span {
-                                s.prop.clear();
-                            }
-                        }
-                        let windows = ui.radio(!d.doors, "Windows");
-                        super::mark("uiWindows", &windows);
-                        if windows.clicked() {
-                            d.doors = false;
-                            if let Some(s) = &mut d.span {
-                                s.prop.clear();
-                            }
-                        }
-                    });
-                    ui.label(RichText::new("Drag along an outside wall: the span sets the width.").color(Color32::GRAY));
-                    if let Some(span) = d.span.clone() {
-                        let wall = match span.side.as_str() { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
-                        ui.label(format!("{} cell{} of the {wall} wall", span.width, if span.width == 1 { "" } else { "s" }));
-                        let list = if d.doors { &doors } else { &windows };
-                        let fitting: Vec<&(String, String, [u8; 2], String)> = list.iter().filter(|(_, _, fp, _)| fp[0] == span.width).collect();
-                        if fitting.is_empty() {
-                            ui.label(RichText::new(format!("No {} {} cells wide: drag a different span", if d.doors { "door" } else { "window" }, span.width)).color(Color32::from_rgb(255, 170, 90)));
-                        }
-                        for (k, (id, name, _, _)) in fitting.into_iter().enumerate() {
-                            let put = ui.button(format!("Put a {name} here"));
-                            if k == 0 {
-                                super::mark("uiPut", &put);
-                            }
-                            if put.clicked() {
-                                let floor = &mut d.b.floors[d.floor];
-                                let segs = Building::segments(&span);
-                                // what was in the way goes
-                                floor.openings.retain(|o| o.side != span.side || !Building::segments(o).iter().any(|s| segs.contains(s)));
-                                floor.openings.push(Opening { prop: id.clone(), ..span.clone() });
-                                d.span = None;
-                                changed = true;
-                            }
-                        }
-                    }
-                    let mut remove = None;
-                    for (i, o) in d.b.floors[d.floor].openings.iter().enumerate() {
-                        ui.horizontal(|ui| {
-                            let name = content.props.get(&o.prop).map(|p| p.name.clone()).unwrap_or_else(|| o.prop.clone());
-                            ui.label(format!("{name} · {:?} {}", o.cell, o.side));
-                            if ui.small_button("remove").on_hover_text("Remove").clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove {
-                        d.b.floors[d.floor].openings.remove(i);
-                        changed = true;
-                    }
-                }
-                Clicks::Inside => {
-                    ui.label(RichText::new("Click inside to place; click an item to select it (Q/E turn, Delete).").color(Color32::GRAY));
-                    for (id, name, fp, _) in &inside {
-                        if ui.selectable_label(d.inside_prop.as_deref() == Some(id.as_str()), format!("{name}  {}×{}", fp[0], fp[1])).clicked() {
-                            d.inside_prop = Some(id.clone());
-                        }
-                    }
-                }
-                Clicks::Pillars => {
-                    ui.label(RichText::new("Click a point of the outline to put or take away a pillar.").color(Color32::GRAY));
-                    for (id, name, _, color) in &pillars {
-                        ui.horizontal(|ui| {
-                            swatch(ui, color);
-                            if ui.selectable_label(d.pillar_prop.as_deref() == Some(id.as_str()), name).clicked() {
-                                d.pillar_prop = Some(id.clone());
-                            }
-                        });
-                    }
-                }
+            if d.sel.is_some() && d.clicks.structure() {
+                d.sel = None;
             }
-            ui.add_space(4.0);
-            ui.label(RichText::new("Walls").strong());
-            for (id, name, _, color) in &walls {
-                ui.horizontal(|ui| {
-                    swatch(ui, color);
-                    if ui.selectable_label(d.b.wall == *id, name).clicked() {
-                        d.b.wall = id.clone();
-                        changed = true;
-                    }
-                });
-            }
-            ui.label(RichText::new("Roof").strong());
-            for (id, name, _, color) in &roofs {
-                ui.horizontal(|ui| {
-                    swatch(ui, color);
-                    if ui.selectable_label(d.b.roof == *id, name).clicked() {
-                        d.b.roof = id.clone();
-                        changed = true;
-                    }
-                });
-            }
+            ui.separator();
+        }
+        let clicks = self.draft.as_ref().unwrap().clicks;
+        match clicks {
+            Clicks::Inside => self.inside_panel(ui),
+            Clicks::Outside => self.outside_panel(ui),
+            Clicks::Openings | Clicks::Pillars => changed |= self.structure_panel(ui),
+        }
+        {
+            let d = self.draft.as_mut().unwrap();
             ui.add_space(6.0);
             for p in &d.problems {
                 ui.label(RichText::new(p).color(Color32::from_rgb(255, 120, 100)));
@@ -760,16 +651,141 @@ impl MapEditor {
         }
     }
 
+    /// Flooring, doors and windows, pillars, the walls' and the roof's styles.
+    fn structure_panel(&mut self, ui: &mut egui::Ui) -> bool {
+        let walls = ids_of(self, &["wall"]);
+        let roofs = ids_of(self, &["roof"]);
+        let tiles = ids_of(self, &["floor"]);
+        let doors = ids_of(self, &["door"]);
+        let windows = ids_of(self, &["window"]);
+        let pillars = ids_of(self, &["pillar"]);
+        let content = self.content.clone();
+        let mut changed = false;
+        let d = self.draft.as_mut().unwrap();
+        ui.label(RichText::new(format!("Flooring (floor {})", d.floor + 1)).strong());
+        for (id, name, _, color) in &tiles {
+            ui.horizontal(|ui| {
+                swatch(ui, color);
+                if ui.selectable_label(d.b.floors[d.floor].tile == *id, name).clicked() {
+                    d.b.floors[d.floor].tile = id.clone();
+                    changed = true;
+                }
+            });
+        }
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            super::mark("uiOpenings", &ui.radio_value(&mut d.clicks, Clicks::Openings, "Doors & windows"));
+            super::mark("uiPillars", &ui.radio_value(&mut d.clicks, Clicks::Pillars, "Pillars"));
+        });
+        match d.clicks {
+            Clicks::Openings => {
+                ui.horizontal(|ui| {
+                    if ui.radio(d.doors, "Doors").clicked() {
+                        d.doors = true;
+                        if let Some(s) = &mut d.span {
+                            s.prop.clear();
+                        }
+                    }
+                    let windows = ui.radio(!d.doors, "Windows");
+                    super::mark("uiWindows", &windows);
+                    if windows.clicked() {
+                        d.doors = false;
+                        if let Some(s) = &mut d.span {
+                            s.prop.clear();
+                        }
+                    }
+                });
+                ui.label(RichText::new("Drag along an outside wall: the span sets the width.").color(Color32::GRAY));
+                if let Some(span) = d.span.clone() {
+                    let wall = match span.side.as_str() { "n" => "north", "s" => "south", "e" => "east", _ => "west" };
+                    ui.label(format!("{} cell{} of the {wall} wall", span.width, if span.width == 1 { "" } else { "s" }));
+                    let list = if d.doors { &doors } else { &windows };
+                    let fitting: Vec<&(String, String, [u8; 2], String)> = list.iter().filter(|(_, _, fp, _)| fp[0] == span.width).collect();
+                    if fitting.is_empty() {
+                        ui.label(RichText::new(format!("No {} {} cells wide: drag a different span", if d.doors { "door" } else { "window" }, span.width)).color(Color32::from_rgb(255, 170, 90)));
+                    }
+                    for (k, (id, name, _, _)) in fitting.into_iter().enumerate() {
+                        let put = ui.button(format!("Put a {name} here"));
+                        if k == 0 {
+                            super::mark("uiPut", &put);
+                        }
+                        if put.clicked() {
+                            let floor = &mut d.b.floors[d.floor];
+                            let segs = Building::segments(&span);
+                            // what was in the way goes
+                            floor.openings.retain(|o| o.side != span.side || !Building::segments(o).iter().any(|s| segs.contains(s)));
+                            floor.openings.push(Opening { prop: id.clone(), ..span.clone() });
+                            d.span = None;
+                            changed = true;
+                        }
+                    }
+                }
+                let mut remove = None;
+                for (i, o) in d.b.floors[d.floor].openings.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let name = content.props.get(&o.prop).map(|p| p.name.clone()).unwrap_or_else(|| o.prop.clone());
+                        ui.label(format!("{name} · {:?} {}", o.cell, o.side));
+                        if ui.small_button("remove").on_hover_text("Remove").clicked() {
+                            remove = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = remove {
+                    d.b.floors[d.floor].openings.remove(i);
+                    changed = true;
+                }
+            }
+            Clicks::Pillars => {
+                ui.label(RichText::new("Click a point of the outline to put or take away a pillar.").color(Color32::GRAY));
+                for (id, name, _, color) in &pillars {
+                    ui.horizontal(|ui| {
+                        swatch(ui, color);
+                        if ui.selectable_label(d.pillar_prop.as_deref() == Some(id.as_str()), name).clicked() {
+                            d.pillar_prop = Some(id.clone());
+                        }
+                    });
+                }
+            }
+            Clicks::Inside | Clicks::Outside => {}
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new("Walls").strong());
+        for (id, name, _, color) in &walls {
+            ui.horizontal(|ui| {
+                swatch(ui, color);
+                if ui.selectable_label(d.b.wall == *id, name).clicked() {
+                    d.b.wall = id.clone();
+                    changed = true;
+                }
+            });
+        }
+        ui.label(RichText::new("Roof").strong());
+        for (id, name, _, color) in &roofs {
+            ui.horizontal(|ui| {
+                swatch(ui, color);
+                if ui.selectable_label(d.b.roof == *id, name).clicked() {
+                    d.b.roof = id.clone();
+                    changed = true;
+                }
+            });
+        }
+        changed
+    }
+
     // ------------------------------------------------------------ buildings on the map
 
     /// The selected building's inspector.
     pub(super) fn building_inspector(&mut self, ui: &mut egui::Ui, i: usize) {
-        let decorations = ids_of(self, &["wall_decoration"]);
         let b = self.map.buildings[i].clone();
         ui.heading(&b.name);
         ui.label(RichText::new(format!("{} · {} cells · {} floor{}", b.id, b.cells().len(), b.floors.len(), if b.floors.len() == 1 { "" } else { "s" })).color(Color32::GRAY));
+        let inside: usize = b.floors.iter().map(|f| f.props.len()).sum::<usize>() + b.anchors.iter().filter(|a| a.inside).count();
+        let outside = b.outside.len() + b.anchors.iter().filter(|a| !a.inside).count();
+        ui.label(RichText::new(format!("{inside} thing{} inside, {outside} outside", if inside == 1 { "" } else { "s" })).color(Color32::GRAY));
         ui.horizontal(|ui| {
-            if ui.button("Edit").clicked() {
+            let edit = ui.button("Edit").on_hover_text("Its structure, what's inside, what's outside");
+            super::mark("uiEditBuilding", &edit);
+            if edit.clicked() {
                 self.start_building(Some(i));
             }
             if ui.button("Turn 90°").on_hover_text("Q / E").clicked() {
@@ -784,45 +800,9 @@ impl MapEditor {
                 self.checkpoint();
                 self.map.buildings.remove(i);
                 self.selected_building = None;
-                self.decorate = None;
                 self.need_buildings = true;
             }
         });
-        if self.selected_building != Some(i) {
-            return;
-        }
-        ui.add_space(8.0);
-        let mut on = self.decorate.is_some();
-        let decorate = ui.checkbox(&mut on, "Decorate the walls").on_hover_text("Click an outside wall to anchor a decoration where you clicked");
-        super::mark("uiDecorate", &decorate);
-        if decorate.changed() {
-            self.decorate = on.then(|| Decorate { prop: decorations.first().map(|d| d.0.clone()), hover: None });
-        }
-        if let Some(dec) = &mut self.decorate {
-            for (id, name, _, color) in &decorations {
-                ui.horizontal(|ui| {
-                    swatch(ui, color);
-                    if ui.selectable_label(dec.prop.as_deref() == Some(id.as_str()), name).clicked() {
-                        dec.prop = Some(id.clone());
-                    }
-                });
-            }
-        }
-        let mut remove = None;
-        for (k, a) in b.anchors.iter().enumerate() {
-            ui.horizontal(|ui| {
-                let name = self.content.props.get(&a.prop).map(|p| p.name.clone()).unwrap_or_else(|| a.prop.clone());
-                ui.label(format!("{name} · floor {} · {:.2} up", a.floor + 1, a.height));
-                if ui.small_button("remove").clicked() {
-                    remove = Some(k);
-                }
-            });
-        }
-        if let Some(k) = remove {
-            self.checkpoint();
-            self.map.buildings[i].anchors.remove(k);
-            self.need_buildings = true;
-        }
     }
 
     pub(super) fn turn_building(&mut self, i: usize) {
@@ -850,45 +830,20 @@ impl MapEditor {
         true
     }
 
-    /// Decorating: what the pointer's on, and a click anchors the decoration there.
-    pub(super) fn decorate_view(&mut self, origin: Vec3, dir: Vec3, pressed: bool) {
-        let Some(i) = self.selected_building else { return };
-        let hit = self.pick_wall(&self.map.buildings[i], origin, dir);
-        let Some(dec) = &mut self.decorate else { return };
-        dec.hover = hit.map(|(_, c, s, f, h)| (c, s, f, h));
-        if let (true, Some((cell, side, floor, height)), Some(prop)) = (pressed, dec.hover, dec.prop.clone()) {
-            self.checkpoint();
-            self.map.buildings[i].anchors.push(Anchor { prop, cell, side: side.into(), floor: floor as u8, height });
-            self.need_buildings = true;
-        }
-    }
-
-    pub(super) fn decorate_shapes(&self, shapes: &mut Vec<Shape>) {
-        let (Some(i), Some(dec)) = (self.selected_building, &self.decorate) else { return };
-        let Some((cell, side, floor, height)) = dec.hover else { return };
-        let b = &self.map.buildings[i];
-        let (mid, out) = world::buildings::segment_point(b, cell, side, floor, height as f32, self.level_height);
-        let (w, d) = if matches!(side, "n" | "s") { (0.8, 0.25) } else { (0.25, 0.8) };
-        shapes.push(Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: mid + out * 0.15, color: [1.0, 0.85, 0.2, 0.8], additive: false });
-    }
-
-    /// Q/E on an inside item while designing, Delete removes it.
+    /// Q/E and Delete while designing: on what's selected inside or outside; with nothing
+    /// selected, Q/E turn what's about to be placed.
     pub(super) fn build_keys(&mut self, turn: f32, delete: bool) -> bool {
-        let Some(d) = &mut self.draft else { return false };
-        let Some(i) = d.item else { return false };
-        let floor = &mut d.b.floors[d.floor];
-        if i >= floor.props.len() {
+        let Some(d) = &self.draft else { return false };
+        if d.step != Step::Design || d.clicks.structure() {
             return false;
         }
-        if delete {
-            floor.props.remove(i);
-            d.item = None;
-        } else if turn != 0.0 {
-            floor.props[i].turn = ((floor.props[i].turn as f32 + turn).rem_euclid(360.0)) as f64;
-        } else {
-            return false;
+        if d.sel.is_some() {
+            return self.rooms_keys(turn, delete);
         }
-        self.need_buildings = true;
-        true
+        if turn != 0.0 {
+            self.turn = (self.turn + turn).rem_euclid(360.0);
+            return true;
+        }
+        false
     }
 }

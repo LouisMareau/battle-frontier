@@ -9,8 +9,10 @@
 //! Ctrl+Z / Ctrl+Y, Ctrl+S, G the grid, arrows pan, Home recentres. Walk (`walk.rs`) puts a
 //! character on the map to try it on foot.
 
+mod assets;
 mod build;
 mod models;
+mod rooms;
 mod walk;
 mod zones;
 
@@ -146,7 +148,10 @@ pub struct MapEditor {
     selected_building: Option<usize>,
     /// moving a building: where it was grabbed, from its corner
     building_grab: Option<Vec2>,
-    decorate: Option<build::Decorate>,
+    /// the cells lit while a building is designed, as last sent to the GPU
+    focus_sent: Option<Vec<(i32, i32)>>,
+    /// the asset browser
+    assets: assets::Assets,
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
@@ -254,7 +259,8 @@ impl MapEditor {
             draft: None,
             selected_building: None,
             building_grab: None,
-            decorate: None,
+            focus_sent: None,
+            assets: assets::Assets::default(),
             probe: None,
             walker: None,
             blocked: None,
@@ -348,7 +354,6 @@ impl MapEditor {
         self.extra_changed = true;
         self.draft = None;
         self.selected_building = None;
-        self.decorate = None;
         self.dirty = false;
         self.undo.clear();
         self.redo.clear();
@@ -383,9 +388,6 @@ impl MapEditor {
         self.zone_sel = self.zone_sel.filter(|&i| i < self.map.zones.len());
         self.selected = self.selected.filter(|&i| i < self.map.props.len());
         self.selected_building = self.selected_building.filter(|&i| i < self.map.buildings.len());
-        if self.selected_building.is_none() {
-            self.decorate = None;
-        }
     }
 
     fn undo(&mut self) {
@@ -447,11 +449,20 @@ impl MapEditor {
         if let Some(note) = self.save_spawns() {
             self.status = format!("{} · {note}", self.status);
         }
+        if !self.assets.dirty.is_empty() {
+            let map = self.status.clone();
+            self.save_assets();
+            self.status = format!("{map} · {}", self.status);
+        }
     }
 
     // ------------------------------------------------------------ the GPU
 
     fn sync(&mut self, rs: &eframe::egui_wgpu::RenderState, now: f64) {
+        let focus = self.focus_cells();
+        if focus != self.focus_sent {
+            self.need_cells = true;
+        }
         let map_changed = self.need_ground || self.need_cells || self.need_props || self.need_trees || self.need_buildings;
         if !(map_changed || self.extra_changed || !self.sprites_wanted.is_empty() || self.models_pending()) {
             return;
@@ -465,7 +476,8 @@ impl MapEditor {
         self.load_models(r, rs);
         if self.need_ground {
             r.clear_map();
-            let g = mesh::ground(&self.map, &self.content, self.level_height);
+            let mut g = mesh::ground(&self.map, &self.content, self.level_height);
+            self.mark_focus(&mut g.cells, focus.as_deref());
             let (tops, solid) = (gpu(&g.tops.vertices), gpu(&g.solid.vertices));
             r.set_world_ground(
                 &rs.device,
@@ -483,9 +495,12 @@ impl MapEditor {
             self.need_ground = false;
             self.need_cells = false;
         } else if self.need_cells {
-            r.set_world_cells(&rs.queue, &mesh::cells_texture(&self.map));
+            let mut cells = mesh::cells_texture(&self.map);
+            self.mark_focus(&mut cells, focus.as_deref());
+            r.set_world_cells(&rs.queue, &cells);
             self.need_cells = false;
         }
+        self.focus_sent = focus;
         // each layer sent alone when it changes: placing a prop doesn't send the forest again
         if self.need_trees {
             let trees = mesh::tree_mesh(&self.map, &self.content, self.level_height, &self.models);
@@ -517,6 +532,18 @@ impl MapEditor {
             let extra = self.extra_mesh(now);
             r.set_world_extra(&rs.device, &models::batches(&extra));
             self.extra_changed = false;
+        }
+    }
+
+    /// The cells texture's blue channel: 255 on the cells in the focus.
+    fn mark_focus(&self, cells: &mut [u8], focus: Option<&[(i32, i32)]>) {
+        let Some(focus) = focus else { return };
+        for &(x, z) in focus {
+            if let Some(i) = self.map.index(x, z) {
+                if let Some(b) = cells.get_mut(i * 4 + 2) {
+                    *b = 255;
+                }
+            }
         }
     }
 
@@ -720,6 +747,9 @@ impl MapEditor {
             self.sync(rs, now);
         }
         let mut back = false;
+        self.take_drops(&ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.watch_assets(now);
         self.keys(&ctx);
         egui::Panel::top("maps-top").show(ui, |ui| {
             ui.add_space(5.0);
@@ -768,6 +798,11 @@ impl MapEditor {
                 if debug.clicked() {
                     self.debug = !self.debug;
                 }
+                let assets = ui.selectable_label(self.assets.open, "Assets").on_hover_text("Every prop by folder; drop .glb files here");
+                mark("uiAssets", &assets);
+                if assets.clicked() {
+                    self.assets.open = !self.assets.open;
+                }
                 let walk = ui.selectable_label(self.walker.is_some(), "Walk").on_hover_text("Try the map on foot: the arrows move, Esc stops");
                 mark("uiWalk", &walk);
                 if walk.clicked() {
@@ -798,10 +833,6 @@ impl MapEditor {
             });
             ui.add_space(5.0);
         });
-        egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.tools_panel(ui));
-        });
-        egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| self.inspector(ui));
         egui::Panel::bottom("maps-status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let badge = match self.space {
@@ -821,6 +852,14 @@ impl MapEditor {
                 ui.label(RichText::new(&self.status).color(Color32::LIGHT_GRAY));
             });
         });
+        // the asset browser across the window, under the side panels
+        if self.assets.open {
+            egui::Panel::bottom("maps-assets").resizable(true).default_size(300.0).min_size(140.0).show(ui, |ui| self.assets_panel(ui));
+        }
+        egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
+            egui::ScrollArea::vertical().show(ui, |ui| self.tools_panel(ui));
+        });
+        egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| self.inspector(ui));
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -848,6 +887,13 @@ impl MapEditor {
             format!("floors:{};floor:{};openings:{};inside:{};pillars:{}", d.b.floors.len(), d.floor + 1, f.openings.len(), f.props.len(), d.b.pillars.len())
         });
         crate::platform::set_hook("draft", &draft.unwrap_or_default());
+        let rooms = self.draft.as_ref().map(|d| {
+            let wall = d.wall.map(|w| format!("{},{},{}", w.0, w.1, w.2)).unwrap_or_default();
+            let inner = d.b.anchors.iter().filter(|a| a.inside).count();
+            format!("wall:{wall};inner:{inner};outer:{};outside:{};sel:{:?}", d.b.anchors.len() - inner, d.b.outside.len(), d.sel)
+        });
+        crate::platform::set_hook("rooms", &rooms.unwrap_or_default());
+        crate::platform::set_hook("status", &self.status);
         let selection = match (self.selected, self.selected_building) {
             (_, Some(i)) => format!("building:{i}"),
             (Some(i), None) => format!("prop:{i}"),
@@ -1204,17 +1250,18 @@ impl MapEditor {
         if pressed(egui::Key::Escape) {
             if self.walker.is_some() {
                 self.stop_walk();
+            } else if let Some(d) = self.draft.as_mut().filter(|d| d.sel.is_some()) {
+                d.sel = None;
             } else {
                 self.selected = None;
             }
         }
         if pressed(egui::Key::Delete) || pressed(egui::Key::Backspace) {
-            if self.tool == Tool::Build {
+            if self.tool == Tool::Build && self.draft.is_some() {
                 self.build_keys(0.0, true);
             } else if let Some(i) = self.selected_building.take() {
                 self.checkpoint();
                 self.map.buildings.remove(i);
-                self.decorate = None;
                 self.need_buildings = true;
             } else {
                 self.delete_selected();
@@ -1223,7 +1270,7 @@ impl MapEditor {
         let step = if mods.shift { 90.0 } else { 15.0 };
         for (k, dir) in [(egui::Key::Q, -1.0), (egui::Key::E, 1.0)] {
             if pressed(k) {
-                if self.tool == Tool::Build {
+                if self.tool == Tool::Build && self.draft.is_some() {
                     self.build_keys(dir * step, false);
                 } else if let Some(i) = self.selected_building {
                     if dir > 0.0 {
@@ -1348,9 +1395,14 @@ impl MapEditor {
                 if primary_pressed && response.hovered() {
                     if let (Some(prop), Some(p)) = (self.prop.clone(), self.plane_hit) {
                         let at = self.snap(&prop, self.turn, p, mods.shift);
-                        if at[0] >= 0.0 && at[1] >= 0.0 && at[0] <= self.map.width as f64 && at[1] <= self.map.height as f64 {
+                        let placed = Placed { prop: prop.clone(), at, level: self.level, turn: self.turn as f64, scale: 1.0 };
+                        let cells = rooms::cells_of(self, &placed);
+                        let clash = rooms::clash(self, &prop, &cells, &rooms::ground_items(self, self.level, None));
+                        if let Some(other) = clash {
+                            self.status = format!("No room: {other} is there, and one of them doesn't stack");
+                        } else if at[0] >= 0.0 && at[1] >= 0.0 && at[0] <= self.map.width as f64 && at[1] <= self.map.height as f64 {
                             self.checkpoint();
-                            self.map.props.push(Placed { prop, at, level: self.level, turn: self.turn as f64, scale: 1.0 });
+                            self.map.props.push(placed);
                             self.selected = Some(self.map.props.len() - 1);
                             self.need_props = true;
                         }
@@ -1362,9 +1414,6 @@ impl MapEditor {
             }
             Tool::Zones => {
                 self.zones_view(mods.alt, primary_pressed && response.hovered(), primary_down, primary_released, response.hovered());
-            }
-            Tool::Select if self.decorate.is_some() && self.selected_building.is_some() => {
-                self.decorate_view(origin, dir, primary_pressed && response.hovered());
             }
             Tool::Select => {
                 if primary_pressed && response.hovered() {
@@ -1415,7 +1464,9 @@ impl MapEditor {
                     if let Some(hit) = Self::plane(origin, dir, level as f32 * self.level_height) {
                         let target = hit - Vec3::new(grab.x, 0.0, grab.y);
                         let at = self.snap(&prop, turn, target, mods.shift);
-                        if at != self.map.props[i].at {
+                        let moved = Placed { at, ..self.map.props[i].clone() };
+                        let free = rooms::clash(self, &prop, &rooms::cells_of(self, &moved), &rooms::ground_items(self, level, Some(i))).is_none();
+                        if at != self.map.props[i].at && free {
                             if !self.stroke {
                                 self.checkpoint();
                                 self.stroke = true;
@@ -1436,6 +1487,7 @@ impl MapEditor {
         let (light, tint) = period_lighting(self.period, None, self.cam.target, radius);
         let mut billboards = vec![];
         let mut shapes = vec![];
+        let mut overlays = vec![];
         let lh = self.level_height;
         let rect_at = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
         match self.tool {
@@ -1464,9 +1516,8 @@ impl MapEditor {
                     shapes.push(rect_at(at[0] as f32, self.level as f32 * lh + 0.04, at[1] as f32, w as f32, d as f32, [1.0, 1.0, 1.0, 0.4]));
                 }
             }
-            Tool::Build => self.build_shapes(&mut shapes),
-            Tool::Select => self.decorate_shapes(&mut shapes),
-            Tool::Zones => {}
+            Tool::Build => self.build_shapes(&mut shapes, &mut overlays),
+            Tool::Select | Tool::Zones => {}
         }
         self.zones_shapes(&mut shapes);
         self.creature_billboards([tint.x, tint.y, tint.z, 1.0], &mut billboards, &mut shapes);
@@ -1515,8 +1566,8 @@ impl MapEditor {
             streaks: vec![],
             time: (now / 1000.0) as f32,
             grid: self.grid,
-            focus: false,
-            overlays: vec![],
+            focus: self.focus_box(),
+            overlays,
         }
     }
 }

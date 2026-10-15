@@ -392,17 +392,51 @@ pub struct Prop {
     /// the player can't walk through it
     #[serde(skip_serializing_if = "is_default")]
     pub blocks: bool,
+    /// nothing goes on it or overlaps its cells, and it goes on or over nothing (stairs,
+    /// shelves, beds...)
+    #[serde(skip_serializing_if = "is_default")]
+    pub unstackable: bool,
     /// its stand-in model
     pub parts: Vec<Part>,
     /// a real model (glTF), when it has one
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// the asset browser's folders it's in ("Nature", "Buildings/Inside"...); empty: the
+    /// ones its category gives it (see `Prop::folders`)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub folders: Vec<String>,
 }
+
+/// The folder of what can go inside buildings (the Build tool's Inside list).
+pub const INSIDE: &str = "Buildings/Inside";
+/// The folder of what can go outside buildings, on their walls or next to them.
+pub const OUTSIDE: &str = "Buildings/Outside";
 
 impl Prop {
     /// Trees and flora keep their size when placed; everything else can be scaled down.
     pub fn scalable(&self) -> bool {
         !matches!(self.category.as_str(), "tree" | "flora")
+    }
+
+    /// The folders it's in: its own list, or the one its category gives.
+    pub fn folders(&self) -> Vec<String> {
+        if !self.folders.is_empty() {
+            return self.folders.clone();
+        }
+        let f = match self.category.as_str() {
+            "tree" | "flora" | "rock" => "Nature",
+            "furniture" | "stairs" => INSIDE,
+            "wall_decoration" => OUTSIDE,
+            "door" | "window" | "wall" | "pillar" | "floor" | "roof" => "Buildings/Structure",
+            "character" => "Characters",
+            _ => "Town",
+        };
+        vec![f.to_string()]
+    }
+
+    /// Hung on walls rather than standing on the ground.
+    pub fn on_walls(&self) -> bool {
+        self.category == "wall_decoration"
     }
 
     /// The colour of one of its parts ("#rrggbb"), or the first one's.

@@ -11,5 +11,6 @@
     { "shape": "sphere", "size": [0.16, 0.14, 0.16], "at": [0.3, 0.12, 0.3], "color": "#f4f0e8" },
     { "shape": "sphere", "size": [0.16, 0.14, 0.16], "at": [-0.3, 0.12, 0.28], "color": "#f2d04a" },
     { "shape": "cone", "size": [0.5, 0.18, 0.5], "at": [0.0, 0.0, 0.0], "color": "#4f9a3b" }
-  ]
+  ],
+  "folders": ["Nature", "Buildings/Outside"]
 }

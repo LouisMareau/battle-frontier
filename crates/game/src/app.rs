@@ -76,7 +76,8 @@ pub struct Cli {
     pub levels: Option<u8>,
     /// open the map editor (on that map, if not empty)
     pub maps: Option<String>,
-    /// draw as fast as possible, not at the screen's rate (to measure)
+    /// draw as fast as possible, not at the screen's rate (to measure; the desktop only)
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub no_vsync: bool,
 }
 

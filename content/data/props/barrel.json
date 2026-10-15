@@ -5,7 +5,9 @@
   "footprint": [1, 1],
   "height": 0.9,
   "blocks": true,
+  "unstackable": true,
   "parts": [
     { "shape": "cylinder", "size": [0.7, 0.9, 0.7], "at": [0.0, 0.0, 0.0], "color": "#8a5a34" }
-  ]
+  ],
+  "folders": ["Town", "Buildings/Inside", "Buildings/Outside"]
 }

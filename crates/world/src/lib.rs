@@ -319,10 +319,10 @@ impl WorldMap {
             let walk = content.terrains.get(&self.terrains[self.terrain[i] as usize]).map(|t| t.walk.as_str()).unwrap_or("walk");
             *b = self.area[i] > 0 || walk != "walk";
         }
-        // what stands on the ground floor of buildings
+        // what stands on the ground floor of buildings, and outside them
         for b in &self.buildings {
             let Some(floor) = b.floors.first() else { continue };
-            for p in &floor.props {
+            for p in floor.props.iter().chain(&b.outside) {
                 if content.props.get(&p.prop).map(|q| q.blocks).unwrap_or(false) {
                     let placed = Placed { at: [p.at[0] + b.at[0] as f64, p.at[1] + b.at[1] as f64], level: b.level, ..p.clone() };
                     for (x, z) in self.footprint(&placed, content) {

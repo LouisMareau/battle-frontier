@@ -29,6 +29,7 @@ node tools/perf.mjs [tile=4] [size=3840x2160]   # how fast it draws, uncapped: m
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
+node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves
 cargo run -p engine-world --bin export-glb -- map test_meadow   # a map (or prop ID, props, building MAP ID) as .glb for Blender
 node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from commands
 ```
@@ -46,7 +47,9 @@ writes `data-state`, `data-round`, `data-fps`, `data-maxgap`, `data-cpu`, `data-
 read in progress), and in the map editor `data-map`, `data-mapsize`, `data-tool`, `data-level`,
 `data-props`, `data-areas`, `data-dirty`, `data-buildings`, `data-build`, `data-draft`,
 `data-selection`, `data-walker`, `data-zones`, `data-links`, `data-roamers`, `data-roaming`,
-`data-pool` and the places of a few buttons (`data-ui-*`) on `<body>`;
+`data-pool`, `data-rooms` (a building's inside and outside while it's designed), `data-status`,
+`data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models` and the places of
+the buttons the checks press (`data-ui-*`) on `<body>`;
 `view:x,z,distance,yaw,pitch` points the editor's camera and `point:x,y,z` reports where a
 world point is on the screen (`data-point`): that's what the checks drive.
 
@@ -92,9 +95,11 @@ list (`prop`, `at` in cells, `level`, `turn`, `scale`).
   (the four nearest cells vote with noise and priority), so edges come out organic and
   corners round without border tiles. Patterns (grass, meadow, tall grass, dirt, sand,
   cobbles, rock, water) are procedural for now. Raised cells get cliff faces.
-- **Props** are the asset database: footprint in cells, height, whether they block, and a
-  stand-in model made of simple shapes (`parts`) until real models (glTF) come. Trees and
-  flora can't be scaled; the rest can be scaled down.
+- **Props** are the asset database: footprint in cells, height, whether they block, whether
+  they are `unstackable` (nothing overlaps them and they overlap nothing: stairs, beds,
+  shelves, wells...), the asset browser's `folders` they're in, and a stand-in model made of
+  simple shapes (`parts`) until a real model (glTF, `model`) comes. Trees and flora can't be
+  scaled; the rest can be scaled down.
 - **Tree areas** are cells the player can't cross. The engine fills them with trees from
   the area's settings (which trees, spacing, size range, density, a tree in every edge
   cell, seed): the same trees every time.
@@ -103,8 +108,9 @@ list (`prop`, `at` in cells, `level`, `turn`, `scale`).
   planks, bricks, stone, logs), doors and windows in them (an opening is as wide, in cells,
   as its asset: a 2-cell span only offers 2-cell doors), what stands inside each floor,
   pillars on points of the outline, a roof (gabled on a rectangle, flat with a parapet on
-  any other shape) and decorations anchored on the outside walls. Walls block and doors
-  let the player through; a building flattens the ground under it and clears trees.
+  any other shape), things hung on its walls (`anchors`, outside or `inside`) and what
+  stands outside next to it (`outside`). Walls block and doors let the player through; a
+  building flattens the ground under it and clears trees.
 
 - **Zones** are areas creatures roam (`zone_cells` rows, `zones`), and **links** send
   creatures out of a treeline (edge cells of a tree area) to a zone: they walk out of the
@@ -120,11 +126,16 @@ The editor (menu: "Edit maps", or `--maps`): pick the level at the top (PageUp/P
 (right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
 it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props;
 **Trees** paints tree areas and edits their settings; **Build** draws a building's
-footprint, then designs it floor by floor (the floors above are cut away): flooring, doors
-and windows (drag along an outside wall, then pick an asset that wide), what's inside,
-pillars, walls and roof, then "Confirm the building". A building on the map is selected
-with Select: Edit, turn (Q/E), move (drag), delete, and "Decorate the walls" anchors a
-decoration where you click a wall. **Walk** puts a stand-in character on the map: the
+footprint, then designs it floor by floor: the floors above are cut away and the rest of the
+map is darkened, and nothing lands outside the building. *Structure* is flooring, doors and
+windows (drag along an outside wall, then pick an asset that wide), pillars, walls and roof;
+*Inside* places what the `Buildings/Inside` folder holds on the floor being designed (on its
+inner walls for things that hang); *Outside* asks for a wall first (a court's walls count),
+then hangs what `Buildings/Outside` holds on it or stands it on the ground up to two cells in
+front of it. Click a placed thing to select it: Q/E turn it, Delete (or its "remove" button)
+removes it; unstackable props never overlap anything. Then "Confirm the building". A
+building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag),
+delete. **Walk** puts a stand-in character on the map: the
 arrows move it cell by cell, and the building it enters is cut away above it. **Zones**
 paints zones (and who lives there: morning, day, night) or, in "Link treelines", takes a
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
@@ -132,6 +143,18 @@ every zone, tree area, link arrow and creature path. Right-drag pans, middle-dra
 the view, the wheel zooms; Morning/Day/Night preview the light; Ctrl+Z/Ctrl+Y undo and
 redo. Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
 file. Maps made here are the game's own content.
+
+**Assets** (in the top bar, or drop a file on the window) is the asset browser: every prop
+of both spaces as a detailed list, with its GAME or TEMPORARY tag, category, size, model or
+stand-in, what it does (blocks, unstackable, on walls) and folders, shown by folder
+(`Buildings/Inside`, `Buildings/Outside`, `Nature`, `Town`...: a prop's `folders`, or its
+category's). Drag a row onto a folder to put the prop there too (a chip's × takes it out);
+click a row to use it (the Place tool, or a building's Inside or Outside list when it's in
+that folder); drop `.glb` files on a folder and each becomes a prop there, its footprint and
+height measured from the model: written at once on the desktop (`content/`, or `temporary/`
+with the box ticked), kept until Save in the browser (its record and model download). On the
+desktop, `data/props` and `assets/models` of both spaces are watched: a record or model
+changed there (the Blender add-on's Add to project, a re-export) shows within a second.
 
 ## Blender
 
@@ -154,8 +177,8 @@ on the ground at the origin, its front to Blender's front view.
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

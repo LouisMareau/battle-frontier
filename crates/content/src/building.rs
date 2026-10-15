@@ -32,9 +32,13 @@ pub struct Building {
     /// on grid points of the outline, as high as the building
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub pillars: Vec<Pillar>,
-    /// decorations on the outside walls
+    /// things hung on its walls, outside (or inside: `Anchor::inside`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub anchors: Vec<Anchor>,
+    /// what stands outside it, next to its walls (benches, planters...): `at` from the
+    /// building's `at`, on the ground floor's level; never on its cells
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub outside: Vec<Placed>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -70,8 +74,8 @@ pub struct Pillar {
     pub corner: [i32; 2],
 }
 
-/// A decoration on an outside wall: centred on the wall on `side` of `cell`, on `floor`,
-/// `height` cells above that floor, facing out.
+/// Something hung on a wall: centred on the wall on `side` of `cell`, on `floor`, `height`
+/// cells above that floor, on the outside face facing out (or the inside face facing in).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Anchor {
@@ -81,6 +85,9 @@ pub struct Anchor {
     #[serde(skip_serializing_if = "is_default")]
     pub floor: u8,
     pub height: f64,
+    /// on the inside face of the wall
+    #[serde(skip_serializing_if = "is_default")]
+    pub inside: bool,
 }
 
 pub const SIDES: [&str; 4] = ["n", "e", "s", "w"];
@@ -266,6 +273,11 @@ impl Building {
             a.cell = [x, z];
             a.side = turned_side(&a.side).into();
         }
+        for p in b.outside.iter_mut() {
+            let (x, z) = point(p.at[0], p.at[1]);
+            p.at = [x, z];
+            p.turn = (p.turn + 90.0).rem_euclid(360.0);
+        }
         b
     }
 
@@ -325,12 +337,22 @@ impl Building {
             }
         }
         for a in &self.anchors {
-            want(&a.prop, &["wall_decoration"], "decoration", &mut out);
+            if prop(&a.prop).is_none() {
+                out.push(format!("{at}: a wall item \"{}\", no such prop", a.prop));
+            }
             if !self.is_edge(a.cell[0], a.cell[1], &a.side) {
-                out.push(format!("{at}: a decoration at {:?} {}, not on an outside wall", a.cell, a.side));
+                out.push(format!("{at}: a wall item at {:?} {}, not on one of its walls", a.cell, a.side));
             }
             if a.floor as usize >= self.floors.len() {
                 out.push(format!("{at}: a decoration on floor {}, it has {}", a.floor + 1, self.floors.len()));
+            }
+        }
+        for p in &self.outside {
+            if prop(&p.prop).is_none() {
+                out.push(format!("{at}: outside, \"{}\", no such prop", p.prop));
+            }
+            if self.has(p.at[0].floor() as i32, p.at[1].floor() as i32) {
+                out.push(format!("{at}: \"{}\" stands outside but on its cells, at {:?}", p.prop, p.at));
             }
         }
         out

@@ -1,8 +1,10 @@
 // The Build tool, driven with the mouse and keys in a headless Chrome: draws an L-shaped
-// footprint, puts a double door and a window on the ground floor, adds a floor with a bed
-// and a pillar, confirms, decorates a wall, walks in through the door (and into walls),
-// turns and moves the building, undoes, and downloads the map. Screenshots go to
-// screenshots/build-*.png.
+// footprint, puts a double door and a window on the ground floor, adds a floor and, Inside,
+// a bed (a table on it is refused: neither stacks), a table placed then deleted, a lamp on
+// an inner wall, a pillar; confirms; edits it again and, Outside, picks a wall, hangs a
+// flower box on it and puts a barrel in front of it (not further away); walks in through
+// the door (and into walls), turns and moves the building, undoes, and downloads the map.
+// Screenshots go to screenshots/build-*.png.
 //     node tools/buildcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -85,31 +87,67 @@ try {
   await expect('a window', 'draft', 'floors:1;floor:1;openings:2;inside:0;pillars:0');
   await shot('2-ground-floor');
 
-  // 3. a second floor: a bed inside, a pillar on a corner
+  // 3. a second floor: Inside, a bed; a table on the bed refused; a table placed then
+  // deleted; a lamp on an inner wall; then a pillar on a corner (Structure)
   await press('uiAddFloor');
   await press('uiInside');
+  await press('uiPick_bed');
   await browser.click(...(await at(22.5, 2.0, 17.6)));
+  await expect('a bed inside', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:0');
+  await shot('3-inside');
+  await press('uiPick_table');
+  await browser.click(...(await at(22.5, 2.0, 17.42)));
+  await expect('a table on the bed: refused', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:0');
+  check('  and why', (await data('status')).startsWith('No room'), await data('status'));
+  await browser.click(...(await at(21.5, 2.0, 22.5)));
+  await expect('a table outside the building: refused', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:0');
+  await browser.click(...(await at(23.5, 2.0, 17.5)));
+  await expect('a table next to it', 'draft', 'floors:2;floor:2;openings:0;inside:2;pillars:0');
+  await browser.key('Delete');
+  await expect('the table deleted', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:0');
+  await browser.click(...(await at(22.5, 2.0, 18.0)));
+  check('the bed selected', (await data('rooms')).endsWith('sel:Some(Floor(0))'), await data('rooms'));
+  await browser.key('Escape');
+  await press('uiPick_wall_lamp');
+  await browser.click(...(await at(22.5, 3.3, 17.12)));
+  check('a lamp on the inner north wall', (await data('rooms')).includes('inner:1;outer:0'), await data('rooms'));
+  await press('uiStructure');
   await press('uiPillars');
   await browser.click(...(await at(21.0, 2.0, 17.0)));
-  await expect('the second floor', 'draft', 'floors:2;floor:2;inside:1;pillars:1'.replace('floor:2;', 'floor:2;openings:0;'));
-  await shot('3-second-floor');
+  await expect('the second floor', 'draft', 'floors:2;floor:2;openings:0;inside:1;pillars:1');
+  await shot('4-second-floor');
 
   // 4. confirmed: on the map
   await press('uiConfirm');
   await expect('confirmed', 'build', '');
   await expect('one more building', 'buildings', buildings0 + 1);
   await cmd('view:22.5,18.5,15,-35,40');
-  await shot('4-confirmed');
+  await shot('5-confirmed');
   await cmd('view:22.5,18.5,15,0,58');
 
-  // 5. selected, and a decoration on a wall
+  // 5. edited again, Outside: a wall first, a flower box on it, a barrel in front of it
+  // (one further away refused)
   await browser.key('1');
   await browser.click(...(await at(22.5, 1.0, 18.0)));
   await expect('selected', 'selection', `building:${buildings0}`);
-  await press('uiDecorate');
+  await press('uiEditBuilding');
+  await expect('editing it', 'build', 'design');
+  await press('uiOutside');
+  await browser.click(...(await at(21.5, 0, 20.0)));
+  check('a wall picked (the foot of the L, south)', (await data('rooms')).startsWith('wall:0,2,s;'), await data('rooms'));
+  await press('uiPick_flower_box');
   await browser.click(...(await at(21.5, 1.4, 20.0)));
-  await expect('a decoration', 'anchors', 1);
-  await press('uiDecorate');
+  check('a flower box on it', (await data('rooms')).includes('inner:1;outer:1;outside:0'), await data('rooms'));
+  await press('uiPick_barrel');
+  await browser.click(...(await at(21.5, 0, 20.5)));
+  check('a barrel in front of it', (await data('rooms')).includes('outside:1'), await data('rooms'));
+  await browser.click(...(await at(21.5, 0, 22.5)));
+  check('one further away: refused', (await data('rooms')).includes('outside:1') && (await data('status')).startsWith('Outside, in front'), `${await data('rooms')} · ${await data('status')}`);
+  await shot('6-outside');
+  await press('uiConfirm');
+  await expect('confirmed again', 'build', '');
+  await expect('decorations', 'anchors', 2);
+  await browser.key('1');
 
   // 6. on foot: in through the door, not through walls
   await press('uiWalk');
@@ -124,7 +162,7 @@ try {
   await step('ArrowLeft', '22,19', 'the wall stops it');
   await step('ArrowUp', '22,18', 'back in');
   await step('ArrowUp', '22,17', 'inside');
-  await shot('5-inside');
+  await shot('7-walking-inside');
   await step('ArrowUp', '22,17', 'the north wall stops it');
   await browser.key('Escape');
 
@@ -136,7 +174,7 @@ try {
   await browser.drag([await at(22.5, 1.0, 18.0), await at(23.0, 0, 18.0), await at(24.0, 0, 18.0), await at(24.5, 0, 18.0)]);
   const moved = await data('bat');
   check('moved', moved !== before, `${before} -> ${moved}`);
-  await shot('6-moved');
+  await shot('8-moved');
   await browser.key('z', { ctrl: true });
   await expect('the move undone', 'bat', before);
 
@@ -148,8 +186,9 @@ try {
   await sleep(1500);
   const saved = JSON.parse(readFileSync(join(downloads, 'test_meadow.json'), 'utf8'));
   const b = saved.buildings?.[buildings0];
-  check('downloaded', !!b && b.floors.length === 2 && b.floors[0].openings.length === 2 && b.pillars.length === 1 && b.anchors.length === 1,
-    b ? `${b.id}: ${b.floors.length} floors, ${b.floors[0].openings.length} openings, ${b.pillars.length} pillar, ${b.anchors.length} decoration` : 'no building');
+  check('downloaded', !!b && b.floors.length === 2 && b.floors[0].openings.length === 2 && b.pillars.length === 1 && b.anchors.length === 2
+    && b.anchors.filter((a) => a.inside).length === 1 && b.outside?.length === 1 && b.floors[1].props.length === 1,
+    b ? `${b.id}: ${b.floors.length} floors, ${b.floors[0].openings.length} openings, ${b.pillars.length} pillar, ${b.anchors.length} on walls, ${b.outside?.length ?? 0} outside` : 'no building');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

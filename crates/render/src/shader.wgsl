@@ -16,6 +16,7 @@ struct Globals {
     world: vec4<f32>,        // the map: x: width, y: height (cells), z: level height, w: time (s)
     editor: vec4<f32>,       // x: grid lines on, y: darken cells outside the focus
     shadow: vec4<f32>,       // x: normal offset (world), y: depth margin (light depth), z: a texel (uv)
+    focus: vec4<f32>,        // the editor's focus box: x0, z0, x1, z1 (when editor.y is on)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -28,6 +29,14 @@ fn fog(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let depth = distance(world, g.camera.xyz);
     let f = smoothstep(g.fog_color.w, g.params.x, depth);
     return mix(rgb, g.fog_color.rgb, f);
+}
+
+// darker outside the editor's focus box
+fn focus_dim(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
+    if (g.editor.y > 0.5 && (world.x < g.focus.x || world.z < g.focus.y || world.x > g.focus.z || world.z > g.focus.w)) {
+        return rgb * 0.16;
+    }
+    return rgb;
 }
 
 fn lit_by_sun(light_pos: vec4<f32>) -> f32 {
@@ -94,7 +103,7 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
     if (c.a < 0.5) {
         discard;
     }
-    return vec4<f32>(fog(c.rgb * sunlit(i.normal, i.light_pos), i.world), 1.0);
+    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos), i.world), i.world), 1.0);
 }
 
 // the same without cut-outs (vertex colours on white): with no discard, the GPU can skip
@@ -102,7 +111,7 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_map_opaque(i: MapOut) -> @location(0) vec4<f32> {
     let c = textureSample(tex, samp, i.uv) * i.color;
-    return vec4<f32>(fog(c.rgb * sunlit(i.normal, i.light_pos), i.world), 1.0);
+    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos), i.world), i.world), 1.0);
 }
 
 // ---------------------------------------------------------------- the world's ground
@@ -308,7 +317,7 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
     if (cell_at(own_cell + vec2<i32>(1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.x)); }
     col = col * shade;
     if (g.editor.y > 0.5 && !focused(own_cell)) {
-        col = col * 0.3;
+        col = col * 0.16;
     }
     if (g.editor.x > 0.5) {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
@@ -379,7 +388,7 @@ fn fs_sprite_cutout(i: SpriteOut) -> @location(0) vec4<f32> {
     if (c.a < 0.4) {
         discard;
     }
-    return vec4<f32>(fog(c.rgb * i.color.rgb, i.world), 1.0);
+    return vec4<f32>(fog(focus_dim(c.rgb * i.color.rgb, i.world), i.world), 1.0);
 }
 
 @fragment

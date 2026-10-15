@@ -5,6 +5,7 @@
   "footprint": [2, 2],
   "height": 2.2,
   "blocks": true,
+  "unstackable": true,
   "parts": [],
   "model": "models/stone_well.glb"
 }

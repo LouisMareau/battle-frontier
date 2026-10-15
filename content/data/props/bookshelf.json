@@ -5,6 +5,7 @@
   "footprint": [1, 1],
   "height": 1.8,
   "blocks": true,
+  "unstackable": true,
   "parts": [
     { "shape": "box", "size": [0.9, 1.8, 0.4], "at": [0.0, 0.0, -0.25], "color": "#7a5434" },
     { "shape": "box", "size": [0.8, 0.32, 0.3], "at": [0.0, 1.3, -0.2], "color": "#3f6fa3" },
