@@ -1,2 +1,6 @@
 # shell scripts run on Linux (Cloudflare Pages, GitHub Actions): always LF
 *.sh text eol=lf
+# models and pictures are binary: never touch their bytes
+*.glb binary
+*.png binary
+*.wav binary
