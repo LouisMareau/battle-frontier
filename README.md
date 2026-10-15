@@ -25,6 +25,7 @@ trunk build --release                  # the site in build/dist/ (content/ only,
 node tools/serve.mjs                   # serves the site at http://localhost:8080, with temporary/ next to it
 node tools/check.mjs [seconds=60]      # plays battles in a headless Chrome (needs creatures and encounters), frame times -> screenshots/
 node tools/frames.mjs [encounter]      # frame times of one encounter, second by second
+node tools/perf.mjs [tile=4] [size=3840x2160]   # how fast it draws, uncapped: menu, map views, editing, walking, a battle
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
@@ -34,11 +35,15 @@ node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from command
 
 The desktop build takes `--preset ID` (start that encounter), `--auto` (the AI plays your
 side), `--time morning|day|night`, `--levels 1-5` (every move at that level), `--maps [ID]` (the
-map editor), `--exit-after SECONDS` and `--stats` (frames per second and the worst frame
-gap, printed every second). The browser build takes the same as
-`<body data-cmd="start:ID;auto:1">` (also `editor`, `maps`, `map:ID` and `back`) and
-writes `data-state`, `data-round`, `data-fps`, `data-maxgap`, `data-pending` (the timing
-read in progress), and in the map editor `data-map`, `data-tool`, `data-level`,
+map editor), `--exit-after SECONDS`, `--stats` (frames per second, the worst frame
+gap and the time each frame keeps the processor busy, printed every second) and `--no-vsync`
+(draws as fast as it can, not at the screen's rate: with `--stats`, what the machine could
+do). The browser build takes the same as
+`<body data-cmd="start:ID;auto:1">` (also `editor`, `maps`, `map:ID`, `back`, `scale:50-100`
+and `shadows:off|low|medium|high`) and
+writes `data-state`, `data-round`, `data-fps`, `data-maxgap`, `data-cpu`, `data-cpupeak`,
+`data-draws`, `data-tris`, `data-shadowtris`, `data-culled`, `data-pending` (the timing
+read in progress), and in the map editor `data-map`, `data-mapsize`, `data-tool`, `data-level`,
 `data-props`, `data-areas`, `data-dirty`, `data-buildings`, `data-build`, `data-draft`,
 `data-selection`, `data-walker`, `data-zones`, `data-links`, `data-roamers`, `data-roaming`,
 `data-pool` and the places of a few buttons (`data-ui-*`) on `<body>`;
@@ -150,7 +155,7 @@ on the ground at the origin, its front to Blender's front view.
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -171,6 +176,49 @@ Measured on 2026-10-14 (RTX 3080), a triple battle played by the AI:
 | Browser, headless Chrome on WebGPU, 60 s (`tools/frames.mjs`) | 56-58 (headless Chrome ticks at ~57 Hz) | 18-19 ms; one frame over 25 ms (25 ms, a battle restarting) |
 
 The only long frame on either is the first one, while the battle loads.
+
+## Performance
+
+The aim is 120 frames per second on a 120 Hz screen, 60 at least on modest machines. `F3`
+shows the details in the game (time per frame, draw calls and triangles in the scene and the
+shadow, what was left out of sight, the graphics settings). In the menu, **Graphics** sets
+the 3D scene's resolution (100, 75 or 50% of the screen's, smoothed up) and the shadows (off,
+low, medium, high: a 1024 to 4096 shadow map) for machines that can't keep up.
+
+What keeps it fast:
+
+- World meshes (ground, cliffs, props, trees, buildings) are cut into 16 x 16 cell squares
+  with their bounds; a square out of the camera's sight isn't drawn, nor one out of the sun's
+  in the shadow pass. A big map costs what's on screen, not its size.
+- Nearest first, and props without cut-outs on a shader with no `discard`: the GPU drops what's
+  hidden before shading it. The ground (the costliest shader) is drawn last, under the rest.
+- The ground shader skips the border votes wherever a cell and its neighbours have one
+  terrain: most of the ground.
+- The map editor sends props, trees and buildings to the GPU as separate layers: placing a
+  prop doesn't send the forest again.
+- Test hooks on `<body>` are written only when they change.
+
+Shadows are looked up a little off each surface, along its normal (1.5 shadow texels), with
+a margin of half a texel: both in world units, so shadows start at their casters' feet at any
+zoom (a fixed margin in the light's depth used to part them by up to a world unit). The sun's
+view moves in whole shadow texels, so shadow edges stay still when the camera moves, and its
+coverage grows in steps when the camera zooms out.
+
+`tools/perf.mjs` measures it uncapped (Chrome without vsync or its 60 FPS limit): frames per
+second are then what the machine could do. `tile=N` plays a map made of N x N copies of the
+test meadow (added to the served bundle, nothing written); `profile=NAME` samples where the
+time goes. Measured on 2026-10-15 (RTX 3080, WebGPU), before and after the work above:
+
+| 3840 x 2160, the meadow x 16 (160 x 120 cells, 1M triangles) | Before | After |
+|---|---|---|
+| Close view | 1009 fps (0.99 ms) | 1610 fps (0.62 ms) |
+| Mid view | 555 fps (1.8 ms) | 1080 fps (0.93 ms) |
+| The whole map in view | 471 fps (2.1 ms) | 727 fps (1.4 ms) |
+| Walking (close camera) | not measured | 895 fps (1.1 ms) |
+| A prop placed in the map editor: worst frame | 57 ms | 7.4 ms |
+
+At 1400 x 900 on the meadow itself, every scene runs at ~2400 fps uncapped (~0.4 ms a frame),
+a battle at ~3800.
 
 ## Not yet
 

@@ -106,11 +106,35 @@ impl Files {
     }
 }
 
-/// Test hooks: in the browser, `<body data-KEY="value">`; elsewhere, nothing.
+/// Test hooks: in the browser, `<body data-KEY="value">`; elsewhere, nothing. Written only
+/// when they change: dozens are set every frame, and each write is a trip into the page.
 #[cfg(target_arch = "wasm32")]
 pub fn set_hook(key: &str, value: &str) {
-    if let Some(body) = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body()) {
-        let _ = body.dataset().set(key, value);
+    use std::cell::RefCell;
+    thread_local! {
+        static LAST: RefCell<HashMap<String, String>> = RefCell::new(HashMap::new());
+        static BODY: Option<web_sys::HtmlElement> = web_sys::window().and_then(|w| w.document()).and_then(|d| d.body());
+    }
+    let changed = LAST.with(|last| {
+        let mut last = last.borrow_mut();
+        match last.get_mut(key) {
+            Some(v) if v == value => false,
+            Some(v) => {
+                value.clone_into(v);
+                true
+            }
+            None => {
+                last.insert(key.to_string(), value.to_string());
+                true
+            }
+        }
+    });
+    if changed {
+        BODY.with(|body| {
+            if let Some(body) = body {
+                let _ = body.dataset().set(key, value);
+            }
+        });
     }
 }
 

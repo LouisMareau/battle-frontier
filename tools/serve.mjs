@@ -14,7 +14,8 @@ const TYPES = {
   '.png': 'image/png', '.css': 'text/css', '.wav': 'audio/wav',
 };
 
-export function serve(port = 8080) {
+/// `rewrite(path, body)`: a check's chance to change what's served (a Buffer back, or the same).
+export function serve(port = 8080, { rewrite } = {}) {
   const server = createServer(async (req, res) => {
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
     const local = /^temporary[\\/]/.test(path); // normalize() gives backslashes on Windows
@@ -22,7 +23,8 @@ export function serve(port = 8080) {
     const file = local ? join(temporary, path.slice('temporary/'.length)) : join(root, path || 'index.html');
     if (!file.startsWith(base)) { res.writeHead(403).end(); return; }
     try {
-      const body = await readFile(file);
+      let body = await readFile(file);
+      if (rewrite) body = rewrite(path.split('\\').join('/'), body);
       res.writeHead(200, { 'content-type': TYPES[extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
       res.end(body);
     } catch {

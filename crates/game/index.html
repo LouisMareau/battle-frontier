@@ -19,5 +19,7 @@
   <canvas id="game"></canvas>
   <div id="loading"><p>Loading the game…</p></div>
   <noscript><p style="position:absolute;inset:0;padding:24px">The game is a WebAssembly app: it needs JavaScript.</p></noscript>
+  <!-- F3 shows the game's frame-time details, not the browser's search -->
+  <script>addEventListener('keydown', (e) => { if (e.key === 'F3') e.preventDefault(); });</script>
 </body>
 </html>

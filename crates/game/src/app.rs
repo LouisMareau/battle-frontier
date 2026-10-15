@@ -8,7 +8,7 @@ use std::sync::Arc;
 use content::{Content, Space};
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Vec2};
 use render::map::{find_spot, MapScene};
-use render::scene::{Frame, SceneRenderer};
+use render::scene::{DrawStats, Frame, Quality, SceneRenderer};
 use rules::battle::{Battle, BattleKind, BattleSetup, Outcome, Side};
 use rules::config::{Config, Period};
 use rules::dex::{Dex, Rng};
@@ -38,6 +38,31 @@ pub struct Options {
     pub text: usize,
     pub match_level: bool,
     pub auto: bool,
+    pub graphics: Graphics,
+}
+
+/// How much the GPU draws (for machines that can't keep up): the 3D scene's resolution
+/// against the screen's, and the shadows' sharpness.
+#[derive(Clone, Copy, PartialEq)]
+pub struct Graphics {
+    /// percent of the screen's resolution
+    pub scale: u8,
+    /// 0 none, 1 low, 2 medium, 3 high
+    pub shadows: usize,
+}
+
+impl Default for Graphics {
+    fn default() -> Self {
+        Graphics { scale: 100, shadows: 2 }
+    }
+}
+
+impl Graphics {
+    pub const SHADOWS: [(&'static str, u32); 4] = [("Off", 0), ("Low", 1024), ("Medium", 2048), ("High", 4096)];
+
+    fn quality(self) -> Quality {
+        Quality { scale: self.scale as f32 / 100.0, shadow_size: Self::SHADOWS[self.shadows.min(3)].1 }
+    }
 }
 
 /// Command-line options of the desktop build (the browser takes them as `<body data-cmd>`).
@@ -51,6 +76,8 @@ pub struct Cli {
     pub levels: Option<u8>,
     /// open the map editor (on that map, if not empty)
     pub maps: Option<String>,
+    /// draw as fast as possible, not at the screen's rate (to measure)
+    pub no_vsync: bool,
 }
 
 struct Loading {
@@ -84,15 +111,21 @@ enum Screen {
     Results(Box<Director>, Results),
 }
 
-/// Frame times: frames per second and the worst gap between two frames, per second.
+/// Frame times: frames per second, the worst gap between two frames, and the processor's
+/// time per frame (the game's and egui's work, without waiting for the screen), per second.
 #[derive(Default)]
 struct Stats {
     last: f64,
     window_start: f64,
     frames: u32,
     worst: f64,
+    cpu_sum: f64,
+    cpu_worst: f64,
     pub fps: u32,
     pub worst_gap: f64,
+    /// milliseconds: average and worst
+    pub cpu: f64,
+    pub cpu_peak: f64,
 }
 
 pub struct GameApp {
@@ -113,6 +146,10 @@ pub struct GameApp {
     menu_sel: usize,
     /// frames over 25 ms and what was going on (for the checks)
     hitches: Vec<String>,
+    /// what the renderer put on screen last frame
+    draws: DrawStats,
+    /// the frame-time details (F3)
+    perf_panel: bool,
 }
 
 pub struct SceneCallback {
@@ -181,10 +218,12 @@ impl GameApp {
             text: if cli.preset.is_some() { 0 } else { 1 },
             match_level: true,
             auto: cli.auto,
+            graphics: Graphics::default(),
         };
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
+            draws: DrawStats::default(), perf_panel: false,
         }
     }
 
@@ -461,6 +500,12 @@ impl GameApp {
                     }
                 }
                 "text" => self.options.text = match arg { "fast" => 0, "slow" => 2, _ => 1 },
+                "scale" => self.options.graphics.scale = arg.parse::<u8>().unwrap_or(100).clamp(25, 100),
+                "shadows" => {
+                    if let Some(i) = Graphics::SHADOWS.iter().position(|(n, _)| n.eq_ignore_ascii_case(arg)) {
+                        self.options.graphics.shadows = i;
+                    }
+                }
                 "levels" => {
                     if let Ok(lv) = arg.parse::<u8>() {
                         for s in self.party.iter_mut() {
@@ -503,7 +548,7 @@ impl GameApp {
         }
     }
 
-    fn frame_stats(&mut self, now: f64) {
+    fn frame_stats(&mut self, now: f64, cpu_ms: Option<f64>) {
         let gap = now - self.stats.last;
         if self.stats.last > 0.0 && gap > 25.0 {
             let what = match &self.screen {
@@ -529,14 +574,29 @@ impl GameApp {
         }
         s.last = now;
         s.frames += 1;
+        if let Some(c) = cpu_ms {
+            s.cpu_sum += c;
+            s.cpu_worst = s.cpu_worst.max(c);
+        }
         if now - s.window_start >= 1000.0 {
             s.fps = s.frames;
             s.worst_gap = s.worst;
+            s.cpu = s.cpu_sum / s.frames.max(1) as f64;
+            s.cpu_peak = s.cpu_worst;
             s.frames = 0;
             s.worst = 0.0;
+            s.cpu_sum = 0.0;
+            s.cpu_worst = 0.0;
             s.window_start = now;
             platform::set_hook("fps", &s.fps.to_string());
             platform::set_hook("maxgap", &format!("{:.1}", s.worst_gap));
+            platform::set_hook("cpu", &format!("{:.2}", s.cpu));
+            platform::set_hook("cpupeak", &format!("{:.2}", s.cpu_peak));
+            let d = self.draws;
+            platform::set_hook("draws", &d.draws.to_string());
+            platform::set_hook("tris", &d.triangles.to_string());
+            platform::set_hook("shadowtris", &d.shadow_triangles.to_string());
+            platform::set_hook("culled", &d.culled.to_string());
             if self.cli.stats {
                 let state = match &self.screen {
                     Screen::Battle(d, _) => format!("battle round {}", d.battle.round),
@@ -545,7 +605,7 @@ impl GameApp {
                     Screen::Maps(_) => "map editor".into(),
                     _ => "menu".into(),
                 };
-                println!("fps {} worst-gap-ms {:.1} {state}", s.fps, s.worst_gap);
+                println!("fps {} worst-gap-ms {:.1} cpu-ms {:.2} (worst {:.2}) {state}", s.fps, s.worst_gap, s.cpu, s.cpu_peak);
             }
         }
     }
@@ -592,6 +652,19 @@ impl GameApp {
                     ui.separator();
                     ui.checkbox(&mut self.options.match_level, "Party matches each encounter's level");
                     ui.checkbox(&mut self.options.auto, "AI plays your side");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(RichText::new("Graphics").color(TEXT));
+                    ui.label(RichText::new("resolution").color(MUTED));
+                    for p in [100u8, 75, 50] {
+                        ui.selectable_value(&mut self.options.graphics.scale, p, format!("{p}%"));
+                    }
+                    ui.separator();
+                    ui.label(RichText::new("shadows").color(MUTED));
+                    for (i, (name, _)) in Graphics::SHADOWS.iter().enumerate() {
+                        ui.selectable_value(&mut self.options.graphics.shadows, i, *name);
+                    }
+                    ui.label(RichText::new("(lower these if the frame rate drops)").color(MUTED).size(11.5));
                 });
                 ui.add_space(8.0);
                 let Some(content) = content else { return };
@@ -671,7 +744,16 @@ impl eframe::App for GameApp {
         let ctx = ui.ctx().clone();
         let now = platform::now_ms();
         let dt = ((now - self.stats.last).max(0.0) / 1000.0).min(0.05) as f32;
-        self.frame_stats(now);
+        self.frame_stats(now, frame.info().cpu_usage.map(|s| s as f64 * 1000.0));
+        if let Some(rs) = frame.wgpu_render_state() {
+            if let Some(r) = rs.renderer.write().callback_resources.get_mut::<SceneRenderer>() {
+                let q = self.options.graphics.quality();
+                if r.quality() != q {
+                    r.set_quality(&rs.device, q);
+                }
+                self.draws = r.stats();
+            }
+        }
         let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
         self.input.read(&ctx, now, timing_read);
         if let Some(limit) = self.cli.exit_after {
@@ -798,7 +880,7 @@ impl eframe::App for GameApp {
             }
         }
 
-        // frame times, top right
+        // frame times, top right; F3: the details
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("stats")));
         let r = ctx.content_rect();
         painter.text(
@@ -808,6 +890,28 @@ impl eframe::App for GameApp {
             FontId::proportional(11.0),
             Color32::from_white_alpha(150),
         );
+        if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
+            self.perf_panel = !self.perf_panel;
+        }
+        if self.perf_panel {
+            let (d, g) = (self.draws, self.options.graphics);
+            let lines = [
+                format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap),
+                format!("busy {:.2} ms a frame (worst {:.2})", self.stats.cpu, self.stats.cpu_peak),
+                format!("scene: {} draws, {}k triangles", d.draws, d.triangles / 1000),
+                format!("shadow: {} draws, {}k triangles", d.shadow_draws, d.shadow_triangles / 1000),
+                format!("out of sight: {} squares", d.culled),
+                format!("resolution {}% · shadows {}", g.scale, Graphics::SHADOWS[g.shadows.min(3)].0.to_lowercase()),
+                "F3 hides this".to_string(),
+            ];
+            let font = FontId::monospace(11.0);
+            let top = r.top() + 26.0;
+            let box_rect = Rect::from_min_max(Pos2::new(r.right() - 270.0, top - 4.0), Pos2::new(r.right() - 6.0, top + lines.len() as f32 * 15.0 + 4.0));
+            painter.rect_filled(box_rect, 4.0, Color32::from_black_alpha(190));
+            for (k, l) in lines.iter().enumerate() {
+                painter.text(Pos2::new(box_rect.left() + 8.0, top + k as f32 * 15.0), Align2::LEFT_TOP, l, font.clone(), Color32::from_white_alpha(210));
+            }
+        }
         if let Some(e) = &self.error {
             painter.text(Pos2::new(r.left() + 10.0, r.bottom() - 10.0), Align2::LEFT_BOTTOM, e, FontId::proportional(12.0), Color32::from_rgb(255, 120, 100));
         }

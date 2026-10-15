@@ -14,7 +14,8 @@ struct Globals {
     params: vec4<f32>,       // x: fog end, y: shadows on, z: encode sRGB in the blit
     camera: vec4<f32>,
     world: vec4<f32>,        // the map: x: width, y: height (cells), z: level height, w: time (s)
-    editor: vec4<f32>,       // x: grid lines on
+    editor: vec4<f32>,       // x: grid lines on, y: darken cells outside the focus
+    shadow: vec4<f32>,       // x: normal offset (world), y: depth margin (light depth), z: a texel (uv)
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
@@ -38,8 +39,8 @@ fn lit_by_sun(light_pos: vec4<f32>) -> f32 {
     if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || p.z > 1.0) {
         return 1.0;
     }
-    let texel = 1.0 / 2048.0;
-    let z = p.z - 0.0015;
+    let texel = g.shadow.z;
+    let z = p.z - g.shadow.y;
     var sum = 0.0;
     sum += textureSampleCompareLevel(shadow_map, shadow_samp, uv + vec2<f32>(-0.5, -0.5) * texel, z);
     sum += textureSampleCompareLevel(shadow_map, shadow_samp, uv + vec2<f32>(0.5, -0.5) * texel, z);
@@ -73,7 +74,9 @@ fn vs_map(v: MapIn) -> MapOut {
     o.uv = v.uv;
     o.normal = v.normal;
     o.world = v.pos;
-    o.light_pos = g.light_view_proj * vec4<f32>(v.pos, 1.0);
+    // looked up a little off the surface, along its normal: no acne, and no margin wide
+    // enough to part a shadow from its caster
+    o.light_pos = g.light_view_proj * vec4<f32>(v.pos + v.normal * g.shadow.x, 1.0);
     o.color = v.color;
     return o;
 }
@@ -91,6 +94,14 @@ fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
     if (c.a < 0.5) {
         discard;
     }
+    return vec4<f32>(fog(c.rgb * sunlit(i.normal, i.light_pos), i.world), 1.0);
+}
+
+// the same without cut-outs (vertex colours on white): with no discard, the GPU can skip
+// what's hidden before shading it
+@fragment
+fn fs_map_opaque(i: MapOut) -> @location(0) vec4<f32> {
+    let c = textureSample(tex, samp, i.uv) * i.color;
     return vec4<f32>(fog(c.rgb * sunlit(i.normal, i.light_pos), i.world), 1.0);
 }
 
@@ -130,6 +141,12 @@ fn cell_at(c: vec2<i32>) -> vec2<i32> {
     let size = vec2<i32>(textureDimensions(cells));
     let t = textureLoad(cells, clamp(c, vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0);
     return vec2<i32>(i32(round(t.r * 255.0)), i32(round(t.g * 255.0)));
+}
+
+// is the cell in the editor's focus (the cells texture's blue channel)?
+fn focused(c: vec2<i32>) -> bool {
+    let size = vec2<i32>(textureDimensions(cells));
+    return textureLoad(cells, clamp(c, vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0).b > 0.5;
 }
 
 fn pal(t: i32, row: i32) -> vec4<f32> {
@@ -243,38 +260,44 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
         select(own.x, c2.x, c2.y == own.y),
         select(own.x, c3.x, c3.y == own.y),
     );
-    let ws = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
-    var best = -9.0;
-    var bt = own.x;
-    var second = -9.0;
-    var st = own.x;
-    let s0 = score(ts, ws, ts[0], p);
-    let s1 = score(ts, ws, ts[1], p);
-    let s2 = score(ts, ws, ts[2], p);
-    let s3 = score(ts, ws, ts[3], p);
-    let ss = array<f32, 4>(s0, s1, s2, s3);
-    for (var k = 0; k < 4; k = k + 1) {
-        var t = ts[0];
-        var s = ss[0];
-        if (k == 1) { t = ts[1]; s = ss[1]; }
-        if (k == 2) { t = ts[2]; s = ss[2]; }
-        if (k == 3) { t = ts[3]; s = ss[3]; }
-        if (s > best) {
-            if (t != bt) {
-                second = best;
-                st = bt;
+    var col: vec3<f32>;
+    if (ts[0] == ts[1] && ts[1] == ts[2] && ts[2] == ts[3]) {
+        // one terrain all around (most of the ground): no border to draw, no votes
+        col = terrain_color(ts[0], p, 10.0);
+    } else {
+        let ws = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+        var best = -9.0;
+        var bt = own.x;
+        var second = -9.0;
+        var st = own.x;
+        let s0 = score(ts, ws, ts[0], p);
+        let s1 = score(ts, ws, ts[1], p);
+        let s2 = score(ts, ws, ts[2], p);
+        let s3 = score(ts, ws, ts[3], p);
+        let ss = array<f32, 4>(s0, s1, s2, s3);
+        for (var k = 0; k < 4; k = k + 1) {
+            var t = ts[0];
+            var s = ss[0];
+            if (k == 1) { t = ts[1]; s = ss[1]; }
+            if (k == 2) { t = ts[2]; s = ss[2]; }
+            if (k == 3) { t = ts[3]; s = ss[3]; }
+            if (s > best) {
+                if (t != bt) {
+                    second = best;
+                    st = bt;
+                }
+                best = s;
+                bt = t;
+            } else if (t != bt && s > second) {
+                second = s;
+                st = t;
             }
-            best = s;
-            bt = t;
-        } else if (t != bt && s > second) {
-            second = s;
-            st = t;
         }
-    }
-    var col = terrain_color(bt, p, best - second);
-    if (second > -8.0) {
-        let other = terrain_color(st, p, 0.0);
-        col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, best - second));
+        col = terrain_color(bt, p, best - second);
+        if (second > -8.0) {
+            let other = terrain_color(st, p, 0.0);
+            col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, best - second));
+        }
     }
     // shade at the foot of a cliff
     let fc = p - vec2<f32>(own_cell);
@@ -284,6 +307,9 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
     if (cell_at(own_cell + vec2<i32>(-1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, fc.x)); }
     if (cell_at(own_cell + vec2<i32>(1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.x)); }
     col = col * shade;
+    if (g.editor.y > 0.5 && !focused(own_cell)) {
+        col = col * 0.3;
+    }
     if (g.editor.x > 0.5) {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));

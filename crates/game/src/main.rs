@@ -1,7 +1,9 @@
 //! The game: one program for the browser (WebAssembly, WebGPU or WebGL 2) and the desktop.
 //!
 //! Desktop options: game [--preset ID] [--auto] [--time morning|day|night] [--levels 1-5]
-//!                       [--maps [ID]] [--exit-after SECONDS] [--stats]
+//!                       [--maps [ID]] [--exit-after SECONDS] [--stats] [--no-vsync]
+//! (--stats prints frames per second and processor time each second; with --no-vsync the
+//! frame rate is uncapped: what the machine can do, not the screen's rate)
 //! (content from ./content and ./temporary, or under $GAME_ROOT)
 
 #![cfg_attr(all(not(debug_assertions), not(target_arch = "wasm32")), windows_subsystem = "windows")]
@@ -52,6 +54,7 @@ fn main() -> eframe::Result {
             }
             "--auto" => cli.auto = true,
             "--stats" => cli.stats = true,
+            "--no-vsync" => cli.no_vsync = true,
             other => eprintln!("unknown option {other}"),
         }
         i += 1;
@@ -61,6 +64,10 @@ fn main() -> eframe::Result {
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
+    let mut options = options;
+    if cli.no_vsync {
+        options.wgpu_options.surface.present_mode = eframe::wgpu::PresentMode::AutoNoVsync;
+    }
     eframe::run_native("Battle engine", options, Box::new(move |cc| Ok(Box::new(app::GameApp::new(cc, cli)))))
 }
 

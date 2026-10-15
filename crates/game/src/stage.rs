@@ -476,7 +476,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, streaks, time: (now / 1000.0) as f32, grid: false }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, streaks, time: (now / 1000.0) as f32, grid: false, focus: false, overlays: vec![] }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.
@@ -519,6 +519,8 @@ pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec
         None => {}
     }
     let hemi_i = if period == Period::Night { 0.2 } else { 0.5 };
+    // in steps (so a zoom doesn't change the shadow's texels each frame)
+    let radius = 2f32.powf((radius.max(1.0).log2() * 4.0).ceil() / 4.0);
     let far = (radius / 22.0).max(1.0);
     let sun_pos = target + p.sun_pos * far;
     let light_view = Mat4::look_at_rh(sun_pos, target, Vec3::Y);

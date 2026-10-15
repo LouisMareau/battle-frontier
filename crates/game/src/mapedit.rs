@@ -138,9 +138,6 @@ pub struct MapEditor {
     need_props: bool,
     need_trees: bool,
     need_buildings: bool,
-    props_mesh: Scene,
-    trees_mesh: Scene,
-    buildings_mesh: Scene,
     /// props' real models, loaded (by prop id), and the ones that wouldn't load
     models: world::mesh::Models,
     model_failed: std::collections::HashSet<String>,
@@ -252,9 +249,6 @@ impl MapEditor {
             need_props: true,
             need_trees: true,
             need_buildings: true,
-            props_mesh: Scene::default(),
-            trees_mesh: Scene::default(),
-            buildings_mesh: Scene::default(),
             models: world::mesh::Models::new(),
             model_failed: std::collections::HashSet::new(),
             draft: None,
@@ -492,11 +486,16 @@ impl MapEditor {
             r.set_world_cells(&rs.queue, &mesh::cells_texture(&self.map));
             self.need_cells = false;
         }
+        // each layer sent alone when it changes: placing a prop doesn't send the forest again
         if self.need_trees {
-            self.trees_mesh = mesh::tree_mesh(&self.map, &self.content, self.level_height, &self.models);
+            let trees = mesh::tree_mesh(&self.map, &self.content, self.level_height, &self.models);
+            r.set_world_layer(&rs.device, "trees", &models::batches(&trees));
+            self.need_trees = false;
         }
         if self.need_props {
-            self.props_mesh = mesh::props(&self.map, &self.content, self.level_height, &self.models);
+            let props = mesh::props(&self.map, &self.content, self.level_height, &self.models);
+            r.set_world_layer(&rs.device, "props", &models::batches(&props));
+            self.need_props = false;
         }
         if self.need_buildings {
             let editing = self.draft.as_ref().and_then(|d| d.editing);
@@ -511,15 +510,7 @@ impl MapEditor {
             if let Some(d) = self.draft.as_ref().filter(|d| d.step == build::Step::Design) {
                 m.append(&building(&d.b, &self.content, self.level_height, Some(Cut { top: d.floor }), &self.models), Mat4::IDENTITY);
             }
-            self.buildings_mesh = m;
-        }
-        if self.need_trees || self.need_props || self.need_buildings {
-            let mut all = self.props_mesh.clone();
-            all.append(&self.trees_mesh, Mat4::IDENTITY);
-            all.append(&self.buildings_mesh, Mat4::IDENTITY);
-            r.set_world_objects(&rs.device, &models::batches(&all));
-            self.need_trees = false;
-            self.need_props = false;
+            r.set_world_layer(&rs.device, "buildings", &models::batches(&m));
             self.need_buildings = false;
         }
         if self.extra_changed {
@@ -838,6 +829,7 @@ impl MapEditor {
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
         crate::platform::set_hook("map", &self.map.id);
+        crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
         crate::platform::set_hook("props", &self.map.props.len().to_string());
         crate::platform::set_hook("areas", &self.map.tree_areas.len().to_string());
         crate::platform::set_hook("level", &self.level.to_string());
@@ -1523,6 +1515,8 @@ impl MapEditor {
             streaks: vec![],
             time: (now / 1000.0) as f32,
             grid: self.grid,
+            focus: false,
+            overlays: vec![],
         }
     }
 }

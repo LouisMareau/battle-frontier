@@ -2,16 +2,64 @@
 //! effects. The scene is drawn into its own colour + depth target (with the sun's shadow
 //! map first), then blitted into whatever pass the host gives (egui's, in the game).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use glam::{Mat4, Vec2, Vec3};
+use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::map::{build_meshes, MapScene, MapVertex, Spot};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
-const SHADOW_SIZE: u32 = 2048;
+/// The sun's shadow map, texels a side, unless `Quality` says otherwise.
+pub const SHADOW_SIZE: u32 = 2048;
+/// World meshes are cut into squares this many cells a side, each drawn only when the
+/// camera (or, for the shadow, the sun) can see it.
+const CHUNK: f32 = 16.0;
+
+/// How much the GPU draws: the scene's resolution against the screen's, and the sun's
+/// shadow map's size (0: no shadows). For machines that can't keep up at full quality.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Quality {
+    /// 0.25 to 1
+    pub scale: f32,
+    pub shadow_size: u32,
+}
+
+impl Default for Quality {
+    fn default() -> Self {
+        Quality { scale: 1.0, shadow_size: SHADOW_SIZE }
+    }
+}
+
+/// What the last frame had drawn: draw calls and triangles, in the scene and in the shadow.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DrawStats {
+    pub draws: u32,
+    pub triangles: u32,
+    pub shadow_draws: u32,
+    pub shadow_triangles: u32,
+    /// world chunks left out because they were out of sight (scene + shadow)
+    pub culled: u32,
+}
+
+/// A view's six planes (from its view-projection; depth 0 to 1, as wgpu has it).
+struct Frustum([Vec4; 6]);
+
+impl Frustum {
+    fn new(m: &Mat4) -> Frustum {
+        let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
+        Frustum([r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2])
+    }
+
+    /// Can any of the box be in it?
+    fn sees(&self, lo: Vec3, hi: Vec3) -> bool {
+        self.0.iter().all(|p| {
+            let far = Vec3::new(if p.x >= 0.0 { hi.x } else { lo.x }, if p.y >= 0.0 { hi.y } else { lo.y }, if p.z >= 0.0 { hi.z } else { lo.z });
+            p.x * far.x + p.y * far.y + p.z * far.z + p.w >= 0.0
+        })
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -28,6 +76,7 @@ struct Globals {
     camera: [f32; 4],
     world: [f32; 4],
     editor: [f32; 4],
+    shadow: [f32; 4],
 }
 
 #[repr(C)]
@@ -114,6 +163,10 @@ pub struct Frame {
     pub time: f32,
     /// grid lines on the world's ground (the map editor)
     pub grid: bool,
+    /// darken the world's cells outside the focus (the cells texture's blue channel)
+    pub focus: bool,
+    /// shapes drawn over everything (an editor's cursors), whatever is in front of them
+    pub overlays: Vec<Shape>,
 }
 
 /// A world map's ground, as `world::mesh::ground` makes it.
@@ -133,6 +186,9 @@ struct GpuMesh {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     count: u32,
+    /// its bounds, in the world
+    lo: Vec3,
+    hi: Vec3,
 }
 
 impl GpuMesh {
@@ -140,7 +196,15 @@ impl GpuMesh {
         if indices.is_empty() {
             return None;
         }
+        let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        for v in vertices {
+            let p = Vec3::from(v.pos);
+            lo = lo.min(p);
+            hi = hi.max(p);
+        }
         Some(GpuMesh {
+            lo,
+            hi,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("world vertices"),
                 contents: bytemuck::cast_slice(vertices),
@@ -160,14 +224,52 @@ impl GpuMesh {
         pass.set_index_buffer(self.indices.slice(..), wgpu::IndexFormat::Uint32);
         pass.draw_indexed(0..self.count, 0, 0..1);
     }
+
+    /// A world mesh cut into CHUNK squares (each triangle goes where its middle is), so
+    /// what's out of sight can be left out.
+    fn chunked(device: &wgpu::Device, vertices: &[MapVertex], indices: &[u32]) -> Vec<GpuMesh> {
+        let mut squares: BTreeMap<(i32, i32), Vec<u32>> = BTreeMap::new();
+        for tri in indices.as_chunks::<3>().0 {
+            let mid = tri.iter().fold(Vec3::ZERO, |m, &i| m + Vec3::from(vertices[i as usize].pos)) / 3.0;
+            squares.entry(((mid.x / CHUNK).floor() as i32, (mid.z / CHUNK).floor() as i32)).or_default().extend_from_slice(tri);
+        }
+        if squares.len() <= 1 {
+            return GpuMesh::new(device, vertices, indices).into_iter().collect();
+        }
+        // each square's own vertices: `slot` maps the mesh's to the square's (stamped with
+        // the square's number, so it's never cleared)
+        let mut slot = vec![(usize::MAX, 0u32); vertices.len()];
+        squares
+            .into_values()
+            .enumerate()
+            .filter_map(|(n, tris)| {
+                let mut own = vec![];
+                let idx: Vec<u32> = tris
+                    .iter()
+                    .map(|&i| {
+                        let s = &mut slot[i as usize];
+                        if s.0 != n {
+                            *s = (n, own.len() as u32);
+                            own.push(vertices[i as usize]);
+                        }
+                        s.1
+                    })
+                    .collect();
+                GpuMesh::new(device, &own, &idx)
+            })
+            .collect()
+    }
 }
 
-/// The world map on the GPU: cell tops (terrain shader), cliffs, props and trees.
+/// The world map on the GPU: cell tops (terrain shader), cliffs, props and trees, in
+/// CHUNK squares.
 struct WorldGpu {
-    tops: Option<GpuMesh>,
-    solid: Option<GpuMesh>,
-    /// props, trees and buildings, by texture (WHITE for the vertex-coloured ones)
-    objects: Vec<(String, GpuMesh)>,
+    tops: Vec<GpuMesh>,
+    solid: Vec<GpuMesh>,
+    /// props, trees and buildings, in layers replaced one at a time ("props", "trees"...):
+    /// by texture (WHITE for the vertex-coloured ones), a texture's squares one after the
+    /// other
+    objects: BTreeMap<String, Vec<(String, GpuMesh)>>,
     /// things that move (the walker, creatures): small, replaced often
     extra: Vec<(String, GpuMesh)>,
     cells: wgpu::Texture,
@@ -210,7 +312,14 @@ pub struct SceneRenderer {
     linear: wgpu::Sampler,
     shadow_view: wgpu::TextureView,
     shadow_bind: wgpu::BindGroup,
+    shadow_layout: wgpu::BindGroupLayout,
+    shadow_sampler: wgpu::Sampler,
+    /// the shadow map's size now
+    shadow_size: u32,
+    quality: Quality,
+    stats: DrawStats,
     map_pipeline: wgpu::RenderPipeline,
+    opaque_pipeline: wgpu::RenderPipeline,
     map_shadow_pipeline: wgpu::RenderPipeline,
     sprite_pipeline: wgpu::RenderPipeline,
     sprite_shadow_pipeline: wgpu::RenderPipeline,
@@ -229,6 +338,8 @@ pub struct SceneRenderer {
     sprite_draws: Vec<DrawCall>,
     blend_draws: Vec<DrawCall>,
     add_draws: Vec<DrawCall>,
+    overlay_draws: Vec<DrawCall>,
+    overlay_pipeline: wgpu::RenderPipeline,
     sky: [f32; 3],
     output_srgb: bool,
 }
@@ -324,25 +435,7 @@ impl SceneRenderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
-        let shadow_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("shadow map"),
-            size: wgpu::Extent3d { width: SHADOW_SIZE, height: SHADOW_SIZE, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: DEPTH,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
-            view_formats: &[],
-        });
-        let shadow_view = shadow_texture.create_view(&Default::default());
-        let shadow_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("shadow"),
-            layout: &shadow_layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&shadow_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&shadow_sampler) },
-            ],
-        });
+        let (shadow_view, shadow_bind) = Self::make_shadow(device, &shadow_layout, &shadow_sampler, SHADOW_SIZE);
 
         let data_texture = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
@@ -397,7 +490,7 @@ impl SceneRenderer {
             depth_write_enabled: Some(true),
             depth_compare: Some(wgpu::CompareFunction::LessEqual),
             stencil: Default::default(),
-            bias: wgpu::DepthBiasState { constant: 2, slope_scale: 2.0, clamp: 0.0 },
+            bias: Default::default(),
         };
         let primitive = wgpu::PrimitiveState { cull_mode: None, ..Default::default() };
         let pipeline = |label: &str,
@@ -433,20 +526,24 @@ impl SceneRenderer {
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
         };
         let map_pipeline = pipeline("map", &main_layout, "vs_map", "fs_map", &map_buffers, Some((COLOR, None)), Some(depth(true)));
+        let opaque_pipeline = pipeline("opaque", &main_layout, "vs_map", "fs_map_opaque", &map_buffers, Some((COLOR, None)), Some(depth(true)));
         let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, None, Some(shadow_depth.clone()));
         let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, Some((COLOR, None)), Some(depth(true)));
         let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, None, Some(shadow_depth));
         let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
+        let on_top = wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() };
+        let overlay_pipeline = pipeline("overlay", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(on_top));
         let add_pipeline = pipeline("additive", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(additive))), Some(depth(false)));
         let blit_pipeline = pipeline("blit", &shadow_pass_layout, "vs_blit", "fs_blit", &[], Some((output, None)), None);
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, Some((COLOR, None)), Some(depth(true)));
 
         let mut r = SceneRenderer {
-            globals, globals_bind, texture_layout, nearest, linear, shadow_view, shadow_bind,
-            map_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
+            globals, globals_bind, texture_layout, nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
+            shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
+            map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
             ground_pipeline, ground_layout, world: None,
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
-            sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], sky: [0.1, 0.1, 0.1],
+            sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
             output_srgb: output.is_srgb(),
         };
         r.add_texture(device, queue, WHITE, &[255, 255, 255, 255], 1, 1, false);
@@ -515,7 +612,7 @@ impl SceneRenderer {
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             pass.set_vertex_buffer(0, zeros.slice(..));
-            for p in [&self.map_pipeline, &self.sprite_pipeline, &self.blend_pipeline, &self.add_pipeline] {
+            for p in [&self.map_pipeline, &self.opaque_pipeline, &self.sprite_pipeline, &self.blend_pipeline, &self.add_pipeline, &self.overlay_pipeline] {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
@@ -524,6 +621,52 @@ impl SceneRenderer {
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+    }
+
+    /// The sun's shadow map, `size` texels a side.
+    fn make_shadow(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, size: u32) -> (wgpu::TextureView, wgpu::BindGroup) {
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("shadow map"),
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: DEPTH,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&Default::default());
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("shadow"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+            ],
+        });
+        (view, bind)
+    }
+
+    /// Sets the resolution and the shadows (taking effect on the next frame).
+    pub fn set_quality(&mut self, device: &wgpu::Device, q: Quality) {
+        let q = Quality { scale: q.scale.clamp(0.25, 1.0), shadow_size: q.shadow_size.min(device.limits().max_texture_dimension_2d) };
+        if q.shadow_size > 0 && q.shadow_size != self.shadow_size {
+            (self.shadow_view, self.shadow_bind) = Self::make_shadow(device, &self.shadow_layout, &self.shadow_sampler, q.shadow_size);
+            self.shadow_size = q.shadow_size;
+        }
+        if q.scale != self.quality.scale {
+            self.target = None;
+        }
+        self.quality = q;
+    }
+
+    pub fn quality(&self) -> Quality {
+        self.quality
+    }
+
+    /// What the last frame had drawn.
+    pub fn stats(&self) -> DrawStats {
+        self.stats
     }
 
     pub fn has_texture(&self, key: &str) -> bool {
@@ -605,11 +748,11 @@ impl SceneRenderer {
         let (cells, bind) = self.data_bind(device, queue, g.cells, g.size, g.palette, g.palette_width);
         let (objects, extra) = match self.world.take() {
             Some(w) => (w.objects, w.extra),
-            None => (vec![], vec![]),
+            None => (BTreeMap::new(), vec![]),
         };
         self.world = Some(WorldGpu {
-            tops: GpuMesh::new(device, g.tops.0, g.tops.1),
-            solid: GpuMesh::new(device, g.solid.0, g.solid.1),
+            tops: GpuMesh::chunked(device, g.tops.0, g.tops.1),
+            solid: GpuMesh::chunked(device, g.solid.0, g.solid.1),
             objects,
             extra,
             cells,
@@ -633,12 +776,22 @@ impl SceneRenderer {
         );
     }
 
-    /// The props and trees (after `set_world_ground`).
-    /// Batches by texture key (`WHITE` for vertex colours alone); a texture that isn't
-    /// loaded draws white.
+    /// The props, trees and buildings (after `set_world_ground`), all in one layer.
     pub fn set_world_objects(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
         if let Some(w) = &mut self.world {
-            w.objects = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
+            w.objects.clear();
+        }
+        self.set_world_layer(device, "objects", batches);
+    }
+
+    /// One layer of what stands on the world map (after `set_world_ground`), replacing
+    /// that layer alone: an edit to the props doesn't send the trees again.
+    /// Batches by texture key (`WHITE` for vertex colours alone); a texture that isn't
+    /// loaded draws white.
+    pub fn set_world_layer(&mut self, device: &wgpu::Device, layer: &str, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
+        if let Some(w) = &mut self.world {
+            let meshes = batches.iter().flat_map(|(k, v, i)| GpuMesh::chunked(device, v, i).into_iter().map(|m| (k.clone(), m))).collect();
+            w.objects.insert(layer.to_string(), meshes);
         }
     }
 
@@ -692,28 +845,32 @@ impl SceneRenderer {
 
     /// Uploads the frame and records the shadow and scene passes into `encoder`.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, frame: &Frame, size: [u32; 2]) {
-        let size = [size[0].max(1), size[1].max(1)];
+        let scale = self.quality.scale;
+        let size = [((size[0] as f32 * scale).round() as u32).max(1), ((size[1] as f32 * scale).round() as u32).max(1)];
         if self.target.as_ref().map(|t| t.size != size).unwrap_or(true) {
             self.target = Some(self.make_target(device, size));
         }
         let l = &frame.light;
         self.sky = l.sky.to_array();
+        let shadows = frame.shadows && self.quality.shadow_size > 0;
+        let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
         let globals = Globals {
             view_proj: frame.view_proj.to_cols_array_2d(),
-            light_view_proj: l.light_view_proj.to_cols_array_2d(),
+            light_view_proj: light_view_proj.to_cols_array_2d(),
             sun_dir: l.sun_dir.normalize().extend(0.0).to_array(),
             sun_color: l.sun.extend(0.0).to_array(),
             ambient: l.ambient.extend(0.0).to_array(),
             hemi_sky: l.hemi_sky.extend(0.0).to_array(),
             hemi_ground: l.hemi_ground.extend(0.0).to_array(),
             fog_color: [l.sky.x, l.sky.y, l.sky.z, l.fog_near],
-            params: [l.fog_far, frame.shadows as u32 as f32, (!self.output_srgb) as u32 as f32, 0.0],
+            params: [l.fog_far, shadows as u32 as f32, (!self.output_srgb) as u32 as f32, 0.0],
             camera: frame.camera_pos.extend(1.0).to_array(),
             world: match &self.world {
                 Some(w) => [w.size[0] as f32, w.size[1] as f32, w.level_height, frame.time],
                 None => [0.0, 0.0, 2.0, frame.time],
             },
-            editor: [frame.grid as u32 as f32, 0.0, 0.0, 0.0],
+            editor: [frame.grid as u32 as f32, frame.focus as u32 as f32, 0.0, 0.0],
+            shadow: shadow_params(&light_view_proj, self.shadow_size),
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
 
@@ -722,6 +879,7 @@ impl SceneRenderer {
         self.sprite_draws.clear();
         self.blend_draws.clear();
         self.add_draws.clear();
+        self.overlay_draws.clear();
         let cam = frame.camera_pos;
         let mut sorted: Vec<&Billboard> = frame.billboards.iter().filter(|b| self.textures.contains_key(&b.texture)).collect();
         sorted.sort_by(|a, b| a.texture.cmp(&b.texture));
@@ -747,7 +905,8 @@ impl SceneRenderer {
             vertices.extend_from_slice(&quad);
             push_draw(&mut self.sprite_draws, &b.texture, first, 6);
         }
-        for s in &frame.shapes {
+        let shapes = frame.shapes.iter().map(|s| (s, false)).chain(frame.overlays.iter().map(|s| (s, true)));
+        for (s, over) in shapes {
             let first = vertices.len() as u32;
             let c = s.color;
             let n = 40;
@@ -781,7 +940,14 @@ impl SceneRenderer {
                 }
             }
             let count = vertices.len() as u32 - first;
-            push_draw(if s.additive { &mut self.add_draws } else { &mut self.blend_draws }, WHITE, first, count);
+            let list = if over {
+                &mut self.overlay_draws
+            } else if s.additive {
+                &mut self.add_draws
+            } else {
+                &mut self.blend_draws
+            };
+            push_draw(list, WHITE, first, count);
         }
         // glows face the camera fully
         let view = frame.view_proj;
@@ -828,8 +994,12 @@ impl SceneRenderer {
             queue.write_buffer(sprite_buffer, 0, bytes);
         }
 
+        let mut stats = DrawStats::default();
+        let eye = Frustum::new(&frame.view_proj);
+        let sun = Frustum::new(&light_view_proj);
+
         // the sun's shadow map
-        if frame.shadows {
+        if shadows {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("shadow"),
                 color_attachments: &[],
@@ -851,12 +1021,21 @@ impl SceneRenderer {
             }
             if let Some(w) = &self.world {
                 pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-                if let Some(m) = &w.solid {
+                let solid = w.solid.iter().map(|m| (WHITE, m));
+                let objects = w.objects.values().flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+                let mut bound = WHITE;
+                for (key, m) in solid.chain(objects) {
+                    if !sun.sees(m.lo, m.hi) {
+                        stats.culled += 1;
+                        continue;
+                    }
+                    if key != bound {
+                        pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                        bound = key;
+                    }
                     m.draw(&mut pass);
-                }
-                for (key, m) in w.objects.iter().chain(&w.extra) {
-                    pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
-                    m.draw(&mut pass);
+                    stats.shadow_draws += 1;
+                    stats.shadow_triangles += m.count / 3;
                 }
             }
             pass.set_pipeline(&self.sprite_shadow_pipeline);
@@ -900,22 +1079,50 @@ impl SceneRenderer {
             pass.draw_indexed(0..m.count, 0, 0..1);
         }
         if let Some(w) = &self.world {
-            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-            if let Some(m) = &w.solid {
-                m.draw(&mut pass);
+            // what's in sight, nearest first: what's behind is then hidden before it's shaded
+            let solid = w.solid.iter().map(|m| (WHITE, m));
+            let objects = w.objects.values().flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+            let mut seen: Vec<(f32, &str, &GpuMesh)> = vec![];
+            for (key, m) in solid.chain(objects) {
+                if eye.sees(m.lo, m.hi) {
+                    seen.push((((m.lo + m.hi) * 0.5).distance_squared(frame.camera_pos), key, m));
+                } else {
+                    stats.culled += 1;
+                }
             }
-            for (key, m) in w.objects.iter().chain(&w.extra) {
-                pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+            seen.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let mut bound: Option<&str> = None;
+            let mut cutout: Option<bool> = None;
+            for (_, key, m) in seen {
+                let cuts = key != WHITE;
+                if cutout != Some(cuts) {
+                    pass.set_pipeline(if cuts { &self.map_pipeline } else { &self.opaque_pipeline });
+                    cutout = Some(cuts);
+                }
+                if bound != Some(key) {
+                    pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                    bound = Some(key);
+                }
                 m.draw(&mut pass);
+                stats.draws += 1;
+                stats.triangles += m.count / 3;
             }
-            if let Some(tops) = &w.tops {
-                pass.set_pipeline(&self.ground_pipeline);
-                pass.set_bind_group(1, &w.bind, &[]);
-                tops.draw(&mut pass);
+            // the ground last: what stands on it hides most of it, and its shader is the
+            // costliest
+            pass.set_pipeline(&self.ground_pipeline);
+            pass.set_bind_group(1, &w.bind, &[]);
+            for m in &w.tops {
+                if !eye.sees(m.lo, m.hi) {
+                    stats.culled += 1;
+                    continue;
+                }
+                m.draw(&mut pass);
+                stats.draws += 1;
+                stats.triangles += m.count / 3;
             }
         }
         pass.set_vertex_buffer(0, sprite_buffer.slice(..));
-        for (pipeline, draws) in [(&self.sprite_pipeline, &self.sprite_draws), (&self.blend_pipeline, &self.blend_draws), (&self.add_pipeline, &self.add_draws)] {
+        for (pipeline, draws) in [(&self.sprite_pipeline, &self.sprite_draws), (&self.blend_pipeline, &self.blend_draws), (&self.add_pipeline, &self.add_draws), (&self.overlay_pipeline, &self.overlay_draws)] {
             if draws.is_empty() {
                 continue;
             }
@@ -923,8 +1130,11 @@ impl SceneRenderer {
             for d in draws {
                 pass.set_bind_group(1, &self.textures[&d.texture].bind, &[]);
                 pass.draw(d.first..d.first + d.count, 0..1);
+                stats.draws += 1;
+                stats.triangles += d.count / 3;
             }
         }
+        self.stats = stats;
     }
 
     /// Draws the scene (prepared by `prepare`) into the host's pass.
@@ -964,11 +1174,35 @@ impl SceneRenderer {
             layout: &self.texture_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.nearest) },
+                // at a lower resolution, smoothed on the way up
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if self.quality.scale < 1.0 { &self.linear } else { &self.nearest }) },
             ],
         });
         Target { size, color_view, depth_view: depth.create_view(&Default::default()), blit_bind }
     }
+}
+
+/// What the shader needs to read the shadow map without acne and without detaching shadows
+/// from what casts them: how far to move a surface along its normal before looking it up
+/// (1.5 shadow texels, in the world), a small depth margin (half a texel, in the light's
+/// depth), and a texel in uv. Both in world units, so the same at any zoom: a fixed margin
+/// in the light's depth was a fraction of its whole range, up to a world unit on big views,
+/// and every shadow started that far from its caster.
+fn shadow_params(light_view_proj: &Mat4, size: u32) -> [f32; 4] {
+    // an orthographic light: its first rows' lengths are its scales (2 / width, 1 / depth)
+    let m = light_view_proj;
+    let row = |i: usize| m.row(i).truncate().length();
+    let texel = 2.0 / row(0).max(1e-6) / size as f32;
+    [texel * 1.5, texel * 0.5 * row(2), 1.0 / size as f32, 0.0]
+}
+
+/// The sun's view moved by less than a texel so the world lies on the shadow map's texel
+/// grid wherever the camera is: the shadows' edges stay still when it moves.
+fn on_texels(light_view_proj: &Mat4, size: u32) -> Mat4 {
+    let o = *light_view_proj * Vec4::W;
+    let texel = 2.0 / size as f32;
+    let snap = |v: f32| (v / texel).round() * texel - v;
+    Mat4::from_translation(Vec3::new(snap(o.x), snap(o.y), 0.0)) * *light_view_proj
 }
 
 fn push_draw(draws: &mut Vec<DrawCall>, texture: &str, first: u32, count: u32) {
@@ -979,4 +1213,49 @@ fn push_draw(draws: &mut Vec<DrawCall>, texture: &str, first: u32, count: u32) {
         }
     }
     draws.push(DrawCall { texture: texture.to_string(), first, count });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn frustum_sees_what_is_in_front() {
+        let view = Mat4::look_at_rh(Vec3::new(0.0, 10.0, 10.0), Vec3::ZERO, Vec3::Y);
+        let f = Frustum::new(&(Mat4::perspective_rh(1.0, 1.5, 0.1, 200.0) * view));
+        assert!(f.sees(Vec3::splat(-1.0), Vec3::splat(1.0)));
+        // behind the camera, and far off to the side
+        assert!(!f.sees(Vec3::new(-1.0, 9.0, 30.0), Vec3::new(1.0, 11.0, 32.0)));
+        assert!(!f.sees(Vec3::new(300.0, 0.0, 0.0), Vec3::new(310.0, 1.0, 1.0)));
+        // a box straddling the edge counts
+        assert!(f.sees(Vec3::new(-100.0, -1.0, -1.0), Vec3::new(0.0, 1.0, 1.0)));
+    }
+
+    #[test]
+    fn shadow_texels_hold_still() {
+        // two targets a fraction of a texel apart: the world lands on the same texel grid
+        let light = |x: f32| {
+            let view = Mat4::look_at_rh(Vec3::new(x - 30.0, 60.0, 40.0), Vec3::new(x, 0.0, 0.0), Vec3::Y);
+            on_texels(&(Mat4::orthographic_rh(-32.0, 32.0, -32.0, 32.0, 1.0, 200.0) * view), 2048)
+        };
+        let texel = 2.0 / 2048.0;
+        for x in [0.0, 0.013, 0.4, 7.77] {
+            let p = light(x) * Vec4::new(5.0, 1.0, 3.0, 1.0);
+            let q = light(0.0) * Vec4::new(5.0, 1.0, 3.0, 1.0);
+            let frac = |v: f32| (v / texel - (v / texel).round()).abs();
+            assert!((frac(p.x) - frac(q.x)).abs() < 1e-2 && (frac(p.y) - frac(q.y)).abs() < 1e-2, "{x}");
+        }
+    }
+
+    #[test]
+    fn shadow_margins_are_world_sized() {
+        // the same view at two depth ranges: the normal offset doesn't change, and the depth
+        // margin is the same distance in the world
+        let view = Mat4::look_at_rh(Vec3::new(-30.0, 60.0, 40.0), Vec3::ZERO, Vec3::Y);
+        let near = shadow_params(&(Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 200.0) * view), 2048);
+        let far = shadow_params(&(Mat4::orthographic_rh(-20.0, 20.0, -20.0, 20.0, 1.0, 2000.0) * view), 2048);
+        assert!((near[0] - far[0]).abs() < 1e-6);
+        assert!((near[0] - 40.0 / 2048.0 * 1.5).abs() < 1e-4);
+        assert!((near[1] * 199.0 - far[1] * 1999.0).abs() < 1e-5);
+    }
 }
