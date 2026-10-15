@@ -775,6 +775,11 @@ impl MapEditor {
             if ui.button("Turn 90°").on_hover_text("Q / E").clicked() {
                 self.turn_building(i);
             }
+            let export = ui.button("To Blender").on_hover_text("This building as a .glb");
+            super::mark("uiExportBuilding", &export);
+            if export.clicked() {
+                self.export_building(i);
+            }
             if ui.button("Delete").clicked() {
                 self.checkpoint();
                 self.map.buildings.remove(i);

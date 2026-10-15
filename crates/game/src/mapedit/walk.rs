@@ -4,7 +4,7 @@
 //! walls of buildings; doors let it in, and the building it's in is cut away above it.
 
 use glam::Vec3;
-use world::mesh::{placement, prop_model, Mesh};
+use world::mesh::{placement, prop_scene, Scene};
 
 use super::MapEditor;
 
@@ -127,8 +127,8 @@ impl MapEditor {
     }
 
     /// The things that move: the walker.
-    pub(super) fn extra_mesh(&self, now: f64) -> Mesh {
-        let mut out = Mesh::default();
+    pub(super) fn extra_mesh(&self, now: f64) -> Scene {
+        let mut out = Scene::default();
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
         let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
@@ -137,7 +137,7 @@ impl MapEditor {
         if t < 1.0 {
             pos.y += (t * std::f32::consts::PI).sin() * 0.06;
         }
-        out.append(&prop_model(prop), placement(pos, w.facing, 1.0));
+        out.append(&prop_scene(prop, &self.models), placement(pos, w.facing, 1.0));
         out
     }
 }

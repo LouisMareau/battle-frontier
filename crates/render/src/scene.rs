@@ -166,9 +166,10 @@ impl GpuMesh {
 struct WorldGpu {
     tops: Option<GpuMesh>,
     solid: Option<GpuMesh>,
-    objects: Option<GpuMesh>,
+    /// props, trees and buildings, by texture (WHITE for the vertex-coloured ones)
+    objects: Vec<(String, GpuMesh)>,
     /// things that move (the walker, creatures): small, replaced often
-    extra: Option<GpuMesh>,
+    extra: Vec<(String, GpuMesh)>,
     cells: wgpu::Texture,
     size: [u32; 2],
     bind: wgpu::BindGroup,
@@ -604,7 +605,7 @@ impl SceneRenderer {
         let (cells, bind) = self.data_bind(device, queue, g.cells, g.size, g.palette, g.palette_width);
         let (objects, extra) = match self.world.take() {
             Some(w) => (w.objects, w.extra),
-            None => (None, None),
+            None => (vec![], vec![]),
         };
         self.world = Some(WorldGpu {
             tops: GpuMesh::new(device, g.tops.0, g.tops.1),
@@ -633,16 +634,18 @@ impl SceneRenderer {
     }
 
     /// The props and trees (after `set_world_ground`).
-    pub fn set_world_objects(&mut self, device: &wgpu::Device, vertices: &[MapVertex], indices: &[u32]) {
+    /// Batches by texture key (`WHITE` for vertex colours alone); a texture that isn't
+    /// loaded draws white.
+    pub fn set_world_objects(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
         if let Some(w) = &mut self.world {
-            w.objects = GpuMesh::new(device, vertices, indices);
+            w.objects = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
         }
     }
 
     /// What moves on the world map (after `set_world_ground`); empty clears it.
-    pub fn set_world_extra(&mut self, device: &wgpu::Device, vertices: &[MapVertex], indices: &[u32]) {
+    pub fn set_world_extra(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
         if let Some(w) = &mut self.world {
-            w.extra = GpuMesh::new(device, vertices, indices);
+            w.extra = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
         }
     }
 
@@ -848,7 +851,11 @@ impl SceneRenderer {
             }
             if let Some(w) = &self.world {
                 pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-                for m in [&w.solid, &w.objects, &w.extra].into_iter().flatten() {
+                if let Some(m) = &w.solid {
+                    m.draw(&mut pass);
+                }
+                for (key, m) in w.objects.iter().chain(&w.extra) {
+                    pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
                     m.draw(&mut pass);
                 }
             }
@@ -894,7 +901,11 @@ impl SceneRenderer {
         }
         if let Some(w) = &self.world {
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-            for m in [&w.solid, &w.objects, &w.extra].into_iter().flatten() {
+            if let Some(m) = &w.solid {
+                m.draw(&mut pass);
+            }
+            for (key, m) in w.objects.iter().chain(&w.extra) {
+                pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
                 m.draw(&mut pass);
             }
             if let Some(tops) = &w.tops {

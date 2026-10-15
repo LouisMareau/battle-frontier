@@ -60,7 +60,8 @@ fn main() {
                 print!(" {n} {}", space.dir());
             }
             println!();
-            let problems = content.validate();
+            let mut problems = content.validate();
+            problems.extend(disk::missing_files(&root, &content));
             if problems.is_empty() {
                 println!("no problems");
             } else {

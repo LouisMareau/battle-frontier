@@ -7,7 +7,7 @@
 use content::{segment_ends, side_turn, Building, Content};
 use glam::{Mat4, Vec3};
 
-use crate::mesh::{placement, prop_model, Mesh};
+use crate::mesh::{placement, prop_scene, Mesh, Models, Scene};
 use crate::{color, WorldMap};
 
 /// How thick walls are, inwards from the outline.
@@ -170,7 +170,7 @@ pub struct Cut {
     pub top: usize,
 }
 
-pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<Cut>) -> Mesh {
+pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<Cut>, models: &Models) -> Scene {
     let mut m = Mesh::default();
     let lh = level_height;
     let base = b.level as f32 * lh;
@@ -184,7 +184,14 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         Some(c) => (c.top + 1).min(b.floors.len()),
         None => b.floors.len(),
     };
-    let model = |id: &str| content.props.get(id).map(prop_model);
+    let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
+    // the models' textured parts (the plain ones go into m)
+    let mut textured = Scene::default();
+    let put = |m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4| {
+        m.append(&s.plain, t);
+        let only = Scene { plain: Mesh::default(), textured: s.textured.clone() };
+        textured.append(&only, t);
+    };
 
     // the walls' runs: (side, line, cells along) for every straight piece of outline
     let mut lines: Vec<(&str, i32, Vec<i32>)> = vec![];
@@ -221,7 +228,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         if let Some(tile) = model(&floor.tile) {
             for (x, z) in b.cells() {
                 let at = Vec3::new(ox + x as f32 + 0.5, y0 + if f == 0 { 0.02 } else { 0.0 }, oz + z as f32 + 0.5);
-                m.append(&tile, Mat4::from_translation(at));
+                put(&mut m, &mut textured, &tile, Mat4::from_translation(at));
             }
         }
         // the walls, with their doors and windows
@@ -261,7 +268,7 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
                 let centre = first + o.width as f32 / 2.0;
                 if let Some(model) = model(&o.prop) {
                     let at = line.point(origin + centre, y0 + bottom, 0.0);
-                    m.append(&model, placement(at, side_turn(side) as f32, 1.0));
+                    put(&mut m, &mut textured, &model, placement(at, side_turn(side) as f32, 1.0));
                 }
             }
             holes.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -286,14 +293,14 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
             let Some(model) = model(&p.prop) else { continue };
             let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
             let at = Vec3::new(ox + p.at[0] as f32, y0 + 0.05, oz + p.at[1] as f32);
-            m.append(&model, placement(at, p.turn as f32, scale));
+            put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
         }
         // on the walls
         for a in b.anchors.iter().filter(|a| a.floor as usize == f) {
             let Some(model) = model(&a.prop) else { continue };
             let (p, q) = segment_ends(a.cell[0], a.cell[1], &a.side);
             let mid = Vec3::new(ox + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, oz + (p[1] + q[1]) as f32 / 2.0);
-            m.append(&model, placement(mid, side_turn(&a.side) as f32, 1.0));
+            put(&mut m, &mut textured, &model, placement(mid, side_turn(&a.side) as f32, 1.0));
         }
     }
     // pillars, as high as what's shown
@@ -302,12 +309,13 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         let Some(model) = model(&p.prop) else { continue };
         let stretch = shown as f32 * lh / (prop.height as f32).max(0.1);
         let at = Vec3::new(ox + p.corner[0] as f32, base, oz + p.corner[1] as f32);
-        m.append(&model, Mat4::from_translation(at) * Mat4::from_scale(Vec3::new(1.0, stretch, 1.0)));
+        put(&mut m, &mut textured, &model, Mat4::from_translation(at) * Mat4::from_scale(Vec3::new(1.0, stretch, 1.0)));
     }
     if cut.is_none() && !b.floors.is_empty() {
         roof(&mut m, b, content, base + b.floors.len() as f32 * lh, main);
     }
-    m
+    textured.plain = m;
+    textured
 }
 
 fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4]) {
@@ -380,12 +388,11 @@ fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4])
 }
 
 /// Every building on a map; the one being edited (index, floor) cut away above that floor.
-pub fn buildings(map: &WorldMap, content: &Content, level_height: f32, editing: Option<(usize, usize)>) -> Mesh {
-    let mut out = Mesh::default();
+pub fn buildings(map: &WorldMap, content: &Content, level_height: f32, editing: Option<(usize, usize)>, models: &Models) -> Scene {
+    let mut out = Scene::default();
     for (i, b) in map.buildings.iter().enumerate() {
         let cut = editing.filter(|(e, _)| *e == i).map(|(_, f)| Cut { top: f });
-        let m = building(b, content, level_height, cut);
-        out.append(&m, Mat4::IDENTITY);
+        out.append(&building(b, content, level_height, cut, models), Mat4::IDENTITY);
     }
     out
 }

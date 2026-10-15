@@ -13,6 +13,9 @@ own work, or work you have the right to submit under this project's licenses.
   `content/data/<collection>/<id>.json`, ids in lowercase (`a-z`, `0-9`, `_`), records
   referring to each other by id. Run `cargo run -p engine-content --bin content -- format`
   so the files keep the standard layout, and `-- check` so every reference resolves.
+- **Models** (glTF, `.glb`): in `content/assets/models/`, named by the prop's `model` field.
+  The Blender add-on in `tools/blender/` adds a model and its record for you, measured and
+  laid out as the project's own; see `tools/blender/README.md`.
 - **Code**: in `crates/`, matching the style around it.
 
 Before opening a pull request:

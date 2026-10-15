@@ -643,6 +643,20 @@ pub mod disk {
         content
     }
 
+    /// Files records name that aren't there (props' models), under `root`.
+    pub fn missing_files(root: &Path, content: &Content) -> Vec<String> {
+        let mut out = vec![];
+        for e in content.props.entries() {
+            if let Some(m) = &e.value.model {
+                let rel = e.space.asset(m);
+                if !root.join(&rel).is_file() {
+                    out.push(format!("props/{}: its model {rel} isn't there", e.value.id));
+                }
+            }
+        }
+        out
+    }
+
     /// Writes one record to `<root>/<space>/data/<collection>/<id>.json`; returns the path.
     pub fn save<T: Record>(root: &Path, space: Space, record: &T) -> Result<std::path::PathBuf, String> {
         let dir = root.join(space.dir()).join("data").join(T::COLLECTION);

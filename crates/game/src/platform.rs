@@ -137,6 +137,26 @@ pub fn download(name: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Saves a binary file through the browser (a download).
+#[cfg(target_arch = "wasm32")]
+pub fn download_bytes(name: &str, bytes: &[u8], mime: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
+    let parts = js_sys::Array::new();
+    parts.push(&js_sys::Uint8Array::from(bytes));
+    let bag = web_sys::BlobPropertyBag::new();
+    bag.set_type(mime);
+    let blob = web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag).map_err(err)?;
+    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(err)?;
+    let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(err)?.dyn_into().map_err(|_| "no anchor".to_string())?;
+    a.set_href(&url);
+    a.set_download(name);
+    a.click();
+    let _ = web_sys::Url::revoke_object_url(&url);
+    Ok(())
+}
+
 /// A command left by a test in `<body data-cmd>` (taken once).
 #[cfg(target_arch = "wasm32")]
 pub fn take_command() -> Option<String> {

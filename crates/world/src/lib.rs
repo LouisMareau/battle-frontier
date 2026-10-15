@@ -3,6 +3,8 @@
 //! places, which cells block, and the geometry to draw it all (`mesh`).
 
 pub mod buildings;
+pub mod gltf_in;
+pub mod gltf_out;
 pub mod mesh;
 pub mod spawn;
 pub mod trees;

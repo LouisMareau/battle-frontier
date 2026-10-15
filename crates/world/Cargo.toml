@@ -12,3 +12,7 @@ name = "world"
 engine-content = { path = "../content" }
 glam.workspace = true
 bytemuck.workspace = true
+serde_json.workspace = true
+# props' real models (glTF, as Blender exports them), and writing them back out
+gltf = { version = "1.4", default-features = false, features = ["import", "utils", "names"] }
+image.workspace = true

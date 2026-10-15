@@ -3,7 +3,7 @@
 //! tall grass (vertex colours), and the props and trees (their stand-in models, made from
 //! the simple shapes their records list).
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::TAU;
 
 use content::{Content, Part, Prop};
@@ -182,7 +182,7 @@ fn shape_rock(m: &mut Mesh, s: Vec3, c: [f32; 4], seed: u32) {
     }
 }
 
-fn part_mesh(p: &Part, seed: u32) -> Mesh {
+pub(crate) fn part_mesh(p: &Part, seed: u32) -> Mesh {
     let mut m = Mesh::default();
     let s = Vec3::new(p.size[0] as f32, p.size[1] as f32, p.size[2] as f32);
     let c = color(&p.color);
@@ -195,6 +195,45 @@ fn part_mesh(p: &Part, seed: u32) -> Mesh {
         _ => shape_box(&mut m, s, [1.0, 0.0, 1.0, 1.0]),
     }
     m
+}
+
+/// Geometry by texture: `plain` is coloured by its vertices alone (drawn on white), each
+/// `textured` mesh by its texture too (the key a model's images are known by).
+#[derive(Clone, Debug, Default)]
+pub struct Scene {
+    pub plain: Mesh,
+    pub textured: BTreeMap<String, Mesh>,
+}
+
+impl Scene {
+    /// Adds another scene moved by `m`.
+    pub fn append(&mut self, other: &Scene, m: Mat4) {
+        self.plain.append(&other.plain, m);
+        for (k, mesh) in &other.textured {
+            self.textured.entry(k.clone()).or_default().append(mesh, m);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.plain.indices.is_empty() && self.textured.values().all(|m| m.indices.is_empty())
+    }
+}
+
+impl From<Mesh> for Scene {
+    fn from(plain: Mesh) -> Scene {
+        Scene { plain, textured: BTreeMap::new() }
+    }
+}
+
+/// Props' real models, loaded from their files, by prop id.
+pub type Models = HashMap<String, crate::gltf_in::Model>;
+
+/// What a prop looks like: its real model when it has one loaded, else its stand-in.
+pub fn prop_scene(prop: &Prop, models: &Models) -> Scene {
+    match models.get(&prop.id) {
+        Some(m) => m.scene.clone(),
+        None => prop_model(prop).into(),
+    }
 }
 
 /// A prop's stand-in model, its footprint's centre at the origin, standing on y = 0.
@@ -348,35 +387,35 @@ pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
 }
 
 /// The props placed on the map.
-pub fn props(map: &WorldMap, content: &Content, level_height: f32) -> Mesh {
-    let mut models: HashMap<&str, Mesh> = HashMap::new();
-    let mut out = Mesh::default();
+pub fn props(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
+    let mut cache: HashMap<&str, Scene> = HashMap::new();
+    let mut out = Scene::default();
     for p in &map.props {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
         let at = Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32);
-        let mesh = models.entry(prop.id.as_str()).or_insert_with(|| prop_model(prop));
-        out.append(mesh, placement(at, p.turn as f32, scale));
+        let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
+        out.append(scene, placement(at, p.turn as f32, scale));
     }
     out
 }
 
 /// The tree areas' trees.
-pub fn tree_mesh(map: &WorldMap, content: &Content, level_height: f32) -> Mesh {
-    let mut models: HashMap<&str, Mesh> = HashMap::new();
-    let mut out = Mesh::default();
+pub fn tree_mesh(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
+    let mut cache: HashMap<&str, Scene> = HashMap::new();
+    let mut out = Scene::default();
     for t in trees(map, level_height) {
         let Some(prop) = content.props.get(&t.prop) else { continue };
-        let mesh = models.entry(prop.id.as_str()).or_insert_with(|| prop_model(prop));
-        out.append(mesh, placement(Vec3::from(t.pos), t.turn, t.scale));
+        let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
+        out.append(scene, placement(Vec3::from(t.pos), t.turn, t.scale));
     }
     out
 }
 
 /// Props and trees together.
-pub fn objects(map: &WorldMap, content: &Content, level_height: f32) -> Mesh {
-    let mut out = props(map, content, level_height);
-    let trees = tree_mesh(map, content, level_height);
+pub fn objects(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
+    let mut out = props(map, content, level_height, models);
+    let trees = tree_mesh(map, content, level_height, models);
     out.append(&trees, Mat4::IDENTITY);
     out
 }

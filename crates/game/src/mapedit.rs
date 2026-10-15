@@ -10,6 +10,7 @@
 //! character on the map to try it on foot.
 
 mod build;
+mod models;
 mod walk;
 mod zones;
 
@@ -22,7 +23,7 @@ use render::map::MapVertex;
 use render::scene::{Frame, SceneRenderer, Shape, ShapeKind, WorldGround};
 use rules::config::Period;
 use world::buildings::{building, Cut};
-use world::mesh::{self, Mesh};
+use world::mesh::{self, Scene};
 use world::WorldMap;
 
 use crate::stage::period_lighting;
@@ -137,9 +138,12 @@ pub struct MapEditor {
     need_props: bool,
     need_trees: bool,
     need_buildings: bool,
-    props_mesh: Mesh,
-    trees_mesh: Mesh,
-    buildings_mesh: Mesh,
+    props_mesh: Scene,
+    trees_mesh: Scene,
+    buildings_mesh: Scene,
+    /// props' real models, loaded (by prop id), and the ones that wouldn't load
+    models: world::mesh::Models,
+    model_failed: std::collections::HashSet<String>,
     /// the building being drawn or designed
     draft: Option<build::Draft>,
     selected_building: Option<usize>,
@@ -248,9 +252,11 @@ impl MapEditor {
             need_props: true,
             need_trees: true,
             need_buildings: true,
-            props_mesh: Mesh::default(),
-            trees_mesh: Mesh::default(),
-            buildings_mesh: Mesh::default(),
+            props_mesh: Scene::default(),
+            trees_mesh: Scene::default(),
+            buildings_mesh: Scene::default(),
+            models: world::mesh::Models::new(),
+            model_failed: std::collections::HashSet::new(),
             draft: None,
             selected_building: None,
             building_grab: None,
@@ -453,7 +459,7 @@ impl MapEditor {
 
     fn sync(&mut self, rs: &eframe::egui_wgpu::RenderState, now: f64) {
         let map_changed = self.need_ground || self.need_cells || self.need_props || self.need_trees || self.need_buildings;
-        if !(map_changed || self.extra_changed || !self.sprites_wanted.is_empty()) {
+        if !(map_changed || self.extra_changed || !self.sprites_wanted.is_empty() || self.models_pending()) {
             return;
         }
         if map_changed {
@@ -462,6 +468,7 @@ impl MapEditor {
         let mut guard = rs.renderer.write();
         let Some(r) = guard.callback_resources.get_mut::<SceneRenderer>() else { return };
         self.load_sprites(r, rs);
+        self.load_models(r, rs);
         if self.need_ground {
             r.clear_map();
             let g = mesh::ground(&self.map, &self.content, self.level_height);
@@ -486,23 +493,23 @@ impl MapEditor {
             self.need_cells = false;
         }
         if self.need_trees {
-            self.trees_mesh = mesh::tree_mesh(&self.map, &self.content, self.level_height);
+            self.trees_mesh = mesh::tree_mesh(&self.map, &self.content, self.level_height, &self.models);
         }
         if self.need_props {
-            self.props_mesh = mesh::props(&self.map, &self.content, self.level_height);
+            self.props_mesh = mesh::props(&self.map, &self.content, self.level_height, &self.models);
         }
         if self.need_buildings {
             let editing = self.draft.as_ref().and_then(|d| d.editing);
             let inside = self.walker.as_ref().and_then(|w| w.inside);
-            let mut m = Mesh::default();
+            let mut m = Scene::default();
             for (i, b) in self.map.buildings.iter().enumerate() {
                 if Some(i) != editing {
                     let cut = inside.filter(|(w, _)| *w == i).map(|(_, f)| Cut { top: f });
-                    m.append(&building(b, &self.content, self.level_height, cut), Mat4::IDENTITY);
+                    m.append(&building(b, &self.content, self.level_height, cut, &self.models), Mat4::IDENTITY);
                 }
             }
             if let Some(d) = self.draft.as_ref().filter(|d| d.step == build::Step::Design) {
-                m.append(&building(&d.b, &self.content, self.level_height, Some(Cut { top: d.floor })), Mat4::IDENTITY);
+                m.append(&building(&d.b, &self.content, self.level_height, Some(Cut { top: d.floor }), &self.models), Mat4::IDENTITY);
             }
             self.buildings_mesh = m;
         }
@@ -510,14 +517,14 @@ impl MapEditor {
             let mut all = self.props_mesh.clone();
             all.append(&self.trees_mesh, Mat4::IDENTITY);
             all.append(&self.buildings_mesh, Mat4::IDENTITY);
-            r.set_world_objects(&rs.device, &gpu(&all.vertices), &all.indices);
+            r.set_world_objects(&rs.device, &models::batches(&all));
             self.need_trees = false;
             self.need_props = false;
             self.need_buildings = false;
         }
         if self.extra_changed {
             let extra = self.extra_mesh(now);
-            r.set_world_extra(&rs.device, &gpu(&extra.vertices), &extra.indices);
+            r.set_world_extra(&rs.device, &models::batches(&extra));
             self.extra_changed = false;
         }
     }
@@ -754,6 +761,11 @@ impl MapEditor {
                     self.recentre();
                 }
                 ui.separator();
+                let export = ui.button("To Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
+                mark("uiExportMap", &export);
+                if export.clicked() {
+                    self.export_map();
+                }
                 let creatures = ui.selectable_label(self.creatures_on, "Creatures").on_hover_text("Creatures roam their zones");
                 mark("uiCreatures", &creatures);
                 if creatures.clicked() {
@@ -1013,6 +1025,19 @@ impl MapEditor {
             }
         }
         ui.add_space(6.0);
+        if let Some(id) = self.prop.clone() {
+            let has_model = self.content.props.get(&id).and_then(|p| p.model.clone());
+            let label = match &has_model {
+                Some(_) => format!("{id}: its own model (loaded: {})", if self.models.contains_key(&id) { "yes" } else { "not yet" }),
+                None => format!("{id}: a stand-in made of shapes"),
+            };
+            ui.label(RichText::new(label).size(11.0).color(Color32::GRAY));
+            let export = ui.button("This prop to Blender").on_hover_text("A .glb of it, standing at the origin");
+            mark("uiExportProp", &export);
+            if export.clicked() {
+                self.export_prop(&id);
+            }
+        }
         ui.label(format!("Turned {:.0}° (Q / E, Shift: 90°)", self.turn));
         ui.label(RichText::new(format!("Placed on level {}. Shift: off the grid.", self.level)).color(Color32::GRAY));
     }

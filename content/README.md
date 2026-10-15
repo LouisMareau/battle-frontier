@@ -23,5 +23,9 @@ Rules:
 
 Check everything resolves: `cargo run -p engine-content --bin content -- check`.
 
+Props' real models are glTF files (`.glb`) in `assets/models/`, named by the prop's `model`
+field; the Blender add-on (`tools/blender/`) writes both. A prop without one is drawn from its
+`parts`, a stand-in made of simple shapes.
+
 Everything in this folder is licensed under Creative Commons Attribution-ShareAlike 4.0
 (`LICENSE` here); the code outside it is under MIT or Apache-2.0.

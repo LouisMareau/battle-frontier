@@ -28,6 +28,7 @@ node tools/frames.mjs [encounter]      # frame times of one encounter, second by
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
+cargo run -p engine-world --bin export-glb -- map test_meadow   # a map (or prop ID, props, building MAP ID) as .glb for Blender
 node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from commands
 ```
 
@@ -127,16 +128,29 @@ the view, the wheel zooms; Morning/Day/Night preview the light; Ctrl+Z/Ctrl+Y un
 redo. Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
 file. Maps made here are the game's own content.
 
+## Blender
+
+Props, buildings and maps go to Blender, and models made in Blender come into the game, as
+glTF (`.glb`). A prop with a `model` (a `.glb` under its space's `assets/models/`) is drawn
+with it, textures included; one without keeps its stand-in made of shapes. The map editor
+exports the map ("To Blender"), the selected prop (Place) and a building (its inspector) to
+`build/exports/` (a download in the browser); so does `export-glb`. The Blender add-on in
+`tools/blender/` finds the project on the computer, imports its props (models, or stand-ins
+rebuilt from their shapes), exports and imports maps, and adds a selection to the project as
+a prop: the `.glb` and its record, measured and laid out as the project's own (see
+`tools/blender/README.md`). Same frame everywhere: one unit is a cell (a metre), the asset
+on the ground at the origin, its front to Blender's front view.
+
 ## Layout
 
 | Crate | What |
 |---|---|
 | `crates/content` (`content`) | The content model (`model.rs`; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
-| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -163,7 +177,8 @@ The only long frame on either is the first one, while the battle loads.
 - The content browser only reads; the map editor saves maps (other records next).
 - Maps: creatures roam but don't battle yet (walking into one does nothing), no stairs or ramps between
   levels (walking stays on one level, so upper floors aren't reachable on foot), no
-  interiors as separate maps, no lights at night; props are stand-in shapes.
+  interiors as separate maps, no lights at night; most props are still stand-in shapes
+  (a sample made in Blender: `stone_well`).
 - Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
 - No overworld yet (walking, map loading and connections, scripts).
 - Sprites are battle pictures on billboards. The renderer can take 3D models later
