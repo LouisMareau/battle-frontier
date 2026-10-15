@@ -11,7 +11,7 @@ pub mod trees;
 
 use std::collections::BTreeMap;
 
-use content::{char_level, level_char, side_step, Building, Content, Map, Placed, SpawnLink, TreeArea, Zone};
+use content::{side_step, Building, Cells, Chunk, Content, Map, Placed, SpawnLink, TreeArea, Zone};
 
 /// A map, decoded. Cells are row by row, north first: index = z * width + x.
 #[derive(Clone, Debug)]
@@ -38,6 +38,8 @@ pub struct WorldMap {
     pub door_props: Vec<String>,
     /// the characters the record used, so a saved map keeps its legend
     legend: BTreeMap<String, String>,
+    /// stored as chunk files this many cells a side (0: as rows in the record)
+    pub chunk: u16,
 }
 
 impl WorldMap {
@@ -61,101 +63,72 @@ impl WorldMap {
             links: vec![],
             door_props: vec![],
             legend: BTreeMap::new(),
+            chunk: 0,
         }
     }
 
     pub fn from_record(m: &Map) -> WorldMap {
-        let (w, h) = (m.width as usize, m.height as usize);
-        let mut out = WorldMap::new(&m.id, &m.name, w, h, "");
-        out.terrains.clear();
-        out.region = m.region.clone();
-        out.legend = m.legend.clone();
-        let mut ids: BTreeMap<char, u16> = BTreeMap::new();
-        for (c, t) in &m.legend {
-            let Some(c) = c.chars().next() else { continue };
-            let i = out.terrain_index(t);
-            ids.insert(c, i);
-        }
-        if out.terrains.is_empty() {
-            out.terrains.push("grass".into());
-        }
-        let rows = |rows: &[String], out: &mut Vec<u8>, f: &dyn Fn(char) -> u8| {
-            for (z, row) in rows.iter().take(h).enumerate() {
-                for (x, c) in row.chars().take(w).enumerate() {
-                    out[z * w + x] = f(c);
-                }
-            }
-        };
-        for (z, row) in m.terrain.iter().take(h).enumerate() {
-            for (x, c) in row.chars().take(w).enumerate() {
-                out.terrain[z * w + x] = ids.get(&c).copied().unwrap_or(0);
-            }
-        }
-        rows(&m.levels, &mut out.level, &|c| char_level(c).unwrap_or(0));
-        let marks: BTreeMap<char, u8> = m.tree_areas.iter().enumerate().filter_map(|(i, a)| a.mark.chars().next().map(|c| (c, i as u8 + 1))).collect();
-        rows(&m.areas, &mut out.area, &|c| marks.get(&c).copied().unwrap_or(0));
-        out.tree_areas = m.tree_areas.clone();
-        out.props = m.props.clone();
-        out.buildings = m.buildings.clone();
-        let zmarks: BTreeMap<char, u8> = m.zones.iter().enumerate().filter_map(|(i, z)| z.mark.chars().next().map(|c| (c, i as u8 + 1))).collect();
-        rows(&m.zone_cells, &mut out.zone, &|c| zmarks.get(&c).copied().unwrap_or(0));
-        out.zones = m.zones.clone();
-        out.links = m.links.clone();
-        out
+        WorldMap::from_chunks(m, &[])
     }
 
-    /// Back to the record (rows of characters), keeping the characters it had.
+    /// From the record and, for a chunked map, its chunk files (a square missing is blank).
+    pub fn from_chunks(m: &Map, chunks: &[Chunk]) -> WorldMap {
+        let cells = m.cells(chunks);
+        WorldMap {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            region: m.region.clone(),
+            width: m.width as usize,
+            height: m.height as usize,
+            terrains: cells.terrains,
+            terrain: cells.terrain,
+            level: cells.level,
+            area: cells.area,
+            tree_areas: m.tree_areas.clone(),
+            props: m.props.clone(),
+            buildings: m.buildings.clone(),
+            zone: cells.zone,
+            zones: m.zones.clone(),
+            links: m.links.clone(),
+            door_props: vec![],
+            legend: m.legend.clone(),
+            chunk: m.chunk,
+        }
+    }
+
+    /// The record: rows of characters, or for a chunked map the header alone (its cells
+    /// are `to_chunks`).
     pub fn to_record(&self) -> Map {
-        let (w, h) = (self.width, self.height);
-        // a character per terrain in use: the one it had, else its first letter, else any free one
-        let used: std::collections::BTreeSet<u16> = self.terrain.iter().copied().collect();
-        let mut legend: BTreeMap<String, String> = BTreeMap::new();
-        let mut chars: BTreeMap<u16, char> = BTreeMap::new();
-        for &t in &used {
-            let id = &self.terrains[t as usize];
-            if let Some((c, _)) = self.legend.iter().find(|(c, v)| *v == id && !legend.contains_key(*c)) {
-                legend.insert(c.clone(), id.clone());
-                chars.insert(t, c.chars().next().unwrap_or('?'));
-            }
-        }
-        for &t in &used {
-            if chars.contains_key(&t) {
-                continue;
-            }
-            let id = &self.terrains[t as usize];
-            let first = id.chars().next().into_iter();
-            let pool = first.chain('a'..='z').chain('A'..='Z').chain('0'..='9');
-            for c in pool {
-                if c != '.' && !legend.contains_key(&c.to_string()) {
-                    legend.insert(c.to_string(), id.clone());
-                    chars.insert(t, c);
-                    break;
-                }
-            }
-        }
-        let rows = |f: &dyn Fn(usize) -> char| -> Vec<String> { (0..h).map(|z| (0..w).map(|x| f(z * w + x)).collect()).collect() };
-        let marks: Vec<char> = self.tree_areas.iter().map(|a| a.mark.chars().next().unwrap_or('a')).collect();
-        Map {
+        self.records().0
+    }
+
+    /// A chunked map's chunk files (blank squares left out); none for a map kept as rows.
+    pub fn to_chunks(&self) -> Vec<Chunk> {
+        self.records().1
+    }
+
+    /// The record and the chunk files, as the map is stored.
+    pub fn records(&self) -> (Map, Vec<Chunk>) {
+        let header = Map {
             id: self.id.clone(),
             name: self.name.clone(),
             region: self.region.clone(),
-            width: w as u16,
-            height: h as u16,
-            legend,
-            terrain: rows(&|i| chars.get(&self.terrain[i]).copied().unwrap_or('?')),
-            levels: rows(&|i| level_char(self.level[i])),
-            areas: if self.area.iter().any(|&a| a > 0) { rows(&|i| if self.area[i] == 0 { '.' } else { marks[self.area[i] as usize - 1] }) } else { vec![] },
+            width: self.width as u16,
+            height: self.height as u16,
+            chunk: self.chunk,
+            legend: self.legend.clone(),
             tree_areas: self.tree_areas.clone(),
             props: self.props.clone(),
             buildings: self.buildings.clone(),
-            zone_cells: if self.zone.iter().any(|&z| z > 0) {
-                let zm: Vec<char> = self.zones.iter().map(|z| z.mark.chars().next().unwrap_or('a')).collect();
-                rows(&|i| if self.zone[i] == 0 { '.' } else { zm[self.zone[i] as usize - 1] })
-            } else {
-                vec![]
-            },
             zones: self.zones.clone(),
             links: self.links.clone(),
+            ..Default::default()
+        };
+        let cells = Cells { terrains: self.terrains.clone(), terrain: self.terrain.clone(), level: self.level.clone(), area: self.area.clone(), zone: self.zone.clone() };
+        if self.chunk > 0 {
+            header.with_chunks(&cells)
+        } else {
+            (header.with_rows(&cells), vec![])
         }
     }
 
@@ -403,6 +376,16 @@ pub fn color(hex: &str) -> [f32; 4] {
     [c(v >> 16), c(v >> 8), c(v), 1.0]
 }
 
+/// A map from the content, its chunk files read from disk under `root` when it's chunked.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn load_map(root: &std::path::Path, content: &Content, id: &str) -> Result<WorldMap, String> {
+    let e = content.maps.entry(id).ok_or_else(|| format!("no map {id}"))?;
+    let chunks = if e.value.chunked() { content::disk::read_chunks(root, e.space, &e.value)? } else { vec![] };
+    let mut m = WorldMap::from_chunks(&e.value, &chunks);
+    m.know_doors(content);
+    Ok(m)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -445,5 +428,61 @@ mod tests {
         assert_eq!(back.level_at(3, 0), Some(2));
         assert_eq!(back.area[0], 1);
         assert_eq!(back.to_record(), r);
+    }
+
+    #[test]
+    fn a_chunked_map_round_trips() {
+        let mut m = WorldMap::new("big", "Big", 150, 100, "grass");
+        let sand = m.terrain_index("sand");
+        let rock = m.terrain_index("rock");
+        for z in 0..100 {
+            for x in 0..150 {
+                let i = z * 150 + x;
+                if (x * 7 + z * 3) % 11 == 0 {
+                    m.terrain[i] = sand;
+                }
+                if x > 120 && z > 70 {
+                    m.terrain[i] = rock;
+                    m.level[i] = 12;
+                }
+            }
+        }
+        m.tree_areas.push(TreeArea { mark: "a".into(), ..Default::default() });
+        m.area[0] = 1;
+        m.zones.push(Zone { mark: "z".into(), ..Default::default() });
+        m.zone[150 * 99 + 149] = 1;
+        m.chunk = content::CHUNK;
+        let (header, chunks) = m.records();
+        assert_eq!(header.chunk, 64);
+        assert!(header.terrain.is_empty() && header.levels.is_empty() && header.legend.is_empty());
+        assert_eq!(header.terrains, vec!["grass", "sand", "rock"]);
+        assert_eq!(header.chunk_grid(), (3, 2));
+        assert_eq!(chunks.len(), 6);
+        let back = WorldMap::from_chunks(&header, &chunks);
+        let grids = [
+            ("terrain", back.terrain.iter().map(|&v| v as u32).collect::<Vec<u32>>(), m.terrain.iter().map(|&v| v as u32).collect::<Vec<u32>>()),
+            ("level", back.level.iter().map(|&v| v as u32).collect(), m.level.iter().map(|&v| v as u32).collect()),
+            ("area", back.area.iter().map(|&v| v as u32).collect(), m.area.iter().map(|&v| v as u32).collect()),
+            ("zone", back.zone.iter().map(|&v| v as u32).collect(), m.zone.iter().map(|&v| v as u32).collect()),
+        ];
+        for (name, got, want) in &grids {
+            let first = got.iter().zip(want).position(|(a, b)| a != b);
+            assert!(first.is_none() && got.len() == want.len(), "{name} differs first at cell {first:?} (x {}, z {}): {:?} instead of {:?}", first.map(|i| i % 150).unwrap_or(0), first.map(|i| i / 150).unwrap_or(0), first.map(|i| got[i]), first.map(|i| want[i]));
+        }
+        assert_eq!(back.level_at(149, 99), Some(12), "levels past 9 need no letters");
+        assert_eq!(back.chunk, 64);
+        // a square left out is blank
+        let partial: Vec<Chunk> = chunks.iter().filter(|c| c.chunk != [0, 0]).cloned().collect();
+        let sparse = WorldMap::from_chunks(&header, &partial);
+        assert_eq!(sparse.terrain_at(0, 0), Some("grass"));
+        assert_eq!(sparse.terrain_at(149, 99), Some("rock"));
+        // back to rows: the same cells
+        let mut rows = back.clone();
+        rows.chunk = 0;
+        let r = rows.to_record();
+        assert_eq!(r.terrain.len(), 100);
+        let again = WorldMap::from_record(&r);
+        let same = (0..150 * 100).all(|i| again.terrains[again.terrain[i] as usize] == m.terrains[m.terrain[i] as usize]);
+        assert!(same, "the rows hold the same terrains (their numbers may differ: the legend orders them)");
     }
 }

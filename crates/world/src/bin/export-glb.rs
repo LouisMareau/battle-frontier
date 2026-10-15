@@ -10,7 +10,6 @@ use std::path::PathBuf;
 
 use world::gltf_in::{load_disk_models, load_model};
 use world::gltf_out::{building_glb, map_glb, prop_glb};
-use world::WorldMap;
 
 fn main() {
     let root = PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
@@ -48,7 +47,7 @@ fn main() {
         std::fs::write(&path, &bytes).unwrap_or_else(|e| fail(format!("{}: {e}", path.display())));
         println!("{} ({} KB)", path.display(), bytes.len() / 1024);
     };
-    let map = |id: &str| content.maps.get(id).map(|m| { let mut w = WorldMap::from_record(m); w.know_doors(&content); w }).unwrap_or_else(|| fail(format!("no map {id}")));
+    let map = |id: &str| world::load_map(&root, &content, id).unwrap_or_else(|e| fail(e));
     match (args.first().map(String::as_str), args.get(1), args.get(2)) {
         (Some("prop"), Some(id), _) => {
             let p = content.props.get(id).unwrap_or_else(|| fail(format!("no prop {id}")));

@@ -9,7 +9,7 @@ use std::f32::consts::TAU;
 use content::{Content, Part, Prop};
 use glam::{Mat3, Mat4, Vec3};
 
-use crate::trees::trees;
+use crate::trees::{trees, Tree};
 use crate::{color, Rng, WorldMap};
 
 #[repr(C)]
@@ -322,13 +322,36 @@ pub fn palette(map: &WorldMap, content: &Content) -> (Vec<u8>, u32) {
 }
 
 pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
-    let (w, h) = (map.width as i32, map.height as i32);
+    let (tops, solid) = ground_region(map, content, level_height, whole(map));
+    let (palette, palette_width) = palette(map, content);
+    Ground { tops, solid, cells: cells_texture(map), palette, palette_width }
+}
+
+/// A region holding the whole map: x0, z0 (in) to x1, z1 (out).
+pub fn whole(map: &WorldMap) -> [i32; 4] {
+    [0, 0, map.width as i32, map.height as i32]
+}
+
+/// The cells of a region, clipped to the map.
+pub fn region_cells(map: &WorldMap, region: [i32; 4]) -> impl Iterator<Item = (i32, i32)> {
+    let (x0, z0) = (region[0].max(0), region[1].max(0));
+    let (x1, z1) = (region[2].min(map.width as i32), region[3].min(map.height as i32));
+    (z0..z1).flat_map(move |z| (x0..x1).map(move |x| (x, z)))
+}
+
+fn in_region(region: [i32; 4], x: i32, z: i32) -> bool {
+    x >= region[0] && z >= region[1] && x < region[2] && z < region[3]
+}
+
+/// The cell tops and the cliff faces (and tall grass) of a region's cells; the faces look
+/// at the neighbours, so the whole grid is read.
+pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4]) -> (Mesh, Mesh) {
     let mut tops = Mesh::default();
     let mut solid = Mesh::default();
     let white = [1.0, 1.0, 1.0, 1.0];
     let terrain = |x: i32, z: i32| map.terrain_at(x, z).and_then(|id| content.terrains.get(id));
-    for z in 0..h {
-        for x in 0..w {
+    for (x, z) in region_cells(map, region) {
+        {
             let level = map.level_at(x, z).unwrap_or(0);
             let y = level as f32 * level_height;
             let (fx, fz) = (x as f32, z as f32);
@@ -382,15 +405,19 @@ pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
             }
         }
     }
-    let (palette, palette_width) = palette(map, content);
-    Ground { tops, solid, cells: cells_texture(map), palette, palette_width }
+    (tops, solid)
 }
 
 /// The props placed on the map.
 pub fn props(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
+    props_region(map, content, level_height, models, whole(map))
+}
+
+/// The props whose foot stands in a region.
+pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models: &Models, region: [i32; 4]) -> Scene {
     let mut cache: HashMap<&str, Scene> = HashMap::new();
     let mut out = Scene::default();
-    for p in &map.props {
+    for p in map.props.iter().filter(|p| in_region(region, p.at[0].floor() as i32, p.at[1].floor() as i32)) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
         let at = Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32);
@@ -402,9 +429,14 @@ pub fn props(map: &WorldMap, content: &Content, level_height: f32, models: &Mode
 
 /// The tree areas' trees.
 pub fn tree_mesh(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
+    trees_from(&trees(map, level_height), content, models, whole(map))
+}
+
+/// The trees (placed by `trees::trees`) whose foot stands in a region.
+pub fn trees_from(trees: &[Tree], content: &Content, models: &Models, region: [i32; 4]) -> Scene {
     let mut cache: HashMap<&str, Scene> = HashMap::new();
     let mut out = Scene::default();
-    for t in trees(map, level_height) {
+    for t in trees.iter().filter(|t| in_region(region, t.pos[0].floor() as i32, t.pos[2].floor() as i32)) {
         let Some(prop) = content.props.get(&t.prop) else { continue };
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
         out.append(scene, placement(Vec3::from(t.pos), t.turn, t.scale));

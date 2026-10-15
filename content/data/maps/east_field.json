@@ -1,0 +1,28 @@
+{
+  "id": "east_field",
+  "name": "East field",
+  "width": 72,
+  "height": 30,
+  "chunk": 64,
+  "terrains": ["dirt", "grass", "meadow", "stones"],
+  "legend": {},
+  "terrain": [],
+  "levels": [],
+  "tree_areas": [
+    {
+      "mark": "a",
+      "name": "North woods",
+      "trees": ["pine_tree", "round_tree"],
+      "spacing": 1.1,
+      "height": [0.85, 1.2],
+      "density": 0.85,
+      "solid_edge": true,
+      "seed": 3
+    }
+  ],
+  "props": [
+    { "prop": "signpost", "at": [3.5, 12.5], "level": 0 },
+    { "prop": "stone_well", "at": [24.0, 20.0], "level": 0 },
+    { "prop": "boulder", "at": [66.0, 8.0], "level": 1 }
+  ]
+}

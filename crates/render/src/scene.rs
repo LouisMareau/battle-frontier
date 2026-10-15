@@ -171,10 +171,9 @@ pub struct Frame {
     pub overlays: Vec<Shape>,
 }
 
-/// A world map's ground, as `world::mesh::ground` makes it.
+/// A world map's ground: the cells' texture and the terrains' palette (the meshes come
+/// square by square, `set_chunk`).
 pub struct WorldGround<'a> {
-    pub tops: (&'a [MapVertex], &'a [u32]),
-    pub solid: (&'a [MapVertex], &'a [u32]),
     /// width x height texels: terrain index, level, 0, 255
     pub cells: &'a [u8],
     pub size: [u32; 2],
@@ -263,15 +262,19 @@ impl GpuMesh {
     }
 }
 
-/// The world map on the GPU: cell tops (terrain shader), cliffs, props and trees, in
-/// CHUNK squares.
+/// One layer's squares: each by texture (WHITE for the vertex-coloured ones), a texture's
+/// pieces one after the other.
+type Squares = BTreeMap<(i32, i32), Vec<(String, GpuMesh)>>;
+
+/// The world map on the GPU, square by square (whatever size the editor cuts it in; each
+/// square's meshes are cut again into CHUNK squares for the culling).
 struct WorldGpu {
-    tops: Vec<GpuMesh>,
-    solid: Vec<GpuMesh>,
-    /// props, trees and buildings, in layers replaced one at a time ("props", "trees"...):
-    /// by texture (WHITE for the vertex-coloured ones), a texture's squares one after the
+    /// the cell tops (the terrain shader), by square
+    tops: BTreeMap<(i32, i32), Vec<GpuMesh>>,
+    /// everything else by layer ("cliffs", "props", "trees", "buildings"...) and square:
+    /// by texture (WHITE for the vertex-coloured ones), a texture's pieces one after the
     /// other
-    objects: BTreeMap<String, Vec<(String, GpuMesh)>>,
+    layers: BTreeMap<String, Squares>,
     /// things that move (the walker, creatures): small, replaced often
     extra: Vec<(String, GpuMesh)>,
     cells: wgpu::Texture,
@@ -743,25 +746,16 @@ impl SceneRenderer {
         (cells, bind)
     }
 
-    /// Shows a world map's ground (replacing the one before; props and trees stay until
-    /// `set_world_objects`). Battle maps (`load_map`) and the world draw together; clear
-    /// the one you don't want.
+    /// Shows a world map's ground: its cells' texture and palette (the one before goes; its
+    /// squares stay when the map is the same size, else they go too). Battle maps
+    /// (`load_map`) and the world draw together; clear the one you don't want.
     pub fn set_world_ground(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, g: &WorldGround) {
         let (cells, bind) = self.data_bind(device, queue, g.cells, g.size, g.palette, g.palette_width);
-        let (objects, extra) = match self.world.take() {
-            Some(w) => (w.objects, w.extra),
-            None => (BTreeMap::new(), vec![]),
+        let (tops, layers, extra) = match self.world.take() {
+            Some(w) if w.size == g.size => (w.tops, w.layers, w.extra),
+            _ => (BTreeMap::new(), BTreeMap::new(), vec![]),
         };
-        self.world = Some(WorldGpu {
-            tops: GpuMesh::chunked(device, g.tops.0, g.tops.1),
-            solid: GpuMesh::chunked(device, g.solid.0, g.solid.1),
-            objects,
-            extra,
-            cells,
-            size: g.size,
-            bind,
-            level_height: g.level_height,
-        });
+        self.world = Some(WorldGpu { tops, layers, extra, cells, size: g.size, bind, level_height: g.level_height });
     }
 
     /// Repaints the cells only (same size): what painting terrain changes.
@@ -778,22 +772,37 @@ impl SceneRenderer {
         );
     }
 
-    /// The props, trees and buildings (after `set_world_ground`), all in one layer.
-    pub fn set_world_objects(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
-        if let Some(w) = &mut self.world {
-            w.objects.clear();
+    /// One square of one layer of the world map (after `set_world_ground`), replacing what
+    /// that square held: "tops" is the ground's cell tops (the terrain shader); any other
+    /// name ("cliffs", "props", "trees", "buildings") draws like props. No batches: the
+    /// square goes. Batches by texture key (`WHITE` for vertex colours alone); a texture
+    /// that isn't loaded draws white.
+    pub fn set_chunk(&mut self, device: &wgpu::Device, layer: &str, square: (i32, i32), batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
+        let Some(w) = &mut self.world else { return };
+        if layer == "tops" {
+            let meshes: Vec<GpuMesh> = batches.iter().flat_map(|(_, v, i)| GpuMesh::chunked(device, v, i)).collect();
+            if meshes.is_empty() {
+                w.tops.remove(&square);
+            } else {
+                w.tops.insert(square, meshes);
+            }
+            return;
         }
-        self.set_world_layer(device, "objects", batches);
+        let meshes: Vec<(String, GpuMesh)> = batches.iter().flat_map(|(k, v, i)| GpuMesh::chunked(device, v, i).into_iter().map(|m| (k.clone(), m))).collect();
+        let squares = w.layers.entry(layer.to_string()).or_default();
+        if meshes.is_empty() {
+            squares.remove(&square);
+        } else {
+            squares.insert(square, meshes);
+        }
     }
 
-    /// One layer of what stands on the world map (after `set_world_ground`), replacing
-    /// that layer alone: an edit to the props doesn't send the trees again.
-    /// Batches by texture key (`WHITE` for vertex colours alone); a texture that isn't
-    /// loaded draws white.
-    pub fn set_world_layer(&mut self, device: &wgpu::Device, layer: &str, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
-        if let Some(w) = &mut self.world {
-            let meshes = batches.iter().flat_map(|(k, v, i)| GpuMesh::chunked(device, v, i).into_iter().map(|m| (k.clone(), m))).collect();
-            w.objects.insert(layer.to_string(), meshes);
+    /// Drops the squares `keep` doesn't want, in every layer (the ones far from the camera).
+    pub fn keep_chunks(&mut self, keep: &dyn Fn((i32, i32)) -> bool) {
+        let Some(w) = &mut self.world else { return };
+        w.tops.retain(|s, _| keep(*s));
+        for squares in w.layers.values_mut() {
+            squares.retain(|s, _| keep(*s));
         }
     }
 
@@ -1024,10 +1033,9 @@ impl SceneRenderer {
             }
             if let Some(w) = &self.world {
                 pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-                let solid = w.solid.iter().map(|m| (WHITE, m));
-                let objects = w.objects.values().flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+                let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
                 let mut bound = WHITE;
-                for (key, m) in solid.chain(objects) {
+                for (key, m) in objects {
                     if !sun.sees(m.lo, m.hi) {
                         stats.culled += 1;
                         continue;
@@ -1083,10 +1091,9 @@ impl SceneRenderer {
         }
         if let Some(w) = &self.world {
             // what's in sight, nearest first: what's behind is then hidden before it's shaded
-            let solid = w.solid.iter().map(|m| (WHITE, m));
-            let objects = w.objects.values().flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+            let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
             let mut seen: Vec<(f32, &str, &GpuMesh)> = vec![];
-            for (key, m) in solid.chain(objects) {
+            for (key, m) in objects {
                 if eye.sees(m.lo, m.hi) {
                     seen.push((((m.lo + m.hi) * 0.5).distance_squared(frame.camera_pos), key, m));
                 } else {
@@ -1114,7 +1121,7 @@ impl SceneRenderer {
             // costliest
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_bind_group(1, &w.bind, &[]);
-            for m in &w.tops {
+            for m in w.tops.values().flatten() {
                 if !eye.sees(m.lo, m.hi) {
                     stats.culled += 1;
                     continue;

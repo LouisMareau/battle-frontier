@@ -30,6 +30,8 @@ node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, p
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves
+node tools/worldcheck.mjs              # the World view: a piece dragged into place, the world saved, a walk across a seam into a chunked map
+cargo run -p engine-content --bin content -- chunk MAP    # a map stored as chunk files (unchunk: rows again)
 cargo run -p engine-world --bin export-glb -- map test_meadow   # a map (or prop ID, props, building MAP ID) as .glb for Blender
 node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from commands
 ```
@@ -48,8 +50,9 @@ read in progress), and in the map editor `data-map`, `data-mapsize`, `data-tool`
 `data-props`, `data-areas`, `data-dirty`, `data-buildings`, `data-build`, `data-draft`,
 `data-selection`, `data-walker`, `data-zones`, `data-links`, `data-roamers`, `data-roaming`,
 `data-pool`, `data-rooms` (a building's inside and outside while it's designed), `data-status`,
-`data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models` and the places of
-the buttons the checks press (`data-ui-*`) on `<body>`;
+`data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models`, `data-chunked`,
+`data-loading`, `data-squares` (the ground's squares held / in the map), `data-world`,
+`data-pieces` and the places of the buttons the checks press (`data-ui-*`) on `<body>`;
 `view:x,z,distance,yaw,pitch` points the editor's camera and `point:x,y,z` reports where a
 world point is on the screen (`data-point`): that's what the checks drive.
 
@@ -91,6 +94,18 @@ floors of buildings will stack on the same steps. Cells are stored as rows of ch
 (`terrain` with a `legend`, `levels` as 0-9 then a-z, `areas` for tree areas), props as a
 list (`prop`, `at` in cells, `level`, `turn`, `scale`).
 
+A big map is stored as **chunk files** instead: the record keeps its lists and says
+`"chunk": 64` with a `terrains` list, and the cells live in `data/maps/<id>/<x>_<z>.json`,
+one file per 64 × 64 square, as rows of numbers (the terrain's index in that list, the level
+as a number, so neither has a limit) with the tree areas and zones the same way. A square with
+no file is blank, so a large, mostly empty world costs little; an edit touches few files. The
+editor reads either form and saves the one the map asks for ("Chunk files" in the inspector,
+or in the New map box); `content chunk MAP` and `unchunk MAP` convert; `content check` reads
+every chunk file. On the GPU a map is held square by square whatever its storage: the squares
+within reach of the camera are built (a few per frame, nearest first) and the far ones dropped,
+and an edit rebuilds only the squares it touched, so a 320 × 240 map edits and draws like a
+small one.
+
 - **Terrains** are painted per cell; the border between two is drawn by the ground shader
   (the four nearest cells vote with noise and priority), so edges come out organic and
   corners round without border tiles. Patterns (grass, meadow, tall grass, dirt, sand,
@@ -114,6 +129,11 @@ list (`prop`, `at` in cells, `level`, `turn`, `scale`).
   flat roof; under a gabled roof they're refused. Walls block and doors let the player
   through; a building flattens the ground under it and clears trees.
 
+- **Worlds** stitch maps together: a world record (`worlds/<id>.json`) places maps as
+  pieces on one grid of cells (`"pieces": [{ "map": ..., "at": [x, z] }]`). Where two pieces
+  touch they share a seam; walking off a map's edge goes on in the piece there, where the
+  levels match on both sides (the content check notes seams whose levels differ; it refuses
+  pieces that overlap). Interiors stay separate maps.
 - **Zones** are areas creatures roam (`zone_cells` rows, `zones`), and **links** send
   creatures out of a treeline (edge cells of a tree area) to a zone: they walk out of the
   trees, roam the zone for a while, then walk back in. Creatures move freely, not cell by
@@ -147,7 +167,12 @@ paints zones (and who lives there: morning, day, night) or, in "Link treelines",
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
 every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
 the view, the wheel zooms; Morning/Day/Night preview the light; Ctrl+Z/Ctrl+Y undo and
-redo. Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
+redo. **World** opens the World view across the window: the world this map is part of as
+pieces on a grid (the map being edited lit), seams green where the levels match and crimson
+where they don't; drag a map in from the list, drag pieces into place (they snap to cells),
+double-click a piece to edit that map, "New world" starts one with this map, "Save world"
+writes `content/data/worlds/<id>.json` (a download in the browser). With a world, Walk
+crosses from one map into the next at a matching seam (the map must be saved first). Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
 file. Maps made here are the game's own content.
 
 **Assets** (in the top bar, or drop a file on the window) is the asset browser: every prop
@@ -179,12 +204,12 @@ on the ground at the origin, its front to Blender's front view.
 
 | Crate | What |
 |---|---|
-| `crates/content` (`content`) | The content model (`model.rs`; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
+| `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/walk.rs` walking, `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -216,9 +241,11 @@ low, medium, high: a 1024 to 4096 shadow map) for machines that can't keep up.
 
 What keeps it fast:
 
-- World meshes (ground, cliffs, props, trees, buildings) are cut into 16 x 16 cell squares
-  with their bounds; a square out of the camera's sight isn't drawn, nor one out of the sun's
-  in the shadow pass. A big map costs what's on screen, not its size.
+- World meshes (ground, cliffs, props, trees, buildings) are built square by square (64 cells,
+  only the squares within reach of the camera, a few per frame; the far ones are dropped) and
+  cut into 16 x 16 cell pieces with their bounds; a piece out of the camera's sight isn't drawn,
+  nor one out of the sun's in the shadow pass. A big map costs what's in reach, not its size,
+  and an edit rebuilds the squares it touched: on a 320 x 240 map a prop placed costs 6 ms.
 - Nearest first, and props without cut-outs on a shader with no `discard`: the GPU drops what's
   hidden before shading it. The ground (the costliest shader) is drawn last, under the rest.
 - The ground shader skips the border votes wherever a cell and its neighbours have one
@@ -247,7 +274,8 @@ time goes. Measured on 2026-10-15 (RTX 3080, WebGPU), before and after the work 
 | A prop placed in the map editor: worst frame | 57 ms | 7.4 ms |
 
 At 1400 x 900 on the meadow itself, every scene runs at ~2400 fps uncapped (~0.4 ms a frame),
-a battle at ~3800.
+a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whole at 4K at
+379 fps, and a prop placed on it costs 6 ms (`only=editing`).
 
 ## Not yet
 

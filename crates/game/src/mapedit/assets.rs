@@ -144,6 +144,9 @@ impl MapEditor {
     }
 
     pub(super) fn add_to_folder(&mut self, id: &str, folder: &str) {
+        if !self.content.props.contains(id) {
+            return;
+        }
         self.change_prop(id, |p| {
             let mut f = p.folders();
             if !f.iter().any(|x| x == folder) {

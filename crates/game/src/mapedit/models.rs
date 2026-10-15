@@ -22,11 +22,6 @@ pub(super) fn batches(scene: &Scene) -> Vec<(String, Vec<MapVertex>, Vec<u32>)> 
 }
 
 impl MapEditor {
-    /// Props whose model file is still on its way.
-    pub(super) fn models_pending(&self) -> bool {
-        self.content.props.iter().any(|p| p.model.is_some() && !self.models.contains_key(&p.id) && !self.model_failed.contains(&p.id))
-    }
-
     /// Takes in the model files that arrived: textures to the renderer, everything that
     /// shows props rebuilt.
     pub(super) fn load_models(&mut self, r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState) {

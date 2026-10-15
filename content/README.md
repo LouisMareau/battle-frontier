@@ -23,6 +23,13 @@ Rules:
 
 Check everything resolves: `cargo run -p engine-content --bin content -- check`.
 
+Big maps are chunk files: `data/maps/<id>.json` says `"chunk": 64` and lists its
+`terrains`, and `data/maps/<id>/<x>_<z>.json` holds each 64 × 64 square's cells as rows of
+numbers (terrain index, level, tree area, zone); a square with no file is blank.
+`content chunk MAP` converts a map, `unchunk MAP` converts it back. Worlds (`data/worlds/`)
+place maps as pieces on one grid of cells; pieces may touch (a seam, walked across where the
+levels match) but never overlap.
+
 Props' real models are glTF files (`.glb`) in `assets/models/`, named by the prop's `model`
 field; the Blender add-on (`tools/blender/`) writes both. A prop without one is drawn from its
 `parts`, a stand-in made of simple shapes. A prop's `unstackable` means nothing overlaps it

@@ -13,19 +13,20 @@ mod assets;
 mod build;
 mod models;
 mod rooms;
+mod stream;
 mod walk;
+mod worlds;
 mod zones;
 
 use std::sync::Arc;
 
-use content::{Content, Placed, Space, TreeArea};
+use content::{Chunk, Content, Placed, Space, TreeArea, CHUNK};
 use egui::{Color32, PointerButton, RichText, Sense};
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::MapVertex;
-use render::scene::{Frame, SceneRenderer, Shape, ShapeKind, WorldGround};
+use render::scene::{Frame, Shape, ShapeKind};
 use rules::config::Period;
-use world::buildings::{building, Cut};
-use world::mesh::{self, Scene};
+use world::mesh;
 use world::WorldMap;
 
 use crate::stage::period_lighting;
@@ -98,6 +99,15 @@ struct NewMap {
     width: u16,
     height: u16,
     terrain: String,
+    /// stored as chunk files
+    chunked: bool,
+}
+
+/// A chunked map being opened: its chunk files are on their way.
+struct Loading {
+    record: content::Map,
+    space: Space,
+    paths: Vec<String>,
 }
 
 pub struct MapEditor {
@@ -140,6 +150,14 @@ pub struct MapEditor {
     need_props: bool,
     need_trees: bool,
     need_buildings: bool,
+    /// the world map on the GPU, square by square
+    gpu: stream::GpuState,
+    /// a chunked map whose chunk files are on their way
+    loading: Option<Loading>,
+    /// the World view
+    worlds: worlds::Worlds,
+    /// a walker coming from the map next to this one: where it stands once the map is up
+    arrive: Option<((i32, i32), f32)>,
     /// props' real models, loaded (by prop id), and the ones that wouldn't load
     models: world::mesh::Models,
     model_failed: std::collections::HashSet<String>,
@@ -282,6 +300,8 @@ impl MapEditor {
         };
         let terrain = Self::first_terrain(&content);
         let prop = content.props.iter().next().map(|p| p.id.clone());
+        // a chunked map's cells come from its files: opened once the editor stands
+        let chunked = entry.filter(|e| e.value.chunked()).map(|e| e.value.id.clone());
         let mut ed = MapEditor {
             level_height: world.level_height() as f32,
             max_level: world.max_level,
@@ -312,6 +332,10 @@ impl MapEditor {
             need_props: true,
             need_trees: true,
             need_buildings: true,
+            gpu: Default::default(),
+            loading: None,
+            worlds: worlds::Worlds::default(),
+            arrive: None,
             models: world::mesh::Models::new(),
             model_failed: std::collections::HashSet::new(),
             draft: None,
@@ -353,6 +377,9 @@ impl MapEditor {
         ed.map.know_doors(&ed.content);
         ed.load_spawns();
         ed.recentre();
+        if let Some(id) = chunked {
+            ed.open(&id);
+        }
         ed
     }
 
@@ -397,11 +424,48 @@ impl MapEditor {
     }
 
     fn open(&mut self, id: &str) {
-        if let Some(e) = self.content.maps.entry(id) {
-            self.map = WorldMap::from_record(&e.value);
-            self.space = e.space;
-            self.after_load();
+        let Some(e) = self.content.maps.entry(id) else { return };
+        if e.value.chunked() {
+            // the cells are in chunk files: fetched, then `poll_loading` opens the map
+            let (gx, gz) = e.value.chunk_grid();
+            let paths: Vec<String> = (0..gz).flat_map(|z| (0..gx).map(move |x| (x, z))).map(|(x, z)| format!("{}/{}", e.space.dir(), Chunk::path(&e.value.id, x, z))).collect();
+            for p in &paths {
+                self.files.request(p);
+            }
+            self.status = format!("Loading {}: {} chunk files", e.value.name, paths.len());
+            self.loading = Some(Loading { record: e.value.clone(), space: e.space, paths });
+            return;
         }
+        self.map = WorldMap::from_record(&e.value);
+        self.space = e.space;
+        self.after_load();
+    }
+
+    /// A chunked map being opened: once every chunk file is here (or isn't there, a blank
+    /// square), it's up.
+    fn poll_loading(&mut self) {
+        let Some(l) = &self.loading else { return };
+        if l.paths.iter().any(|p| matches!(self.files.get(p), crate::platform::Load::Pending)) {
+            return;
+        }
+        let l = self.loading.take().unwrap();
+        let mut chunks = vec![];
+        let mut bad = vec![];
+        for p in &l.paths {
+            if let crate::platform::Load::Ready(bytes) = self.files.get(p) {
+                match serde_json::from_slice::<Chunk>(&bytes) {
+                    Ok(c) => chunks.push(c),
+                    Err(e) => bad.push(format!("{p}: {e}")),
+                }
+            }
+        }
+        self.map = WorldMap::from_chunks(&l.record, &chunks);
+        self.space = l.space;
+        self.after_load();
+        self.status = match bad.is_empty() {
+            true => format!("{}: {} chunk files", self.map.name, chunks.len()),
+            false => format!("{}: {} chunk files; unreadable: {}", self.map.name, chunks.len(), bad.join("; ")),
+        };
     }
 
     fn after_load(&mut self) {
@@ -419,8 +483,10 @@ impl MapEditor {
         self.area = None;
         self.width_edit = self.map.width as u16;
         self.height_edit = self.map.height as u16;
+        self.worlds.levels.clear();
         self.everything_changed();
         self.recentre();
+        self.finish_arrival();
     }
 
     fn everything_changed(&mut self) {
@@ -467,31 +533,49 @@ impl MapEditor {
     }
 
     fn save(&mut self) {
-        let record = self.map.to_record();
-        let mut problems = vec![];
+        let (record, chunks) = self.map.records();
         if !slug_ok(&record.id) {
-            problems.push(format!("the id \"{}\" must be lowercase letters, digits, _ or -", record.id));
-        }
-        if !problems.is_empty() {
-            self.status = format!("Not saved: {}", problems.join("; "));
+            self.status = format!("Not saved: the id \"{}\" must be lowercase letters, digits, _ or -", record.id);
             return;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
             let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
-            match content::disk::save(&root, Space::Content, &record) {
-                Ok(path) => self.status = format!("Saved {}", path.display()),
+            let written = content::disk::save(&root, Space::Content, &record).and_then(|path| {
+                if record.chunked() {
+                    content::disk::save_chunks(&root, Space::Content, &record, &chunks).map(|(w, gone)| format!("Saved {} and {w} chunk file{} ({gone} removed)", path.display(), if w == 1 { "" } else { "s" }))
+                } else {
+                    let gone = content::disk::remove_chunks(&root, Space::Content, &record.id);
+                    Ok(if gone > 0 { format!("Saved {} as rows; {gone} chunk files removed", path.display()) } else { format!("Saved {}", path.display()) })
+                }
+            });
+            match written {
+                Ok(msg) => self.status = msg,
                 Err(e) => {
                     self.status = format!("Not saved: {e}");
                     return;
+                }
+            }
+            // the next opening reads the files as they are now
+            let (gx, gz) = record.chunk_grid();
+            for z in 0..gz {
+                for x in 0..gx {
+                    self.files.forget(&format!("{}/{}", Space::Content.dir(), Chunk::path(&record.id, x, z)));
                 }
             }
         }
         #[cfg(target_arch = "wasm32")]
         {
             let name = format!("{}.json", record.id);
-            match crate::platform::download(&name, &content::to_text(&record)) {
-                Ok(()) => self.status = format!("Downloaded {name}: put it in content/data/maps/"),
+            let mut result = crate::platform::download(&name, &content::to_text(&record));
+            for c in &chunks {
+                if result.is_ok() {
+                    result = crate::platform::download(&format!("{}_{}.json", c.chunk[0], c.chunk[1]), &content::to_text(c));
+                }
+            }
+            match result {
+                Ok(()) if chunks.is_empty() => self.status = format!("Downloaded {name}: put it in content/data/maps/"),
+                Ok(()) => self.status = format!("Downloaded {name} (for content/data/maps/) and {} chunk files (for content/data/maps/{}/)", chunks.len(), record.id),
                 Err(e) => {
                     self.status = format!("Not saved: {e}");
                     return;
@@ -515,83 +599,6 @@ impl MapEditor {
     }
 
     // ------------------------------------------------------------ the GPU
-
-    fn sync(&mut self, rs: &eframe::egui_wgpu::RenderState, now: f64) {
-        let focus = self.focus_cells();
-        if focus != self.focus_sent {
-            self.need_cells = true;
-        }
-        let map_changed = self.need_ground || self.need_cells || self.need_props || self.need_trees || self.need_buildings;
-        if !(map_changed || self.extra_changed || !self.sprites_wanted.is_empty() || self.models_pending()) {
-            return;
-        }
-        if map_changed {
-            self.blocked = None;
-        }
-        let mut guard = rs.renderer.write();
-        let Some(r) = guard.callback_resources.get_mut::<SceneRenderer>() else { return };
-        self.load_sprites(r, rs);
-        self.load_models(r, rs);
-        if self.need_ground {
-            r.clear_map();
-            let mut g = mesh::ground(&self.map, &self.content, self.level_height);
-            self.mark_focus(&mut g.cells, focus.as_deref());
-            let (tops, solid) = (gpu(&g.tops.vertices), gpu(&g.solid.vertices));
-            r.set_world_ground(
-                &rs.device,
-                &rs.queue,
-                &WorldGround {
-                    tops: (&tops, &g.tops.indices),
-                    solid: (&solid, &g.solid.indices),
-                    cells: &g.cells,
-                    size: [self.map.width as u32, self.map.height as u32],
-                    palette: &g.palette,
-                    palette_width: g.palette_width,
-                    level_height: self.level_height,
-                },
-            );
-            self.need_ground = false;
-            self.need_cells = false;
-        } else if self.need_cells {
-            let mut cells = mesh::cells_texture(&self.map);
-            self.mark_focus(&mut cells, focus.as_deref());
-            r.set_world_cells(&rs.queue, &cells);
-            self.need_cells = false;
-        }
-        self.focus_sent = focus;
-        // each layer sent alone when it changes: placing a prop doesn't send the forest again
-        if self.need_trees {
-            let trees = mesh::tree_mesh(&self.map, &self.content, self.level_height, &self.models);
-            r.set_world_layer(&rs.device, "trees", &models::batches(&trees));
-            self.need_trees = false;
-        }
-        if self.need_props {
-            let props = mesh::props(&self.map, &self.content, self.level_height, &self.models);
-            r.set_world_layer(&rs.device, "props", &models::batches(&props));
-            self.need_props = false;
-        }
-        if self.need_buildings {
-            let editing = self.draft.as_ref().and_then(|d| d.editing);
-            let inside = self.walker.as_ref().and_then(|w| w.inside);
-            let mut m = Scene::default();
-            for (i, b) in self.map.buildings.iter().enumerate() {
-                if Some(i) != editing {
-                    let cut = inside.filter(|(w, _)| *w == i).map(|(_, f)| Cut { top: f });
-                    m.append(&building(b, &self.content, self.level_height, cut, &self.models), Mat4::IDENTITY);
-                }
-            }
-            if let Some(d) = self.draft.as_ref().filter(|d| d.step == build::Step::Design) {
-                m.append(&building(&d.b, &self.content, self.level_height, Some(Cut { top: d.floor }), &self.models), Mat4::IDENTITY);
-            }
-            r.set_world_layer(&rs.device, "buildings", &models::batches(&m));
-            self.need_buildings = false;
-        }
-        if self.extra_changed {
-            let extra = self.extra_mesh(now);
-            r.set_world_extra(&rs.device, &models::batches(&extra));
-            self.extra_changed = false;
-        }
-    }
 
     /// The cells texture's blue channel: 255 on the cells in the focus.
     fn mark_focus(&self, cells: &mut [u8], focus: Option<&[(i32, i32)]>) {
@@ -805,6 +812,7 @@ impl MapEditor {
             self.sync(rs, now);
         }
         let mut back = false;
+        self.poll_loading();
         self.take_drops(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.watch_assets(now);
@@ -846,7 +854,7 @@ impl MapEditor {
                 if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
                     self.grid = !self.grid;
                 }
-                if ui.button("Reset view").on_hover_text("The whole map (Home)").clicked() {
+                if ui.button("Fit").on_hover_text("The whole map in view (Home)").clicked() {
                     self.recentre();
                 }
                 ui.separator();
@@ -874,6 +882,11 @@ impl MapEditor {
                 mark("uiAssets", &assets);
                 if assets.clicked() {
                     self.assets.open = !self.assets.open;
+                }
+                let worlds = ui.selectable_label(self.worlds.open, "World").on_hover_text("Maps stitched into a world: place this map next to others");
+                mark("uiWorld", &worlds);
+                if worlds.clicked() {
+                    self.worlds.open = !self.worlds.open;
                 }
                 ui.separator();
                 let export = ui.button("To Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
@@ -904,9 +917,12 @@ impl MapEditor {
                 }
             });
         });
-        // the asset browser across the window, under the side panels
+        // the asset browser and the World view across the window, under the side panels
         if self.assets.open {
             egui::Panel::bottom("maps-assets").resizable(true).default_size(300.0).min_size(140.0).show(ui, |ui| self.assets_panel(ui));
+        }
+        if self.worlds.open {
+            egui::Panel::bottom("maps-world").resizable(true).default_size(320.0).min_size(160.0).show(ui, |ui| self.worlds_panel(ui));
         }
         egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
             ui.add_space(6.0);
@@ -925,6 +941,8 @@ impl MapEditor {
         });
         crate::platform::set_hook("map", &self.map.id);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
+        crate::platform::set_hook("chunked", if self.map.chunk > 0 { "1" } else { "0" });
+        crate::platform::set_hook("loading", if self.loading.is_some() { "1" } else { "0" });
         crate::platform::set_hook("props", &self.map.props.len().to_string());
         crate::platform::set_hook("areas", &self.map.tree_areas.len().to_string());
         crate::platform::set_hook("level", &self.level.to_string());
@@ -987,7 +1005,7 @@ impl MapEditor {
             }
         }
         if ui.button("New").on_hover_text("A new map").clicked() {
-            self.new_map = Some(NewMap { id: String::new(), name: String::new(), width: 32, height: 24, terrain: self.terrain.clone() });
+            self.new_map = Some(NewMap { id: String::new(), name: String::new(), width: 32, height: 24, terrain: self.terrain.clone(), chunked: false });
         }
     }
 
@@ -1066,6 +1084,7 @@ impl MapEditor {
                     ui.selectable_value(&mut nm.terrain, t.id.clone(), &t.name);
                 }
             });
+            ui.checkbox(&mut nm.chunked, "Chunk files").on_hover_text(format!("Stored as {CHUNK} x {CHUNK} squares in data/maps/<id>/, for big maps: an edit touches few files"));
             let taken = self.content.maps.contains(&nm.id);
             if taken {
                 warn(ui, "That id is taken.");
@@ -1080,6 +1099,7 @@ impl MapEditor {
         if create {
             let name = if nm.name.is_empty() { nm.id.clone() } else { nm.name.clone() };
             self.map = WorldMap::new(&nm.id, &name, nm.width as usize, nm.height as usize, &nm.terrain);
+            self.map.chunk = if nm.chunked { CHUNK } else { 0 };
             self.space = Space::Content;
             self.new_map = None;
             self.after_load();
@@ -1318,6 +1338,16 @@ impl MapEditor {
                 self.everything_changed();
             }
         });
+        section(ui, "Storage");
+        let mut chunked = self.map.chunk > 0;
+        if ui.checkbox(&mut chunked, format!("Chunk files ({CHUNK} × {CHUNK})")).on_hover_text("The cells in data/maps/<id>/<x>_<z>.json squares, with numbers for levels and no limit on terrains: an edit touches few files. Off: rows of characters in the record.").changed() {
+            self.map.chunk = if chunked { CHUNK } else { 0 };
+            self.dirty = true;
+        }
+        if chunked {
+            let n = CHUNK as i32;
+            hint(ui, &format!("{} × {} squares", (self.map.width as i32 + n - 1) / n, (self.map.height as i32 + n - 1) / n));
+        }
         section(ui, "On it");
         let m = &self.map;
         let rows = [

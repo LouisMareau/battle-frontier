@@ -1,0 +1,8 @@
+{
+  "id": "test_world",
+  "name": "Test world",
+  "pieces": [
+    { "map": "test_meadow", "at": [0, 0] },
+    { "map": "east_field", "at": [40, 0] }
+  ]
+}

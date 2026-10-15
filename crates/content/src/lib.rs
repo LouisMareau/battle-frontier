@@ -79,10 +79,11 @@ record!(Terrain, "terrains");
 record!(Prop, "props");
 record!(Map, "maps");
 record!(Spawns, "spawns");
+record!(World, "worlds");
 
-pub const COLLECTIONS: [&str; 16] = [
+pub const COLLECTIONS: [&str; 17] = [
     "types", "creatures", "moves", "abilities", "items", "natures", "growth_rates", "egg_groups", "regions", "encounters", "parties",
-    "settings", "terrains", "props", "maps", "spawns",
+    "settings", "terrains", "props", "maps", "spawns", "worlds",
 ];
 
 #[derive(Clone, Debug)]
@@ -269,6 +270,7 @@ pub struct Content {
     pub props: Collection<Prop>,
     pub maps: Collection<Map>,
     pub spawns: Collection<Spawns>,
+    pub worlds: Collection<World>,
     /// what couldn't be read
     pub problems: Vec<String>,
 }
@@ -308,6 +310,7 @@ impl Content {
             "props" => go!(props),
             "maps" => go!(maps),
             "spawns" => go!(spawns),
+            "worlds" => go!(worlds),
             other => return Err(format!("{path}: no collection named \"{other}\"")),
         }
         Ok(())
@@ -346,6 +349,7 @@ impl Content {
         self.props.sort_by_key(|p| (p.category.clone(), p.id.clone()));
         self.maps.sort_by_key(|m| m.id.clone());
         self.spawns.sort_by_key(|s| s.id.clone());
+        self.worlds.sort_by_key(|w| w.id.clone());
     }
 
     /// The world's measures (the "world" settings record, or the defaults).
@@ -380,6 +384,7 @@ impl Content {
         count!(props, "props");
         count!(maps, "maps");
         count!(spawns, "spawns");
+        count!(worlds, "worlds");
         out
     }
 
@@ -472,6 +477,10 @@ impl Content {
         for m in self.maps.iter() {
             out.extend(self.check_map(m, &world));
         }
+        let size = |id: &str| self.maps.get(id).map(|m| (m.width, m.height));
+        for w in self.worlds.iter() {
+            out.extend(w.problems(&size).into_iter().map(|p| format!("worlds/{}: {p}", w.id)));
+        }
         for e in self.spawns.entries() {
             let s = &e.value;
             let at = format!("spawns/{}", s.id);
@@ -529,10 +538,28 @@ impl Content {
                 }
             }
         };
-        rows("terrain", &m.terrain, &mut out);
-        rows("levels", &m.levels, &mut out);
-        if !m.areas.is_empty() {
-            rows("areas", &m.areas, &mut out);
+        if m.chunked() {
+            // the cells are in chunk files (checked from disk: `disk::check_chunks`)
+            if !(8..=512).contains(&m.chunk) {
+                out.push(format!("{at}: chunks of {} cells: 8 to 512", m.chunk));
+            }
+            if m.terrains.is_empty() {
+                out.push(format!("{at}: chunked, but no terrains list"));
+            }
+            for t in &m.terrains {
+                if !self.terrains.contains(t) {
+                    out.push(format!("{at}: terrain \"{t}\", no such terrain"));
+                }
+            }
+            if !m.terrain.is_empty() || !m.levels.is_empty() || !m.areas.is_empty() || !m.zone_cells.is_empty() {
+                out.push(format!("{at}: chunked, so its rows are ignored: remove them"));
+            }
+        } else {
+            rows("terrain", &m.terrain, &mut out);
+            rows("levels", &m.levels, &mut out);
+            if !m.areas.is_empty() {
+                rows("areas", &m.areas, &mut out);
+            }
         }
         let unknown: std::collections::BTreeSet<char> = m.terrain.iter().flat_map(|r| r.chars()).filter(|c| !m.legend.contains_key(&c.to_string())).collect();
         if !unknown.is_empty() {
@@ -651,6 +678,137 @@ pub mod disk {
                 let rel = e.space.asset(m);
                 if !root.join(&rel).is_file() {
                     out.push(format!("props/{}: its model {rel} isn't there", e.value.id));
+                }
+            }
+        }
+        out
+    }
+
+    fn chunk_dir(root: &Path, space: Space, id: &str) -> std::path::PathBuf {
+        root.join(space.dir()).join("data").join("maps").join(id)
+    }
+
+    /// A chunked map's chunk files (those that are there), under a space.
+    pub fn read_chunks(root: &Path, space: Space, map: &Map) -> Result<Vec<Chunk>, String> {
+        let dir = chunk_dir(root, space, &map.id);
+        let mut out = vec![];
+        let Ok(list) = std::fs::read_dir(&dir) else { return Ok(out) };
+        let mut names: Vec<String> = list.filter_map(|e| e.ok()).map(|e| e.file_name().to_string_lossy().to_string()).filter(|n| n.ends_with(".json")).collect();
+        names.sort();
+        for name in names {
+            let path = dir.join(&name);
+            let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+            out.push(serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?);
+        }
+        Ok(out)
+    }
+
+    /// Writes a chunked map's chunk files: those whose text changed; blank squares and
+    /// squares not given lose their file. Returns (written, removed).
+    pub fn save_chunks(root: &Path, space: Space, map: &Map, chunks: &[Chunk]) -> Result<(usize, usize), String> {
+        let dir = chunk_dir(root, space, &map.id);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let mut keep = std::collections::BTreeSet::new();
+        let (mut written, mut removed) = (0, 0);
+        for c in chunks.iter().filter(|c| !c.is_blank()) {
+            let name = format!("{}_{}.json", c.chunk[0], c.chunk[1]);
+            let path = dir.join(&name);
+            keep.insert(name);
+            let text = to_text(c);
+            if std::fs::read_to_string(&path).ok().as_deref() != Some(text.as_str()) {
+                std::fs::write(&path, text).map_err(|e| format!("{}: {e}", path.display()))?;
+                written += 1;
+            }
+        }
+        if let Ok(list) = std::fs::read_dir(&dir) {
+            for e in list.flatten() {
+                let name = e.file_name().to_string_lossy().to_string();
+                if name.ends_with(".json") && !keep.contains(&name) && std::fs::remove_file(e.path()).is_ok() {
+                    removed += 1;
+                }
+            }
+        }
+        Ok((written, removed))
+    }
+
+    /// Removes a map's chunk folder (a map stored as rows again, or gone); how many files.
+    pub fn remove_chunks(root: &Path, space: Space, id: &str) -> usize {
+        let dir = chunk_dir(root, space, id);
+        let n = std::fs::read_dir(&dir).map(|l| l.count()).unwrap_or(0);
+        std::fs::remove_dir_all(&dir).ok();
+        n
+    }
+
+    /// What's wrong with the chunk files of the chunked maps.
+    pub fn check_chunks(root: &Path, content: &Content) -> Vec<String> {
+        let world = content.world();
+        let mut out = vec![];
+        for e in content.maps.entries() {
+            let m = &e.value;
+            if !m.chunked() {
+                continue;
+            }
+            let at = format!("maps/{}", m.id);
+            let dir = chunk_dir(root, e.space, &m.id);
+            let Ok(list) = std::fs::read_dir(&dir) else { continue };
+            let (gx, gz) = m.chunk_grid();
+            for entry in list.flatten() {
+                let name = entry.file_name().to_string_lossy().to_string();
+                if !name.ends_with(".json") {
+                    continue;
+                }
+                let Some((cx, cz)) = Chunk::parse_name(&name) else {
+                    out.push(format!("{at}: chunk file {name}: named <x>_<z>.json"));
+                    continue;
+                };
+                if cx < 0 || cz < 0 || cx >= gx || cz >= gz {
+                    out.push(format!("{at}: chunk {cx}, {cz} is outside the map ({gx} x {gz} chunks)"));
+                }
+                let c: Chunk = match std::fs::read_to_string(entry.path()).map_err(|e| e.to_string()).and_then(|t| serde_json::from_str(&t).map_err(|e| e.to_string())) {
+                    Ok(c) => c,
+                    Err(err) => {
+                        out.push(format!("{at}: chunk {name}: {err}"));
+                        continue;
+                    }
+                };
+                if c.map != m.id || c.chunk != [cx, cz] {
+                    out.push(format!("{at}: chunk {name} says it's {} {:?}", c.map, c.chunk));
+                }
+                let n = m.chunk as usize;
+                let shape = |rows: &[Vec<u8>]| rows.len() <= n && rows.iter().all(|r| r.len() <= n);
+                if c.terrain.len() > n || c.terrain.iter().any(|r| r.len() > n) || !shape(&c.levels) || !shape(&c.areas) || !shape(&c.zones) {
+                    out.push(format!("{at}: chunk {name} has rows past {n} cells"));
+                }
+                if c.terrain.iter().flatten().any(|&t| t as usize >= m.terrains.len()) {
+                    out.push(format!("{at}: chunk {name} uses a terrain past the map's list of {}", m.terrains.len()));
+                }
+                if c.levels.iter().flatten().any(|&l| l > world.max_level) {
+                    out.push(format!("{at}: chunk {name}: levels must be 0 to {}", world.max_level));
+                }
+                if c.areas.iter().flatten().any(|&a| a as usize > m.tree_areas.len()) {
+                    out.push(format!("{at}: chunk {name} names a tree area the map doesn't have"));
+                }
+                if c.zones.iter().flatten().any(|&z| z as usize > m.zones.len()) {
+                    out.push(format!("{at}: chunk {name} names a zone the map doesn't have"));
+                }
+            }
+        }
+        out
+    }
+
+    /// Where the worlds' regions touch and the levels differ on the two sides: notes, not
+    /// problems (a cliff at a seam is allowed; walking can't cross there).
+    pub fn seam_notes(root: &Path, content: &Content) -> Vec<String> {
+        let levels = |id: &str| {
+            let e = content.maps.entry(id)?;
+            let chunks = if e.value.chunked() { read_chunks(root, e.space, &e.value).ok()? } else { vec![] };
+            Some((e.value.width, e.value.height, e.value.cells(&chunks).level))
+        };
+        let mut out = vec![];
+        for w in content.worlds.iter() {
+            for s in w.seams(&levels) {
+                if !s.mismatches.is_empty() {
+                    out.push(format!("worlds/{}: {} and {} meet along {} cells; the levels differ on {} of them (no walking across there)", w.id, s.a, s.b, s.cells, s.mismatches.len()));
                 }
             }
         }

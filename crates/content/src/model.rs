@@ -526,10 +526,20 @@ pub struct Map {
     pub width: u16,
     /// cells along z (rows)
     pub height: u16,
+    /// stored as chunk files this many cells a side (`data/maps/<id>/<cx>_<cz>.json`, see
+    /// `Chunk`); 0: the rows below hold the cells
+    #[serde(skip_serializing_if = "is_default")]
+    pub chunk: u16,
+    /// chunked maps: the terrains the chunks' numbers index
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub terrains: Vec<String>,
     /// which terrain each character of `terrain` is
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub legend: BTreeMap<String, String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub terrain: Vec<String>,
     /// the level of each cell's ground: 0-9, then a-z
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub levels: Vec<String>,
     /// the tree area each cell belongs to (its `mark`), '.' for none
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -548,6 +558,385 @@ pub struct Map {
     /// creatures that come out of a treeline and go roam a zone
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<SpawnLink>,
+}
+
+/// Chunk files: how many cells a side.
+pub const CHUNK: u16 = 64;
+
+/// One square of a chunked map's cells (`data/maps/<map>/<cx>_<cz>.json`): rows of
+/// numbers, north first, as many as the square has within the map. `terrain` indexes the
+/// map's `terrains`; `areas` and `zones` are 0 for none, else 1 + the index in the map's
+/// `tree_areas` / `zones`. A square with no file is blank: the first terrain, level 0,
+/// nothing on it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Chunk {
+    pub map: String,
+    /// which square, in chunks: x, z
+    pub chunk: [i32; 2],
+    pub terrain: Vec<Vec<u16>>,
+    pub levels: Vec<Vec<u8>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub areas: Vec<Vec<u8>>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub zones: Vec<Vec<u8>>,
+}
+
+impl Chunk {
+    /// Its file, under a space's folder.
+    pub fn path(map: &str, cx: i32, cz: i32) -> String {
+        format!("data/maps/{map}/{cx}_{cz}.json")
+    }
+
+    /// The square a file name is for ("3_1.json": (3, 1)).
+    pub fn parse_name(name: &str) -> Option<(i32, i32)> {
+        let (x, z) = name.strip_suffix(".json")?.split_once('_')?;
+        Some((x.parse().ok()?, z.parse().ok()?))
+    }
+
+    /// Nothing but zeros: not worth a file.
+    pub fn is_blank(&self) -> bool {
+        self.terrain.iter().flatten().all(|&v| v == 0)
+            && self.levels.iter().flatten().all(|&v| v == 0)
+            && self.areas.iter().flatten().all(|&v| v == 0)
+            && self.zones.iter().flatten().all(|&v| v == 0)
+    }
+}
+
+/// A map's cells, decoded: per cell (row by row, north first) its terrain (an index into
+/// `terrains`), level, tree area (0 none, else 1 + the index in `tree_areas`) and zone (the
+/// same way).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Cells {
+    pub terrains: Vec<String>,
+    pub terrain: Vec<u16>,
+    pub level: Vec<u8>,
+    pub area: Vec<u8>,
+    pub zone: Vec<u8>,
+}
+
+/// Copies a chunk's rows into a map-sized grid at `at` (cells), `n` cells a side at most.
+fn blit<T: Copy>(rows: &[Vec<T>], grid: &mut [T], (w, h): (usize, usize), (ox, oz): (usize, usize), n: usize) {
+    for (z, row) in rows.iter().take(n).enumerate() {
+        for (x, &v) in row.iter().take(n).enumerate() {
+            if ox + x < w && oz + z < h {
+                grid[(oz + z) * w + ox + x] = v;
+            }
+        }
+    }
+}
+
+impl Map {
+    /// Stored as chunk files (else as rows of characters in the record).
+    pub fn chunked(&self) -> bool {
+        self.chunk > 0
+    }
+
+    /// How many chunks along x and along z.
+    pub fn chunk_grid(&self) -> (i32, i32) {
+        let c = self.chunk.max(1) as i32;
+        ((self.width as i32 + c - 1) / c, (self.height as i32 + c - 1) / c)
+    }
+
+    /// The cells, decoded: from the rows, or from the chunk files given (a square with no
+    /// chunk is blank).
+    pub fn cells(&self, chunks: &[Chunk]) -> Cells {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let mut out = Cells { terrains: vec![], terrain: vec![0; w * h], level: vec![0; w * h], area: vec![0; w * h], zone: vec![0; w * h] };
+        if self.chunked() {
+            out.terrains = self.terrains.clone();
+            let n = self.chunk as usize;
+            for c in chunks {
+                let at = (c.chunk[0].max(0) as usize * n, c.chunk[1].max(0) as usize * n);
+                blit(&c.terrain, &mut out.terrain, (w, h), at, n);
+                blit(&c.levels, &mut out.level, (w, h), at, n);
+                blit(&c.areas, &mut out.area, (w, h), at, n);
+                blit(&c.zones, &mut out.zone, (w, h), at, n);
+            }
+        } else {
+            let mut ids: BTreeMap<char, u16> = BTreeMap::new();
+            for (c, t) in &self.legend {
+                let Some(c) = c.chars().next() else { continue };
+                let i = match out.terrains.iter().position(|x| x == t) {
+                    Some(i) => i as u16,
+                    None => {
+                        out.terrains.push(t.clone());
+                        (out.terrains.len() - 1) as u16
+                    }
+                };
+                ids.insert(c, i);
+            }
+            for (z, row) in self.terrain.iter().take(h).enumerate() {
+                for (x, c) in row.chars().take(w).enumerate() {
+                    out.terrain[z * w + x] = ids.get(&c).copied().unwrap_or(0);
+                }
+            }
+            let rows = |rows: &[String], grid: &mut [u8], f: &dyn Fn(char) -> u8| {
+                for (z, row) in rows.iter().take(h).enumerate() {
+                    for (x, c) in row.chars().take(w).enumerate() {
+                        grid[z * w + x] = f(c);
+                    }
+                }
+            };
+            rows(&self.levels, &mut out.level, &|c| char_level(c).unwrap_or(0));
+            let marks: BTreeMap<char, u8> = self.tree_areas.iter().enumerate().filter_map(|(i, a)| a.mark.chars().next().map(|c| (c, i as u8 + 1))).collect();
+            rows(&self.areas, &mut out.area, &|c| marks.get(&c).copied().unwrap_or(0));
+            let zmarks: BTreeMap<char, u8> = self.zones.iter().enumerate().filter_map(|(i, z)| z.mark.chars().next().map(|c| (c, i as u8 + 1))).collect();
+            rows(&self.zone_cells, &mut out.zone, &|c| zmarks.get(&c).copied().unwrap_or(0));
+        }
+        if out.terrains.is_empty() {
+            out.terrains.push("grass".into());
+        }
+        out
+    }
+
+    /// This map with `cells` as rows of characters: the legend's characters kept where it
+    /// had them, a terrain's first letter or any free character otherwise.
+    pub fn with_rows(&self, cells: &Cells) -> Map {
+        let (w, h) = (self.width as usize, self.height as usize);
+        let used: std::collections::BTreeSet<u16> = cells.terrain.iter().copied().collect();
+        let mut legend: BTreeMap<String, String> = BTreeMap::new();
+        let mut chars: BTreeMap<u16, char> = BTreeMap::new();
+        for &t in &used {
+            let Some(id) = cells.terrains.get(t as usize) else { continue };
+            if let Some((c, _)) = self.legend.iter().find(|(c, v)| *v == id && !legend.contains_key(*c)) {
+                legend.insert(c.clone(), id.clone());
+                chars.insert(t, c.chars().next().unwrap_or('?'));
+            }
+        }
+        for &t in &used {
+            if chars.contains_key(&t) {
+                continue;
+            }
+            let Some(id) = cells.terrains.get(t as usize) else { continue };
+            let pool = id.chars().next().into_iter().chain('a'..='z').chain('A'..='Z').chain('0'..='9');
+            for c in pool {
+                if c != '.' && !legend.contains_key(&c.to_string()) {
+                    legend.insert(c.to_string(), id.clone());
+                    chars.insert(t, c);
+                    break;
+                }
+            }
+        }
+        let rows = |f: &dyn Fn(usize) -> char| -> Vec<String> { (0..h).map(|z| (0..w).map(|x| f(z * w + x)).collect()).collect() };
+        let marks: Vec<char> = self.tree_areas.iter().map(|a| a.mark.chars().next().unwrap_or('a')).collect();
+        let zmarks: Vec<char> = self.zones.iter().map(|z| z.mark.chars().next().unwrap_or('a')).collect();
+        Map {
+            chunk: 0,
+            terrains: vec![],
+            legend,
+            terrain: rows(&|i| chars.get(&cells.terrain[i]).copied().unwrap_or('?')),
+            levels: rows(&|i| level_char(cells.level[i])),
+            areas: if cells.area.iter().any(|&a| a > 0) { rows(&|i| if cells.area[i] == 0 { '.' } else { marks.get(cells.area[i] as usize - 1).copied().unwrap_or('?') }) } else { vec![] },
+            zone_cells: if cells.zone.iter().any(|&z| z > 0) { rows(&|i| if cells.zone[i] == 0 { '.' } else { zmarks.get(cells.zone[i] as usize - 1).copied().unwrap_or('?') }) } else { vec![] },
+            ..self.clone()
+        }
+    }
+
+    /// This map with `cells` as chunk files, `chunk` cells a side (its own size, else
+    /// CHUNK): the header record (no rows) and the chunks, blank squares left out.
+    pub fn with_chunks(&self, cells: &Cells) -> (Map, Vec<Chunk>) {
+        let size = if self.chunk > 0 { self.chunk } else { CHUNK };
+        let header = Map { chunk: size, terrains: cells.terrains.clone(), legend: BTreeMap::new(), terrain: vec![], levels: vec![], areas: vec![], zone_cells: vec![], ..self.clone() };
+        let (w, h) = (self.width as usize, self.height as usize);
+        let n = size as usize;
+        let (gx, gz) = header.chunk_grid();
+        let mut out = vec![];
+        for cz in 0..gz as usize {
+            for cx in 0..gx as usize {
+                let (x0, z0) = (cx * n, cz * n);
+                let (x1, z1) = ((x0 + n).min(w), (z0 + n).min(h));
+                let grid = |g: &[u8]| -> Vec<Vec<u8>> {
+                    let rows: Vec<Vec<u8>> = (z0..z1).map(|z| g[z * w + x0..z * w + x1].to_vec()).collect();
+                    if rows.iter().flatten().any(|&v| v > 0) { rows } else { vec![] }
+                };
+                let c = Chunk {
+                    map: self.id.clone(),
+                    chunk: [cx as i32, cz as i32],
+                    terrain: (z0..z1).map(|z| cells.terrain[z * w + x0..z * w + x1].to_vec()).collect(),
+                    levels: (z0..z1).map(|z| cells.level[z * w + x0..z * w + x1].to_vec()).collect(),
+                    areas: grid(&cells.area),
+                    zones: grid(&cells.zone),
+                };
+                if !c.is_blank() {
+                    out.push(c);
+                }
+            }
+        }
+        (header, out)
+    }
+}
+
+/// Maps stitched into one world: each piece is a map at a place on the world's grid of
+/// cells (its north-west cell); walking off a map's edge goes on in the map there.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct World {
+    pub id: String,
+    pub name: String,
+    pub pieces: Vec<Piece>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Piece {
+    pub map: String,
+    /// the map's north-west cell on the world's grid: x, z
+    pub at: [i32; 2],
+}
+
+/// Where two pieces touch: how many cells along the edge, and the cells (on `a`'s side,
+/// world coordinates) whose level differs from the cell across, where walking can't cross.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Seam {
+    pub a: String,
+    pub b: String,
+    /// where b is, from a: "e" or "s"
+    pub side: String,
+    /// the first shared cell on a's side (world coordinates); the seam runs south from it
+    /// (an "e" seam) or east (an "s" one), `cells` long
+    pub from: [i32; 2],
+    pub cells: usize,
+    pub mismatches: Vec<[i32; 2]>,
+}
+
+/// A map's size (cells) and its cells' levels, for the seams.
+pub type Levels = (u16, u16, Vec<u8>);
+
+impl World {
+    pub fn piece_of(&self, map: &str) -> Option<&Piece> {
+        self.pieces.iter().find(|r| r.map == map)
+    }
+
+    /// The piece under a world cell (its index) and the cell in its map.
+    pub fn at(&self, size: &dyn Fn(&str) -> Option<(u16, u16)>, cell: [i32; 2]) -> Option<(usize, [i32; 2])> {
+        self.pieces.iter().enumerate().find_map(|(i, r)| {
+            let (w, h) = size(&r.map)?;
+            let (x, z) = (cell[0] - r.at[0], cell[1] - r.at[1]);
+            (x >= 0 && z >= 0 && x < w as i32 && z < h as i32).then_some((i, [x, z]))
+        })
+    }
+
+    /// What's wrong: a map that isn't there, one placed twice, pieces overlapping.
+    pub fn problems(&self, size: &dyn Fn(&str) -> Option<(u16, u16)>) -> Vec<String> {
+        let mut out = vec![];
+        let rect = |r: &Piece| size(&r.map).map(|(w, h)| (r.at[0], r.at[1], r.at[0] + w as i32, r.at[1] + h as i32));
+        for (i, r) in self.pieces.iter().enumerate() {
+            if size(&r.map).is_none() {
+                out.push(format!("piece {i}: no map \"{}\"", r.map));
+            }
+            if self.pieces[..i].iter().any(|o| o.map == r.map) {
+                out.push(format!("\"{}\" is placed twice", r.map));
+            }
+            for o in &self.pieces[..i] {
+                if let (Some(a), Some(b)) = (rect(r), rect(o)) {
+                    if a.0 < b.2 && b.0 < a.2 && a.1 < b.3 && b.1 < a.3 {
+                        out.push(format!("\"{}\" and \"{}\" overlap", o.map, r.map));
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// Where pieces touch, with their level mismatches (`levels`: a map's size and levels;
+    /// a map it can't give is left out).
+    pub fn seams(&self, levels: &dyn Fn(&str) -> Option<Levels>) -> Vec<Seam> {
+        let known: Vec<(&Piece, Levels)> = self.pieces.iter().filter_map(|r| levels(&r.map).map(|l| (r, l))).collect();
+        let at = |l: &[u8], i: i32| l.get(i.max(0) as usize).copied().unwrap_or(0);
+        let mut out = vec![];
+        for (a, (aw, ah, al)) in &known {
+            for (b, (bw, bh, bl)) in &known {
+                if a.map == b.map {
+                    continue;
+                }
+                let (aw, ah, bw, bh) = (*aw as i32, *ah as i32, *bw as i32, *bh as i32);
+                if b.at[0] == a.at[0] + aw {
+                    // b east of a
+                    let (z0, z1) = (a.at[1].max(b.at[1]), (a.at[1] + ah).min(b.at[1] + bh));
+                    if z1 > z0 {
+                        let mismatches = (z0..z1).filter(|&z| at(al, (z - a.at[1]) * aw + aw - 1) != at(bl, (z - b.at[1]) * bw)).map(|z| [a.at[0] + aw - 1, z]).collect();
+                        out.push(Seam { a: a.map.clone(), b: b.map.clone(), side: "e".into(), from: [a.at[0] + aw - 1, z0], cells: (z1 - z0) as usize, mismatches });
+                    }
+                }
+                if b.at[1] == a.at[1] + ah {
+                    // b south of a
+                    let (x0, x1) = (a.at[0].max(b.at[0]), (a.at[0] + aw).min(b.at[0] + bw));
+                    if x1 > x0 {
+                        let mismatches = (x0..x1).filter(|&x| at(al, (ah - 1) * aw + x - a.at[0]) != at(bl, x - b.at[0])).map(|x| [x, a.at[1] + ah - 1]).collect();
+                        out.push(Seam { a: a.map.clone(), b: b.map.clone(), side: "s".into(), from: [x0, a.at[1] + ah - 1], cells: (x1 - x0) as usize, mismatches });
+                    }
+                }
+            }
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rows_and_chunks_hold_the_same_cells() {
+        let mut m = Map { id: "m".into(), width: 70, height: 20, ..Default::default() };
+        m.legend.insert("g".into(), "grass".into());
+        m.legend.insert("s".into(), "sand".into());
+        m.terrain = (0..20).map(|z| (0..70).map(|x| if (x + z) % 7 == 0 { 's' } else { 'g' }).collect()).collect();
+        m.levels = (0..20).map(|z| (0..70).map(|x| level_char(((x / 10 + z / 5) % 4) as u8)).collect()).collect();
+        m.tree_areas.push(TreeArea { mark: "a".into(), ..Default::default() });
+        m.areas = (0..20).map(|_| (0..70).map(|x| if x < 3 { 'a' } else { '.' }).collect()).collect();
+        let cells = m.cells(&[]);
+        assert_eq!(cells.terrains, vec!["grass", "sand"]);
+        let (header, chunks) = m.with_chunks(&cells);
+        assert_eq!(header.chunk, CHUNK);
+        assert_eq!(header.chunk_grid(), (2, 1));
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[1].terrain[0].len(), 6, "the second square holds the 6 columns left");
+        assert!(chunks[1].areas.is_empty(), "no tree area in the second square");
+        assert_eq!(header.cells(&chunks), cells);
+        assert_eq!(header.with_rows(&cells).terrain, m.terrain);
+        assert_eq!(header.with_rows(&cells).legend, m.legend, "the characters come back");
+        let blank = Map { width: 128, height: 64, chunk: CHUNK, terrains: vec!["grass".into()], ..Default::default() };
+        assert!(blank.with_chunks(&blank.cells(&[])).1.is_empty(), "blank squares have no file");
+        assert_eq!(Chunk::parse_name("3_1.json"), Some((3, 1)));
+        assert_eq!(Chunk::parse_name("3-1.json"), None);
+    }
+
+    #[test]
+    fn worlds_see_overlaps_and_seams() {
+        let size = |id: &str| match id {
+            "a" => Some((4u16, 3u16)),
+            "b" => Some((2, 3)),
+            "c" => Some((4, 2)),
+            _ => None,
+        };
+        let w = World {
+            id: "w".into(),
+            pieces: vec![Piece { map: "a".into(), at: [0, 0] }, Piece { map: "b".into(), at: [4, 0] }, Piece { map: "c".into(), at: [0, 3] }, Piece { map: "x".into(), at: [9, 9] }],
+            ..Default::default()
+        };
+        let p = w.problems(&size);
+        assert_eq!(p.len(), 1, "{p:?}");
+        assert!(p[0].contains("no map \"x\""));
+        assert_eq!(w.at(&size, [5, 2]), Some((1, [1, 2])));
+        assert_eq!(w.at(&size, [8, 0]), None);
+        let levels = |id: &str| match id {
+            "a" => Some((4, 3, vec![0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 0])),
+            "b" => Some((2, 3, vec![1, 0, 1, 0, 0, 0])),
+            "c" => Some((4, 2, vec![0, 0, 5, 0, 0, 0, 0, 0])),
+            _ => None,
+        };
+        let seams = w.seams(&levels);
+        assert_eq!(seams.len(), 2, "{seams:?}");
+        let e = seams.iter().find(|s| s.b == "b").unwrap();
+        assert_eq!((e.side.as_str(), e.cells, e.mismatches.len()), ("e", 3, 0), "a's east column 1, 1, 0 meets b's west column 1, 1, 0");
+        let s = seams.iter().find(|s| s.b == "c").unwrap();
+        assert_eq!((s.side.as_str(), s.cells, s.mismatches.clone()), ("s", 4, vec![[2, 2]]), "c rises to 5 under a's south row");
+        let mut overlapping = w.clone();
+        overlapping.pieces[1].at = [3, 0];
+        assert!(overlapping.problems(&size).iter().any(|s| s.contains("overlap")));
+    }
 }
 
 /// An area creatures roam (freely, not cell by cell). Who lives there is in the map's

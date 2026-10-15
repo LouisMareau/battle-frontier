@@ -59,6 +59,19 @@ impl MapEditor {
         self.status = "Walking: the arrows move, Esc stops".into();
     }
 
+    /// A map opened for a walker coming from the map next to it: it stands where it
+    /// arrived.
+    pub(super) fn finish_arrival(&mut self) {
+        let Some((cell, facing)) = self.arrive.take() else { return };
+        let blocked = self.map.blocked(&self.content);
+        let pos = self.cell_pos(cell);
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside: None });
+        self.blocked = Some(blocked);
+        self.cam.target = pos;
+        self.extra_changed = true;
+        self.status = format!("Walking on {}: the arrows move, Esc stops", self.map.name);
+    }
+
     pub(super) fn stop_walk(&mut self) {
         if self.walker.take().is_some() {
             self.need_buildings = true;
@@ -103,6 +116,19 @@ impl MapEditor {
                 (0, -1) => 180.0,
                 _ => 270.0,
             };
+            if self.map.index(next.0, next.1).is_none() {
+                // off the map: on into the piece next to it in the world, if there's one
+                self.walker.as_mut().unwrap().facing = facing;
+                if let Some((id, there)) = self.across(next) {
+                    if self.dirty {
+                        self.status = format!("Save {} first, then walk on into {id}", self.map.id);
+                    } else {
+                        self.arrive = Some((there, facing));
+                        self.open(&id);
+                        return;
+                    }
+                }
+            }
             let free = self.map.can_step(self.blocked.as_ref().unwrap(), cell, next);
             let to = self.cell_pos(next);
             let w = self.walker.as_mut().unwrap();
