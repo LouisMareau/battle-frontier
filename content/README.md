@@ -65,5 +65,15 @@ a map or an encounter that doesn't exist. A map's `ambience` lists the sounds of
 place: `file` under `assets/`, `volume`, `when` (`always`, `day`, `night`, `morning`), and
 for a sound of one spot its `area` and a `fade` in cells past its edge.
 
+A placed prop (`props` on a map, on a building's floors and outside it) stays on its cells:
+`at` is their centre, and `offset` (x, z from it, within its cells) is where it stands
+within them.
+
+`templates/<id>.json` keeps things to put down again anywhere: `name`, `size` (cells along
+x and z), and `props`, `buildings`, `actors` and `events` as a map has them, placed from the
+template's north-west corner with levels from its lowest ground. Its scripts may name
+actors it doesn't hold (they're on the maps it's put down on); everything else is checked
+like a map's.
+
 Everything in this folder is licensed under Creative Commons Attribution-ShareAlike 4.0
 (`LICENSE` here); the code outside it is under MIT or Apache-2.0.

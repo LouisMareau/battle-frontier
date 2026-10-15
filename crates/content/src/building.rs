@@ -435,7 +435,7 @@ mod tests {
             _ => None,
         };
         let about_stairs = |b: &Building| b.problems(&prop).into_iter().filter(|p| p.contains("stairs")).collect::<Vec<_>>();
-        let place = |id: &str, x: f64, z: f64| Placed { prop: id.into(), at: [x, z], level: 0, turn: 0.0, scale: 1.0 };
+        let place = |id: &str, x: f64, z: f64| Placed { prop: id.into(), at: [x, z], level: 0, turn: 0.0, scale: 1.0, ..Default::default() };
         // an L: a flat roof, so stairs on its only floor come up to it
         let mut b = l_shape();
         b.floors[0].props.push(place("stairs", 0.5, 1.0));

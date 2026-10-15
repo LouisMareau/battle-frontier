@@ -41,7 +41,7 @@ pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
     for p in &map.props {
         let Some((l, scalable)) = light(&p.prop) else { continue };
         let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, l, placement(Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32), p.turn as f32, scale));
+        put(&mut out, l, placement(Vec3::new(p.pos()[0] as f32, p.level as f32 * level_height, p.pos()[1] as f32), p.turn as f32, scale));
     }
     for b in &map.buildings {
         let base = b.level as f32 * level_height;
@@ -51,7 +51,7 @@ pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
             for p in &floor.props {
                 let Some((l, scalable)) = light(&p.prop) else { continue };
                 let scale = if scalable { p.scale as f32 } else { 1.0 };
-                put(&mut out, l, placement(Vec3::new(ox + p.at[0] as f32, y0 + 0.05, oz + p.at[1] as f32), p.turn as f32, scale));
+                put(&mut out, l, placement(Vec3::new(ox + p.pos()[0] as f32, y0 + 0.05, oz + p.pos()[1] as f32), p.turn as f32, scale));
             }
         }
         for a in &b.anchors {
@@ -62,7 +62,7 @@ pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
         for p in &b.outside {
             let Some((l, scalable)) = light(&p.prop) else { continue };
             let scale = if scalable { p.scale as f32 } else { 1.0 };
-            put(&mut out, l, placement(Vec3::new(ox + p.at[0] as f32, base, oz + p.at[1] as f32), p.turn as f32, scale));
+            put(&mut out, l, placement(Vec3::new(ox + p.pos()[0] as f32, base, oz + p.pos()[1] as f32), p.turn as f32, scale));
         }
     }
     out
@@ -79,7 +79,7 @@ mod tests {
         let lamp = Prop { id: "lamp".into(), category: "decoration".into(), light: Some(Light { at: [0.0, 2.0, 0.5], aim: [0.0, -1.0, 1.0], ..Default::default() }), ..Default::default() };
         content.props.put(lamp, content::Space::Content);
         let mut map = WorldMap::new("m", "M", 8, 8, "grass");
-        map.props.push(Placed { prop: "lamp".into(), at: [2.0, 3.0], level: 0, turn: 90.0, scale: 1.0 });
+        map.props.push(Placed { prop: "lamp".into(), at: [2.0, 3.0], level: 0, turn: 90.0, scale: 1.0, ..Default::default() });
         map.buildings.push(Building {
             id: "b".into(),
             at: [4, 4],

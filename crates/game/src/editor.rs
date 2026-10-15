@@ -56,6 +56,7 @@ fn rows(content: &Content, collection: &str) -> Vec<Row> {
         "maps" => rows_of(&content.maps),
         "spawns" => rows_of(&content.spawns),
         "worlds" => rows_of(&content.worlds),
+        "templates" => rows_of(&content.templates),
         _ => vec![],
     }
 }

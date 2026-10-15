@@ -273,6 +273,50 @@ except RuntimeError:  # Blender raises when an operator reports an error
     r = {"CANCELLED"}
 check("won't replace it unasked", r == {"CANCELLED"})
 
+# 5b. opened from the map editor ("Edit in Blender"): written back to the project by itself,
+# where it came from, its facts and folders kept
+clear()
+well_record = scratch / "content" / "data" / "props" / "test_well.json"
+rec = json.loads(well_record.read_text(encoding="utf-8"))
+rec["folders"] = ["Town"]
+well_record.write_text(bf.to_text(bf.ordered_prop(rec)), encoding="utf-8", newline="\n")
+r = bpy.ops.battle_frontier.import_prop(prop_id="test_well")
+bf.start_editing(bpy.context, "test_well")
+check("an edit session: its .blend under build/blender/", (scratch / "build" / "blender" / "test_well.blend").is_file() and bpy.context.scene.get("bf_editing") == "test_well")
+model_before = glb.read_bytes()
+for o in bpy.data.objects:
+    if o.type == "MESH" and not bf.is_bounds(o):
+        o.scale.z *= 1.5
+        o.location.z *= 1.5
+bpy.context.view_layer.update()
+message = bf.save_edited(bpy.context)
+rec2 = json.loads(well_record.read_text(encoding="utf-8"))
+check("saved back: taller, its folders, category and flags kept", abs(rec2.get("height", 0) - 3.3) < 0.08 and rec2.get("folders") == ["Town"] and rec2.get("category") == "decoration" and rec2.get("unstackable") is True,
+      f"{message} · {json.dumps(rec2)}")
+check("  its model rewritten", glb.read_bytes() != model_before)
+# a placeholder stays a placeholder: written back to temporary/, never content/
+tmp_props = scratch / "temporary" / "data" / "props"
+tmp_props.mkdir(parents=True, exist_ok=True)
+crate = json.loads((scratch / "content" / "data" / "props" / "crate.json").read_text(encoding="utf-8"))
+crate.update({"id": "temp_crate", "name": "Temp crate"})
+(tmp_props / "temp_crate.json").write_text(bf.to_text(bf.ordered_prop(crate)), encoding="utf-8", newline="\n")
+clear()
+r = bpy.ops.battle_frontier.import_prop(prop_id="temp_crate")
+check("imports a placeholder prop too", r == {"FINISHED"} and any(o.type == "MESH" for o in bpy.data.objects))
+bf.start_editing(bpy.context, "temp_crate")
+check("  untouched, it isn't written back (a stand-in stays one)", bf.save_edited(bpy.context) == "" and not (scratch / "temporary" / "assets" / "models" / "temp_crate.glb").exists())
+for o in bpy.data.objects:
+    if o.type == "MESH" and not bf.is_bounds(o):
+        o.scale.x *= 0.8
+bpy.context.view_layer.update()
+bf.save_edited(bpy.context)
+saved_tmp = json.loads((tmp_props / "temp_crate.json").read_text(encoding="utf-8"))
+check("  written back to temporary/, never content/", (scratch / "temporary" / "assets" / "models" / "temp_crate.glb").is_file()
+      and not (scratch / "content" / "assets" / "models" / "temp_crate.glb").exists() and not (scratch / "content" / "data" / "props" / "temp_crate.json").exists()
+      and saved_tmp.get("model") == "models/temp_crate.glb")
+del bpy.context.scene["bf_editing"]
+clear()
+
 # 6. a whole map, exported by the project itself
 os.environ["BATTLE_FRONTIER_ROOT"] = str(project)
 clear()

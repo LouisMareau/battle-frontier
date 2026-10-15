@@ -326,7 +326,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             let Some(prop) = content.props.get(&p.prop) else { continue };
             let Some(model) = model(&p.prop) else { continue };
             let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-            let at = Vec3::new(ox + p.at[0] as f32, y0 + 0.05, oz + p.at[1] as f32);
+            let at = Vec3::new(ox + p.pos()[0] as f32, y0 + 0.05, oz + p.pos()[1] as f32);
             put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
         }
         // on the walls: outside facing out, inside (past the wall's thickness) facing in
@@ -340,7 +340,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let Some(model) = model(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-        let at = Vec3::new(ox + p.at[0] as f32, base, oz + p.at[1] as f32);
+        let at = Vec3::new(ox + p.pos()[0] as f32, base, oz + p.pos()[1] as f32);
         put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
     }
     // pillars, as high as what's shown

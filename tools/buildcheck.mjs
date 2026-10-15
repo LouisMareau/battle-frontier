@@ -206,17 +206,18 @@ try {
   await step('ArrowUp', '22,17', 'the north wall stops it');
   await browser.key('Escape');
 
-  // 7. turned, moved, and the move undone
+  // 7. turned on its cells; a drag doesn't move it (it stays where it was built); the
+  // turn undone
   const cells = await data('bcells');
   await browser.key('e');
   check('turned', (await data('bcells')) !== cells, `${cells} -> ${await data('bcells')}`);
   const before = await data('bat');
   await browser.drag([await at(22.5, 1.0, 18.0), await at(23.0, 0, 18.0), await at(24.0, 0, 18.0), await at(24.5, 0, 18.0)]);
   const moved = await data('bat');
-  check('moved', moved !== before, `${before} -> ${moved}`);
-  await shot('9-moved');
+  check('a drag leaves it where it was built', moved === before, `${before} -> ${moved}`);
+  await shot('9-stays');
   await browser.key('z', { ctrl: true });
-  await expect('the move undone', 'bat', before);
+  await expect('the turn undone', 'bcells', cells);
 
   // 8. the download has it
   await press('uiWalk'); // walking again then stopping: no effect on the map

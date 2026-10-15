@@ -488,6 +488,29 @@ impl MapEditor {
                 }
             }
         }
+        // the asset browser's folders it's in, and moving it to another
+        let folders = after.folders();
+        ui.horizontal_wrapped(|ui| {
+            ui.label("In");
+            for f in &folders {
+                ui.label(RichText::new(f).size(11.0).color(Color32::from_gray(190)));
+            }
+        });
+        let mut move_to = None;
+        let all = self.asset_folders();
+        let combo = egui::ComboBox::from_id_salt(("prop-move", id)).selected_text("Move to a folder…").width(170.0).show_ui(ui, |ui| {
+            for f in &all {
+                let r = ui.selectable_label(folders.contains(f), f);
+                mark(&format!("uiMoveTo_{}", f.replace(['/', ' '], "_")), &r);
+                if r.clicked() {
+                    move_to = Some(f.clone());
+                }
+            }
+        });
+        mark("uiPropMoveTo", &combo.response);
+        if let Some(f) = move_to {
+            after.folders = vec![f];
+        }
         // its model, and Blender
         ui.horizontal(|ui| {
             match &p.model {

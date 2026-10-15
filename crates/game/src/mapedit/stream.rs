@@ -127,7 +127,7 @@ impl MapEditor {
         for p in &self.map.props {
             let h = by.entry(square(p.at[0].floor() as i32, p.at[1].floor() as i32)).or_default();
             p.prop.hash(h);
-            (p.at[0].to_bits(), p.at[1].to_bits(), p.level, p.turn.to_bits(), p.scale.to_bits()).hash(h);
+            (p.at[0].to_bits(), p.at[1].to_bits(), p.level, p.turn.to_bits(), p.scale.to_bits(), p.offset[0].to_bits(), p.offset[1].to_bits()).hash(h);
         }
         by.into_iter().map(|(s, h)| (s, h.finish())).collect()
     }

@@ -145,6 +145,16 @@ def props_dir(root):
     return Path(root) / "content" / "data" / "props"
 
 
+def find_prop(root, pid):
+    """A prop's record file and the space it's in ("content", or "temporary" for a
+    placeholder), the game's own first; (None, None) when it's in neither."""
+    for space in ("content", "temporary"):
+        p = Path(root) / space / "data" / "props" / f"{pid}.json"
+        if p.is_file():
+            return p, space
+    return None, None
+
+
 def read_props(root):
     out = []
     for f in sorted(props_dir(root).glob("*.json")):
@@ -422,7 +432,7 @@ def light_record(o, offset, existing=None):
     }
 
 
-def sound_record(o, offset, root, aid):
+def sound_record(o, offset, root, aid, space="content"):
     """A speaker object as a prop's `sound`: its file copied to content/assets/sounds/, its
     volume, its maximum distance as the range (the engine's 8 when it has none). None when
     it plays nothing."""
@@ -431,7 +441,7 @@ def sound_record(o, offset, root, aid):
         return None
     src = Path(bpy.path.abspath(data.sound.filepath, library=data.sound.library))
     name = f"{aid}_{slug(src.stem) or 'sound'}{src.suffix.lower() or '.ogg'}"
-    dst = root / "content" / "assets" / "sounds" / name
+    dst = Path(root) / space / "assets" / "sounds" / name
     dst.parent.mkdir(parents=True, exist_ok=True)
     if data.sound.packed_file is not None:
         dst.write_bytes(data.sound.packed_file.data)
@@ -600,14 +610,14 @@ class BF_OT_import_prop(bpy.types.Operator):
             self.report({"ERROR"}, "No Battle Frontier project found")
             return {"CANCELLED"}
         pid = self.prop_id or context.window_manager.bf_prop
-        path = props_dir(root) / f"{pid}.json"
-        if not path.is_file():
+        path, space = find_prop(root, pid)
+        if path is None:
             self.report({"ERROR"}, f"No prop {pid}")
             return {"CANCELLED"}
         record = json.loads(path.read_text(encoding="utf-8"))
         model = record.get("model")
-        if model and (root / "content" / "assets" / model).is_file():
-            objects = [o for o in import_glb(root / "content" / "assets" / model) if not is_bounds(o)]
+        if model and (Path(root) / space / "assets" / model).is_file():
+            objects = [o for o in import_glb(Path(root) / space / "assets" / model) if not is_bounds(o)]
         else:
             objects = build_stand_in(record, context.collection)
         # its light, unless its model brought one along
@@ -725,6 +735,236 @@ class BF_OT_show_bounds(bpy.types.Operator):
         return {"FINISHED"}
 
 
+ASSET_TYPES = {"MESH", "EMPTY", "CURVE", "ARMATURE", "LIGHT", "SPEAKER"}
+
+
+def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_modifiers=True):
+    """`objects` as a prop of the project: its .glb under the space's assets/models/, its
+    record under data/props/ (keeping what the record had: its folders, its stand-in...),
+    measured from them; `facts` are the record's fields to set (name, category, blocks,
+    unstackable, sill). Returns (the model's path, the record's path, the record, notes)."""
+    root = Path(root)
+    meshes = [o for o in objects if o.type == "MESH"]
+    if not meshes:
+        raise ValueError("there's no mesh to make it from")
+    lights = [o for o in objects if o.type == "LIGHT" and o.data.type in {"SPOT", "POINT"}]
+    speakers = [o for o in objects if o.type == "SPEAKER"]
+    notes = []
+    if any(o.type == "LIGHT" and o.data.type not in {"SPOT", "POINT"} for o in objects):
+        notes.append("only a spot or a point light can be a prop's")
+    if len(lights) > 1:
+        notes.append(f"only the first of its {len(lights)} lights is kept")
+    model_rel = f"models/{aid}.glb"
+    glb = root / space / "assets" / model_rel
+    record_path = root / space / "data" / "props" / f"{aid}.json"
+    # its size, in the world
+    corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+    lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
+    hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
+    offset = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)) if recentre else Vector((0, 0, 0))
+    tops = [o for o in objects if o.parent not in objects]
+    for o in tops:
+        o.location -= offset
+    # only the asset goes out: its bounds and anything else stay behind
+    selected = list(context.selected_objects)
+    active = context.view_layer.objects.active
+    for o in context.view_layer.objects:
+        o.select_set(o in objects)
+    context.view_layer.update()
+    try:
+        glb.parent.mkdir(parents=True, exist_ok=True)
+        # materials, textures, vertex colours, rigs, animations and shape keys as Blender
+        # writes them; the lights in watts (1000 W = 1); never a camera
+        bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB", use_selection=True, export_apply=apply_modifiers, export_yup=True,
+                                  **gltf_options(bpy.ops.export_scene.gltf, export_cameras=False, export_lights=True, export_import_convert_lighting_mode="RAW"))
+    finally:
+        for o in tops:
+            o.location += offset
+        for o in context.view_layer.objects:
+            o.select_set(o in selected)
+        context.view_layer.objects.active = active
+        context.view_layer.update()
+    size = hi - lo
+    record = {}
+    if record_path.is_file():
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except ValueError:
+            record = {}
+    record.update({
+        "id": aid,
+        "name": facts.get("name") or record.get("name") or meshes[0].name,
+        "category": facts.get("category") or record.get("category") or "decoration",
+        # cells it covers along the engine's x and z (Blender's x and y)
+        "footprint": [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))],
+        "height": round(float(size.z), 2),
+        "sill": round(float(facts.get("sill", record.get("sill", 0.0))), 2),
+        "blocks": bool(facts.get("blocks", record.get("blocks", True))),
+        "unstackable": bool(facts.get("unstackable", record.get("unstackable", False))),
+        "model": model_rel,
+    })
+    # its light and its sound, from the prop's origin (a record's own stay when there's none)
+    if lights:
+        record["light"] = light_record(lights[0], offset, record.get("light"))
+    for s in speakers:
+        sound = sound_record(s, offset, root, aid, space)
+        if sound:
+            record["sound"] = sound
+            break
+    record.setdefault("parts", [])
+    record_path.parent.mkdir(parents=True, exist_ok=True)
+    record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
+    tag(meshes, record)
+    make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection,
+                centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not recentre else (offset.x, offset.y, offset.z))
+    extras = ", with its light" if lights else ""
+    extras += ", with its sound" if record.get("sound") and speakers else ""
+    if extras:
+        notes.insert(0, extras.lstrip(", "))
+    return glb, record_path, record, notes
+
+
+# ---------------------------------------------------------------- an edit session
+
+EDIT_KEY = "bf_editing"
+_edit = {"changed": 0.0, "saved_at": 0.0, "starting": False, "last": "", "timer": False, "print": None}
+
+
+def _fingerprint(scene):
+    """What the prop is made of, roughly: a change to it changes this (so an untouched prop
+    is never written back, and a stand-in never becomes a model by itself)."""
+    parts = []
+    for o in sorted((o for o in scene.objects if o.type in ASSET_TYPES and not is_bounds(o)), key=lambda o: o.name):
+        parts.append((o.name, o.type, tuple(round(v, 4) for row in o.matrix_world for v in row)))
+        if o.type == "MESH":
+            me = o.data
+            co = [0.0] * (len(me.vertices) * 3)
+            me.vertices.foreach_get("co", co)
+            parts.append((len(me.vertices), len(me.polygons), round(sum(co), 4), round(sum(abs(c) for c in co), 4)))
+            parts.append(tuple((md.type, md.show_viewport) for md in o.modifiers))
+            for slot in o.material_slots:
+                mat = slot.material
+                if mat is None:
+                    continue
+                parts.append(mat.name)
+                if mat.use_nodes:
+                    for n in mat.node_tree.nodes:
+                        if n.type == "BSDF_PRINCIPLED":
+                            parts.append(tuple(round(v, 4) for v in n.inputs["Base Color"].default_value))
+                        elif n.type == "TEX_IMAGE" and n.image:
+                            parts.append(n.image.name)
+        elif o.type == "LIGHT":
+            d = o.data
+            parts.append((d.type, round(d.energy, 3), tuple(round(c, 4) for c in d.color), round(getattr(d, "spot_size", 0.0), 4), round(d.cutoff_distance, 3)))
+    return hash(repr(parts))
+
+
+def save_edited(context, force=False):
+    """The prop being edited (opened by the map editor's "Edit in Blender"), written back
+    to the project where it came from: its space (a placeholder stays in temporary/), its
+    record's facts and folders kept, its model and size from the scene. Returns what was
+    written."""
+    scene = context.scene
+    pid = scene.get(EDIT_KEY)
+    root = project_root()
+    if not pid or not root:
+        return ""
+    # untouched since the last save (or since it was opened): nothing to write, unless asked
+    if not force and _fingerprint(scene) == _edit["print"]:
+        _edit["changed"] = 0.0
+        return ""
+    record_path, space = find_prop(root, pid)
+    record = json.loads(record_path.read_text(encoding="utf-8")) if record_path else {}
+    space = space or scene.get("bf_space", "content")
+    objects = [o for o in scene.objects if o.type in ASSET_TYPES and not is_bounds(o)]
+    facts = {k: record[k] for k in ("name", "category", "blocks", "unstackable", "sill") if k in record}
+    try:
+        glb, path, record, notes = write_prop(context, root, space, pid, objects, facts, recentre=False)
+    except ValueError as e:
+        _edit["last"] = f"Not saved: {e}"
+        return _edit["last"]
+    finally:
+        _edit["saved_at"] = time.time()
+        _edit["changed"] = 0.0
+    _edit["print"] = _fingerprint(scene)
+    _edit["last"] = f"Saved {Path(glb).relative_to(root)} and {Path(path).relative_to(root)}" + (f" ({'; '.join(notes)})" if notes else "")
+    print(_edit["last"], flush=True)
+    return _edit["last"]
+
+
+@bpy.app.handlers.persistent
+def _on_save(*_args):
+    if not _edit["starting"] and bpy.context.scene.get(EDIT_KEY):
+        save_edited(bpy.context)
+
+
+@bpy.app.handlers.persistent
+def _on_change(scene, depsgraph=None):
+    """A change to the prop (not its bounds, not our own export): saved after a pause."""
+    if not scene.get(EDIT_KEY) or time.time() - _edit["saved_at"] < 0.5 or depsgraph is None:
+        return
+    for u in depsgraph.updates:
+        thing = u.id
+        name = getattr(thing, "name", "")
+        if name.endswith(" bounds") or (isinstance(thing, bpy.types.Object) and is_bounds(thing)):
+            continue
+        if u.is_updated_geometry or u.is_updated_transform or u.is_updated_shading:
+            _edit["changed"] = time.time()
+            return
+
+
+def _autosave():
+    """Two seconds after the last change, back in object mode: the prop goes to the project."""
+    try:
+        context = bpy.context
+        if _edit["changed"] and time.time() - _edit["changed"] > 2.0 and context.mode == "OBJECT" and context.scene.get(EDIT_KEY):
+            save_edited(context)
+    except Exception as e:  # noqa: BLE001 - a timer must keep running
+        print(f"Battle Frontier: not saved: {e}", flush=True)
+    return 1.0
+
+
+def start_editing(context, pid):
+    """An edit session on a prop already imported: the scene remembers which, the .blend
+    lives in build/blender/ (Ctrl+S saves without asking where), and every save, or a pause
+    after a change, writes the prop back to the project."""
+    root = project_root()
+    scene = context.scene
+    scene[EDIT_KEY] = pid
+    _, space = find_prop(root, pid)
+    scene["bf_space"] = space or "content"
+    blend = Path(root) / "build" / "blender" / f"{pid}.blend"
+    blend.parent.mkdir(parents=True, exist_ok=True)
+    _edit["starting"] = True
+    try:
+        bpy.ops.wm.save_as_mainfile(filepath=str(blend), check_existing=False)
+    finally:
+        _edit["starting"] = False
+    if _on_save not in bpy.app.handlers.save_post:
+        bpy.app.handlers.save_post.append(_on_save)
+    if _on_change not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_on_change)
+    if not bpy.app.background and not _edit["timer"]:
+        bpy.app.timers.register(_autosave, first_interval=1.0, persistent=True)
+        _edit["timer"] = True
+    _edit["changed"] = 0.0
+    _edit["saved_at"] = time.time()
+    _edit["print"] = _fingerprint(scene)
+    _edit["last"] = f"Editing {pid}: saved to the project as you go"
+
+
+class BF_OT_save_edited(bpy.types.Operator):
+    """Write the prop being edited back to the project now (it's saved by itself too)"""
+    bl_idname = "battle_frontier.save_edited"
+    bl_label = "Save it to the project now"
+    bl_options = {"REGISTER"}
+
+    def execute(self, context):
+        message = save_edited(context, force=True)
+        self.report({"INFO"} if message.startswith("Saved") else {"ERROR"}, message or "Nothing being edited")
+        return {"FINISHED"}
+
+
 class BF_OT_add_to_project(bpy.types.Operator):
     """Add the selected objects to the project as a prop: a .glb model and its record"""
     bl_idname = "battle_frontier.add_to_project"
@@ -764,90 +1004,26 @@ class BF_OT_add_to_project(bpy.types.Operator):
             return {"CANCELLED"}
         # the meshes, their rig, the lights and speakers on them; never a camera (the game
         # has one of its own) nor the bounds
-        objects = [o for o in context.selected_objects if o.type in {"MESH", "EMPTY", "CURVE", "ARMATURE", "LIGHT", "SPEAKER"} and not is_bounds(o)]
+        objects = [o for o in context.selected_objects if o.type in ASSET_TYPES and not is_bounds(o)]
         meshes = [o for o in objects if o.type == "MESH"]
         if not meshes:
             self.report({"ERROR"}, "Select the objects that make the asset")
             return {"CANCELLED"}
-        lights = [o for o in objects if o.type == "LIGHT" and o.data.type in {"SPOT", "POINT"}]
-        speakers = [o for o in objects if o.type == "SPEAKER"]
-        notes = []
-        if any(o.type == "LIGHT" and o.data.type not in {"SPOT", "POINT"} for o in objects):
-            notes.append("only a spot or a point light can be a prop's")
-        if len(lights) > 1:
-            notes.append(f"only the first of its {len(lights)} lights is kept")
-        if any(o.type == "CAMERA" for o in context.selected_objects):
-            notes.append("the camera stays behind (the game has one)")
         aid = slug(self.asset_id or meshes[0].name)
-        model_rel = f"models/{aid}.glb"
-        glb = root / "content" / "assets" / model_rel
+        glb = Path(root) / "content" / "assets" / "models" / f"{aid}.glb"
         record_path = props_dir(root) / f"{aid}.json"
         if (glb.exists() or record_path.exists()) and not self.replace:
-            self.report({"ERROR"}, f"{aid} is already in the project: tick \"Replace if it exists\"")
+            self.report({"ERROR"}, f"{aid} is already in the project: tick 'Replace if it exists'")
             return {"CANCELLED"}
-        # its size, in the world
-        corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
-        lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
-        hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
-        offset = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)) if self.recentre else Vector((0, 0, 0))
-        tops = [o for o in objects if o.parent not in objects]
-        for o in tops:
-            o.location -= offset
-        # only the asset goes out: its bounds and anything else stay behind
-        selected = list(context.selected_objects)
-        for o in selected:
-            if o not in objects:
-                o.select_set(False)
-        context.view_layer.update()
+        facts = {"name": self.asset_name, "category": self.category, "blocks": self.blocks, "unstackable": self.unstackable, "sill": self.sill}
         try:
-            glb.parent.mkdir(parents=True, exist_ok=True)
-            # materials, textures, vertex colours, rigs, animations and shape keys as
-            # Blender writes them; the lights in watts (1000 W = 1); never a camera
-            bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB", use_selection=True, export_apply=self.apply_modifiers, export_yup=True,
-                                      **gltf_options(bpy.ops.export_scene.gltf, export_cameras=False, export_lights=True, export_import_convert_lighting_mode="RAW"))
-        finally:
-            for o in tops:
-                o.location += offset
-            for o in selected:
-                o.select_set(True)
-            context.view_layer.update()
-        size = hi - lo
-        record = {}
-        if record_path.is_file():
-            try:
-                record = json.loads(record_path.read_text(encoding="utf-8"))
-            except ValueError:
-                record = {}
-        record.update({
-            "id": aid,
-            "name": self.asset_name or record.get("name") or meshes[0].name,
-            "category": self.category,
-            # cells it covers along the engine's x and z (Blender's x and y)
-            "footprint": [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))],
-            "height": round(float(size.z), 2),
-            "sill": round(float(self.sill), 2),
-            "blocks": bool(self.blocks),
-            "unstackable": bool(self.unstackable),
-            "model": model_rel,
-        })
-        # its light and its sound, from the prop's origin (a record's own stay when the
-        # selection has none)
-        if lights:
-            record["light"] = light_record(lights[0], offset, record.get("light"))
-        for s in speakers:
-            sound = sound_record(s, offset, root, aid)
-            if sound:
-                record["sound"] = sound
-                break
-        record.setdefault("parts", [])
-        record_path.parent.mkdir(parents=True, exist_ok=True)
-        record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
-        tag(meshes, record)
-        make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection,
-                    centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not self.recentre else (offset.x, offset.y, offset.z))
-        extras = ", with its light" if lights else ""
-        extras += ", with its sound" if record.get("sound") and speakers else ""
-        self.report({"INFO"}, f"{aid}: {glb.relative_to(root)} and {record_path.relative_to(root)}{extras}; check with `content check`" + ("; " + "; ".join(notes) if notes else ""))
+            glb, record_path, record, notes = write_prop(context, root, "content", aid, objects, facts, self.recentre, self.apply_modifiers)
+        except ValueError as e:
+            self.report({"ERROR"}, str(e))
+            return {"CANCELLED"}
+        if any(o.type == "CAMERA" for o in context.selected_objects):
+            notes.append("the camera stays behind (the game has one)")
+        self.report({"INFO"}, f"{aid}: {Path(glb).relative_to(root)} and {Path(record_path).relative_to(root)}; check with `content check`" + ("; " + "; ".join(notes) if notes else ""))
         return {"FINISHED"}
 
 
@@ -882,6 +1058,14 @@ class BF_PT_panel(bpy.types.Panel):
             box.label(text="Project not found yet", icon="ERROR")
             box.operator(BF_OT_find_project.bl_idname, icon="VIEWZOOM")
             return
+        editing = context.scene.get(EDIT_KEY)
+        if editing:
+            box = layout.box()
+            box.label(text=f"Editing {editing}", icon="GREASEPENCIL")
+            box.label(text="Saved to the project as you go, and with Ctrl+S")
+            box.operator(BF_OT_save_edited.bl_idname, icon="FILE_TICK")
+            if _edit["last"]:
+                box.label(text=_edit["last"][:70])
         col = layout.column(align=True)
         col.label(text="Props", icon="MESH_MONKEY")
         col.prop(wm, "bf_prop", text="")
@@ -906,7 +1090,7 @@ class BF_PT_panel(bpy.types.Panel):
         col.operator(BF_OT_import_export.bl_idname, icon="IMPORT").file = wm.bf_export
 
 
-CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_export_props, BF_OT_show_bounds, BF_OT_add_to_project, BF_PT_panel)
+CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_export_props, BF_OT_show_bounds, BF_OT_save_edited, BF_OT_add_to_project, BF_PT_panel)
 
 
 def _auto_find():

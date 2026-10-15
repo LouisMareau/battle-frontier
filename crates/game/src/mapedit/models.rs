@@ -131,23 +131,23 @@ impl MapEditor {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
-            let root = std::fs::canonicalize(&root).unwrap_or(root);
-            let Some(blender) = find_blender() else {
-                self.export_prop(id);
-                self.status = format!("{} · Blender not found: set BLENDER to blender.exe, or put it on the PATH", self.status);
-                return;
+            self.status = match open_in_blender(&root, id) {
+                Ok(msg) => msg,
+                Err(e) => {
+                    self.export_prop(id);
+                    format!("{e} · {}", self.status)
+                }
             };
-            let script = root.join("tools").join("blender").join("open_prop.py");
-            match std::process::Command::new(&blender).arg("--python").arg(&script).arg("--").arg(&root).arg(id).spawn() {
-                Ok(_) => self.status = format!("Blender is opening {id}: edit it, then \"Add to the project\" with \"Replace\" sends it back here"),
-                Err(e) => self.status = format!("Blender ({}) wouldn't start: {e}", blender.display()),
-            }
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.export_prop(id);
-            self.status = format!("{} · in Blender, \"Add to the project\" with \"Replace\" writes it back into the project", self.status);
+            // the desktop game answers battlefrontier: links (it sets them up when it starts)
+            self.status = match crate::platform::open_link(&format!("{LINK}edit/{id}")) {
+                Ok(()) => format!("Opening Blender on {id} through the battlefrontier: link (run the desktop game once to set it up); it saves the prop into your project by itself"),
+                Err(e) => format!("Blender not opened: {e}"),
+            };
         }
+        crate::platform::set_hook("blender", id);
     }
 
 
@@ -162,25 +162,69 @@ impl MapEditor {
     /// animation (or its first), out of step with the others.
     pub(super) fn animated_draws(&self, now: f64) -> Vec<Animated> {
         let mut out = vec![];
-        if !self.animate {
-            return out;
-        }
         let lh = self.level_height;
         let t = (now / 1000.0) as f32;
         for (i, p) in self.map.props.iter().enumerate() {
             let Some(m) = self.models.get(&p.prop) else { continue };
-            let (Some(rig), Some(anim)) = (&m.rig, m.idle()) else { continue };
+            let Some(rig) = &m.rig else { continue };
+            // still, at rest, when Animate is off
+            let anim = if self.animate { m.idle() } else { None };
             let Some(prop) = self.content.props.get(&p.prop) else { continue };
             // out of reach: not worth posing
-            if Vec3::new(p.at[0] as f32, 0.0, p.at[1] as f32).distance(Vec3::new(self.cam.target.x, 0.0, self.cam.target.z)) > self.cam.distance * 1.5 + 24.0 {
+            let pos = p.pos();
+            if Vec3::new(pos[0] as f32, 0.0, pos[1] as f32).distance(Vec3::new(self.cam.target.x, 0.0, self.cam.target.z)) > self.cam.distance * 1.5 + 24.0 {
                 continue;
             }
             let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-            let at = Vec3::new(p.at[0] as f32, p.level as f32 * lh, p.at[1] as f32);
-            let phase = (i as f32 * 0.37) % 1.0 * anim.duration.max(0.1);
-            out.push(Animated { key: p.prop.clone(), model: placement(at, p.turn as f32, scale), joints: world::anim::pose(rig, Some(anim), t + phase) });
+            let at = Vec3::new(pos[0] as f32, p.level as f32 * lh, pos[1] as f32);
+            let phase = (i as f32 * 0.37) % 1.0 * anim.map(|a| a.duration).unwrap_or(1.0).max(0.1);
+            out.push(Animated { key: p.prop.clone(), model: placement(at, p.turn as f32, scale), joints: world::anim::pose(rig, anim, t + phase) });
         }
         out
+    }
+}
+
+/// The links the browser's "Edit in Blender" opens: `battlefrontier://edit/<prop id>`.
+pub const LINK: &str = "battlefrontier://";
+
+/// The prop a link names, if it's one of ours (the desktop game answers the links).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn link_target(url: &str) -> Option<String> {
+    let url = url.trim().trim_matches('"');
+    let rest = url.strip_prefix(LINK).or_else(|| url.strip_prefix("battlefrontier:"))?.trim_start_matches('/');
+    let id = rest.strip_prefix("edit/")?.trim_end_matches('/');
+    (!id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')).then(|| id.to_string())
+}
+
+/// Opens Blender on a prop of the project at `root`: the add-on is set up, the prop
+/// imported, and it's written back to the project by itself as it's edited
+/// (`tools/blender/open_prop.py`).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn open_in_blender(root: &std::path::Path, id: &str) -> Result<String, String> {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let blender = find_blender().ok_or("Blender not found: set BLENDER to blender.exe, or put it on the PATH")?;
+    let script = root.join("tools").join("blender").join("open_prop.py");
+    if !script.is_file() {
+        return Err(format!("{} isn't there: is {} the project?", script.display(), root.display()));
+    }
+    std::process::Command::new(&blender).arg("--python").arg(&script).arg("--").arg(&root).arg(id).spawn().map_err(|e| format!("Blender ({}) wouldn't start: {e}", blender.display()))?;
+    Ok(format!("Blender is opening {id}: what you change there is saved into the project by itself (and with Ctrl+S), and shows here within a second"))
+}
+
+/// Has the system send battlefrontier: links to this program (Windows: the user's own
+/// registry, no admin), with the project at `root`.
+#[cfg(windows)]
+pub fn register_links(root: &std::path::Path) {
+    use std::os::windows::process::CommandExt;
+    let (Ok(exe), Ok(root)) = (std::env::current_exe(), std::fs::canonicalize(root)) else { return };
+    // the plain form of the path (canonicalize gives \\?\ ones)
+    let plain = |p: &std::path::Path| p.display().to_string().trim_start_matches(r"\\?\").to_string();
+    let command = format!("\"{}\" --root \"{}\" --link \"%1\"", plain(&exe), plain(&root));
+    let key = r"HKCU\Software\Classes\battlefrontier";
+    let open = format!(r"{key}\shell\open\command");
+    for args in [vec!["add", key, "/ve", "/d", "URL:Battle Frontier", "/f"], vec!["add", key, "/v", "URL Protocol", "/d", "", "/f"], vec!["add", open.as_str(), "/ve", "/d", command.as_str(), "/f"]] {
+        // no console window flashing
+        let _ = std::process::Command::new("reg").args(&args).creation_flags(0x0800_0000).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status();
     }
 }
 
@@ -216,4 +260,19 @@ fn find_blender() -> Option<std::path::PathBuf> {
     }
     found.sort();
     found.pop()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::link_target;
+
+    #[test]
+    fn links_name_a_prop() {
+        assert_eq!(link_target("battlefrontier://edit/lamp_post").as_deref(), Some("lamp_post"));
+        assert_eq!(link_target("\"battlefrontier://edit/stone_well/\"").as_deref(), Some("stone_well"));
+        assert_eq!(link_target("battlefrontier:edit/bench").as_deref(), Some("bench"));
+        assert_eq!(link_target("battlefrontier://edit/../secret"), None);
+        assert_eq!(link_target("https://edit/lamp_post"), None);
+        assert_eq!(link_target("battlefrontier://delete/lamp_post"), None);
+    }
 }

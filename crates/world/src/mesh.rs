@@ -236,6 +236,36 @@ pub fn prop_scene(prop: &Prop, models: &Models) -> Scene {
     }
 }
 
+/// How far a placed prop may stand from its cells' centre, along x and z: as far as its
+/// model (turned and scaled) leaves room within its footprint's cells, and always as far as
+/// where it was put (0). ([least x, least z], [most x, most z]); none when it fills them.
+pub fn offset_room(prop: &Prop, models: &Models, turn: f64, scale: f64) -> ([f64; 2], [f64; 2]) {
+    let scene: Scene = match models.get(&prop.id) {
+        Some(m) => m.rest_scene(),
+        None => prop_model(prop).into(),
+    };
+    let m = Mat4::from_rotation_y(-(turn as f32).to_radians()) * Mat4::from_scale(Vec3::splat(scale as f32));
+    let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+    for v in scene.plain.vertices.iter().chain(scene.textured.values().flat_map(|t| t.vertices.iter())) {
+        let p = m.transform_point3(Vec3::from(v.pos));
+        lo = lo.min(p);
+        hi = hi.max(p);
+    }
+    if lo.x > hi.x {
+        return ([0.0; 2], [0.0; 2]);
+    }
+    let quarter = ((turn / 90.0).round() as i64).rem_euclid(2) == 1;
+    let fp = prop.footprint;
+    let (w, d) = if quarter { (fp[1].max(1), fp[0].max(1)) } else { (fp[0].max(1), fp[1].max(1)) };
+    let room = |half: f64, a: f32, b: f32| {
+        let (least, most) = (-half - a as f64, half - b as f64);
+        if least > most { (0.0, 0.0) } else { (least.min(0.0), most.max(0.0)) }
+    };
+    let (xl, xh) = room(w as f64 / 2.0, lo.x, hi.x);
+    let (zl, zh) = room(d as f64 / 2.0, lo.z, hi.z);
+    ([xl, zl], [xh, zh])
+}
+
 /// A prop's stand-in model, its footprint's centre at the origin, standing on y = 0.
 pub fn prop_model(prop: &Prop) -> Mesh {
     let mut out = Mesh::default();
@@ -420,7 +450,8 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
     for p in map.props.iter().filter(|p| in_region(region, p.at[0].floor() as i32, p.at[1].floor() as i32)) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-        let at = Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32);
+        let pos = p.pos();
+        let at = Vec3::new(pos[0] as f32, p.level as f32 * level_height, pos[1] as f32);
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
         out.append(scene, placement(at, p.turn as f32, scale));
     }
@@ -508,4 +539,33 @@ pub fn objects(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     let trees = tree_mesh(map, content, level_height, models);
     out.append(&trees, Mat4::IDENTITY);
     out
+}
+
+#[cfg(test)]
+mod room_tests {
+    use super::*;
+    use content::Part;
+
+    #[test]
+    fn a_small_prop_moves_within_its_cell_a_big_one_does_not() {
+        let part = |size: f64| Part { shape: "box".into(), size: [size, 1.0, size], at: [0.0, 0.0, 0.0], color: "#888888".into(), turn: 0.0 };
+        let small = Prop { id: "pebble".into(), footprint: [1, 1], parts: vec![part(0.4)], ..Default::default() };
+        let (lo, hi) = offset_room(&small, &Models::new(), 0.0, 1.0);
+        assert!((lo[0] + 0.3).abs() < 1e-4 && (hi[0] - 0.3).abs() < 1e-4 && (hi[1] - 0.3).abs() < 1e-4, "{lo:?} {hi:?}");
+        // turned 45 degrees it's wider: less room
+        let (_, hi45) = offset_room(&small, &Models::new(), 45.0, 1.0);
+        assert!(hi45[0] < 0.3 - 0.05, "{hi45:?}");
+        // half the size, more room
+        let (_, hi_half) = offset_room(&small, &Models::new(), 0.0, 0.5);
+        assert!((hi_half[0] - 0.4).abs() < 1e-4, "{hi_half:?}");
+        let big = Prop { id: "block".into(), footprint: [1, 1], parts: vec![part(1.0)], ..Default::default() };
+        assert_eq!(offset_room(&big, &Models::new(), 0.0, 1.0), ([0.0, 0.0], [0.0, 0.0]));
+        // a long prop on two cells has room along its length
+        let bench = Prop { id: "bench".into(), footprint: [2, 1], parts: vec![Part { size: [1.2, 0.5, 0.4], ..part(0.0) }], ..Default::default() };
+        let (lo, hi) = offset_room(&bench, &Models::new(), 0.0, 1.0);
+        assert!((hi[0] - 0.4).abs() < 1e-4 && (lo[1] + 0.3).abs() < 1e-4, "{lo:?} {hi:?}");
+        // a quarter turn: its length runs along z now
+        let (_, hi90) = offset_room(&bench, &Models::new(), 90.0, 1.0);
+        assert!((hi90[1] - 0.4).abs() < 1e-3 && (hi90[0] - 0.3).abs() < 1e-3, "{hi90:?}");
+    }
 }

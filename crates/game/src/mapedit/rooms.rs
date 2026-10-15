@@ -199,8 +199,8 @@ impl MapEditor {
                 let Some(g) = ground else { return };
                 let r = rel(g);
                 let turn = self.turn as f64;
-                let at = self.snap(&prop, turn as f32, Vec3::new(r.x, 0.0, r.y), false);
-                let placed = Placed { prop: prop.clone(), at, level: 0, turn, scale: 1.0 };
+                let at = self.snap(&prop, turn as f32, Vec3::new(r.x, 0.0, r.y));
+                let placed = Placed { prop: prop.clone(), at, level: 0, turn, scale: 1.0, ..Default::default() };
                 if let Err(why) = self.inside_ok(&b, floor, &placed, None) {
                     self.status = why;
                     return;
@@ -266,8 +266,8 @@ impl MapEditor {
                 }
                 let Some(g) = ground else { return };
                 let turn = self.turn as f64;
-                let at = self.snap(&prop, turn as f32, g, false);
-                let placed = Placed { prop: prop.clone(), at, level: b.level, turn, scale: 1.0 };
+                let at = self.snap(&prop, turn as f32, g);
+                let placed = Placed { prop: prop.clone(), at, level: b.level, turn, scale: 1.0, ..Default::default() };
                 let cells = cells_of(self, &placed);
                 if cells.iter().any(|c| !front.contains(c)) {
                     self.status = format!("Outside, in front of the wall you picked (up to {FRONT} cells out)");
@@ -303,8 +303,8 @@ impl MapEditor {
             Clicks::Outside if d.wall.is_some() => (d.outside_prop.clone()?, true),
             _ => return None,
         };
-        let snapped = self.snap(&prop, self.turn, Vec3::new(at[0] as f32 + b.at[0] as f32, 0.0, at[1] as f32 + b.at[1] as f32), false);
-        let placed = Placed { prop: prop.clone(), at: snapped, level: b.level, turn: self.turn as f64, scale: 1.0 };
+        let snapped = self.snap(&prop, self.turn, Vec3::new(at[0] as f32 + b.at[0] as f32, 0.0, at[1] as f32 + b.at[1] as f32));
+        let placed = Placed { prop: prop.clone(), at: snapped, level: b.level, turn: self.turn as f64, scale: 1.0, ..Default::default() };
         let cells = cells_of(self, &placed);
         let ok = if outside {
             let wall = d.wall?;

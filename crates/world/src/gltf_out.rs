@@ -418,7 +418,8 @@ pub fn map_glb(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     for (i, p) in map.props.iter().enumerate() {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-        let at = Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32);
+        let pos = p.pos();
+        let at = Vec3::new(pos[0] as f32, p.level as f32 * level_height, pos[1] as f32);
         let mesh = mesh_of(&mut glb, &p.prop);
         props.push(glb.node(&format!("{} {}", p.prop, i + 1), mesh, placement(at, p.turn as f32, scale), vec![]));
     }

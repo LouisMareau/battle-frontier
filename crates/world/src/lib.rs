@@ -11,6 +11,7 @@ pub mod lights;
 pub mod mesh;
 pub mod sounds;
 pub mod spawn;
+pub mod templates;
 pub mod trees;
 
 use std::collections::BTreeMap;

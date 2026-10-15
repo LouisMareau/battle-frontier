@@ -32,7 +32,7 @@ pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
     for (i, p) in map.props.iter().enumerate() {
         let Some((s, scalable)) = sound(&p.prop) else { continue };
         let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, format!("prop:{i}"), &p.prop, s, placement(Vec3::new(p.at[0] as f32, p.level as f32 * level_height, p.at[1] as f32), p.turn as f32, scale));
+        put(&mut out, format!("prop:{i}"), &p.prop, s, placement(Vec3::new(p.pos()[0] as f32, p.level as f32 * level_height, p.pos()[1] as f32), p.turn as f32, scale));
     }
     for (bi, b) in map.buildings.iter().enumerate() {
         let base = b.level as f32 * level_height;
@@ -42,7 +42,7 @@ pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
             for (i, p) in floor.props.iter().enumerate() {
                 let Some((s, scalable)) = sound(&p.prop) else { continue };
                 let scale = if scalable { p.scale as f32 } else { 1.0 };
-                put(&mut out, format!("building:{bi}:floor:{f}:{i}"), &p.prop, s, placement(Vec3::new(ox + p.at[0] as f32, y0 + 0.05, oz + p.at[1] as f32), p.turn as f32, scale));
+                put(&mut out, format!("building:{bi}:floor:{f}:{i}"), &p.prop, s, placement(Vec3::new(ox + p.pos()[0] as f32, y0 + 0.05, oz + p.pos()[1] as f32), p.turn as f32, scale));
             }
         }
         for (i, a) in b.anchors.iter().enumerate() {
@@ -53,7 +53,7 @@ pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
         for (i, p) in b.outside.iter().enumerate() {
             let Some((s, scalable)) = sound(&p.prop) else { continue };
             let scale = if scalable { p.scale as f32 } else { 1.0 };
-            put(&mut out, format!("building:{bi}:outside:{i}"), &p.prop, s, placement(Vec3::new(ox + p.at[0] as f32, base, oz + p.at[1] as f32), p.turn as f32, scale));
+            put(&mut out, format!("building:{bi}:outside:{i}"), &p.prop, s, placement(Vec3::new(ox + p.pos()[0] as f32, base, oz + p.pos()[1] as f32), p.turn as f32, scale));
         }
     }
     out

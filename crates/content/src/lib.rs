@@ -81,10 +81,11 @@ record!(Prop, "props");
 record!(Map, "maps");
 record!(Spawns, "spawns");
 record!(World, "worlds");
+record!(Template, "templates");
 
-pub const COLLECTIONS: [&str; 17] = [
+pub const COLLECTIONS: [&str; 18] = [
     "types", "creatures", "moves", "abilities", "items", "natures", "growth_rates", "egg_groups", "regions", "encounters", "parties",
-    "settings", "terrains", "props", "maps", "spawns", "worlds",
+    "settings", "terrains", "props", "maps", "spawns", "worlds", "templates",
 ];
 
 #[derive(Clone, Debug)]
@@ -144,6 +145,14 @@ impl<T: Record> Collection<T> {
     /// Adds or replaces a record whatever the spaces (the editor, saving one).
     pub fn put(&mut self, value: T, space: Space) {
         self.put_in(value, space, true)
+    }
+
+    /// Takes a record out (the editor, deleting one).
+    pub fn remove(&mut self, id: &str) -> Option<Entry<T>> {
+        let i = self.index.remove(id)?;
+        let out = self.entries.remove(i);
+        self.index = self.entries.iter().enumerate().map(|(i, e)| (e.value.id().to_string(), i)).collect();
+        Some(out)
     }
 
     fn put_in(&mut self, value: T, space: Space, always: bool) {
@@ -272,6 +281,7 @@ pub struct Content {
     pub maps: Collection<Map>,
     pub spawns: Collection<Spawns>,
     pub worlds: Collection<World>,
+    pub templates: Collection<Template>,
     /// what couldn't be read
     pub problems: Vec<String>,
 }
@@ -312,6 +322,7 @@ impl Content {
             "maps" => go!(maps),
             "spawns" => go!(spawns),
             "worlds" => go!(worlds),
+            "templates" => go!(templates),
             other => return Err(format!("{path}: no collection named \"{other}\"")),
         }
         Ok(())
@@ -351,6 +362,7 @@ impl Content {
         self.maps.sort_by_key(|m| m.id.clone());
         self.spawns.sort_by_key(|s| s.id.clone());
         self.worlds.sort_by_key(|w| w.id.clone());
+        self.templates.sort_by_key(|t| t.id.clone());
     }
 
     /// The world's measures (the "world" settings record, or the defaults).
@@ -386,6 +398,7 @@ impl Content {
         count!(maps, "maps");
         count!(spawns, "spawns");
         count!(worlds, "worlds");
+        count!(templates, "templates");
         out
     }
 
@@ -489,6 +502,9 @@ impl Content {
         let world = self.world();
         for m in self.maps.iter() {
             out.extend(self.check_map(m, &world));
+        }
+        for e in self.templates.entries() {
+            out.extend(self.check_template(e));
         }
         let size = |id: &str| self.maps.get(id).map(|m| (m.width, m.height));
         for w in self.worlds.iter() {
@@ -636,12 +652,45 @@ impl Content {
                 out.push(format!("{at}: building \"{}\" on level {}", b.id, b.level));
             }
         }
+        // where props stand within their cells
+        for p in &m.props {
+            if let Some(q) = self.props.get(&p.prop) {
+                let (w, d) = p.turned(q.footprint);
+                if p.offset[0].abs() > w as f64 / 2.0 + 1e-6 || p.offset[1].abs() > d as f64 / 2.0 + 1e-6 {
+                    out.push(format!("{at}: \"{}\" at {:?} stands outside its cells (offset {:?})", p.prop, p.at, p.offset));
+                }
+            }
+        }
         // the actors, the events and the sounds of the place
         let actor_ids: Vec<String> = m.actors.iter().map(|a| a.id.clone()).collect();
         let maps: Vec<String> = self.maps.iter().map(|x| x.id.clone()).collect();
         let encounters: Vec<String> = self.encounters.iter().map(|x| x.id.clone()).collect();
-        let known = script::Known { actors: &actor_ids, maps: Some(&maps), encounters: Some(&encounters) };
+        let known = script::Known { actors: Some(&actor_ids), maps: Some(&maps), encounters: Some(&encounters) };
+        out.extend(self.check_story(&at, m.width as i32, m.height as i32, &m.actors, &m.events, &known));
         let on_map = |area: [i32; 4]| area[0] >= 0 && area[1] >= 0 && area[0] + area[2] <= m.width as i32 && area[1] + area[3] <= m.height as i32;
+        for s in &m.ambience {
+            let what = format!("{at}: ambience \"{}\"", s.file);
+            if s.file.is_empty() || s.file.contains("..") {
+                out.push(format!("{at}: an ambience needs a file under assets/"));
+            }
+            if !matches!(s.when.as_str(), "always" | "day" | "night" | "morning") {
+                out.push(format!("{what}: when \"{}\" (always, day, night or morning)", s.when));
+            }
+            if s.volume < 0.0 || s.fade < 0.0 {
+                out.push(format!("{what}: a volume and a fade of 0 or more"));
+            }
+            if s.area != [0, 0, 0, 0] && (s.area[2] < 1 || s.area[3] < 1 || !on_map(s.area)) {
+                out.push(format!("{what}: its area {:?} must be cells on the map (x, z, width, height)", s.area));
+            }
+        }
+        out
+    }
+
+    /// What's wrong with a place's actors and events (`w` × `h` cells): ids, looks, ways,
+    /// triggers, areas and scripts.
+    fn check_story(&self, at: &str, w: i32, h: i32, actors: &[Actor], events: &[Event], known: &script::Known) -> Vec<String> {
+        let mut out = vec![];
+        let on_map = |area: [i32; 4]| area[0] >= 0 && area[1] >= 0 && area[0] + area[2] <= w && area[1] + area[3] <= h;
         let mut event_ids: Vec<String> = vec![];
         let mut check_event = |e: &Event, owner: &str, out: &mut Vec<String>| {
             let what = format!("{at}: event \"{}\"{owner}", e.id);
@@ -658,16 +707,16 @@ impl Content {
             if owner.is_empty() && e.trigger != "start" && (e.area[2] < 1 || e.area[3] < 1 || !on_map(e.area)) {
                 out.push(format!("{what}: its area {:?} must be cells on the map (x, z, width, height)", e.area));
             }
-            for p in script::problems(&e.script, &known) {
+            for p in script::problems(&e.script, known) {
                 out.push(format!("{what}: {p}"));
             }
         };
-        for a in &m.actors {
+        for a in actors {
             let what = format!("{at}: actor \"{}\"", a.id);
             if a.id.is_empty() || !a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
                 out.push(format!("{what}: its id must be lowercase letters, digits and _"));
             }
-            if m.actors.iter().filter(|o| o.id == a.id).count() > 1 {
+            if actors.iter().filter(|o| o.id == a.id).count() > 1 {
                 out.push(format!("{what}: two actors with that id"));
             }
             match a.look.split_once(':') {
@@ -694,24 +743,58 @@ impl Content {
                 check_event(e, &format!(" of actor \"{}\"", a.id), &mut out);
             }
         }
-        for e in &m.events {
+        for e in events {
             check_event(e, "", &mut out);
         }
-        for s in &m.ambience {
-            let what = format!("{at}: ambience \"{}\"", s.file);
-            if s.file.is_empty() || s.file.contains("..") {
-                out.push(format!("{at}: an ambience needs a file under assets/"));
+        out
+    }
+
+    /// What's wrong with a template: what it names, its buildings, its story. Its scripts may
+    /// name actors it doesn't hold (they're on the maps it's put down on).
+    fn check_template(&self, e: &Entry<Template>) -> Vec<String> {
+        let t = &e.value;
+        let at = format!("templates/{}", t.id);
+        let mut out = vec![];
+        let (w, h) = (t.size[0] as i32, t.size[1] as i32);
+        if w < 1 || h < 1 {
+            out.push(format!("{at}: a size of {w} × {h} cells"));
+        }
+        let inside = |x: f64, z: f64| x >= 0.0 && z >= 0.0 && x <= w as f64 && z <= h as f64;
+        for p in &t.props {
+            match self.props.get(&p.prop) {
+                None => out.push(format!("{at}: \"{}\", no such prop", p.prop)),
+                Some(_) if !inside(p.at[0], p.at[1]) => out.push(format!("{at}: \"{}\" at {:?} is outside its {w} × {h} cells", p.prop, p.at)),
+                Some(_) => {}
             }
-            if !matches!(s.when.as_str(), "always" | "day" | "night" | "morning") {
-                out.push(format!("{what}: when \"{}\" (always, day, night or morning)", s.when));
-            }
-            if s.volume < 0.0 || s.fade < 0.0 {
-                out.push(format!("{what}: a volume and a fade of 0 or more"));
-            }
-            if s.area != [0, 0, 0, 0] && (s.area[2] < 1 || s.area[3] < 1 || !on_map(s.area)) {
-                out.push(format!("{what}: its area {:?} must be cells on the map (x, z, width, height)", s.area));
+            if let Some(pe) = self.props.entry(&p.prop) {
+                if e.space == Space::Content && pe.space == Space::Temporary {
+                    out.push(format!("{at}: in content/ but names the placeholder prop \"{}\": save it in temporary/", p.prop));
+                }
             }
         }
+        let prop = |id: &str| self.props.get(id).map(|p| (p.category.clone(), p.footprint));
+        for b in &t.buildings {
+            out.extend(b.problems(&prop).into_iter().map(|p| format!("{at}: {p}")));
+            if t.buildings.iter().filter(|o| o.id == b.id).count() > 1 {
+                out.push(format!("{at}: two buildings with the id \"{}\"", b.id));
+            }
+            if b.map_cells().iter().any(|&(x, z)| x < 0 || z < 0 || x >= w || z >= h) {
+                out.push(format!("{at}: building \"{}\" goes outside its {w} × {h} cells", b.id));
+            }
+        }
+        for a in &t.actors {
+            if let Some(("creature", c)) = a.look.split_once(':') {
+                if let Some(ce) = self.creatures.entry(c) {
+                    if e.space == Space::Content && ce.space == Space::Temporary {
+                        out.push(format!("{at}: in content/ but names the placeholder \"{c}\": save it in temporary/"));
+                    }
+                }
+            }
+        }
+        let maps: Vec<String> = self.maps.iter().map(|x| x.id.clone()).collect();
+        let encounters: Vec<String> = self.encounters.iter().map(|x| x.id.clone()).collect();
+        let known = script::Known { actors: None, maps: Some(&maps), encounters: Some(&encounters) };
+        out.extend(self.check_story(&at, w, h, &t.actors, &t.events, &known));
         out
     }
 }
@@ -793,6 +876,20 @@ pub mod disk {
             }
             let scripts = m.events.iter().chain(m.actors.iter().flat_map(|a| a.events.iter()));
             for ev in scripts {
+                for f in script::sound_files(&ev.script) {
+                    look(e.space, format!("{who} event {}", ev.id), "sound", &f);
+                }
+            }
+        }
+        for e in content.templates.entries() {
+            let t = &e.value;
+            let who = format!("templates/{}", t.id);
+            for a in &t.actors {
+                if let Some(p) = a.look.strip_prefix("sprite:") {
+                    look(e.space, format!("{who} actor {}", a.id), "picture", p);
+                }
+            }
+            for ev in t.events.iter().chain(t.actors.iter().flat_map(|a| a.events.iter())) {
                 for f in script::sound_files(&ev.script) {
                     look(e.space, format!("{who} event {}", ev.id), "sound", &f);
                 }

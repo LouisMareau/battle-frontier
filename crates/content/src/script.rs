@@ -203,7 +203,8 @@ pub fn parse(lines: &[String]) -> Result<Vec<Action>, Vec<String>> {
 /// What the script refers to that must exist.
 #[derive(Default)]
 pub struct Known<'a> {
-    pub actors: &'a [String],
+    /// None: don't check (a template's scripts name the actors of where it's put down)
+    pub actors: Option<&'a [String]>,
     /// None: don't check
     pub maps: Option<&'a [String]>,
     pub encounters: Option<&'a [String]>,
@@ -224,7 +225,7 @@ pub fn problems(lines: &[String], known: &Known) -> Vec<String> {
         }
     };
     let actor = |w: &str, out: &mut Vec<String>| {
-        if w != "player" && !known.actors.iter().any(|a| a == w) {
+        if w != "player" && known.actors.map(|all| !all.iter().any(|a| a == w)).unwrap_or(false) {
             out.push(format!("no actor \"{w}\" on the map"));
         }
     };
@@ -261,6 +262,29 @@ pub fn problems(lines: &[String], known: &Known) -> Vec<String> {
     out
 }
 
+/// A script moved along with what it belongs to: the cells it names (`move`, `camera`)
+/// shifted by `by`, and actors renamed (`renames`: old id, new id). Lines it doesn't change
+/// stay as they were written.
+pub fn shift(lines: &[String], by: [i32; 2], renames: &[(String, String)]) -> Vec<String> {
+    let rename = |w: &str| renames.iter().find(|(a, _)| a == w).map(|(_, b)| b.clone()).unwrap_or_else(|| w.to_string());
+    let cell = |c: &[i32; 2]| format!("{},{}", c[0] + by[0], c[1] + by[1]);
+    lines
+        .iter()
+        .map(|line| {
+            let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
+            match parse_line(line) {
+                Ok(Some(Action::Move { who, cells })) => format!("{indent}move {} {}", rename(&who), cells.iter().map(cell).collect::<Vec<_>>().join(" ")),
+                Ok(Some(Action::Face { who, to })) => format!("{indent}face {} {}", rename(&who), if matches!(to.as_str(), "n" | "s" | "e" | "w") { to } else { rename(&to) }),
+                Ok(Some(Action::Show(who))) => format!("{indent}show {}", rename(&who)),
+                Ok(Some(Action::Hide(who))) => format!("{indent}hide {}", rename(&who)),
+                Ok(Some(Action::Camera(Target::Cell(c)))) => format!("{indent}camera {}", cell(&c)),
+                Ok(Some(Action::Camera(Target::Who(who)))) => format!("{indent}camera {}", rename(&who)),
+                _ => line.clone(),
+            }
+        })
+        .collect()
+}
+
 /// The sound files a script plays.
 pub fn sound_files(lines: &[String]) -> Vec<String> {
     parse(lines).unwrap_or_default().into_iter().filter_map(|a| if let Action::Sound { file, .. } = a { Some(file) } else { None }).collect()
@@ -285,8 +309,15 @@ mod tests {
         assert_eq!(actions[7], Action::Camera(Target::Cell([12, 8])));
         assert_eq!(actions[8], Action::Sound { file: "sounds/hum.wav".into(), volume: 0.4 });
         assert_eq!(actions[9], Action::If { flag: "met_bo".into(), label: "no".into(), set: false });
-        assert_eq!(problems(&script, &Known { actors: &["bo".into()], ..Default::default() }), Vec::<String>::new());
+        assert_eq!(problems(&script, &Known { actors: Some(&["bo".into()]), ..Default::default() }), Vec::<String>::new());
         assert_eq!(sound_files(&script), vec!["sounds/hum.wav".to_string()]);
+    }
+
+    #[test]
+    fn a_script_moves_along_with_its_place() {
+        let script = lines("say Bo: Follow me.\nmove bo 12,8 12,11\n  face bo pip\nface player n\ncamera 3,4\ncamera pip\nhide bo\nwarp meadow 5,5\n# move bo 1,1");
+        let moved = shift(&script, [10, -2], &[("bo".into(), "bo_2".into()), ("pip".into(), "pip_2".into())]);
+        assert_eq!(moved, lines("say Bo: Follow me.\nmove bo_2 22,6 22,9\n  face bo_2 pip_2\nface player n\ncamera 13,2\ncamera pip_2\nhide bo_2\nwarp meadow 5,5\n# move bo 1,1"));
     }
 
     #[test]
@@ -300,7 +331,7 @@ mod tests {
         assert!(errors[3].contains("text -> label"));
         assert!(errors[4].contains("0 to 120"));
         let dangling = lines("goto nowhere\nmove ghost 1,1\nwarp moon 1,1\nbattle big_one");
-        let known = Known { actors: &["bo".into()], maps: Some(&["meadow".into()]), encounters: Some(&[]) };
+        let known = Known { actors: Some(&["bo".into()]), maps: Some(&["meadow".into()]), encounters: Some(&[]) };
         let p = problems(&dangling, &known);
         assert_eq!(p, vec!["no label \"nowhere\"", "no actor \"ghost\" on the map", "no map \"moon\"", "no encounter \"big_one\""]);
     }

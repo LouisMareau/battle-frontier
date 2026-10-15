@@ -2,6 +2,8 @@
 //!
 //! Desktop options: game [--preset ID] [--auto] [--time morning|day|night] [--levels 1-5]
 //!                       [--maps [ID]] [--explore [ID]] [--exit-after SECONDS] [--stats] [--no-vsync]
+//!        game --link battlefrontier://edit/PROP [--root PROJECT]   (opens Blender on the prop)
+//!        game --register-links                                    (sets those links up; done at every start too)
 //! (--stats prints frames per second and processor time each second; with --no-vsync the
 //! frame rate is uncapped: what the machine can do, not the screen's rate)
 //! (content from ./content and ./temporary, or under $GAME_ROOT)
@@ -24,6 +26,33 @@ mod stage;
 fn main() -> eframe::Result {
     let mut cli = app::Cli::default();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    let arg_after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
+    let root = std::path::PathBuf::from(arg_after("--root").or_else(|| std::env::var("GAME_ROOT").ok()).unwrap_or_else(|| ".".into()));
+    // a battlefrontier: link (the browser's "Edit in Blender"): Blender opens on the prop,
+    // and that's all
+    if let Some(url) = arg_after("--link") {
+        match mapedit::link_target(&url) {
+            Some(id) => {
+                if let Err(e) = mapedit::open_in_blender(&root, &id) {
+                    eprintln!("{e}");
+                }
+            }
+            None => eprintln!("not a Battle Frontier link: {url}"),
+        }
+        return Ok(());
+    }
+    // the links go to this program, with this project (cheap, the user's own registry)
+    #[cfg(windows)]
+    {
+        if root.join("content").is_dir() {
+            let at = root.clone();
+            if args.iter().any(|a| a == "--register-links") {
+                mapedit::register_links(&at);
+                return Ok(());
+            }
+            std::thread::spawn(move || mapedit::register_links(&at));
+        }
+    }
     let mut i = 0;
     while i < args.len() {
         let next = args.get(i + 1).cloned();
@@ -65,6 +94,11 @@ fn main() -> eframe::Result {
             "--auto" => cli.auto = true,
             "--stats" => cli.stats = true,
             "--no-vsync" => cli.no_vsync = true,
+            "--root" | "--register-links" => {
+                if args[i] == "--root" {
+                    i += 1;
+                }
+            }
             other => eprintln!("unknown option {other}"),
         }
         i += 1;

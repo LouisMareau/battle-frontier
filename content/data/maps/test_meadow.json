@@ -186,7 +186,8 @@
             { "prop": "wide_window", "cell": [0, 2], "side": "s", "width": 2 }
           ],
           "props": [
-            { "prop": "bookshelf", "at": [0.5, 0.5], "level": 0 }
+            { "prop": "bookshelf", "at": [0.5, 0.5], "level": 0 },
+            { "prop": "stairs", "at": [2.0, 1.5], "level": 0, "turn": 90.0 }
           ]
         },
         {

@@ -134,6 +134,11 @@ try {
   await expect('two props changed', 'assetsdirty', 2);
   await press('uiPropBlocks');
   await sleep(200);
+  // moved to another folder from the selection panel
+  await press('uiPropMoveTo');
+  await sleep(300);
+  await press('uiMoveTo_Town');
+  await sleep(200);
   await shot('5-prop');
   await browser.key('Escape');
 
@@ -150,8 +155,9 @@ try {
   }
   if (got('garden_lamp.json')) {
     const lamp = JSON.parse(readFileSync(join(downloads, 'garden_lamp.json'), 'utf8'));
-    check('the new prop: measured, its model, its folder', lamp.footprint?.join('x') === '2x2' && lamp.model === 'models/garden_lamp.glb' && lamp.folders?.[0] === 'Buildings/Outside',
-      `${lamp.footprint} · ${lamp.height} high · ${lamp.model} · ${lamp.folders}`);
+    check('the new prop: measured, its model', lamp.footprint?.join('x') === '2x2' && lamp.model === 'models/garden_lamp.glb',
+      `${lamp.footprint} · ${lamp.height} high · ${lamp.model}`);
+    check('  moved from its drop folder to Town in the selection panel', lamp.folders?.length === 1 && lamp.folders[0] === 'Town', JSON.stringify(lamp.folders));
     check('  with the light and the blocking set from the inspector', lamp.light?.kind === 'spot' && lamp.blocks !== true, `light ${JSON.stringify(lamp.light)} · blocks ${lamp.blocks}`);
   }
   await expect('nothing left to save', 'assetsdirty', 0);

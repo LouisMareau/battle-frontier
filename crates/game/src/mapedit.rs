@@ -17,6 +17,7 @@ mod models;
 mod rooms;
 mod sounds;
 mod stream;
+mod templates;
 mod walk;
 mod worlds;
 mod zones;
@@ -33,6 +34,10 @@ use world::mesh;
 use world::WorldMap;
 
 pub use events::Request;
+#[cfg(not(target_arch = "wasm32"))]
+pub use models::{link_target, open_in_blender};
+#[cfg(windows)]
+pub use models::register_links;
 
 /// The story as it's kept between runs: where the player stands, and the flags.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -41,6 +46,8 @@ pub struct SaveGame {
     pub map: String,
     pub at: [i32; 2],
     pub facing: f64,
+    /// the floor of the building there (0: the ground)
+    pub floor: usize,
     pub flags: std::collections::BTreeMap<String, i64>,
 }
 
@@ -189,8 +196,6 @@ pub struct MapEditor {
     /// the building being drawn or designed
     draft: Option<build::Draft>,
     selected_building: Option<usize>,
-    /// moving a building: where it was grabbed, from its corner
-    building_grab: Option<Vec2>,
     /// the cells lit while a building is designed, as last sent to the GPU
     focus_sent: Option<Vec<(i32, i32)>>,
     /// the asset browser
@@ -241,6 +246,8 @@ pub struct MapEditor {
     animated_n: usize,
     /// this frame's time, for the scripts' host
     now: f64,
+    /// templates: capturing one, the list, what's dragged over the map
+    tpl: templates::Templates,
     /// the game's overworld: the map walked, no editing (`play_ui`)
     play: bool,
 }
@@ -382,7 +389,6 @@ impl MapEditor {
             model_failed: std::collections::HashSet::new(),
             draft: None,
             selected_building: None,
-            building_grab: None,
             focus_sent: None,
             assets: assets::Assets::default(),
             probe: None,
@@ -419,6 +425,7 @@ impl MapEditor {
             animate: true,
             animated_n: 0,
             now: 0.0,
+            tpl: Default::default(),
             play: false,
             dirty: false,
             space,
@@ -453,6 +460,9 @@ impl MapEditor {
             if ed.walker.is_none() {
                 ed.start_walk();
             }
+            if let Some(s) = save.filter(|s| s.map == ed.map.id) {
+                ed.set_walker_floor(s.floor);
+            }
             ed.play_camera();
         }
         ed
@@ -478,7 +488,7 @@ impl MapEditor {
             Some(w) => ([w.cell.0, w.cell.1], w.facing as f64),
             None => ([self.cam.target.x.floor() as i32, self.cam.target.z.floor() as i32], 0.0),
         };
-        SaveGame { map: self.map.id.clone(), at, facing, flags: self.story.flags.clone() }
+        SaveGame { map: self.map.id.clone(), at, facing, floor: self.walker_floor(), flags: self.story.flags.clone() }
     }
 
     fn first_terrain(content: &Content) -> String {
@@ -717,6 +727,11 @@ impl MapEditor {
             self.save_assets();
             self.status = format!("{map} · {}", self.status);
         }
+        if !self.tpl.dirty.is_empty() {
+            let map = self.status.clone();
+            self.save_templates();
+            self.status = format!("{map} · {}", self.status);
+        }
     }
 
     // ------------------------------------------------------------ the GPU
@@ -785,7 +800,8 @@ impl MapEditor {
         let (w, d) = if quarter { (prop.footprint[1], prop.footprint[0]) } else { (prop.footprint[0], prop.footprint[1]) };
         let s = if prop.scalable() { p.scale as f32 } else { 1.0 };
         let half = Vec3::new(w as f32 / 2.0, 0.0, d as f32 / 2.0) * s;
-        let base = Vec3::new(p.at[0] as f32, p.level as f32 * self.level_height, p.at[1] as f32);
+        let pos = p.pos();
+        let base = Vec3::new(pos[0] as f32, p.level as f32 * self.level_height, pos[1] as f32);
         Some((base - half, base + half + Vec3::Y * (prop.height as f32 * s).max(0.3)))
     }
 
@@ -803,11 +819,8 @@ impl MapEditor {
         best
     }
 
-    /// Where a prop's centre goes for a point: its footprint on whole cells, unless free.
-    fn snap(&self, prop: &str, turn: f32, p: Vec3, free: bool) -> [f64; 2] {
-        if free {
-            return [(p.x as f64 * 20.0).round() / 20.0, (p.z as f64 * 20.0).round() / 20.0];
-        }
+    /// Where a prop's centre goes for a point: its footprint on whole cells.
+    fn snap(&self, prop: &str, turn: f32, p: Vec3) -> [f64; 2] {
         let fp = self.content.props.get(prop).map(|q| q.footprint).unwrap_or([1, 1]);
         let quarter = ((turn / 90.0).round() as i64).rem_euclid(2) == 1;
         let (w, d) = if quarter { (fp[1] as f64, fp[0] as f64) } else { (fp[0] as f64, fp[1] as f64) };
@@ -903,12 +916,34 @@ impl MapEditor {
         self.area = Some(self.map.tree_areas.len() - 1);
     }
 
+    /// How far a placed prop may stand from its cells' centre ([least x, z], [most x, z]);
+    /// None when it fills them.
+    fn prop_room(&self, i: usize) -> Option<([f64; 2], [f64; 2])> {
+        let p = self.map.props.get(i)?;
+        let prop = self.content.props.get(&p.prop)?;
+        let scale = if prop.scalable() { p.scale } else { 1.0 };
+        let (lo, hi) = world::mesh::offset_room(prop, &self.models, p.turn, scale);
+        (hi[0] - lo[0] > 0.02 || hi[1] - lo[1] > 0.02).then_some((lo, hi))
+    }
+
+    /// After a turn or a new size: back on whole cells (a quarter turn of a long prop moves
+    /// it by half a cell), and within them.
+    fn reseat(&mut self, i: usize) {
+        let Some(p) = self.map.props.get(i).cloned() else { return };
+        let at = self.snap(&p.prop, p.turn as f32, Vec3::new(p.at[0] as f32, 0.0, p.at[1] as f32));
+        let (lo, hi) = self.prop_room(i).unwrap_or(([0.0; 2], [0.0; 2]));
+        let q = &mut self.map.props[i];
+        q.at = at;
+        q.offset = [q.offset[0].clamp(lo[0], hi[0]), q.offset[1].clamp(lo[1], hi[1])];
+        self.need_props = true;
+    }
+
     fn turn_selected(&mut self, by: f32) {
         if let Some(i) = self.selected {
             self.checkpoint();
             let p = &mut self.map.props[i];
             p.turn = ((p.turn as f32 + by).rem_euclid(360.0)) as f64;
-            self.need_props = true;
+            self.reseat(i);
         }
     }
 
@@ -1181,6 +1216,8 @@ impl MapEditor {
             _ => String::new(),
         };
         crate::platform::set_hook("selection", &selection);
+        let selprop = self.selected.and_then(|i| self.map.props.get(i)).map(|p| format!("{:.2},{:.2};{:.2},{:.2}", p.at[0], p.at[1], p.offset[0], p.offset[1]));
+        crate::platform::set_hook("selprop", &selprop.unwrap_or_default());
         if let Some(b) = self.selected_building.and_then(|i| self.map.buildings.get(i)) {
             crate::platform::set_hook("bat", &format!("{},{}", b.at[0], b.at[1]));
             crate::platform::set_hook("bcells", &b.cells.join("/"));
@@ -1253,7 +1290,8 @@ impl MapEditor {
         match self.tool {
             Tool::Select => {
                 section(ui, "Select");
-                hint(ui, "Click a prop or a building: the inspector shows it. Drag moves it, Q/E turn it, Delete removes it.");
+                hint(ui, "Click a prop or a building: the inspector shows it. Q/E turn it, Delete removes it. Things stay on their cells: a prop that leaves room moves within them (drag it).");
+                self.templates_panel(ui);
             }
             Tool::Ground => self.ground_panel(ui),
             Tool::Place => self.place_panel(ui),
@@ -1487,33 +1525,56 @@ impl MapEditor {
         }
         let before = self.map.props[i].clone();
         let mut delete = false;
+        let mut template = false;
+        let room = self.prop_room(i);
         {
             let p = &mut self.map.props[i];
             section(ui, "Placed");
-            ui.horizontal(|ui| {
-                ui.label("At");
-                ui.add(egui::DragValue::new(&mut p.at[0]).speed(0.05).range(0.0..=self.map.width as f64));
-                ui.add(egui::DragValue::new(&mut p.at[1]).speed(0.05).range(0.0..=self.map.height as f64));
-                ui.label("level");
-                ui.add(egui::DragValue::new(&mut p.level).range(0..=self.max_level));
-            });
+            let (w, d) = prop.as_ref().map(|q| p.turned(q.footprint)).unwrap_or((1, 1));
+            let (x0, z0) = ((p.at[0] - w as f64 / 2.0).round() as i32, (p.at[1] - d as f64 / 2.0).round() as i32);
+            hint(ui, &format!("On {} cell{} from {x0}, {z0}, level {}: it stays on them.", w as u16 * d as u16, if w as u16 * d as u16 == 1 { "" } else { "s" }, p.level));
             ui.add(egui::Slider::new(&mut p.turn, 0.0..=360.0).step_by(15.0).text("turn").suffix("°"));
             let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
             ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size");
-            ui.add_space(4.0);
-            if ui.button("Delete").on_hover_text("Delete").clicked() {
-                delete = true;
+            match room {
+                Some((lo, hi)) => {
+                    for (k, label) in [(0, "x"), (1, "z")] {
+                        if hi[k] - lo[k] > 0.02 {
+                            let r = ui.add(egui::Slider::new(&mut p.offset[k], lo[k]..=hi[k]).text(label).fixed_decimals(2));
+                            mark(&format!("uiOffset{}", label.to_uppercase()), &r);
+                        }
+                    }
+                    hint(ui, "Where it stands within its cells (or drag it on the map).");
+                }
+                None => hint(ui, "It fills its cells: it can't move within them."),
             }
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.button("Delete").on_hover_text("Delete").clicked() {
+                    delete = true;
+                }
+                let t = ui.button("Make a template").on_hover_text("This prop as it is, to put down again anywhere (Select's Templates)");
+                mark("uiTemplateProp", &t);
+                if t.clicked() {
+                    template = true;
+                }
+            });
         }
         if self.map.props[i] != before {
             let after = self.map.props[i].clone();
-            self.map.props[i] = before;
+            self.map.props[i] = before.clone();
             if self.undo.last().map(|m| m.props.get(i) != Some(&self.map.props[i])).unwrap_or(true) {
                 self.checkpoint();
             }
             self.map.props[i] = after;
+            if self.map.props[i].turn != before.turn || self.map.props[i].scale != before.scale {
+                self.reseat(i);
+            }
             self.dirty = true;
             self.need_props = true;
+        }
+        if template {
+            self.template_of_prop(i);
         }
         if delete {
             self.delete_selected();
@@ -1613,7 +1674,10 @@ impl MapEditor {
             self.recentre();
         }
         if pressed(egui::Key::Escape) {
-            if self.evt.placing.is_some() {
+            if self.tpl.capturing {
+                self.tpl.capturing = false;
+                self.tpl.drag = None;
+            } else if self.evt.placing.is_some() {
                 self.evt.placing = None;
                 self.evt.drag = None;
             } else if self.walker.is_some() {
@@ -1682,7 +1746,10 @@ impl MapEditor {
                 i.pointer.button_clicked(PointerButton::Secondary),
             )
         });
-        let hovered = response.hovered() || response.dragged();
+        // a template (or a prop) dragged in from a list
+        let carried = egui::DragAndDrop::payload::<String>(ui.ctx());
+        let dropping = carried.is_some() && response.contains_pointer();
+        let hovered = response.hovered() || response.dragged() || dropping;
         // the view
         if response.hovered() && scroll != 0.0 {
             self.cam.distance = (self.cam.distance * (-scroll * 0.0015).exp()).clamp(5.0, 220.0);
@@ -1705,8 +1772,15 @@ impl MapEditor {
             self.ground_hit = self.ground(o, d);
         }
         self.last_ray = ray;
-        if let Some((origin, dir)) = ray {
-            self.tool_input(origin, dir, response, mods, primary_pressed, primary_down, primary_released, secondary_clicked);
+        if let Some(released) = response.dnd_release_payload::<String>() {
+            self.drop_on_map(&released);
+        } else if let (true, Some(p)) = (dropping, carried.as_ref()) {
+            self.drag_over(p);
+        } else {
+            self.tpl.ghost = None;
+            if let Some((origin, dir)) = ray {
+                self.tool_input(origin, dir, response, mods, primary_pressed, primary_down, primary_released, secondary_clicked);
+            }
         }
         if primary_released {
             if self.stroke && self.stroke_ground {
@@ -1716,7 +1790,6 @@ impl MapEditor {
             self.stroke_ground = false;
             self.last_cell = None;
             self.grab = None;
-            self.building_grab = None;
         }
     }
 
@@ -1762,8 +1835,16 @@ impl MapEditor {
             Tool::Place => {
                 if primary_pressed && response.hovered() {
                     if let (Some(prop), Some(p)) = (self.prop.clone(), self.plane_hit) {
-                        let at = self.snap(&prop, self.turn, p, mods.shift);
-                        let placed = Placed { prop: prop.clone(), at, level: self.level, turn: self.turn as f64, scale: 1.0 };
+                        let at = self.snap(&prop, self.turn, p);
+                        // Shift: where the pointer is within its cells, as far as it leaves room
+                        let offset = match (mods.shift, self.content.props.get(&prop)) {
+                            (true, Some(q)) => {
+                                let (lo, hi) = world::mesh::offset_room(q, &self.models, self.turn as f64, 1.0);
+                                [((p.x as f64 - at[0]).clamp(lo[0], hi[0]) * 100.0).round() / 100.0, ((p.z as f64 - at[1]).clamp(lo[1], hi[1]) * 100.0).round() / 100.0]
+                            }
+                            _ => [0.0, 0.0],
+                        };
+                        let placed = Placed { prop: prop.clone(), at, level: self.level, turn: self.turn as f64, scale: 1.0, offset };
                         let cells = rooms::cells_of(self, &placed);
                         let clash = rooms::clash(self, &prop, &cells, &rooms::ground_items(self, self.level, None));
                         if let Some(other) = clash {
@@ -1786,6 +1867,9 @@ impl MapEditor {
             Tool::Events => {
                 self.events_view(primary_pressed && response.hovered(), primary_down, primary_released, response.hovered(), secondary_clicked);
             }
+            Tool::Select if self.tpl.capturing => {
+                self.capture_view(primary_pressed && response.hovered(), primary_down, primary_released);
+            }
             Tool::Select => {
                 if primary_pressed && response.hovered() {
                     let prop = self.pick_prop(origin, dir);
@@ -1797,52 +1881,34 @@ impl MapEditor {
                     };
                     self.selected = if nearer { None } else { prop.map(|(_, i)| i) };
                     self.selected_building = if nearer { house.map(|(_, i)| i) } else { None };
-                    self.building_grab = None;
-                    if let Some(i) = self.selected_building {
-                        let b = &self.map.buildings[i];
-                        if let Some(hit) = Self::plane(origin, dir, b.level as f32 * self.level_height) {
-                            self.building_grab = Some(Vec2::new(hit.x - b.at[0] as f32, hit.z - b.at[1] as f32));
-                        }
+                    if self.selected_building.is_some() {
+                        self.status = "A building fills its cells: it stays where it was built (Edit changes it)".into();
                     }
                     if let Some(i) = self.selected {
                         let p = &self.map.props[i];
+                        let pos = p.pos();
                         let y = p.level as f32 * self.level_height;
                         if let Some(hit) = Self::plane(origin, dir, y) {
-                            self.grab = Some(Vec2::new(hit.x - p.at[0] as f32, hit.z - p.at[1] as f32));
+                            self.grab = Some(Vec2::new(hit.x - pos[0] as f32, hit.z - pos[1] as f32));
+                        }
+                        if self.prop_room(i).is_none() {
+                            self.status = "It fills its cells: it stays where it was put".into();
                         }
                     }
                 }
-                if let (Some(i), Some(grab), true) = (self.selected_building, self.building_grab, primary_down && response.dragged()) {
-                    let level = self.map.buildings[i].level;
-                    if let Some(hit) = Self::plane(origin, dir, level as f32 * self.level_height) {
-                        let at = [(hit.x - grab.x).round() as i32, (hit.z - grab.y).round() as i32];
-                        if at != self.map.buildings[i].at {
-                            let before = self.map.clone();
-                            if self.move_building(i, at) && !self.stroke {
-                                self.undo.push(before);
-                                self.redo.clear();
-                                self.dirty = true;
-                                self.stroke = true;
-                            }
-                        }
-                    }
-                }
-                if let (Some(i), true, true) = (self.selected_building, primary_released, self.stroke) {
-                    self.settle(i);
-                }
+                // a prop moves within its cells, as far as it leaves room there
                 if let (Some(i), Some(grab), true) = (self.selected, self.grab, primary_down && response.dragged()) {
-                    let (level, prop, turn) = { let p = &self.map.props[i]; (p.level, p.prop.clone(), p.turn as f32) };
-                    if let Some(hit) = Self::plane(origin, dir, level as f32 * self.level_height) {
-                        let target = hit - Vec3::new(grab.x, 0.0, grab.y);
-                        let at = self.snap(&prop, turn, target, mods.shift);
-                        let moved = Placed { at, ..self.map.props[i].clone() };
-                        let free = rooms::clash(self, &prop, &rooms::cells_of(self, &moved), &rooms::ground_items(self, level, Some(i))).is_none();
-                        if at != self.map.props[i].at && free {
+                    let level = self.map.props[i].level;
+                    if let (Some(hit), Some((lo, hi))) = (Self::plane(origin, dir, level as f32 * self.level_height), self.prop_room(i)) {
+                        let p = &self.map.props[i];
+                        let want = [(hit.x - grab.x) as f64 - p.at[0], (hit.z - grab.y) as f64 - p.at[1]];
+                        let offset = [(want[0].clamp(lo[0], hi[0]) * 100.0).round() / 100.0, (want[1].clamp(lo[1], hi[1]) * 100.0).round() / 100.0];
+                        if offset != p.offset {
                             if !self.stroke {
                                 self.checkpoint();
                                 self.stroke = true;
                             }
-                            self.map.props[i].at = at;
+                            self.map.props[i].offset = offset;
                             self.need_props = true;
                         }
                     }
@@ -1901,7 +1967,7 @@ impl MapEditor {
             }
             Tool::Place => {
                 if let (Some(prop), Some(p)) = (&self.prop, self.plane_hit) {
-                    let at = self.snap(prop, self.turn, p, false);
+                    let at = self.snap(prop, self.turn, p);
                     let fp = self.content.props.get(prop).map(|q| q.footprint).unwrap_or([1, 1]);
                     let quarter = ((self.turn / 90.0).round() as i64).rem_euclid(2) == 1;
                     let (w, d) = if quarter { (fp[1], fp[0]) } else { (fp[0], fp[1]) };
@@ -1912,6 +1978,7 @@ impl MapEditor {
             Tool::Select | Tool::Zones | Tool::Events => {}
         }
         self.zones_shapes(&mut shapes);
+        self.template_shapes(&mut shapes);
         self.creature_billboards([tint.x, tint.y, tint.z, 1.0], &mut billboards, &mut shapes);
         self.actor_billboards([tint.x, tint.y, tint.z, 1.0], now, &mut billboards, &mut shapes);
         self.events_shapes(&mut shapes, now);

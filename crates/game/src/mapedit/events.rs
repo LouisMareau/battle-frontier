@@ -761,9 +761,15 @@ impl MapEditor {
             _ => {}
         }
         ui.add(egui::Slider::new(&mut a.speed, 0.5..=8.0).text("cells a second"));
-        if ui.button("Delete the actor").clicked() {
-            delete = true;
-        }
+        let mut template = false;
+        ui.horizontal(|ui| {
+            if ui.button("Delete the actor").clicked() {
+                delete = true;
+            }
+            let t = ui.button("Make a template").on_hover_text("This actor with its events, to put down again anywhere (Select's Templates)");
+            mark("uiTemplateActor", &t);
+            template = t.clicked();
+        });
         if a != self.map.actors[i] {
             if self.undo.last().map(|m| m.actors.get(i) != Some(&self.map.actors[i])).unwrap_or(true) {
                 self.checkpoint();
@@ -774,6 +780,9 @@ impl MapEditor {
             if moved {
                 self.rebuild_actors();
             }
+        }
+        if template {
+            self.template_of_actor(i);
         }
         if delete {
             self.checkpoint();
@@ -844,7 +853,7 @@ impl MapEditor {
         let actor_ids: Vec<String> = self.map.actors.iter().map(|a| a.id.clone()).collect();
         let maps: Vec<String> = self.content.maps.iter().map(|m| m.id.clone()).collect();
         let encounters: Vec<String> = self.content.encounters.iter().map(|x| x.id.clone()).collect();
-        let problems = script::problems(&e.script, &script::Known { actors: &actor_ids, maps: Some(&maps), encounters: Some(&encounters) });
+        let problems = script::problems(&e.script, &script::Known { actors: Some(&actor_ids), maps: Some(&maps), encounters: Some(&encounters) });
         for p in &problems {
             warn(ui, p);
         }

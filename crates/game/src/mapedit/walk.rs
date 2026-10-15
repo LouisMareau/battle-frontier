@@ -1,8 +1,10 @@
 //! Walking the map in the editor: a stand-in character on the grid, moved cell by cell with
 //! the arrows (up is away from the camera) at a fixed pace, so 60 and 144 Hz screens play
 //! the same. What blocks on foot stops it: tree areas, water, cliffs, blocking props, the
-//! walls of buildings; doors let it in, and the building it's in is cut away above it. A
-//! script can walk it too (`route`), and holds it still while a dialog is up.
+//! walls of buildings; doors let it in, and the building it's in is cut away above it.
+//! Stairs take it up: from in front of a flight's bottom step, walking the way it rises,
+//! it climbs to the floor above (or onto a flat roof), and back down the same way. A script
+//! can walk it too (`route`), and holds it still while a dialog is up.
 
 use std::collections::VecDeque;
 
@@ -25,6 +27,10 @@ const INSIDE_ZOOM: f32 = 0.8;
 /// Meshes for the renderer, by texture.
 pub(super) type Batches = Vec<(String, Vec<MapVertex>, Vec<u32>)>;
 
+/// A flight of stairs, for the walker: the cell in front of its bottom step, the cell past
+/// its top (on the floor above), and the way up.
+pub(super) type Flight = ((i32, i32), (i32, i32), (i32, i32));
+
 /// A building's upper floors and roof on their way out (walking in) or back (walking out).
 pub(super) struct Fade {
     pub building: usize,
@@ -38,6 +44,10 @@ pub(super) struct Walker {
     from: Vec3,
     to: Vec3,
     t0: f64,
+    /// how long the move from `from` to `to` takes (a step, or a flight of stairs)
+    dur: f64,
+    /// on a building's upper floor (or its roof): the building and the floor
+    pub upstairs: Option<(usize, usize)>,
     /// degrees clockwise from south
     pub facing: f32,
     /// the building it's in, and the floor
@@ -48,12 +58,12 @@ pub(super) struct Walker {
 
 impl Walker {
     pub fn pos(&self, now: f64) -> Vec3 {
-        let t = ((now - self.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
+        let t = ((now - self.t0) / self.dur).clamp(0.0, 1.0) as f32;
         self.from.lerp(self.to, t)
     }
 
     pub fn stepping(&self, now: f64) -> bool {
-        now - self.t0 < STEP_MS
+        now - self.t0 < self.dur
     }
 }
 
@@ -66,12 +76,127 @@ impl MapEditor {
     fn stand(&mut self, cell: (i32, i32), facing: f32) {
         let pos = self.cell_pos(cell);
         let inside = self.walker.as_ref().and_then(|w| w.inside);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside, route: VecDeque::new() });
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, dur: STEP_MS, upstairs: None, facing, inside, route: VecDeque::new() });
         self.blocked = Some(self.map.blocked(&self.content));
         self.story.started = false;
         // standing on cells counts as entering them
         self.story.last_cell = None;
         self.extra_changed = true;
+    }
+
+    /// Where a cell's floor is: floor `f` of building `b`.
+    fn floor_pos(&self, c: (i32, i32), b: usize, f: usize) -> Vec3 {
+        let level = self.map.buildings.get(b).map(|x| x.level as usize + f).unwrap_or(0) as f32;
+        Vec3::new(c.0 as f32 + 0.5, level * self.level_height, c.1 as f32 + 0.5)
+    }
+
+    /// A building's flights of stairs on a floor: for each column of steps, the cell in
+    /// front of its bottom step, the cell past its top (on the floor above), and the way up.
+    pub(super) fn flights(&self, bi: usize, floor: usize) -> Vec<Flight> {
+        let Some(b) = self.map.buildings.get(bi) else { return vec![] };
+        let Some(fl) = b.floors.get(floor) else { return vec![] };
+        let mut out = vec![];
+        for p in &fl.props {
+            let Some(prop) = self.content.props.get(&p.prop).filter(|q| q.category == "stairs") else { continue };
+            let cells: Vec<(i32, i32)> = content::footprint_cells(p.at, p.turn, prop.footprint, 1.0).into_iter().map(|(x, z)| (x + b.at[0], z + b.at[1])).collect();
+            // the steps rise toward the stairs' back (north), turned with them
+            let up = match ((p.turn / 90.0).round() as i64).rem_euclid(4) {
+                0 => (0, -1),
+                1 => (1, 0),
+                2 => (0, 1),
+                _ => (-1, 0),
+            };
+            for &c in &cells {
+                let front = (c.0 - up.0, c.1 - up.1);
+                if cells.contains(&front) {
+                    continue;
+                }
+                let mut top = c;
+                while cells.contains(&(top.0 + up.0, top.1 + up.1)) {
+                    top = (top.0 + up.0, top.1 + up.1);
+                }
+                out.push((front, (top.0 + up.0, top.1 + up.1), up));
+            }
+        }
+        out
+    }
+
+    /// Whether the walker can stand on a cell of a building's floor above the ground (or
+    /// its flat roof): on the building, off the stairwells, clear of what blocks there.
+    fn floor_free(&self, bi: usize, f: usize, c: (i32, i32)) -> bool {
+        let Some(b) = self.map.buildings.get(bi) else { return false };
+        let rel = (c.0 - b.at[0], c.1 - b.at[1]);
+        if !b.has(rel.0, rel.1) || f > b.floors.len() || (f == b.floors.len() && !b.roof_is_flat()) {
+            return false;
+        }
+        let stairs = |id: &str| self.content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
+        if b.stairwells(f, &stairs).contains(&rel) {
+            return false;
+        }
+        !self.stairs_or_blocking(bi, f, rel)
+    }
+
+    /// A blocking prop, or stairs (taken from their bottom, not walked over), on a cell
+    /// (from the building's corner) of a building's floor.
+    fn stairs_or_blocking(&self, bi: usize, f: usize, rel: (i32, i32)) -> bool {
+        let Some(fl) = self.map.buildings.get(bi).and_then(|b| b.floors.get(f)) else { return false };
+        fl.props.iter().any(|p| {
+            self.content.props.get(&p.prop).map(|q| (q.blocks || q.category == "stairs") && content::footprint_cells(p.at, p.turn, q.footprint, 1.0).contains(&rel)).unwrap_or(false)
+        })
+    }
+
+    /// Taking the stairs: from in front of a flight's bottom, the way it rises, up to the
+    /// floor above; from past its top, the other way, back down. (where, on which floor,
+    /// how many steps)
+    #[allow(clippy::type_complexity)]
+    fn stairs_step(&self, cell: (i32, i32), up: Option<(usize, usize)>, d: (i32, i32)) -> Option<((i32, i32), Option<(usize, usize)>, usize)> {
+        let (bi, f) = match up {
+            Some(x) => x,
+            None => (self.map.buildings.iter().position(|b| b.map_cells().contains(&cell))?, 0),
+        };
+        let steps = |a: (i32, i32), b: (i32, i32)| ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as usize;
+        for (front, exit, u) in self.flights(bi, f) {
+            if cell == front && d == u && self.floor_free(bi, f + 1, exit) {
+                return Some((exit, Some((bi, f + 1)), steps(front, exit)));
+            }
+        }
+        if f >= 1 {
+            for (front, exit, u) in self.flights(bi, f - 1) {
+                if cell == exit && d == (-u.0, -u.1) {
+                    let free = if f == 1 {
+                        let b = &self.map.buildings[bi];
+                        let blocked = self.map.index(front.0, front.1).map(|i| self.blocked.as_ref().map(|bl| bl[i]).unwrap_or(false)).unwrap_or(true);
+                        !blocked && !self.stairs_or_blocking(bi, 0, (front.0 - b.at[0], front.1 - b.at[1]))
+                    } else {
+                        self.floor_free(bi, f - 1, front)
+                    };
+                    if free {
+                        return Some((front, if f == 1 { None } else { Some((bi, f - 1)) }, steps(front, exit)));
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// The floor the walker is on, in the building it's in (0: the ground).
+    pub(super) fn walker_floor(&self) -> usize {
+        self.walker.as_ref().and_then(|w| w.upstairs).map(|(_, f)| f).unwrap_or(0)
+    }
+
+    /// Puts the walker on a floor of the building it stands in (a save loaded again).
+    pub(super) fn set_walker_floor(&mut self, f: usize) {
+        let Some(cell) = self.walker.as_ref().map(|w| w.cell) else { return };
+        let Some(bi) = self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)) else { return };
+        if f == 0 || !self.floor_free(bi, f, cell) {
+            return;
+        }
+        let pos = self.floor_pos(cell, bi, f);
+        if let Some(w) = &mut self.walker {
+            w.upstairs = Some((bi, f));
+            w.from = pos;
+            w.to = pos;
+        }
     }
 
     /// Starts walking from the free cell nearest the middle of the view.
@@ -151,8 +276,9 @@ impl MapEditor {
         let (right, forward) = self.cam.ground_axes();
         let snap = |v: Vec3| if v.x.abs() > v.z.abs() { (v.x.signum() as i32, 0) } else { (0, v.z.signum() as i32) };
         let w = self.walker.as_ref().unwrap();
-        let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
+        let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
         let pos = w.from.lerp(w.to, t);
+        let upstairs = w.upstairs;
         let routed = w.route.front().map(|&n| (n.0 - w.cell.0, n.1 - w.cell.1));
         let dir = if let Some(d) = routed {
             if t >= 1.0 { Some(d) } else { None }
@@ -167,7 +293,41 @@ impl MapEditor {
         } else {
             None
         };
-        if let (Some(d), true) = (dir, t >= 1.0) {
+        let stairs = match (dir, t >= 1.0) {
+            (Some(d), true) => self.stairs_step(w.cell, upstairs, d).map(|s| (d, s)),
+            _ => None,
+        };
+        if let Some((d, (to_cell, to_floor, steps))) = stairs {
+            // up or down a flight of stairs
+            let to = match to_floor {
+                Some((b, f)) => self.floor_pos(to_cell, b, f),
+                None => self.cell_pos(to_cell),
+            };
+            let w = self.walker.as_mut().unwrap();
+            w.facing = facing_of(d);
+            w.from = pos;
+            w.to = to;
+            w.t0 = now;
+            w.dur = STEP_MS * steps as f64;
+            w.cell = to_cell;
+            w.upstairs = to_floor;
+            w.route.pop_front();
+        } else if let (Some(d), true, Some((bi, f))) = (dir, t >= 1.0, upstairs) {
+            // on an upper floor: within the building
+            let next = (w.cell.0 + d.0, w.cell.1 + d.1);
+            let free = self.floor_free(bi, f, next) && self.actor_at(next).is_none();
+            let to = self.floor_pos(next, bi, f);
+            let w = self.walker.as_mut().unwrap();
+            w.facing = facing_of(d);
+            w.route.pop_front();
+            if free {
+                w.from = pos;
+                w.to = to;
+                w.t0 = now;
+                w.dur = STEP_MS;
+                w.cell = next;
+            }
+        } else if let (Some(d), true) = (dir, t >= 1.0) {
             let cell = w.cell;
             let next = (cell.0 + d.0, cell.1 + d.1);
             let facing = facing_of(d);
@@ -185,7 +345,12 @@ impl MapEditor {
                 }
             }
             let someone = self.actor_at(next).is_some();
-            let free = (self.map.can_step(self.blocked.as_ref().unwrap(), cell, next) || routed.is_some() && self.map.index(next.0, next.1).is_some()) && !someone;
+            // stairs on a building's ground floor are taken from their bottom, not walked over
+            let on_stairs = self.map.buildings.iter().position(|b| b.map_cells().contains(&next)).map(|bi| {
+                let b = &self.map.buildings[bi];
+                self.stairs_or_blocking(bi, 0, (next.0 - b.at[0], next.1 - b.at[1]))
+            });
+            let free = (self.map.can_step(self.blocked.as_ref().unwrap(), cell, next) || routed.is_some() && self.map.index(next.0, next.1).is_some()) && !someone && !on_stairs.unwrap_or(false);
             let to = self.cell_pos(next);
             let w = self.walker.as_mut().unwrap();
             w.facing = facing;
@@ -202,15 +367,22 @@ impl MapEditor {
                 w.from = pos;
                 w.to = to;
                 w.t0 = now;
+                w.dur = STEP_MS;
                 w.cell = next;
             }
         }
-        let (cell, was) = { let w = self.walker.as_ref().unwrap(); (w.cell, w.inside) };
+        let (cell, was, upstairs) = { let w = self.walker.as_ref().unwrap(); (w.cell, w.inside, w.upstairs) };
         let level = self.map.level_at(cell.0, cell.1).unwrap_or(0);
-        let inside = self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize));
+        let inside = match upstairs {
+            // on an upper floor; on the roof, outside again
+            Some((b, f)) => (f < self.map.buildings.get(b).map(|x| x.floors.len()).unwrap_or(0)).then_some((b, f)),
+            None => self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize)),
+        };
         if inside != was {
-            // the floors above and the roof fade out on the way in, back on the way out
+            // the floors above and the roof fade out on the way in, back on the way out; up
+            // and down the stairs the cut just moves
             self.fade = match (was, inside) {
+                (Some((a, _)), Some((b, _))) if a == b => None,
                 (_, Some((i, f))) => Some(Fade { building: i, top: f, t0: now, entering: true }),
                 (Some((i, f)), None) => Some(Fade { building: i, top: f, t0: now, entering: false }),
                 _ => None,
@@ -235,6 +407,7 @@ impl MapEditor {
         }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
+        crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
     }
 
     /// How a building shows for the walker: cut above the floor they're on, also while
@@ -295,7 +468,7 @@ impl MapEditor {
         let mut out = self.actor_scene(now);
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
-        let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
+        let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
         let mut pos = w.from.lerp(w.to, t);
         // a little bob while walking
         if t < 1.0 {

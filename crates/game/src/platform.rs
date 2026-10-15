@@ -257,6 +257,18 @@ pub fn forget_text(name: &str) {
     let _ = std::fs::remove_file(store_path(name));
 }
 
+/// Follows a link the system hands to a program (battlefrontier: ones go to the desktop
+/// game, which opens Blender).
+#[cfg(target_arch = "wasm32")]
+pub fn open_link(url: &str) -> Result<(), String> {
+    use wasm_bindgen::JsCast;
+    let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
+    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(|e| format!("{e:?}"))?.dyn_into().map_err(|_| "no anchor".to_string())?;
+    a.set_href(url);
+    a.click();
+    Ok(())
+}
+
 /// A command left by a test in `<body data-cmd>` (taken once).
 #[cfg(target_arch = "wasm32")]
 pub fn take_command() -> Option<String> {

@@ -93,7 +93,10 @@ A map is a grid. Each cell has a terrain and the level its ground stands at; a l
 the main character's height plus some room (`settings/world.json`: 1.5 + 0.5 cells), so
 floors of buildings will stack on the same steps. Cells are stored as rows of characters
 (`terrain` with a `legend`, `levels` as 0-9 then a-z, `areas` for tree areas), props as a
-list (`prop`, `at` in cells, `level`, `turn`, `scale`).
+list (`prop`, `at` in cells, `level`, `turn`, `scale`, `offset`). A placed prop stays on
+its cells once it's put down (`at` is their centre): it can stand anywhere within them
+(`offset`), as far as its model leaves room; one that fills its cells, and every building,
+stays exactly where it was put.
 
 A big map is stored as **chunk files** instead: the record keeps its lists and says
 `"chunk": 64` with a `terrains` list, and the cells live in `data/maps/<id>/<x>_<z>.json`,
@@ -136,7 +139,22 @@ small one.
   pieces on one grid of cells (`"pieces": [{ "map": ..., "at": [x, z] }]`). Where two pieces
   touch they share a seam; walking off a map's edge goes on in the piece there, where the
   levels match on both sides (the content check notes seams whose levels differ; it refuses
-  pieces that overlap). Interiors stay separate maps.
+  pieces that overlap). Interiors are walked into in place (the floors above fade away).
+- **Templates** (`templates/<id>.json`) are things on a map kept to be put down again
+  anywhere as they are: props (on their cells and within them), buildings with what's
+  inside and outside them, actors with their events, events with their scripts, from the
+  template's north-west corner and its lowest ground. Select's "Capture an area" takes
+  everything wholly inside the cells dragged; "Make a template" on a selected prop,
+  building or actor takes that one. Drag one from Select's list onto the map (any map) and a
+  copy goes down there: on the ground there, ids made unique on that map (Bo comes back as
+  `bo_2`, his events too), the scripts' cells moved along and their actors renamed; it's
+  refused off the map or onto another building. Ctrl+S saves the templates changed (a
+  download in the browser); a template naming placeholders is kept in `temporary/`.
+  Dragging a prop from the asset browser onto the map puts it down too.
+- **Stairs** take the walker up: standing in front of a flight's bottom step and walking
+  the way it rises, it climbs to the floor above (or out onto a flat roof), the building
+  cut away above it; walking back down past the top step takes it down. Upper floors are
+  walked within the building, around the stairwells and what blocks there.
 - **Zones** are areas creatures roam (`zone_cells` rows, `zones`), and **links** send
   creatures out of a treeline (edge cells of a tree area) to a zone: they walk out of the
   trees, roam the zone for a while, then walk back in. Creatures move freely, not cell by
@@ -187,12 +205,19 @@ selected (a prop, a building), or the map itself (name, size, what's on it); the
 bottom shows the cell under the pointer and the last message.
 **Ground** paints terrain and, with "set the level", raises or lowers cells to it
 (right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
-it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props,
+it, Shift puts it where the pointer is within its cells); **Select** moves a prop within
+its cells (drag it, or the inspector's x and z), turns, scales and deletes props,
 and its inspector edits the prop's record too: name, category, cells and height, blocking,
-its light (the same window as the asset browser's) and its sound, with "Edit in Blender"
-opening Blender on it (the add-on's Add to the project with Replace sends it back and the
-editor shows it within a second; in the browser it downloads the .glb instead) and "Save
-prop" (or Ctrl+S) writing the record;
+its light (the same window as the asset browser's), its sound and the asset-browser folder
+it's in ("Move to a folder"), with "Save prop" (or Ctrl+S) writing the record. "Edit in
+Blender" opens Blender on it, the add-on set up and the prop imported; what you change
+there is written back to the project by itself (a moment after each change, and on
+Ctrl+S: the .blend lives in `build/blender/`), into the space it came from (a placeholder
+stays in `temporary/`), its record's facts and folders kept, and the editor shows it within
+a second. In the browser the button opens a `battlefrontier://edit/<prop>` link, which the
+desktop game answers (it sets the link up in the user's registry each time it starts, or
+`game --register-links`; `reg delete HKCU\Software\Classesattlefrontier /f` takes it
+away): Blender opens the same way, on the project the desktop game was started in;
 **Trees** paints tree areas and edits their settings; **Build** draws a building's
 footprint, then designs it floor by floor: the floors above are cut away and the rest of the
 map is darkened, and nothing lands outside the building. *Structure* is flooring, walls and
@@ -267,8 +292,8 @@ the origin, its front to Blender's front view.
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -344,9 +369,9 @@ a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whol
 
 - The content browser only reads; the map editor saves maps (other records next).
 - Maps: creatures roam but don't battle yet (walking into one does nothing; a script's
-  `battle` does), no stairs or ramps between levels (walking stays on one level, so upper
-  floors aren't reachable on foot), no interiors as separate maps; most props are still
-  stand-in shapes (samples made in Blender: `stone_well`, `flag_pole`).
+  `battle` does), no ramps between ground levels (stairs inside buildings only), actors
+  and events don't know a building's floors yet; most props are still stand-in shapes
+  (samples made in Blender: `stone_well`, `flag_pole`).
 - Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
 - The overworld (Explore) has no doors into interiors as separate maps: buildings are
   walked into in place; no stairs between levels; the save is one slot.

@@ -81,8 +81,13 @@ The same as the engine's, so nothing needs converting:
 
 **From the map editor**: select a placed prop and click "Edit in Blender": Blender opens
 with the prop (`open_prop.py`; the program named by `BLENDER`, else `blender` on the PATH,
-else the newest under Program Files), "Add to the project" with "Replace" sends it back,
-and the editor shows the change within a second.
+else the newest under Program Files) in an edit session: the prop is written back to the
+project by itself, two seconds after each change (in object mode) and on every Ctrl+S (the
+.blend is `build/blender/<id>.blend`), into the space its record is in (`content/`, or
+`temporary/` for a placeholder), its record's name, category, flags and folders kept, its
+size measured again. The panel says what was saved last, and "Save it to the project now"
+does it at once. The editor shows the change within a second. From the browser the button
+opens a `battlefrontier://edit/<id>` link, answered by the desktop game (`game --link`).
 
 ## Without the add-on
 

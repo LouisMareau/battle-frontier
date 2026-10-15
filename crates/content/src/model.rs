@@ -559,12 +559,14 @@ impl Prop {
     }
 }
 
-/// A prop placed on a map.
+/// A prop placed on a map: on whole cells, which don't change once it's put down (its
+/// footprint's centre, `at`); it can stand anywhere within them (`offset`, from their
+/// centre) as far as its model leaves room.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Placed {
     pub prop: String,
-    /// where the centre of its footprint stands, in cells from the map's north-west corner
+    /// the centre of its footprint's cells, in cells from the map's north-west corner
     pub at: [f64; 2],
     pub level: u8,
     /// degrees around the vertical axis
@@ -572,11 +574,61 @@ pub struct Placed {
     pub turn: f64,
     #[serde(skip_serializing_if = "is_one")]
     pub scale: f64,
+    /// where it stands within its cells, from their centre (x, z)
+    #[serde(skip_serializing_if = "is_default")]
+    pub offset: [f64; 2],
 }
 
 impl Default for Placed {
     fn default() -> Placed {
-        Placed { prop: String::new(), at: [0.0, 0.0], level: 0, turn: 0.0, scale: 1.0 }
+        Placed { prop: String::new(), at: [0.0, 0.0], level: 0, turn: 0.0, scale: 1.0, offset: [0.0, 0.0] }
+    }
+}
+
+impl Placed {
+    /// Where it stands: its cells' centre, moved by its offset within them.
+    pub fn pos(&self) -> [f64; 2] {
+        [self.at[0] + self.offset[0], self.at[1] + self.offset[1]]
+    }
+
+    /// Its footprint along x and z, turned by quarter turns.
+    pub fn turned(&self, footprint: [u8; 2]) -> (u8, u8) {
+        if ((self.turn / 90.0).round() as i64).rem_euclid(2) == 1 { (footprint[1].max(1), footprint[0].max(1)) } else { (footprint[0].max(1), footprint[1].max(1)) }
+    }
+}
+
+/// Things that stand on a map, kept to be put down again anywhere as they are: props,
+/// buildings, actors and events, placed from the template's north-west corner (cells) with
+/// their levels from its lowest ground. The map editor captures one from an area and puts
+/// copies of it down where it's dropped (ids made unique, the scripts' cells moved along).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Template {
+    pub id: String,
+    pub name: String,
+    /// the cells it covers: [along x, along z]
+    pub size: [u16; 2],
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub props: Vec<Placed>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub buildings: Vec<crate::building::Building>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actors: Vec<Actor>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
+}
+
+impl Template {
+    /// What's in it, in a few words ("3 props, 1 building").
+    pub fn summary(&self) -> String {
+        let count = |n: usize, one: &str, many: &str| if n == 1 { format!("1 {one}") } else { format!("{n} {many}") };
+        let mut parts = vec![];
+        for (n, one, many) in [(self.props.len(), "prop", "props"), (self.buildings.len(), "building", "buildings"), (self.actors.len(), "actor", "actors"), (self.events.len(), "event", "events")] {
+            if n > 0 {
+                parts.push(count(n, one, many));
+            }
+        }
+        if parts.is_empty() { "nothing".into() } else { parts.join(", ") }
     }
 }
 

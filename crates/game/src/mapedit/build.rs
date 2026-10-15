@@ -793,8 +793,13 @@ impl MapEditor {
                 self.selected_building = None;
                 self.need_buildings = true;
             }
+            let t = ui.button("Make a template").on_hover_text("This building with what's inside and outside it, to put down again anywhere (Select's Templates)");
+            super::mark("uiTemplateBuilding", &t);
+            if t.clicked() {
+                self.template_of_building(i);
+            }
         });
-        hint(ui, "Drag it on the map to move it.");
+        hint(ui, "It fills its cells: it stays where it was built. Edit changes it, Turn turns it on its cells.");
     }
 
     pub(super) fn turn_building(&mut self, i: usize) {
@@ -807,19 +812,6 @@ impl MapEditor {
         self.checkpoint();
         self.map.buildings[i] = turned;
         self.settle(i);
-    }
-
-    /// Moves a building so its corner is at `at`, if it fits there.
-    pub(super) fn move_building(&mut self, i: usize, at: [i32; 2]) -> bool {
-        let mut b = self.map.buildings[i].clone();
-        b.at = at;
-        let taken = self.taken(Some(i));
-        if b.map_cells().iter().any(|&(x, z)| !self.map.inside(x, z) || taken.contains(&(x, z))) {
-            return false;
-        }
-        self.map.buildings[i] = b;
-        self.need_buildings = true;
-        true
     }
 
     /// Q/E and Delete while designing: on what's selected inside or outside; with nothing
