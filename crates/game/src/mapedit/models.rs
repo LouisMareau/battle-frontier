@@ -124,6 +124,33 @@ impl MapEditor {
         self.deliver("props.glb", bytes);
     }
 
+    /// Opens a prop in Blender to edit it: on the desktop, Blender itself with the prop
+    /// imported (the add-on's "Add to the project" sends it back, and the editor picks up
+    /// the change within a second); in the browser, its .glb downloaded instead.
+    pub(super) fn edit_in_blender(&mut self, id: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
+            let root = std::fs::canonicalize(&root).unwrap_or(root);
+            let Some(blender) = find_blender() else {
+                self.export_prop(id);
+                self.status = format!("{} · Blender not found: set BLENDER to blender.exe, or put it on the PATH", self.status);
+                return;
+            };
+            let script = root.join("tools").join("blender").join("open_prop.py");
+            match std::process::Command::new(&blender).arg("--python").arg(&script).arg("--").arg(&root).arg(id).spawn() {
+                Ok(_) => self.status = format!("Blender is opening {id}: edit it, then \"Add to the project\" with \"Replace\" sends it back here"),
+                Err(e) => self.status = format!("Blender ({}) wouldn't start: {e}", blender.display()),
+            }
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.export_prop(id);
+            self.status = format!("{} · in Blender, \"Add to the project\" with \"Replace\" writes it back into the project", self.status);
+        }
+    }
+
+
     pub(super) fn export_building(&mut self, i: usize) {
         let Some(b) = self.map.buildings.get(i).cloned() else { return };
         let bytes = building_glb(&b, &self.content, self.level_height, &self.models);
@@ -155,4 +182,38 @@ impl MapEditor {
         }
         out
     }
+}
+
+/// Where Blender is: `BLENDER` (the program's path), `blender` on the PATH, or the newest
+/// one under Program Files (its launcher, which opens no console).
+#[cfg(not(target_arch = "wasm32"))]
+fn find_blender() -> Option<std::path::PathBuf> {
+    if let Ok(p) = std::env::var("BLENDER") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).find_map(|dir| {
+        ["blender-launcher.exe", "blender.exe", "blender"].iter().map(|n| dir.join(n)).find(|p| p.is_file())
+    });
+    if on_path.is_some() {
+        return on_path;
+    }
+    let mut found: Vec<std::path::PathBuf> = vec![];
+    for base in ["C:\\Program Files\\Blender Foundation", "C:\\Program Files (x86)\\Blender Foundation", "/Applications", "/usr/bin", "/snap/bin"] {
+        let Ok(entries) = std::fs::read_dir(base) else { continue };
+        for e in entries.flatten() {
+            let dir = e.path();
+            for name in ["blender-launcher.exe", "blender.exe", "Blender.app/Contents/MacOS/Blender", "blender"] {
+                let p = if base == "/usr/bin" || base == "/snap/bin" { dir.clone() } else { dir.join(name) };
+                if p.is_file() && p.file_name().map(|f| f.to_string_lossy().to_lowercase().contains("blender")).unwrap_or(false) {
+                    found.push(p);
+                    break;
+                }
+            }
+        }
+    }
+    found.sort();
+    found.pop()
 }

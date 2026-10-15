@@ -79,6 +79,11 @@ The same as the engine's, so nothing needs converting:
   and brings it back. Blender's own File > Import with "Standard" units shows the game's
   lamps 54 times too dim: pick "Raw" there, or import through the add-on.
 
+**From the map editor**: select a placed prop and click "Edit in Blender": Blender opens
+with the prop (`open_prop.py`; the program named by `BLENDER`, else `blender` on the PATH,
+else the newest under Program Files), "Add to the project" with "Replace" sends it back,
+and the editor shows the change within a second.
+
 ## Without the add-on
 
 - `cargo run -p engine-world --bin export-glb -- prop ID | props | map ID | building MAP ID`

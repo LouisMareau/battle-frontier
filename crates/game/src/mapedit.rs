@@ -1138,6 +1138,7 @@ impl MapEditor {
         egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
         });
+        self.light_window(ui);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -1516,7 +1517,11 @@ impl MapEditor {
         }
         if delete {
             self.delete_selected();
+            return;
         }
+        // the prop's record itself: what it is and does, its light, its sound, Blender
+        let id = self.map.props[i].prop.clone();
+        self.prop_settings(ui, &id);
     }
 
     /// The map's own settings and what's on it, when nothing is selected.

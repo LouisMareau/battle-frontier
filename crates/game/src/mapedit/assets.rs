@@ -17,7 +17,7 @@ use egui::{Color32, RichText, Sense};
 use world::gltf_in::load_model;
 
 use super::build::Clicks;
-use super::{badge, hint, mark, MapEditor};
+use super::{badge, hint, mark, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
@@ -398,11 +398,127 @@ impl MapEditor {
         if light_edit.is_some() {
             self.assets.light_edit = light_edit;
         }
-        self.light_window(ui);
+    }
+
+    /// A prop's record, in the inspector of a placed prop: what it is, what it does, its
+    /// light and its sound, and the way to Blender. Changes wait in the asset browser's
+    /// "Save changed" (Ctrl+S saves them with the map).
+    pub(super) fn prop_settings(&mut self, ui: &mut egui::Ui, id: &str) {
+        let Some(e) = self.content.props.entry(id).cloned() else { return };
+        let p = e.value;
+        let mut after = p.clone();
+        section(ui, "Prop");
+        ui.horizontal(|ui| {
+            badge(ui, e.space);
+            ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
+            if self.assets.dirty.contains(id) {
+                let save = ui.small_button("Save prop").on_hover_text("Writes its record (Ctrl+S does too)");
+                mark("uiSaveProp", &save);
+                if save.clicked() {
+                    self.save_assets();
+                }
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label("Name");
+            ui.add(egui::TextEdit::singleline(&mut after.name).desired_width(150.0));
+        });
+        ui.horizontal(|ui| {
+            ui.label("Category");
+            egui::ComboBox::from_id_salt(("prop-category", id)).selected_text(&after.category).width(130.0).show_ui(ui, |ui| {
+                for c in CATEGORIES {
+                    ui.selectable_value(&mut after.category, c.to_string(), c);
+                }
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.label("Cells");
+            ui.add(egui::DragValue::new(&mut after.footprint[0]).range(1..=32)).on_hover_text("Along x");
+            ui.add(egui::DragValue::new(&mut after.footprint[1]).range(1..=32)).on_hover_text("Along z");
+            ui.label("high");
+            ui.add(egui::DragValue::new(&mut after.height).speed(0.05).range(0.05..=40.0));
+        });
+        if matches!(after.category.as_str(), "window") {
+            ui.horizontal(|ui| {
+                ui.label("Sill");
+                ui.add(egui::DragValue::new(&mut after.sill).speed(0.05).range(0.0..=4.0)).on_hover_text("How high above the floor a window starts");
+            });
+        }
+        ui.horizontal(|ui| {
+            let blocks = ui.selectable_label(after.blocks, "blocks").on_hover_text("The player can't walk through it");
+            mark("uiPropBlocks", &blocks);
+            if blocks.clicked() {
+                after.blocks = !after.blocks;
+            }
+            let solid = ui.selectable_label(after.unstackable, "unstackable").on_hover_text("Nothing goes on it or overlaps it, and it goes on nothing");
+            if solid.clicked() {
+                after.unstackable = !after.unstackable;
+            }
+        });
+        // its light: the window
+        ui.horizontal(|ui| {
+            let light = ui.button(if p.light.is_some() { "Light…" } else { "Give it a light…" });
+            mark("uiPropLight", &light);
+            if light.clicked() {
+                self.assets.light_edit = Some(id.to_string());
+            }
+            if let Some(l) = &p.light {
+                swatch(ui, &l.color);
+                hint(ui, &format!("{} ×{:.1}, {:.0} cells{}", l.kind, l.intensity, l.range, if l.night { ", at night" } else { "" }));
+            }
+        });
+        // its sound: where its prop stands, looping
+        match &mut after.sound {
+            Some(s) => {
+                ui.horizontal(|ui| {
+                    ui.label("Sound");
+                    ui.add(egui::TextEdit::singleline(&mut s.file).desired_width(140.0)).on_hover_text("A file under assets/ (sounds/hum.wav)");
+                });
+                ui.add(egui::Slider::new(&mut s.volume, 0.0..=2.0).text("volume"));
+                ui.add(egui::Slider::new(&mut s.range, 1.0..=24.0).text("range").suffix(" cells"));
+                if ui.small_button("No sound").clicked() {
+                    after.sound = None;
+                }
+            }
+            None => {
+                let give = ui.button("Give it a sound…").on_hover_text("A loop heard where it stands");
+                mark("uiPropSound", &give);
+                if give.clicked() {
+                    after.sound = Some(content::Sound { file: "sounds/hum.wav".into(), ..Default::default() });
+                }
+            }
+        }
+        // its model, and Blender
+        ui.horizontal(|ui| {
+            match &p.model {
+                Some(m) => hint(ui, &format!("Model {m}")),
+                None => hint(ui, &format!("A stand-in of {} shape{}", p.parts.len(), if p.parts.len() == 1 { "" } else { "s" })),
+            }
+        });
+        ui.horizontal(|ui| {
+            let edit = ui.button("Edit in Blender").on_hover_text(if cfg!(target_arch = "wasm32") {
+                "Downloads it as a .glb for Blender; the add-on's Add to the project writes it back"
+            } else {
+                "Opens Blender on it (BLENDER names the program, else the PATH or Program Files); Add to the project with Replace sends it back, and it shows here within a second"
+            });
+            mark("uiEditBlender", &edit);
+            if edit.clicked() {
+                self.edit_in_blender(id);
+            }
+            let export = ui.small_button("To Blender").on_hover_text("A .glb of it, standing at the origin");
+            if export.clicked() {
+                self.export_prop(id);
+            }
+        });
+        if after != p {
+            self.change_prop(id, move |q| *q = after);
+            self.need_props = true;
+        }
     }
 
     /// The window where a prop's light is set.
-    fn light_window(&mut self, ui: &mut egui::Ui) {
+    pub(super) fn light_window(&mut self, ui: &mut egui::Ui) {
+        crate::platform::set_hook("lightedit", self.assets.light_edit.as_deref().unwrap_or(""));
         let Some(id) = self.assets.light_edit.clone() else { return };
         let Some(p) = self.content.props.get(&id).cloned() else {
             self.assets.light_edit = None;

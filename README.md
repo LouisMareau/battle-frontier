@@ -187,7 +187,12 @@ selected (a prop, a building), or the map itself (name, size, what's on it); the
 bottom shows the cell under the pointer and the last message.
 **Ground** paints terrain and, with "set the level", raises or lowers cells to it
 (right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
-it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props;
+it, Shift places it off the grid); **Select** moves (drag), turns, scales and deletes props,
+and its inspector edits the prop's record too: name, category, cells and height, blocking,
+its light (the same window as the asset browser's) and its sound, with "Edit in Blender"
+opening Blender on it (the add-on's Add to the project with Replace sends it back and the
+editor shows it within a second; in the browser it downloads the .glb instead) and "Save
+prop" (or Ctrl+S) writing the record;
 **Trees** paints tree areas and edits their settings; **Build** draws a building's
 footprint, then designs it floor by floor: the floors above are cut away and the rest of the
 map is darkened, and nothing lands outside the building. *Structure* is flooring, walls and

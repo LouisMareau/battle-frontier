@@ -122,6 +122,21 @@ try {
   check('  and why', (await data('status')).startsWith('No room'), await data('status'));
   await shot('4-placed');
 
+  // 5b. the placed lamp's record from the Select inspector: a light, and blocking off
+  await browser.key('1');
+  await browser.click(...(await at(18.0, 0.5, 12.0)));
+  await sleep(300);
+  check('the placed prop selected', (await data('selection')).startsWith('prop:'), await data('selection'));
+  await press('uiPropLight');
+  await expect('its light window', 'lightedit', 'garden_lamp');
+  await press('uiLightGive');
+  await sleep(200);
+  await expect('two props changed', 'assetsdirty', 2);
+  await press('uiPropBlocks');
+  await sleep(200);
+  await shot('5-prop');
+  await browser.key('Escape');
+
   // 6. saved: the map, the two changed props' records and the model downloaded
   await browser.key('s', { ctrl: true });
   const got = (name) => existsSync(join(downloads, name));
@@ -137,6 +152,7 @@ try {
     const lamp = JSON.parse(readFileSync(join(downloads, 'garden_lamp.json'), 'utf8'));
     check('the new prop: measured, its model, its folder', lamp.footprint?.join('x') === '2x2' && lamp.model === 'models/garden_lamp.glb' && lamp.folders?.[0] === 'Buildings/Outside',
       `${lamp.footprint} · ${lamp.height} high · ${lamp.model} · ${lamp.folders}`);
+    check('  with the light and the blocking set from the inspector', lamp.light?.kind === 'spot' && lamp.blocks !== true, `light ${JSON.stringify(lamp.light)} · blocks ${lamp.blocks}`);
   }
   await expect('nothing left to save', 'assetsdirty', 0);
 
