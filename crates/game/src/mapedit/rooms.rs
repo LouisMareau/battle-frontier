@@ -189,6 +189,7 @@ impl MapEditor {
                         self.status = "Hang it on an inside wall of this floor".into();
                         return;
                     };
+                    self.status = format!("Hung {} on the wall", self.prop_name(&prop));
                     let d = self.draft.as_mut().unwrap();
                     d.b.anchors.push(Anchor { prop, cell, side: side.into(), floor: f as u8, height, inside: true });
                     d.sel = Some(Sel::Wall(d.b.anchors.len() - 1));
@@ -204,6 +205,7 @@ impl MapEditor {
                     self.status = why;
                     return;
                 }
+                self.status = format!("Placed {} on floor {}", self.prop_name(&prop), floor + 1);
                 let d = self.draft.as_mut().unwrap();
                 d.b.floors[floor].props.push(placed);
                 d.sel = Some(Sel::Floor(d.b.floors[floor].props.len() - 1));
@@ -255,6 +257,7 @@ impl MapEditor {
                         self.status = "Hang it on the wall you picked".into();
                         return;
                     };
+                    self.status = format!("Hung {} outside", self.prop_name(&prop));
                     let d = self.draft.as_mut().unwrap();
                     d.b.anchors.push(Anchor { prop, cell, side: side.into(), floor: f as u8, height, inside: false });
                     d.sel = Some(Sel::Wall(d.b.anchors.len() - 1));
@@ -280,6 +283,7 @@ impl MapEditor {
                     return;
                 }
                 let r = [at[0] - b.at[0] as f64, at[1] - b.at[1] as f64];
+                self.status = format!("Placed {} outside", self.prop_name(&prop));
                 let d = self.draft.as_mut().unwrap();
                 d.b.outside.push(Placed { at: r, level: 0, ..placed });
                 d.sel = Some(Sel::Outside(d.b.outside.len() - 1));
@@ -316,6 +320,11 @@ impl MapEditor {
             self.inside_ok(b, d.floor, &rel, None).is_ok()
         };
         Some((cells, ok))
+    }
+
+    /// A prop's name, or its id.
+    fn prop_name(&self, id: &str) -> String {
+        self.content.props.get(id).map(|p| p.name.clone()).unwrap_or_else(|| id.to_string())
     }
 
     /// A stairs prop's footprint (nothing for other props).
