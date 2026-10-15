@@ -36,6 +36,8 @@ pub struct Vis {
     pub side: Side,
     /// a light it carries
     pub light: Option<content::Light>,
+    /// a sound it makes as it stands there
+    pub sound: Option<content::Sound>,
     pub texture: String,
     pub bbox: [i32; 4],
     pub lift: f32,
@@ -157,13 +159,15 @@ impl Stage {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub fn add_battler(&mut self, uid: Uid, side: Side, species: &str, front_box: [i32; 4], back_box: [i32; 4], elevation: u16, light: Option<content::Light>, now: f64) {
+    #[allow(clippy::too_many_arguments)]
+    pub fn add_battler(&mut self, uid: Uid, side: Side, species: &str, front_box: [i32; 4], back_box: [i32; 4], elevation: u16, light: Option<content::Light>, sound: Option<content::Sound>, now: f64) {
         let back = side == Side::Player;
         let lift = if back { 0.0 } else { elevation as f32 * PX * 1.6 };
         let phase = self.rand() * 6.0;
         self.vis.insert(uid, Vis {
             side,
             light,
+            sound,
             texture: format!("{}/{species}", if back { "back" } else { "front" }),
             bbox: if back { back_box } else { front_box },
             lift, float: lift > 0.0, phase, home: Vec3::ZERO, pos: Vec3::ZERO, placed: false, spawn: Some(now),
@@ -491,7 +495,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, streaks, time: (now / 1000.0) as f32, grid: false, focus: None, overlays: vec![] }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, overlays: vec![] }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

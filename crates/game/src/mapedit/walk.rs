@@ -1,11 +1,15 @@
 //! Walking the map in the editor: a stand-in character on the grid, moved cell by cell with
 //! the arrows (up is away from the camera) at a fixed pace, so 60 and 144 Hz screens play
 //! the same. What blocks on foot stops it: tree areas, water, cliffs, blocking props, the
-//! walls of buildings; doors let it in, and the building it's in is cut away above it.
+//! walls of buildings; doors let it in, and the building it's in is cut away above it. A
+//! script can walk it too (`route`), and holds it still while a dialog is up.
+
+use std::collections::VecDeque;
 
 use glam::Vec3;
 use world::mesh::{placement, prop_scene, Scene};
 
+use super::actors::facing_of;
 use super::MapEditor;
 
 /// One cell's walk, in milliseconds.
@@ -18,15 +22,38 @@ pub(super) struct Walker {
     to: Vec3,
     t0: f64,
     /// degrees clockwise from south
-    facing: f32,
+    pub facing: f32,
     /// the building it's in, and the floor
     pub inside: Option<(usize, usize)>,
+    /// cells a script sends it along
+    pub route: VecDeque<(i32, i32)>,
+}
+
+impl Walker {
+    pub fn pos(&self, now: f64) -> Vec3 {
+        let t = ((now - self.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
+        self.from.lerp(self.to, t)
+    }
+
+    pub fn stepping(&self, now: f64) -> bool {
+        now - self.t0 < STEP_MS
+    }
 }
 
 impl MapEditor {
-    fn cell_pos(&self, c: (i32, i32)) -> Vec3 {
+    pub(super) fn cell_pos(&self, c: (i32, i32)) -> Vec3 {
         let level = self.map.level_at(c.0, c.1).unwrap_or(0) as f32;
         Vec3::new(c.0 as f32 + 0.5, level * self.level_height, c.1 as f32 + 0.5)
+    }
+
+    fn stand(&mut self, cell: (i32, i32), facing: f32) {
+        let pos = self.cell_pos(cell);
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside: None, route: VecDeque::new() });
+        self.blocked = Some(self.map.blocked(&self.content));
+        self.story.started = false;
+        // standing on cells counts as entering them
+        self.story.last_cell = None;
+        self.extra_changed = true;
     }
 
     /// Starts walking from the free cell nearest the middle of the view.
@@ -53,22 +80,27 @@ impl MapEditor {
             self.status = "Nowhere to stand on this map".into();
             return;
         };
-        let pos = self.cell_pos(cell);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing: 180.0, inside: None });
-        self.blocked = Some(blocked);
-        self.status = "Walking: the arrows move, Esc stops".into();
+        self.stand(cell, 180.0);
+        self.status = "Walking: the arrows move, A speaks to what's in front, Esc stops".into();
+    }
+
+    /// Puts the walker on a cell (a check's `walkto:x,z`, a warp's landing).
+    pub fn walk_to(&mut self, x: i32, z: i32) {
+        if self.map.index(x, z).is_none() {
+            return;
+        }
+        let facing = self.walker.as_ref().map(|w| w.facing).unwrap_or(0.0);
+        self.stand((x, z), facing);
+        self.story.started = true;
+        self.cam.target = self.cell_pos((x, z));
     }
 
     /// A map opened for a walker coming from the map next to it: it stands where it
     /// arrived.
     pub(super) fn finish_arrival(&mut self) {
         let Some((cell, facing)) = self.arrive.take() else { return };
-        let blocked = self.map.blocked(&self.content);
-        let pos = self.cell_pos(cell);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, facing, inside: None });
-        self.blocked = Some(blocked);
-        self.cam.target = pos;
-        self.extra_changed = true;
+        self.stand(cell, facing);
+        self.cam.target = self.cell_pos(cell);
         self.status = format!("Walking on {}: the arrows move, Esc stops", self.map.name);
     }
 
@@ -76,6 +108,10 @@ impl MapEditor {
         if self.walker.take().is_some() {
             self.need_buildings = true;
             self.extra_changed = true;
+            self.story.machine = None;
+            self.story.dialog = None;
+            self.story.running.clear();
+            self.story.cam_hold = None;
             self.status.clear();
         }
     }
@@ -89,11 +125,19 @@ impl MapEditor {
             self.blocked = Some(self.map.blocked(&self.content));
         }
         let typing = ctx.egui_wants_keyboard_input();
+        // a script has the floor: the arrows do nothing
+        let frozen = self.story.machine.is_some() || self.story.dialog.is_some();
         // held, or tapped this frame (a tap can start and end between two frames)
-        let held = |k: egui::Key| !typing && ctx.input(|i| i.key_down(k) || i.key_pressed(k));
+        let held = |k: egui::Key| !typing && !frozen && ctx.input(|i| i.key_down(k) || i.key_pressed(k));
         let (right, forward) = self.cam.ground_axes();
         let snap = |v: Vec3| if v.x.abs() > v.z.abs() { (v.x.signum() as i32, 0) } else { (0, v.z.signum() as i32) };
-        let dir = if held(egui::Key::ArrowUp) {
+        let w = self.walker.as_ref().unwrap();
+        let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
+        let pos = w.from.lerp(w.to, t);
+        let routed = w.route.front().map(|&n| (n.0 - w.cell.0, n.1 - w.cell.1));
+        let dir = if let Some(d) = routed {
+            if t >= 1.0 { Some(d) } else { None }
+        } else if held(egui::Key::ArrowUp) {
             Some(snap(forward))
         } else if held(egui::Key::ArrowDown) {
             Some(snap(-forward))
@@ -104,18 +148,10 @@ impl MapEditor {
         } else {
             None
         };
-        let w = self.walker.as_ref().unwrap();
-        let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;
-        let pos = w.from.lerp(w.to, t);
         if let (Some(d), true) = (dir, t >= 1.0) {
             let cell = w.cell;
             let next = (cell.0 + d.0, cell.1 + d.1);
-            let facing = match d {
-                (0, 1) => 0.0,
-                (-1, 0) => 90.0,
-                (0, -1) => 180.0,
-                _ => 270.0,
-            };
+            let facing = facing_of(d);
             if self.map.index(next.0, next.1).is_none() {
                 // off the map: on into the piece next to it in the world, if there's one
                 self.walker.as_mut().unwrap().facing = facing;
@@ -129,10 +165,20 @@ impl MapEditor {
                     }
                 }
             }
-            let free = self.map.can_step(self.blocked.as_ref().unwrap(), cell, next);
+            let someone = self.actor_at(next).is_some();
+            let free = (self.map.can_step(self.blocked.as_ref().unwrap(), cell, next) || routed.is_some() && self.map.index(next.0, next.1).is_some()) && !someone;
             let to = self.cell_pos(next);
             let w = self.walker.as_mut().unwrap();
             w.facing = facing;
+            if routed.is_some() {
+                if free {
+                    w.route.pop_front();
+                } else if someone {
+                    // someone in the way: wait for them
+                } else {
+                    w.route.pop_front();
+                }
+            }
             if free {
                 w.from = pos;
                 w.to = to;
@@ -147,14 +193,19 @@ impl MapEditor {
             self.walker.as_mut().unwrap().inside = inside;
             self.need_buildings = true;
         }
-        self.cam.target = pos;
+        // the camera follows, unless a script holds it somewhere
+        match self.story.cam_hold {
+            Some(h) => self.cam.target = self.cam.target.lerp(h, 0.08),
+            None if self.story.cam_until > now => self.cam.target = self.cam.target.lerp(pos, 0.12),
+            None => self.cam.target = pos,
+        }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
     }
 
-    /// The things that move: the walker.
+    /// The things that move: the walker and the actors drawn as props.
     pub(super) fn extra_mesh(&self, now: f64) -> Scene {
-        let mut out = Scene::default();
+        let mut out = self.actor_scene(now);
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
         let t = ((now - w.t0) / STEP_MS).clamp(0.0, 1.0) as f32;

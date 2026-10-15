@@ -38,6 +38,8 @@ pub struct Director {
     pub auto: bool,
     pub text_delay: f64,
     pub level_ups: Vec<String>,
+    /// cries to play, taken by the app each frame
+    pub cries: Vec<String>,
     last_damage: f64,
     sim_rng: Rng,
     pending_hook: String,
@@ -48,8 +50,14 @@ impl Director {
         let events: VecDeque<Event> = battle.start().into();
         Director {
             battle, stage, hud, menu: Menu::new(), events, wait_until: 0.0, step: Step::NeedActor, auto, text_delay,
-            level_ups: vec![], last_damage: 0.0, sim_rng: Rng::new(4242), pending_hook: String::new(),
+            level_ups: vec![],
+            cries: vec![], last_damage: 0.0, sim_rng: Rng::new(4242), pending_hook: String::new(),
         }
+    }
+
+    /// The cries since last asked.
+    pub fn take_cries(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.cries)
     }
 
     pub fn finished(&self) -> bool {
@@ -196,7 +204,10 @@ impl Director {
             Event::Enter { uid, side, .. } => {
                 let m = b.mon(uid);
                 let sp = &b.dex.species[m.species];
-                self.stage.add_battler(uid, side, &sp.key, sp.front_box, sp.back_box, sp.elevation, sp.light.clone(), now);
+                self.stage.add_battler(uid, side, &sp.key, sp.front_box, sp.back_box, sp.elevation, sp.light.clone(), sp.sound.clone(), now);
+                if let Some(c) = &sp.cry {
+                    self.cries.push(c.clone());
+                }
                 self.hud.shown.insert(uid, (m.hp, m.mp));
                 let fields = [b.field(Side::Player).to_vec(), b.field(Side::Foe).to_vec()];
                 self.stage.layout([&fields[0], &fields[1]], now);

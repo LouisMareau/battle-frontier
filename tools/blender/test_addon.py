@@ -22,6 +22,7 @@ argv = sys.argv[sys.argv.index("--") + 1:]
 project, scratch = Path(argv[0]).resolve(), Path(argv[1]).resolve()
 sys.path.insert(0, str(project / "tools" / "blender"))
 import battle_frontier as bf  # noqa: E402
+import make_flag  # noqa: E402
 
 bf.register()
 failed = []
@@ -230,6 +231,23 @@ check("its sound into the record, the file into the project", sound.get("file") 
 check("shows the bounds in Blender", bpy.data.objects.get("test_well bounds") is not None)
 check("measures its footprint and height", record.get("footprint") == [2, 2] and abs(record.get("height", 0) - 2.2) < 0.05, f"{record.get('footprint')} {record.get('height')}")
 check("lays the record out as the project does", record_path.read_text(encoding="utf-8") == bf.to_text(bf.ordered_prop(record)))
+
+# 3b. a rigged asset: a flag that waves, its rig and its animation through the pipeline
+clear()
+rigged = make_flag.build_flag(bpy.context.collection)
+for o in bpy.context.view_layer.objects:
+    o.select_set(o in rigged)
+bpy.context.view_layer.objects.active = rigged[0]
+r = bpy.ops.battle_frontier.add_to_project(asset_id="test_flag", asset_name="Test flag", category="decoration")
+check("adds a rigged asset to the project", r == {"FINISHED"})
+flag_glb = scratch / "content" / "assets" / "models" / "test_flag.glb"
+flag_doc = glb_doc(flag_glb) if flag_glb.is_file() else {}
+check("its rig and its animation go into the model", len(flag_doc.get("skins", [])) == 1 and [a.get("name") for a in flag_doc.get("animations", [])] == ["idle"], f"{len(flag_doc.get('skins', []))} skins, {[a.get('name') for a in flag_doc.get('animations', [])]}")
+run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(flag_glb)], cwd=str(project), capture_output=True, text=True)
+check("the engine reads the rig and the animation", "a rig of 2 joints" in run.stdout and "idle (2.0 s)" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-200:])
+clear()
+r = bpy.ops.battle_frontier.import_prop(prop_id="test_flag")
+check("comes back rigged, with its action", r == {"FINISHED"} and any(o.type == "ARMATURE" for o in bpy.data.objects) and len(bpy.data.actions) >= 1, f"{[o.type for o in bpy.data.objects]}, {len(bpy.data.actions)} actions")
 
 # 4. back from its .glb, standing on the origin
 clear()

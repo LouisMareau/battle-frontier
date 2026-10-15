@@ -9,6 +9,7 @@
 #![cfg_attr(all(not(debug_assertions), not(target_arch = "wasm32")), windows_subsystem = "windows")]
 
 mod app;
+mod audio;
 mod director;
 mod editor;
 mod hud;

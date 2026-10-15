@@ -145,6 +145,10 @@ pub struct Creature {
     /// its feet, +z the way it faces
     #[serde(skip_serializing_if = "Option::is_none")]
     pub light: Option<Light>,
+    /// a sound it makes as it goes about (looping, from its feet): see `Sound`. Its `cry`
+    /// is the one-shot it gives when a battle starts.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sound: Option<Sound>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -649,6 +653,102 @@ pub struct Map {
     /// creatures that come out of a treeline and go roam a zone
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub links: Vec<SpawnLink>,
+    /// the people, creatures and things that move and talk: see `Actor`
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actors: Vec<Actor>,
+    /// what happens on the map's cells: see `Event`
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
+    /// the sounds of the place: see `Ambience`
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ambience: Vec<Ambience>,
+}
+
+/// Someone or something on a map with a life of its own: a creature, a picture or a prop
+/// that stands, wanders or walks a path, and answers when spoken to (its `events`). It
+/// starts at `at`, facing `facing` (degrees clockwise from south, the camera's side).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Actor {
+    /// unique on the map (scripts name it)
+    pub id: String,
+    /// shown when it speaks
+    pub name: String,
+    /// what it looks like: "creature:<id>", "sprite:<picture under assets/>" or
+    /// "prop:<id>"
+    pub look: String,
+    pub at: [i32; 2],
+    pub level: u8,
+    pub facing: f64,
+    /// "still", "wander" (within `area`, idling between strolls) or "path" (`path`'s cells
+    /// one after the other, round and round)
+    pub moves: String,
+    /// x, z, width, height, in cells
+    pub area: [i32; 4],
+    pub path: Vec<[i32; 2]>,
+    /// cells a second
+    pub speed: f64,
+    /// what it does when spoken to or approached: its own events (their `area` is itself)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub events: Vec<Event>,
+}
+
+impl Default for Actor {
+    fn default() -> Self {
+        Actor { id: String::new(), name: String::new(), look: String::new(), at: [0, 0], level: 0, facing: 0.0, moves: "still".into(), area: [0, 0, 0, 0], path: vec![], speed: 2.0, events: vec![] }
+    }
+}
+
+/// Something that happens on a map: when the player speaks to what's there (`interact`:
+/// facing it and pressing A), steps onto it (`enter`) or when the map starts (`start`), its
+/// `script` runs (see `script`): dialog, choices, people moving about, the camera, sounds,
+/// flags, a battle, a warp. `area` is the cells it covers (x, z, width, height); an actor's
+/// events cover the actor. `once` runs it a single time; `if` needs a flag set and `unless`
+/// needs it unset.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Event {
+    pub id: String,
+    /// "interact", "enter" or "start"
+    pub trigger: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub area: [i32; 4],
+    #[serde(skip_serializing_if = "is_default")]
+    pub once: bool,
+    #[serde(rename = "if", skip_serializing_if = "String::is_empty")]
+    pub when: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub unless: String,
+    /// one action a line
+    pub script: Vec<String>,
+}
+
+impl Default for Event {
+    fn default() -> Self {
+        Event { id: String::new(), trigger: "interact".into(), area: [0, 0, 0, 0], once: false, when: String::new(), unless: String::new(), script: vec![] }
+    }
+}
+
+/// A sound of the place, looping: everywhere on the map, or within `area` (x, z, width,
+/// height) and fading out over `fade` cells past its edge; `when` is "always", "day",
+/// "night" or "morning".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Ambience {
+    /// under the space's `assets/`
+    pub file: String,
+    pub volume: f64,
+    pub when: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub area: [i32; 4],
+    #[serde(skip_serializing_if = "is_default")]
+    pub fade: f64,
+}
+
+impl Default for Ambience {
+    fn default() -> Self {
+        Ambience { file: String::new(), volume: 0.5, when: "always".into(), area: [0, 0, 0, 0], fade: 0.0 }
+    }
 }
 
 /// Chunk files: how many cells a side.

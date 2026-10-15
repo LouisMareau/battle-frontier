@@ -144,6 +144,34 @@ small one.
   (`spawns/<map>.json`), kept apart from the map because it names creatures: the editor
   saves it in `temporary/` while it names placeholders, in `content/` once it only names
   the game's own creatures (the check refuses a `content/` record naming a placeholder).
+- **Actors** are the people, creatures and things on a map with a life of their own
+  (`actors`): each looks like a creature, a picture or a prop, stands at a cell, and keeps
+  still, wanders an area (a few steps, a rest, a look around) or walks a path round and
+  round, a cell at a time on the ground the player walks, never through anyone. **Events**
+  (`events`, and an actor's own) are what happens: spoken to (facing it, A), stepped on, or
+  when the map starts; once only if asked, and only with a flag set or unset. Each has a
+  **script**, one action a line, that reads like stage directions: `say Bo: Hello.`, `ask
+  Yes -> yes | No -> no` with `label` and `goto`, `if`/`unless flag goto`, `set`/`add`/`clear
+  flag`, `move bo 12,8 12,11` (the way found on the ground; `move player` too), `face bo
+  player`, `wait 1`, `show`/`hide`, `sound sounds/chime.wav`, `camera 12,6` and `camera
+  player`, `warp map x,z`, `battle encounter`, `end` (`crates/content/src/script.rs`; the
+  content check reads every script and names what's wrong). A dialog box types the lines
+  out (A: all of it, then on), choices pick with up and down; the walker and the actors'
+  own ways wait while a script runs, so a script is a cinematic: people walking about, the
+  camera gliding, lines said. Flags are what the story remembers (`world::events::Machine`
+  runs scripts; the editor is their host, the game will be next). The test meadow has Bo
+  (a talk with a choice and the camera going to the well), Pip wandering, a signpost to
+  read and the well's cells to step into.
+- **Sound**: a prop's `sound` loops where it stands (the stone well hums), a creature's
+  loops as it roams and its `cry` plays when a battle starts, and a map's `ambience` is
+  the sounds of the place (wind always, crickets by night), everywhere or within an area
+  with a fade past its edge; scripts play one-shots. Everything is heard from the walker
+  (or the view), fading with distance (`crates/game/src/audio.rs`: Web Audio in the
+  browser, which plays nothing before the first click or key, rodio on the desktop). The
+  sample sounds are made from scratch by `tools/make_sounds.py`.
+- **Animation**: a prop whose model has a rig plays its "idle" animation (else its first)
+  where it stands, skinned on the GPU with shadows (`crates/world/src/anim.rs` samples the
+  pose, the renderer's skinned pipelines draw it; the flag pole's flag waves).
 
 The editor (menu: "Edit maps", or `--maps`): the tools and the level (PageUp/PageDown) are
 at the top of the left panel, the tool's settings under them; the right panel inspects what's
@@ -164,7 +192,13 @@ front of it. Click a placed thing to select it: Q/E turn it, Delete (or its "rem
 removes it; unstackable props never overlap anything. Then "Confirm the building". A
 building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag),
 delete. **Walk** puts a stand-in character on the map: the
-arrows move it cell by cell, and the building it enters is cut away above it. **Zones**
+arrows move it cell by cell, the building it enters is cut away above it, and A speaks to
+what's in front (an actor, a sign: its events) while cells stepped on set off theirs.
+**Events** (7) is the actors and events: add an actor (click a cell) and give it a look, its
+ways (still, an area to wander, a path of cells) and events; add an event (drag cells) and
+write its script in the inspector, which names what's wrong as you type and runs it on the
+spot while walking; the story's flags are listed there, to forget. "Sounds" and "Animate"
+in the top bar turn the sounds and the rigged props' animations off and on. **Zones**
 paints zones (and who lives there: morning, day, night) or, in "Link treelines", takes a
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
 every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
@@ -203,9 +237,10 @@ rebuilt from their shapes, lamps with their lights) one at a time or all at once
 and imports maps, and adds a selection to the project as a prop: the `.glb` and its
 record, measured and laid out as the project's own, its light read from a spot or point
 light object on it and its sound from a speaker (see `tools/blender/README.md`). The file
-keeps materials, rigs and animations as Blender writes them (the engine draws base colours
-and textures, in the rest pose, for now); a camera never goes into a model, the game has
-its own. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
+keeps materials, rigs and animations as Blender writes them: the engine draws base colours
+and textures, and a rigged model plays its "idle" animation (`crates/world/src/anim.rs`
+poses it, the renderer skins it, shadows included); a camera never goes into a model, the
+game has its own. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
 the origin, its front to Blender's front view.
 
 ## Layout
@@ -216,8 +251,8 @@ the origin, its front to Blender's front view.
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/models.rs` props' models and exports to Blender), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `blender/` (the Blender add-on and its test), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -292,15 +327,16 @@ a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whol
 ## Not yet
 
 - The content browser only reads; the map editor saves maps (other records next).
-- Maps: creatures roam but don't battle yet (walking into one does nothing), no stairs or ramps between
-  levels (walking stays on one level, so upper floors aren't reachable on foot), no
-  interiors as separate maps, no lights at night; most props are still stand-in shapes
-  (a sample made in Blender: `stone_well`).
+- Maps: creatures roam but don't battle yet (walking into one does nothing; a script's
+  `battle` does), no stairs or ramps between levels (walking stays on one level, so upper
+  floors aren't reachable on foot), no interiors as separate maps; most props are still
+  stand-in shapes (samples made in Blender: `stone_well`, `flag_pole`).
 - Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
-- No overworld yet (walking, map loading and connections, scripts).
+- No overworld in the game itself yet: walking, scripts, actors and sounds live in the map
+  editor's Walk for now; flags aren't saved.
 - Sprites are battle pictures on billboards. The renderer can take 3D models later
   (glTF), the battle code doesn't care.
-- No gamepad or touch yet (keyboard and mouse), no sound.
+- No gamepad or touch yet (keyboard and mouse); no music.
 
 ## Checks and deployment
 

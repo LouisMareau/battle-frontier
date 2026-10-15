@@ -172,6 +172,28 @@ pub struct Glow {
 }
 
 /// Everything the game wants drawn this frame.
+/// A vertex of a model that moves with a rig: like a map's, with the joints that place
+/// it and their weights.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct SkinnedVertex {
+    pub pos: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
+    pub color: [f32; 4],
+    pub joints: [u32; 4],
+    pub weights: [f32; 4],
+}
+
+/// A skinned model drawn this frame: which (`set_skinned`), where, and its joints' matrices
+/// (the pose, see `world::anim::pose`).
+#[derive(Clone, Debug)]
+pub struct Animated {
+    pub key: String,
+    pub model: Mat4,
+    pub joints: Vec<Mat4>,
+}
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     pub view_proj: Mat4,
@@ -181,6 +203,8 @@ pub struct Frame {
     pub billboards: Vec<Billboard>,
     pub shapes: Vec<Shape>,
     pub glows: Vec<Glow>,
+    /// skinned models in their poses
+    pub animated: Vec<Animated>,
     /// rain streaks: (top, bottom) points
     pub streaks: Vec<(Vec3, Vec3)>,
     /// seconds, for things that move by themselves (water)
@@ -217,21 +241,26 @@ struct GpuMesh {
 
 impl GpuMesh {
     fn new(device: &wgpu::Device, vertices: &[MapVertex], indices: &[u32]) -> Option<GpuMesh> {
-        if indices.is_empty() {
-            return None;
-        }
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
         for v in vertices {
             let p = Vec3::from(v.pos);
             lo = lo.min(p);
             hi = hi.max(p);
         }
+        GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi)
+    }
+
+    /// From vertices of any layout.
+    fn raw(device: &wgpu::Device, vertices: &[u8], indices: &[u32], lo: Vec3, hi: Vec3) -> Option<GpuMesh> {
+        if indices.is_empty() {
+            return None;
+        }
         Some(GpuMesh {
             lo,
             hi,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("world vertices"),
-                contents: bytemuck::cast_slice(vertices),
+                contents: vertices,
                 usage: wgpu::BufferUsages::VERTEX,
             }),
             indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -332,10 +361,29 @@ struct DrawCall {
     count: u32,
 }
 
+/// The joints' matrices of this frame's skinned models, one buffer, each model's at an
+/// offset the draw binds.
+struct Bones {
+    buffer: wgpu::Buffer,
+    bind: wgpu::BindGroup,
+    cap: u64,
+}
+
+/// Matrices per skinned model are padded to this many: a dynamic offset's alignment.
+const BONES_ALIGN: usize = 4;
+
 pub struct SceneRenderer {
     globals: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
+    bones_layout: wgpu::BindGroupLayout,
+    bones: Bones,
+    /// a stand-in for the shadow map's slot in the shadow pass (which draws into it)
+    empty_bind: wgpu::BindGroup,
+    skinned_pipeline: wgpu::RenderPipeline,
+    skinned_shadow_pipeline: wgpu::RenderPipeline,
+    /// skinned models by key: their parts by texture
+    skinned: HashMap<String, Vec<(String, GpuMesh)>>,
     nearest: wgpu::Sampler,
     linear: wgpu::Sampler,
     shadow_view: wgpu::TextureView,
@@ -494,12 +542,43 @@ impl SceneRenderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
+        // skinned models: their joints' matrices in a storage buffer, each model's at an
+        // offset (group 3; in the shadow pass group 2 stands empty, the shadow map being
+        // drawn into)
+        let bones_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bones"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX,
+                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: true, min_binding_size: None },
+                count: None,
+            }],
+        });
+        let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("empty"), entries: &[] });
+        let empty_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skinned"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout), Some(&shadow_layout), Some(&bones_layout)],
+            immediate_size: 0,
+        });
+        let skinned_shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("skinned shadow"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout), Some(&empty_layout), Some(&bones_layout)],
+            immediate_size: 0,
+        });
+        let bones = Self::make_bones(device, &bones_layout, 256 * 64);
         let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
         let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
+        let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4];
         let map_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<MapVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &map_attrs,
+        })];
+        let skinned_buffers = [Some(wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<SkinnedVertex>() as u64,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &skinned_attrs,
         })];
         let sprite_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<SpriteVertex>() as u64,
@@ -556,6 +635,8 @@ impl SceneRenderer {
         let map_pipeline = pipeline("map", &main_layout, "vs_map", "fs_map", &map_buffers, Some((COLOR, None)), Some(depth(true)));
         let opaque_pipeline = pipeline("opaque", &main_layout, "vs_map", "fs_map_opaque", &map_buffers, Some((COLOR, None)), Some(depth(true)));
         let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, None, Some(shadow_depth.clone()));
+        let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, Some((COLOR, None)), Some(depth(true)));
+        let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, None, Some(shadow_depth.clone()));
         let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, Some((COLOR, None)), Some(depth(true)));
         let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, None, Some(shadow_depth));
         let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
@@ -566,7 +647,8 @@ impl SceneRenderer {
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, Some((COLOR, None)), Some(depth(true)));
 
         let mut r = SceneRenderer {
-            globals, globals_bind, texture_layout, nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
+            globals, globals_bind, texture_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, skinned: HashMap::new(),
+            nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
             ground_pipeline, ground_layout, world: None,
@@ -597,7 +679,7 @@ impl SceneRenderer {
         let ground = self.data_bind(device, queue, &[0, 0, 0, 255], [1, 1], &[255; 12], 1);
         let zeros = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("warm-up"),
-            contents: &[0u8; 3 * 64],
+            contents: &[0u8; 3 * 96],
             usage: wgpu::BufferUsages::VERTEX,
         });
         let mut encoder = device.create_command_encoder(&Default::default());
@@ -619,6 +701,10 @@ impl SceneRenderer {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
+            pass.set_bind_group(2, &self.empty_bind, &[]);
+            pass.set_bind_group(3, &self.bones.bind, &[0]);
+            pass.set_pipeline(&self.skinned_shadow_pipeline);
+            pass.draw(0..3, 0..1);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -644,11 +730,53 @@ impl SceneRenderer {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
+            pass.set_bind_group(3, &self.bones.bind, &[0]);
+            pass.set_pipeline(&self.skinned_pipeline);
+            pass.draw(0..3, 0..1);
             pass.set_bind_group(1, &ground.1, &[]);
             pass.set_pipeline(&self.ground_pipeline);
             pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
+    }
+
+    /// A buffer for the skinned models' joint matrices, `cap` bytes.
+    fn make_bones(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, cap: u64) -> Bones {
+        let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("bones"),
+            size: cap,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bones"),
+            layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(256 * 64) }),
+            }],
+        });
+        Bones { buffer, bind, cap }
+    }
+
+    /// A skinned model's parts, by texture, kept under `key` for `Frame::animated` to draw.
+    pub fn set_skinned(&mut self, device: &wgpu::Device, key: &str, parts: &[(String, Vec<SkinnedVertex>, Vec<u32>)]) {
+        let meshes = parts
+            .iter()
+            .filter_map(|(texture, vertices, indices)| {
+                let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+                for v in vertices {
+                    lo = lo.min(Vec3::from(v.pos));
+                    hi = hi.max(Vec3::from(v.pos));
+                }
+                GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi).map(|m| (texture.clone(), m))
+            })
+            .collect();
+        self.skinned.insert(key.to_string(), meshes);
+    }
+
+    pub fn has_skinned(&self, key: &str) -> bool {
+        self.skinned.contains_key(key)
     }
 
     /// The sun's shadow map, `size` texels a side.
@@ -1039,6 +1167,23 @@ impl SceneRenderer {
         if !bytes.is_empty() {
             queue.write_buffer(sprite_buffer, 0, bytes);
         }
+        // the skinned models' joints, each model's placed in the world, in one buffer
+        let mut bone_data: Vec<[[f32; 4]; 4]> = vec![];
+        let mut animated: Vec<(&str, u32)> = vec![];
+        for a in frame.animated.iter().filter(|a| self.skinned.contains_key(&a.key) && !a.joints.is_empty()) {
+            animated.push((a.key.as_str(), (bone_data.len() * 64) as u32));
+            bone_data.extend(a.joints.iter().map(|j| (a.model * *j).to_cols_array_2d()));
+            while !bone_data.len().is_multiple_of(BONES_ALIGN) {
+                bone_data.push(Mat4::IDENTITY.to_cols_array_2d());
+            }
+        }
+        let bone_bytes: &[u8] = bytemuck::cast_slice(&bone_data);
+        if (bone_bytes.len() as u64) > self.bones.cap {
+            self.bones = Self::make_bones(device, &self.bones_layout, (bone_bytes.len() as u64).next_power_of_two());
+        }
+        if !bone_bytes.is_empty() {
+            queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
+        }
 
         let mut stats = DrawStats::default();
         let eye = Frustum::new(&frame.view_proj);
@@ -1088,6 +1233,19 @@ impl SceneRenderer {
             for d in &self.sprite_draws {
                 pass.set_bind_group(1, &self.textures[&d.texture].bind, &[]);
                 pass.draw(d.first..d.first + d.count, 0..1);
+            }
+            if !animated.is_empty() {
+                pass.set_pipeline(&self.skinned_shadow_pipeline);
+                pass.set_bind_group(2, &self.empty_bind, &[]);
+                for &(key, offset) in &animated {
+                    pass.set_bind_group(3, &self.bones.bind, &[offset]);
+                    for (texture, m) in &self.skinned[key] {
+                        pass.set_bind_group(1, &self.textures.get(texture).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                        m.draw(&mut pass);
+                        stats.shadow_draws += 1;
+                        stats.shadow_triangles += m.count / 3;
+                    }
+                }
             }
         }
 
@@ -1150,6 +1308,19 @@ impl SceneRenderer {
                 m.draw(&mut pass);
                 stats.draws += 1;
                 stats.triangles += m.count / 3;
+            }
+            // the skinned models, in their poses
+            if !animated.is_empty() {
+                pass.set_pipeline(&self.skinned_pipeline);
+                for &(key, offset) in &animated {
+                    pass.set_bind_group(3, &self.bones.bind, &[offset]);
+                    for (texture, m) in &self.skinned[key] {
+                        pass.set_bind_group(1, &self.textures.get(texture).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                        m.draw(&mut pass);
+                        stats.draws += 1;
+                        stats.triangles += m.count / 3;
+                    }
+                }
             }
             // the ground last: what stands on it hides most of it, and its shader is the
             // costliest

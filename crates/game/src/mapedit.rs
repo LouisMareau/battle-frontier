@@ -9,10 +9,13 @@
 //! Ctrl+Z / Ctrl+Y, Ctrl+S, G the grid, arrows pan, Home recentres. Walk (`walk.rs`) puts a
 //! character on the map to try it on foot.
 
+mod actors;
 mod assets;
 mod build;
+mod events;
 mod models;
 mod rooms;
+mod sounds;
 mod stream;
 mod walk;
 mod worlds;
@@ -29,6 +32,8 @@ use rules::config::Period;
 use world::mesh;
 use world::WorldMap;
 
+pub use events::Request;
+
 use crate::stage::period_lighting;
 
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
@@ -42,16 +47,18 @@ enum Tool {
     Trees,
     Build,
     Zones,
+    Events,
 }
 
 impl Tool {
-    const ALL: [(Tool, &'static str, &'static str); 6] = [
+    const ALL: [(Tool, &'static str, &'static str); 7] = [
         (Tool::Select, "Select", "Pick a prop to move (drag), turn (Q/E), scale or delete it."),
         (Tool::Ground, "Ground", "Paint terrain; the borders draw themselves. With \"set the level\", painted cells rise or sink to the level you chose."),
         (Tool::Place, "Place", "Put a prop from the database at the chosen level. Shift: off the grid."),
         (Tool::Trees, "Trees", "Paint tree areas: hard edges the player can't cross, filled with trees from a few settings."),
         (Tool::Build, "Build", "Draw a building's footprint, then its floors, doors, windows, inside, walls and roof, and confirm it."),
         (Tool::Zones, "Zones", "Paint the areas creatures roam, say who lives there by time of day, and drag links from treelines to zones."),
+        (Tool::Events, "Events", "Put actors on the map (people, creatures, things with ways of their own) and events on cells, each with a script: dialog, choices, moves, the camera, sounds, flags, warps, battles."),
     ];
 
     fn key(self) -> &'static str {
@@ -62,6 +69,7 @@ impl Tool {
             Tool::Trees => "trees",
             Tool::Build => "build",
             Tool::Zones => "zones",
+            Tool::Events => "events",
         }
     }
 }
@@ -204,6 +212,18 @@ pub struct MapEditor {
     height_edit: u16,
     view_proj: Mat4,
     viewport: egui::Rect,
+    /// the actors alive on the map
+    live: Vec<actors::Live>,
+    /// the story: a running script, the flags, the dialog
+    story: events::Story,
+    /// the Events tool's state
+    evt: events::Panel,
+    sounds_on: bool,
+    animate: bool,
+    /// rigged props posed this frame
+    animated_n: usize,
+    /// this frame's time, for the scripts' host
+    now: f64,
 }
 
 fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
@@ -372,6 +392,13 @@ impl MapEditor {
             height_edit: map.height as u16,
             view_proj: Mat4::IDENTITY,
             viewport: egui::Rect::NOTHING,
+            live: vec![],
+            story: Default::default(),
+            evt: Default::default(),
+            sounds_on: true,
+            animate: true,
+            animated_n: 0,
+            now: 0.0,
             dirty: false,
             space,
             map,
@@ -496,6 +523,9 @@ impl MapEditor {
         self.width_edit = self.map.width as u16;
         self.height_edit = self.map.height as u16;
         self.worlds.levels.clear();
+        self.story = Default::default();
+        self.evt = Default::default();
+        self.rebuild_actors();
         self.everything_changed();
         self.recentre();
         self.finish_arrival();
@@ -524,6 +554,9 @@ impl MapEditor {
         self.zone_sel = self.zone_sel.filter(|&i| i < self.map.zones.len());
         self.selected = self.selected.filter(|&i| i < self.map.props.len());
         self.selected_building = self.selected_building.filter(|&i| i < self.map.buildings.len());
+        self.evt.actor_sel = self.evt.actor_sel.filter(|&i| i < self.map.actors.len());
+        self.evt.event_sel = self.evt.event_sel.filter(|&r| self.event(r).is_some());
+        self.rebuild_actors();
     }
 
     fn undo(&mut self) {
@@ -816,10 +849,13 @@ impl MapEditor {
     // ------------------------------------------------------------ the screen
 
     /// Draws the editor; true when the player asks to go back.
-    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64) -> bool {
+    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio) -> bool {
         let ctx = ui.ctx().clone();
+        self.now = now;
         self.walk(&ctx, now);
         self.tick(now);
+        self.tick_actors(now);
+        self.step_story(&ctx, now);
         if let Some(rs) = rs {
             self.sync(rs, now);
         }
@@ -867,6 +903,16 @@ impl MapEditor {
                 mark("uiLamps", &lamps);
                 if lamps.clicked() {
                     self.lamps = !self.lamps;
+                }
+                let sounds = ui.selectable_label(self.sounds_on, "Sounds").on_hover_text("The props' and creatures' sounds and the place's ambience, heard from the walker (or the view)");
+                mark("uiSounds", &sounds);
+                if sounds.clicked() {
+                    self.sounds_on = !self.sounds_on;
+                }
+                let animate = ui.selectable_label(self.animate, "Animate").on_hover_text("Rigged props play their animations");
+                mark("uiAnimate", &animate);
+                if animate.clicked() {
+                    self.animate = !self.animate;
                 }
                 if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
                     self.grid = !self.grid;
@@ -930,7 +976,11 @@ impl MapEditor {
                 }
                 if !self.status.is_empty() {
                     ui.separator();
-                    ui.add(egui::Label::new(RichText::new(&self.status).size(12.0).color(Color32::LIGHT_GRAY)).truncate());
+                    // room for the frame readout at the right end
+                    ui.scope(|ui| {
+                        ui.set_max_width((ui.available_width() - 190.0).max(60.0));
+                        ui.add(egui::Label::new(RichText::new(&self.status).size(12.0).color(Color32::LIGHT_GRAY)).truncate());
+                    });
                 }
             });
         });
@@ -956,6 +1006,18 @@ impl MapEditor {
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
+        self.dialog_ui(&ctx, now);
+        // what's heard from here
+        let wants = self.sound_wants(now);
+        audio.update(&self.files, self.listener(now), &wants, now);
+        let shots = std::mem::take(&mut self.story.shots);
+        for (file, volume) in shots {
+            let space = self.content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
+            audio.play_once(&self.files, &space.asset(&file), None, volume, 0.0, now);
+        }
+        crate::platform::set_hook("sounds", &audio.playing().to_string());
+        crate::platform::set_hook("audio", audio.state());
+        crate::platform::set_hook("animated", &self.animated_n.to_string());
         crate::platform::set_hook("map", &self.map.id);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
         crate::platform::set_hook("chunked", if self.map.chunk > 0 { "1" } else { "0" });
@@ -1072,6 +1134,7 @@ impl MapEditor {
             Tool::Trees => self.trees_panel(ui),
             Tool::Build => self.build_panel(ui),
             Tool::Zones => self.zones_panel(ui),
+            Tool::Events => self.events_panel(ui),
         }
         ui.add_space(8.0);
     }
@@ -1279,6 +1342,9 @@ impl MapEditor {
     /// The right panel: the selected building or prop, else the map itself.
     fn inspector(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
+        if self.tool == Tool::Events && self.event_inspector(ui) {
+            return;
+        }
         if let Some(i) = self.selected_building.filter(|&i| i < self.map.buildings.len()) {
             self.building_inspector(ui, i);
             return;
@@ -1399,7 +1465,7 @@ impl MapEditor {
             self.save();
             return;
         }
-        for (k, t) in [(egui::Key::Num1, Tool::Select), (egui::Key::Num2, Tool::Ground), (egui::Key::Num3, Tool::Place), (egui::Key::Num4, Tool::Trees), (egui::Key::Num5, Tool::Build), (egui::Key::Num6, Tool::Zones)] {
+        for (k, t) in [(egui::Key::Num1, Tool::Select), (egui::Key::Num2, Tool::Ground), (egui::Key::Num3, Tool::Place), (egui::Key::Num4, Tool::Trees), (egui::Key::Num5, Tool::Build), (egui::Key::Num6, Tool::Zones), (egui::Key::Num7, Tool::Events)] {
             if pressed(k) {
                 self.tool = t;
             }
@@ -1417,7 +1483,10 @@ impl MapEditor {
             self.recentre();
         }
         if pressed(egui::Key::Escape) {
-            if self.walker.is_some() {
+            if self.evt.placing.is_some() {
+                self.evt.placing = None;
+                self.evt.drag = None;
+            } else if self.walker.is_some() {
                 self.stop_walk();
             } else if let Some(d) = self.draft.as_mut().filter(|d| d.sel.is_some()) {
                 d.sel = None;
@@ -1584,6 +1653,9 @@ impl MapEditor {
             Tool::Zones => {
                 self.zones_view(mods.alt, primary_pressed && response.hovered(), primary_down, primary_released, response.hovered());
             }
+            Tool::Events => {
+                self.events_view(primary_pressed && response.hovered(), primary_down, primary_released, response.hovered(), secondary_clicked);
+            }
             Tool::Select => {
                 if primary_pressed && response.hovered() {
                     let prop = self.pick_prop(origin, dir);
@@ -1707,10 +1779,14 @@ impl MapEditor {
                 }
             }
             Tool::Build => self.build_shapes(&mut shapes, &mut overlays),
-            Tool::Select | Tool::Zones => {}
+            Tool::Select | Tool::Zones | Tool::Events => {}
         }
         self.zones_shapes(&mut shapes);
         self.creature_billboards([tint.x, tint.y, tint.z, 1.0], &mut billboards, &mut shapes);
+        self.actor_billboards([tint.x, tint.y, tint.z, 1.0], now, &mut billboards, &mut shapes);
+        self.events_shapes(&mut shapes, now);
+        let animated = self.animated_draws(now);
+        self.animated_n = animated.len();
         if let Some(b) = self.selected_building.and_then(|i| self.map.buildings.get(i)) {
             let y = b.level as f32 * lh + 0.05;
             for (x, z) in b.map_cells() {
@@ -1753,6 +1829,7 @@ impl MapEditor {
             billboards,
             shapes,
             glows,
+            animated,
             streaks: vec![],
             time: (now / 1000.0) as f32,
             grid: self.grid,

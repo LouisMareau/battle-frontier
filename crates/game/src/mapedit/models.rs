@@ -4,10 +4,11 @@
 //! a `.glb` (written to build/exports/ on the desktop, downloaded in the browser).
 
 use render::map::MapVertex;
-use render::scene::{SceneRenderer, WHITE};
+use render::scene::{Animated, SceneRenderer, SkinnedVertex, WHITE};
 use world::gltf_in::load_model;
 use world::gltf_out::{building_glb, map_glb, prop_glb, props_glb};
-use world::mesh::Scene;
+use glam::Vec3;
+use world::mesh::{placement, Scene};
 
 use super::{gpu, MapEditor};
 use crate::platform::Load;
@@ -44,6 +45,28 @@ impl MapEditor {
                     Ok(m) => {
                         for (key, img) in &m.images {
                             r.add_texture(&rs.device, &rs.queue, key, &img.rgba, img.width, img.height, true);
+                        }
+                        if !m.skinned.is_empty() {
+                            // the parts that move with its rig: the renderer keeps them,
+                            // the frames say the pose
+                            let parts: Vec<(String, Vec<SkinnedVertex>, Vec<u32>)> = m
+                                .skinned
+                                .iter()
+                                .map(|s| {
+                                    let vertices = s
+                                        .mesh
+                                        .vertices
+                                        .iter()
+                                        .enumerate()
+                                        .map(|(i, v)| {
+                                            let j = s.joints.get(i).copied().unwrap_or([0; 4]);
+                                            SkinnedVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, joints: j.map(|x| x as u32), weights: s.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]) }
+                                        })
+                                        .collect();
+                                    (s.texture.clone().unwrap_or_else(|| WHITE.to_string()), vertices, s.mesh.indices.clone())
+                                })
+                                .collect();
+                            r.set_skinned(&rs.device, id, &parts);
                         }
                         self.models.insert(id.clone(), m);
                         self.need_props = true;
@@ -106,5 +129,30 @@ impl MapEditor {
         let bytes = building_glb(&b, &self.content, self.level_height, &self.models);
         let name = format!("{}-{}.glb", self.map.id, b.id);
         self.deliver(&name, bytes);
+    }
+
+    /// The rigged props on the map in their poses this frame: each plays its idle
+    /// animation (or its first), out of step with the others.
+    pub(super) fn animated_draws(&self, now: f64) -> Vec<Animated> {
+        let mut out = vec![];
+        if !self.animate {
+            return out;
+        }
+        let lh = self.level_height;
+        let t = (now / 1000.0) as f32;
+        for (i, p) in self.map.props.iter().enumerate() {
+            let Some(m) = self.models.get(&p.prop) else { continue };
+            let (Some(rig), Some(anim)) = (&m.rig, m.idle()) else { continue };
+            let Some(prop) = self.content.props.get(&p.prop) else { continue };
+            // out of reach: not worth posing
+            if Vec3::new(p.at[0] as f32, 0.0, p.at[1] as f32).distance(Vec3::new(self.cam.target.x, 0.0, self.cam.target.z)) > self.cam.distance * 1.5 + 24.0 {
+                continue;
+            }
+            let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
+            let at = Vec3::new(p.at[0] as f32, p.level as f32 * lh, p.at[1] as f32);
+            let phase = (i as f32 * 0.37) % 1.0 * anim.duration.max(0.1);
+            out.push(Animated { key: p.prop.clone(), model: placement(at, p.turn as f32, scale), joints: world::anim::pose(rig, Some(anim), t + phase) });
+        }
+        out
     }
 }

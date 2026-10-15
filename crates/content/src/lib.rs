@@ -12,6 +12,7 @@
 
 pub mod building;
 pub mod model;
+pub mod script;
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -406,6 +407,9 @@ impl Content {
             for e in c.light.iter().flat_map(|l| l.problems()) {
                 need(false, format!("{at}: {e}"));
             }
+            for e in c.sound.iter().flat_map(|s| s.problems()) {
+                need(false, format!("{at}: {e}"));
+            }
             need(!c.types.is_empty() && c.types.len() <= 2, format!("{at}: needs 1 or 2 types"));
             for t in &c.types {
                 need(self.types.contains(t), format!("{at}: type \"{t}\", no such type"));
@@ -632,6 +636,82 @@ impl Content {
                 out.push(format!("{at}: building \"{}\" on level {}", b.id, b.level));
             }
         }
+        // the actors, the events and the sounds of the place
+        let actor_ids: Vec<String> = m.actors.iter().map(|a| a.id.clone()).collect();
+        let maps: Vec<String> = self.maps.iter().map(|x| x.id.clone()).collect();
+        let encounters: Vec<String> = self.encounters.iter().map(|x| x.id.clone()).collect();
+        let known = script::Known { actors: &actor_ids, maps: Some(&maps), encounters: Some(&encounters) };
+        let on_map = |area: [i32; 4]| area[0] >= 0 && area[1] >= 0 && area[0] + area[2] <= m.width as i32 && area[1] + area[3] <= m.height as i32;
+        let mut event_ids: Vec<String> = vec![];
+        let mut check_event = |e: &Event, owner: &str, out: &mut Vec<String>| {
+            let what = format!("{at}: event \"{}\"{owner}", e.id);
+            if e.id.is_empty() {
+                out.push(format!("{at}: an event{owner} with no id"));
+            }
+            if event_ids.contains(&e.id) {
+                out.push(format!("{what}: two events with that id"));
+            }
+            event_ids.push(e.id.clone());
+            if !matches!(e.trigger.as_str(), "interact" | "enter" | "start") {
+                out.push(format!("{what}: trigger \"{}\" (interact, enter or start)", e.trigger));
+            }
+            if owner.is_empty() && e.trigger != "start" && (e.area[2] < 1 || e.area[3] < 1 || !on_map(e.area)) {
+                out.push(format!("{what}: its area {:?} must be cells on the map (x, z, width, height)", e.area));
+            }
+            for p in script::problems(&e.script, &known) {
+                out.push(format!("{what}: {p}"));
+            }
+        };
+        for a in &m.actors {
+            let what = format!("{at}: actor \"{}\"", a.id);
+            if a.id.is_empty() || !a.id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_') {
+                out.push(format!("{what}: its id must be lowercase letters, digits and _"));
+            }
+            if m.actors.iter().filter(|o| o.id == a.id).count() > 1 {
+                out.push(format!("{what}: two actors with that id"));
+            }
+            match a.look.split_once(':') {
+                Some(("creature", id)) if !self.creatures.contains(id) => out.push(format!("{what}: looks like creature \"{id}\", no such creature")),
+                Some(("prop", id)) if !self.props.contains(id) => out.push(format!("{what}: looks like prop \"{id}\", no such prop")),
+                Some(("creature", _)) | Some(("prop", _)) => {}
+                Some(("sprite", path)) if !path.is_empty() => {}
+                _ => out.push(format!("{what}: its look \"{}\" must be creature:<id>, sprite:<picture> or prop:<id>", a.look)),
+            }
+            if !on_map([a.at[0], a.at[1], 1, 1]) {
+                out.push(format!("{what}: stands off the map at {:?}", a.at));
+            }
+            match a.moves.as_str() {
+                "still" => {}
+                "wander" if a.area[2] < 1 || a.area[3] < 1 || !on_map(a.area) => out.push(format!("{what}: wanders an area {:?} that must be cells on the map", a.area)),
+                "path" if a.path.is_empty() => out.push(format!("{what}: walks a path with no cells")),
+                "wander" | "path" => {}
+                other => out.push(format!("{what}: moves \"{other}\" (still, wander or path)")),
+            }
+            if !(a.speed > 0.0 && a.speed <= 12.0) {
+                out.push(format!("{what}: a speed over 0 and up to 12 cells a second"));
+            }
+            for e in &a.events {
+                check_event(e, &format!(" of actor \"{}\"", a.id), &mut out);
+            }
+        }
+        for e in &m.events {
+            check_event(e, "", &mut out);
+        }
+        for s in &m.ambience {
+            let what = format!("{at}: ambience \"{}\"", s.file);
+            if s.file.is_empty() || s.file.contains("..") {
+                out.push(format!("{at}: an ambience needs a file under assets/"));
+            }
+            if !matches!(s.when.as_str(), "always" | "day" | "night" | "morning") {
+                out.push(format!("{what}: when \"{}\" (always, day, night or morning)", s.when));
+            }
+            if s.volume < 0.0 || s.fade < 0.0 {
+                out.push(format!("{what}: a volume and a fade of 0 or more"));
+            }
+            if s.area != [0, 0, 0, 0] && (s.area[2] < 1 || s.area[3] < 1 || !on_map(s.area)) {
+                out.push(format!("{what}: its area {:?} must be cells on the map (x, z, width, height)", s.area));
+            }
+        }
         out
     }
 }
@@ -679,15 +759,42 @@ pub mod disk {
         content
     }
 
-    /// Files records name that aren't there (props' models and sounds), under `root`.
+    /// Files records name that aren't there, under `root`: props' models and sounds,
+    /// creatures' sounds, maps' ambience, actors' pictures and the sounds scripts play.
     pub fn missing_files(root: &Path, content: &Content) -> Vec<String> {
         let mut out = vec![];
+        let mut look = |space: Space, who: String, what: &str, file: &str| {
+            let rel = space.asset(file);
+            if !root.join(&rel).is_file() {
+                out.push(format!("{who}: its {what} {rel} isn't there"));
+            }
+        };
         for e in content.props.entries() {
             let files = [e.value.model.as_deref().map(|m| ("model", m)), e.value.sound.as_ref().map(|s| ("sound", s.file.as_str()))];
             for (what, file) in files.into_iter().flatten() {
-                let rel = e.space.asset(file);
-                if !root.join(&rel).is_file() {
-                    out.push(format!("props/{}: its {what} {rel} isn't there", e.value.id));
+                look(e.space, format!("props/{}", e.value.id), what, file);
+            }
+        }
+        for e in content.creatures.entries() {
+            if let Some(s) = &e.value.sound {
+                look(e.space, format!("creatures/{}", e.value.id), "sound", &s.file);
+            }
+        }
+        for e in content.maps.entries() {
+            let m = &e.value;
+            let who = format!("maps/{}", m.id);
+            for s in &m.ambience {
+                look(e.space, who.clone(), "ambience", &s.file);
+            }
+            for a in &m.actors {
+                if let Some(p) = a.look.strip_prefix("sprite:") {
+                    look(e.space, format!("{who} actor {}", a.id), "picture", p);
+                }
+            }
+            let scripts = m.events.iter().chain(m.actors.iter().flat_map(|a| a.events.iter()));
+            for ev in scripts {
+                for f in script::sound_files(&ev.script) {
+                    look(e.space, format!("{who} event {}", ev.id), "sound", &f);
                 }
             }
         }

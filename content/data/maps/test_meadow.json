@@ -138,7 +138,8 @@
     { "prop": "fence", "at": [26.5, 13.5], "level": 0 },
     { "prop": "fence", "at": [27.5, 13.5], "level": 0 },
     { "prop": "fence", "at": [28.5, 13.5], "level": 0 },
-    { "prop": "stone_well", "at": [12.0, 6.0], "level": 0 }
+    { "prop": "stone_well", "at": [12.0, 6.0], "level": 0 },
+    { "prop": "flag_pole", "at": [16.5, 12.5], "level": 0 }
   ],
   "buildings": [
     {
@@ -258,5 +259,83 @@
       "every": 4.0,
       "stay": [15.0, 30.0]
     }
+  ],
+  "actors": [
+    {
+      "id": "bo",
+      "name": "Bo",
+      "look": "prop:stand_in_character",
+      "at": [22, 9],
+      "level": 0,
+      "facing": 0.0,
+      "moves": "still",
+      "area": [0, 0, 0, 0],
+      "path": [],
+      "speed": 2.0,
+      "events": [
+        {
+          "id": "bo_talk",
+          "trigger": "interact",
+          "script": [
+            "say Bo: Hello there. New around here?",
+            "ask Yes -> yes | Not really -> no",
+            "label yes",
+            "say Bo: The well hums at night. Have a look.",
+            "camera 12,6",
+            "wait 1",
+            "camera player",
+            "set met_bo",
+            "goto end",
+            "label no",
+            "say Bo: Then you know the way.",
+            "label end",
+            "face bo player"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "pip",
+      "name": "Pip",
+      "look": "prop:stand_in_character",
+      "at": [20, 2],
+      "level": 0,
+      "facing": 0.0,
+      "moves": "wander",
+      "area": [15, 0, 10, 4],
+      "path": [],
+      "speed": 1.5,
+      "events": [
+        {
+          "id": "pip_talk",
+          "trigger": "interact",
+          "script": [
+            "say Pip: Lovely weather for a stroll.",
+            "unless met_bo goto end",
+            "say Pip: Oh, you met Bo? Say hello from me.",
+            "label end"
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    {
+      "id": "sign",
+      "trigger": "interact",
+      "area": [21, 25, 1, 1],
+      "script": ["say Meadow path. North: the cottage and the well. South: the shop."]
+    },
+    {
+      "id": "well_hum",
+      "trigger": "enter",
+      "area": [10, 7, 4, 2],
+      "once": true,
+      "script": ["sound sounds/chime.wav 0.6", "say The well hums softly."]
+    }
+  ],
+  "ambience": [
+    { "file": "sounds/wind.wav", "volume": 0.25, "when": "always" },
+    { "file": "sounds/crickets.wav", "volume": 0.5, "when": "night" }
   ]
 }

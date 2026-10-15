@@ -151,6 +151,10 @@ pub struct GameApp {
     draws: DrawStats,
     /// the frame-time details (F3)
     perf_panel: bool,
+    audio: crate::audio::Audio,
+    /// the map editor, kept while a battle it asked for plays
+    parked: Option<Box<MapEditor>>,
+    pending: Option<crate::mapedit::Request>,
 }
 
 pub struct SceneCallback {
@@ -224,7 +228,7 @@ impl GameApp {
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
-            draws: DrawStats::default(), perf_panel: false,
+            draws: DrawStats::default(), perf_panel: false, audio: crate::audio::Audio::new(), parked: None, pending: None,
         }
     }
 
@@ -292,6 +296,25 @@ impl GameApp {
         c.timing.charge_window = (c.timing.charge_window * k).round();
         c.timing.assist = self.options.assist;
         c
+    }
+
+    /// A battle a map's script asked for: the editor waits, parked, and gets the player
+    /// back after the results.
+    fn battle_from_map(&mut self, id: &str) {
+        let index = self.content.as_ref().and_then(|c| c.encounters.entries().iter().position(|e| e.value.id == id));
+        let Screen::Maps(mut ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { return };
+        match index {
+            Some(i) if self.dex.is_some() => {
+                self.content = Some(ed.content());
+                self.parked = Some(ed);
+                self.audio.stop_all();
+                self.start(i);
+            }
+            _ => {
+                ed.resume_after_battle();
+                self.screen = Screen::Maps(ed);
+            }
+        }
     }
 
     /// The encounters in the menu's order: by region, then by their own order.
@@ -541,6 +564,13 @@ impl GameApp {
                         ed.probe(arg);
                     }
                 }
+                "walkto" => {
+                    if let (Screen::Maps(ed), Some((x, z))) = (&mut self.screen, arg.split_once(',')) {
+                        if let (Ok(x), Ok(z)) = (x.trim().parse(), z.trim().parse()) {
+                            ed.walk_to(x, z);
+                        }
+                    }
+                }
                 "back" => {
                     if let Screen::Maps(ed) = &self.screen {
                         self.content = Some(ed.content());
@@ -762,6 +792,10 @@ impl eframe::App for GameApp {
         }
         let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
         self.input.read(&ctx, now, timing_read);
+        // browsers play no sound before a click or a key
+        if ctx.input(|i| i.pointer.any_pressed() || !i.keys_down.is_empty()) {
+            self.audio.unlock();
+        }
         if let Some(limit) = self.cli.exit_after {
             if now - self.started_at > limit * 1000.0 {
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -783,6 +817,7 @@ impl eframe::App for GameApp {
             Screen::Results(..) => "results",
         };
         platform::set_hook("state", state);
+        platform::set_hook("audio", self.audio.state());
 
         if let Screen::Loading(_) = self.screen {
             if let Err(e) = self.finish_loading(&ctx, frame) {
@@ -797,20 +832,38 @@ impl eframe::App for GameApp {
                     ui.centered_and_justified(|ui| ui.label(RichText::new("Loading…").color(MUTED).size(18.0)));
                 });
             }
-            Screen::Menu => self.menu_screen(ui),
+            Screen::Menu => {
+                self.audio.stop_all();
+                self.menu_screen(ui)
+            }
             Screen::Editor(browser) => {
                 if browser.ui(ui, &self.files) || self.input.pressed(Button::B) && !ctx.egui_wants_keyboard_input() {
                     self.screen = Screen::Menu;
                 }
             }
             Screen::Maps(ed) => {
-                if ed.ui(ui, frame.wgpu_render_state(), now) {
+                let back = ed.ui(ui, frame.wgpu_render_state(), now, &mut self.audio);
+                let request = ed.take_request();
+                if back {
                     self.content = Some(ed.content());
                     self.screen = Screen::Menu;
+                    self.audio.stop_all();
+                } else if request.is_some() {
+                    self.pending = request;
                 }
             }
             Screen::Battle(director, encounter) => {
                 director.update(&ctx, &self.input, now, dt);
+                for c in director.take_cries() {
+                    self.audio.play_once(&self.files, &c, None, 1.0, 0.0, now);
+                }
+                let wants: Vec<crate::audio::Want> = director
+                    .stage
+                    .vis
+                    .iter()
+                    .filter_map(|(uid, v)| v.sound.as_ref().map(|s| crate::audio::Want { key: format!("battler:{uid:?}"), file: s.file.clone(), pos: None, volume: s.volume as f32 * 0.5, range: 0.0 }))
+                    .collect();
+                self.audio.update(&self.files, glam::Vec3::ZERO, &wants, now);
                 Self::draw_scene(ui, director, now);
                 director.hud.draw(&ctx, &director.battle, &director.stage, now);
                 let encounter = *encounter;
@@ -863,7 +916,7 @@ impl eframe::App for GameApp {
                             if ui.add(egui::Button::new(RichText::new("Fight again (A)").color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
                                 choice = Some(true);
                             }
-                            if ui.button("Back to the menu (B)").clicked() {
+                            if ui.button(if self.parked.is_some() { "Back to the map (B)" } else { "Back to the menu (B)" }).clicked() {
                                 choice = Some(false);
                             }
                         });
@@ -880,22 +933,28 @@ impl eframe::App for GameApp {
                 let encounter = results.encounter;
                 match choice {
                     Some(true) => self.start(encounter),
-                    Some(false) => self.screen = Screen::Menu,
+                    Some(false) => match self.parked.take() {
+                        Some(mut ed) => {
+                            ed.resume_after_battle();
+                            self.screen = Screen::Maps(ed);
+                        }
+                        None => self.screen = Screen::Menu,
+                    },
                     None => {}
                 }
             }
         }
 
+        if let Some(crate::mapedit::Request::Battle(id)) = self.pending.take() {
+            self.battle_from_map(&id);
+        }
+
         // frame times, top right; F3: the details
         let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("stats")));
         let r = ctx.content_rect();
-        painter.text(
-            Pos2::new(r.right() - 10.0, r.top() + 8.0),
-            Align2::RIGHT_TOP,
-            format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap),
-            FontId::proportional(11.0),
-            Color32::from_white_alpha(150),
-        );
+        // (at the bottom in the map editor, whose top bar is full)
+        let (at, align) = if matches!(self.screen, Screen::Maps(_)) { (Pos2::new(r.right() - 10.0, r.bottom() - 7.0), Align2::RIGHT_BOTTOM) } else { (Pos2::new(r.right() - 10.0, r.top() + 8.0), Align2::RIGHT_TOP) };
+        painter.text(at, align, format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap), FontId::proportional(11.0), Color32::from_white_alpha(150));
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.perf_panel = !self.perf_panel;
         }

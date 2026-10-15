@@ -272,7 +272,8 @@ impl Glb {
 /// parts, one primitive per part in the part's colour.
 pub fn prop_mesh(glb: &mut Glb, prop: &Prop, models: &Models) -> Option<usize> {
     if let Some(m) = models.get(&prop.id) {
-        return glb.scene_mesh(&prop.id, &m.scene, &m.images);
+        // its skinned parts baked at rest: a rig doesn't go back out yet
+        return glb.scene_mesh(&prop.id, &m.rest_scene(), &m.images);
     }
     let mut parts: Vec<(Mesh, usize)> = vec![];
     for (i, p) in prop.parts.iter().enumerate() {

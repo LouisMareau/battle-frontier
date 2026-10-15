@@ -2,17 +2,20 @@
 //! terrain and a level per cell, tree areas), what stands on it, the trees the engine
 //! places, which cells block, and the geometry to draw it all (`mesh`).
 
+pub mod anim;
 pub mod buildings;
+pub mod events;
 pub mod gltf_in;
 pub mod gltf_out;
 pub mod lights;
 pub mod mesh;
+pub mod sounds;
 pub mod spawn;
 pub mod trees;
 
 use std::collections::BTreeMap;
 
-use content::{side_step, Building, Cells, Chunk, Content, Map, Placed, SpawnLink, TreeArea, Zone};
+use content::{side_step, Actor, Ambience, Building, Cells, Chunk, Content, Event, Map, Placed, SpawnLink, TreeArea, Zone};
 
 /// A map, decoded. Cells are row by row, north first: index = z * width + x.
 #[derive(Clone, Debug)]
@@ -35,6 +38,9 @@ pub struct WorldMap {
     pub zone: Vec<u8>,
     pub zones: Vec<Zone>,
     pub links: Vec<SpawnLink>,
+    pub actors: Vec<Actor>,
+    pub events: Vec<Event>,
+    pub ambience: Vec<Ambience>,
     /// the props that are doors (openings you can walk through), from `know_doors`
     pub door_props: Vec<String>,
     /// the characters the record used, so a saved map keeps its legend
@@ -62,6 +68,9 @@ impl WorldMap {
             zone: vec![0; width * height],
             zones: vec![],
             links: vec![],
+            actors: vec![],
+            events: vec![],
+            ambience: vec![],
             door_props: vec![],
             legend: BTreeMap::new(),
             chunk: 0,
@@ -91,6 +100,9 @@ impl WorldMap {
             zone: cells.zone,
             zones: m.zones.clone(),
             links: m.links.clone(),
+            actors: m.actors.clone(),
+            events: m.events.clone(),
+            ambience: m.ambience.clone(),
             door_props: vec![],
             legend: m.legend.clone(),
             chunk: m.chunk,
@@ -123,6 +135,9 @@ impl WorldMap {
             buildings: self.buildings.clone(),
             zones: self.zones.clone(),
             links: self.links.clone(),
+            actors: self.actors.clone(),
+            events: self.events.clone(),
+            ambience: self.ambience.clone(),
             ..Default::default()
         };
         let cells = Cells { terrains: self.terrains.clone(), terrain: self.terrain.clone(), level: self.level.clone(), area: self.area.clone(), zone: self.zone.clone() };

@@ -7,5 +7,11 @@
   "blocks": true,
   "unstackable": true,
   "parts": [],
-  "model": "models/stone_well.glb"
+  "model": "models/stone_well.glb",
+  "sound": {
+    "file": "sounds/hum.wav",
+    "volume": 0.5,
+    "range": 7.0,
+    "at": [0.0, 1.0, 0.0]
+  }
 }

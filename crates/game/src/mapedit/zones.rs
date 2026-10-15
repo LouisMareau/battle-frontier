@@ -36,7 +36,7 @@ fn quad(corners: [Vec3; 4], color: [f32; 4]) -> Shape {
 }
 
 /// A flat arrow on the ground, from one point to another.
-fn arrow(from: Vec3, to: Vec3, width: f32, color: [f32; 4], out: &mut Vec<Shape>) {
+pub(super) fn arrow(from: Vec3, to: Vec3, width: f32, color: [f32; 4], out: &mut Vec<Shape>) {
     let d = Vec3::new(to.x - from.x, 0.0, to.z - from.z);
     let len = d.length();
     if len < 0.2 {
@@ -322,7 +322,7 @@ impl MapEditor {
         }
     }
 
-    fn cell_y(&self, x: i32, z: i32) -> f32 {
+    pub(super) fn cell_y(&self, x: i32, z: i32) -> f32 {
         self.map.level_at(x, z).unwrap_or(0) as f32 * self.level_height
     }
 

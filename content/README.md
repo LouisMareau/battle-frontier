@@ -34,17 +34,36 @@ Props' real models are glTF files (`.glb`) in `assets/models/`, named by the pro
 field; the Blender add-on (`tools/blender/`) writes both, and a `.glb` dropped on the
 editor's asset browser gets its record written. The file keeps everything Blender exports
 (materials, rigs, animations); the engine draws its triangles, base colours, textures and
-vertex colours, in the rest pose. A prop without one is drawn from its `parts`, a stand-in
-made of simple shapes. A prop's `light` is a light it gives off (`kind` "spot", a cone, or
+vertex colours, and a rigged model plays its "idle" animation (else its first) in a loop.
+A prop without one is drawn from its `parts`, a stand-in made of simple shapes. A prop's `light` is a light it gives off (`kind` "spot", a cone, or
 "point", all around; `color`, `intensity` (1 is 1000 W in Blender), `range` in cells, a
 spot's `cone` in degrees, `at` and `aim` from its origin before it's turned, `night`: lit by
 night only): in Blender, a spot or point light object on the prop. A prop's `sound` is a
-speaker on it (`file` under `assets/`, `volume`, `range` in cells, `at`), carried with the
-prop, not played yet. A creature's `light` is the same, carried from its feet with +z
-the way it faces (a tail light: `"at": [0, 0.5, -0.4]`, `"aim": [0, -0.3, 1]`). A prop's `unstackable` means nothing overlaps it
+speaker on it (`file` under `assets/`, `volume`, `range` in cells, `at`): it loops where
+the prop stands, fading with distance. A creature's `light` is the same, carried from its
+feet with +z the way it faces (a tail light: `"at": [0, 0.5, -0.4]`, `"aim": [0, -0.3,
+1]`); its `sound` is a loop it makes as it goes about, and its `cry` the one-shot it gives
+when a battle starts. A prop's `unstackable` means nothing overlaps it
 and it overlaps nothing (stairs, beds, shelves); `folders` lists the asset browser's folders
 it's in (`Buildings/Inside` and `Buildings/Outside` are what the Build tool offers inside and
 outside a building), its category's folder when left out.
+
+A map's `actors` are the people, creatures and things with a life of their own: `id`,
+`name`, `look` (`creature:<id>`, `sprite:<picture under assets/>` or `prop:<id>`), `at`,
+`level`, `facing` (degrees clockwise from south), `moves` (`still`, `wander` within `area`
+(x, z, width, height) or `path` along `path`'s cells), `speed` in cells a second, and its
+`events`. The map's `events` and an actor's each have an `id`, a `trigger` (`interact`:
+spoken to, `enter`: stepped on, `start`: the map starting), an `area` of cells (a map
+event's), `once`, `if` and `unless` (flags), and a `script`: one action a line, in plain
+words: `say [Who:] text`, `ask text -> label | text -> label`, `label name`, `goto name`,
+`if flag goto name`, `unless flag goto name`, `set flag [value]`, `add flag value`, `clear
+flag`, `move who x,z [x,z ...]`, `face who n|s|e|w|player|<actor>`, `wait seconds`, `show
+who`, `hide who`, `sound file [volume]`, `camera x,z|who`, `warp map x,z`, `battle
+encounter`, `end` (`who` is an actor's id or `player`; `crates/content/src/script.rs`). The
+check reads every script: an action that isn't one, a label or an actor that isn't there,
+a map or an encounter that doesn't exist. A map's `ambience` lists the sounds of the
+place: `file` under `assets/`, `volume`, `when` (`always`, `day`, `night`, `morning`), and
+for a sound of one spot its `area` and a `fade` in cells past its edge.
 
 Everything in this folder is licensed under Creative Commons Attribution-ShareAlike 4.0
 (`LICENSE` here); the code outside it is under MIT or Apache-2.0.

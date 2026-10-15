@@ -368,6 +368,53 @@ fn vs_map_shadow(v: MapIn) -> MapOut {
     return o;
 }
 
+// ---------------------------------------------------------------- skinned models
+
+struct SkinIn {
+    @location(0) pos: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) color: vec4<f32>,
+    @location(4) joints: vec4<u32>,
+    @location(5) weights: vec4<f32>,
+};
+
+// each model's joint matrices (placed in the world already), at the draw's offset
+@group(3) @binding(0) var<storage, read> bones: array<mat4x4<f32>>;
+
+fn skin(v: SkinIn) -> mat4x4<f32> {
+    return bones[v.joints.x] * v.weights.x + bones[v.joints.y] * v.weights.y + bones[v.joints.z] * v.weights.z + bones[v.joints.w] * v.weights.w;
+}
+
+@vertex
+fn vs_skinned(v: SkinIn) -> MapOut {
+    let m = skin(v);
+    let p = (m * vec4<f32>(v.pos, 1.0)).xyz;
+    let n = normalize((m * vec4<f32>(v.normal, 0.0)).xyz);
+    var o: MapOut;
+    o.clip = g.view_proj * vec4<f32>(p, 1.0);
+    o.uv = v.uv;
+    o.normal = n;
+    o.world = p;
+    o.light_pos = g.light_view_proj * vec4<f32>(p + n * g.shadow.x, 1.0);
+    o.color = v.color;
+    return o;
+}
+
+@vertex
+fn vs_skinned_shadow(v: SkinIn) -> MapOut {
+    let m = skin(v);
+    let p = (m * vec4<f32>(v.pos, 1.0)).xyz;
+    var o: MapOut;
+    o.clip = g.light_view_proj * vec4<f32>(p, 1.0);
+    o.uv = v.uv;
+    o.normal = v.normal;
+    o.world = p;
+    o.light_pos = o.clip;
+    o.color = v.color;
+    return o;
+}
+
 // ---------------------------------------------------------------- sprites and effects
 
 struct SpriteIn {

@@ -74,6 +74,9 @@ pub struct Species {
     pub back_box: [i32; 4],
     /// a light it carries
     pub light: Option<content::Light>,
+    /// a sound it makes as it goes about, and its cry (a file under its space's assets)
+    pub sound: Option<content::Sound>,
+    pub cry: Option<String>,
     /// asset paths from the project root (space folder included)
     pub front: Option<String>,
     pub back: Option<String>,
@@ -176,6 +179,11 @@ impl Dex {
                 learnset,
                 front_box: cr.sprites.front_box,
                 light: cr.light.clone(),
+                sound: cr.sound.clone().map(|mut s| {
+                    s.file = e.space.asset(&s.file);
+                    s
+                }),
+                cry: path(&cr.cry),
                 back_box: cr.sprites.back_box,
                 front: path(&cr.sprites.front),
                 back: path(&cr.sprites.back),

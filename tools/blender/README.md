@@ -49,16 +49,18 @@ it blocks the way, and for windows the sill height. The add-on:
     intensity of 1, the light's colour, its spot size is the cone, its custom distance the
     range (else the record's, or 6 cells), where it sits and points from the prop's origin;
   - its **sound**, from the first speaker selected: the sound file is copied to
-    `content/assets/sounds/<id>_<file>`, with the speaker's volume and maximum distance.
-    (Not played by the engine yet; it's carried with the prop for when it is.)
+    `content/assets/sounds/<id>_<file>`, with the speaker's volume and maximum distance:
+    the prop plays it where it stands, looping, fading with distance.
 
 Then `cargo run -p engine-content --bin content -- check`, and the prop is in the editor's
 Place list (and the Build tool's lists, for building pieces).
 
-**What the engine draws of it:** the triangles, the materials' base colour and base colour
-texture, the vertex colours, and the light. The rest of a material (roughness, normal maps,
-emission...), rigs and animations stay in the file untouched, for Blender and for later:
-the engine shows the model in its rest pose and plays no animation yet.
+**What the engine does with it:** draws the triangles, the materials' base colour and base
+colour texture and the vertex colours; lights its light; plays its sound; and, when it has
+a rig, poses it with its animation named "idle" (else its first) in a loop, with shadows
+(`tools/blender/make_flag.py` makes a sample: a flag pole whose flag waves). The rest of a
+material (roughness, normal maps, emission...), shape keys and the other animations stay in
+the file untouched, for Blender and for later.
 
 ## Conventions
 
