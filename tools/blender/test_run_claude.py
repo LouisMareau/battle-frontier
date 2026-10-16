@@ -5,8 +5,9 @@ asked of Claude, nothing in content/ is touched):
 
 The stand-in (written into the scratch project, CLAUDE points at it) checks how it was
 started, then plays one ending each time: it finishes the request, quits without it, crashes,
-isn't logged in, goes silent (the watchdog stops it) or waits to be cancelled. Exits 1 when a
-check fails.
+isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or draws the
+lines and the front and the side and stops there (a request that checks its lines first,
+which a run with --go-on then finishes). Exits 1 when a check fails.
 """
 import json
 import os
@@ -61,7 +62,22 @@ if mode == "finish":
     for piece in ("model", ".py ", "being written"):
         say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
     mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png"], "made a test prop")
-say({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "duration_ms": 61000, "total_cost_usd": 0.42, "result": "Made it.",
+last = "Made it."
+if mode == "lines":
+    # the lines (no pictures here: only the front and the side), drawn as the run would
+    here = mr.folder(os.getcwd(), rid)
+    box = lambda w, h: [[0, 0], [w, 0], [w, h], [0, h]]
+    lines = {{"pictures": {{}}, "front": {{"lines": [{{"name": "outline", "closed": True, "points": box(60, 50)}}]}},
+             "side": {{"lines": [{{"name": "outline", "closed": True, "points": box(100, 50)}}, {{"name": "head", "ellipse": [15, 20, 10, 10]}}]}}}}
+    (here / "lines.json").write_text(json.dumps(lines), encoding="utf-8")
+    try:
+        import request_lines as rl
+        rl.lines(os.getcwd(), rid)
+    except SystemExit:  # no Pillow: a stand-in for the drawing
+        (here / "profiles.png").write_bytes(b"stand-in")
+        mr.update(os.getcwd(), rid, lines=["profiles.png"])
+    last = "Lines ready: the shine on its back is the drawing's; how long its tail is, a guess."
+say({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "duration_ms": 61000, "total_cost_usd": 0.42, "result": last,
       "permission_denials": [{{"tool_name": "Bash", "tool_input": {{"command": "git status"}}}}]}})
 '''
 
@@ -180,7 +196,62 @@ check("  a prop: no pose at all", "Pose" not in rc.settings_lines(mr.normal({"ki
 check("accurate: every part and detail in the lines; else the outline and the main parts", "Lines: every part, marking and detail" in log
       and "Lines: the outline and the main parts" in rc.settings_lines(mr.normal({"style": "smooth"})))
 
-# 9. zooming into a picture: a box of it, enlarged into the request's folder
+# 9. "Let me check the lines first": the run stops once the front and the side are drawn, the
+# request waiting for the user; "The lines look right: go on" runs again from the model, with
+# what the user says is off
+fresh("test_check", kind="creature", check_lines=True)
+code, out, rec, log = run("test_check", "lines")
+check("checking the lines first: the run ends after them, waiting for the user's check, not failed", code == 0 and rec["status"] == "waiting"
+      and rec["progress"]["step"] == mr.LINES_READY and mr.lines_ready(rec) and "FAILED" not in log and "lines ready: check them" in out,
+      f"{code} {rec['status']} {json.dumps(rec['progress'])} {out[-200:]}")
+check("  its prompt: from reading it to the front and the side, then stop; nothing of the model", "from its step 3 to its step 5" in log
+      and "draw the design's lines over each picture" in log and "then draw the front and the side in lines.json" in log
+      and "once profiles.png is drawn and every line sits on the design, stop there: no shapes, no" in log
+      and "write private/requests/test_check/model.py" not in log and "run_request.py test_check --finish" not in log
+      and "End with a few lines for the user, who" in log, log[-1500:])
+check("  the log says what this run is, and that it waits", "This run: the lines, the front and the side, then it stops for the user to check them" in log
+      and "Lines ready: waiting for the user to check them" in log)
+check("  what it says for the check kept; the drawings listed for the editor; the bar's start kept", rec["reply"].startswith("Lines ready: the shine on its back")
+      and "profiles.png" in rec["lines"] and rec["progress"]["started"] > 0, f"{rec['reply']!r} {rec['lines']}")
+listed = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "list"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8").stdout
+check("  model_requests.py list: the user's turn, not one to make", any("test_check" in line and "lines ready: check them (the user's turn)" in line
+                                                                              and "lines checked first" in line for line in listed.splitlines()), listed)
+code, out, rec, log = run("test_check", "finish", "--go-on", "--note", "the tail is longer\nthe ears sit higher")
+second = log.split("a run starts")[-1]
+check("the lines look right, go on: done, a run of its own in the log", code == 0 and rec["status"] == "done" and rec["prop"] == "test_prop"
+      and log.count("a run starts") == 2, f"{code} {rec['status']} {out[-300:]}")
+check("  its prompt: keep lines.json, fix what the user says first, on from the model", "from its step 6, the model" in second
+      and "the user has checked them" in second and "Keep lines.json. What the user says is off in them:" in second
+      and "    the tail is longer" in second and "    the ears sit higher" in second and "Fix that in lines.json first" in second
+      and "python tools/blender/model_requests.py lines test_check again" in second and "write private/requests/test_check/model.py" in second
+      and "run_request.py test_check --finish" in second, second[:2500])
+check("  and not the lines drawn again, nor a stop", "draw the design's lines over each picture" not in second and "stop there" not in second
+      and "This run goes on from the model, on the lines the user checked: what's off: the tail is longer" in second)
+check("  with no note: they look right, lines.json as it is", "The user says they look right: leave lines.json as it is" in rc.prompt(rec, go_on=True)
+      and "What the user says is off" not in rc.prompt(rec, go_on=True, note="  "))
+again = rc.prompt(rec, note="the ears sit higher")
+check("starting over with a note (the window's Start over): fixed first, then the lines checked again", "from its step 3 to its step 5" in again
+      and "- the user looked at the lines the last run made (lines.json) and says this is off in them:\n    the ears sit higher\n" in again
+      and "stop there" in again and "the user looked at the lines" not in rc.prompt(rec), again[:1500])
+fresh("test_no_lines", check_lines=True)
+code, out, rec, log = run("test_no_lines", "quit")
+check("checking the lines first, but no front and side drawn: failed, and why", rec["status"] == "failed"
+      and rec["progress"]["step"] == "failed: Claude ended without drawing the front and the side (profiles.png)", rec["progress"]["step"])
+fresh("test_no_lines")
+code, out, rec, log = run("test_no_lines", "finish", "--go-on")
+check("going on with no lines yet: failed before Claude starts", rec["status"] == "failed" and "nothing to go on from: no lines.json yet" in rec["progress"]["step"]
+      and "Claude Code: " not in log, rec["progress"]["step"])
+rec = mr.normal({"kind": "creature", "style": "accurate"})
+check("the bar's estimate split: the lines about two fifths, the model the rest", mr.estimate(rec, "lines") < mr.estimate(rec, "model") < mr.estimate(rec)
+      and abs(mr.estimate(rec, "lines") + mr.estimate(rec, "model") - mr.estimate(rec)) <= 1, [mr.estimate(rec, p) for p in ("lines", "model", "all")])
+fresh("test_by_hand", check_lines=True)
+mr.start(SCRATCH, "test_by_hand")
+waited = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "wait", "test_by_hand", "--check"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")
+check("a session by hand: wait ID --check leaves it for the user's check", mr.lines_ready(mr.load(SCRATCH, "test_by_hand")) and "lines ready" in waited.stdout, waited.stdout + waited.stderr)
+made = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "new", "Checked one", "--check-lines"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")
+check("  and new --check-lines asks for it", mr.load(SCRATCH, "checked_one")["check_lines"] is True, made.stdout + made.stderr)
+
+# 10. zooming into a picture: a box of it, enlarged into the request's folder
 try:
     from PIL import Image
 except ImportError:
@@ -195,7 +266,7 @@ if Image is not None:
     check("  a box of it, enlarged into the folder (not one of the request's pictures)", out.name == "zoom_front_1.png" and zoomed.size == (1000, 500)
           and mr.load(SCRATCH, "test_nine")["images"] == [], f"{out.name} {zoomed.size}: {said}")
 
-    # 10. a picture's colours: a part's lit tone, its shade and its shine apart, the background
+    # 11. a picture's colours: a part's lit tone, its shade and its shine apart, the background
     # said, see-through pixels left out
     from PIL import ImageDraw
     pic = Image.new("RGBA", (200, 100), (240, 220, 150, 255))
@@ -219,7 +290,7 @@ if Image is not None:
           and mr.colour_name((20, 20, 22)) == "near black" and mr.colour_name((128, 128, 128)) == "mid grey",
           [mr.colour_name(c) for c in ((200, 40, 30), (90, 60, 30), (20, 20, 22), (128, 128, 128))])
 
-    # 11. lines: traced on a picture, the front and the side drawn from them, then laid on renders
+    # 12. lines: traced on a picture, the front and the side drawn from them, then laid on renders
     import request_lines as rl
     fresh("test_ten", kind="creature", height=1.0, images=["front.png"])
     ten = mr.folder(SCRATCH, "test_ten")

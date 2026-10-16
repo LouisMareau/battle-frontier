@@ -6,6 +6,8 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py start ID [--minutes N]    in progress: the bar starts
     python tools/blender/model_requests.py step ID "what it's doing" [--done 0.4]
     python tools/blender/model_requests.py wait ID [--note "why"]    back to waiting (to remake)
+    python tools/blender/model_requests.py wait ID --check           waiting for the user to check
+                                              its lines ("Let me check the lines first")
     python tools/blender/model_requests.py fail ID "why"             failed, and why
     python tools/blender/model_requests.py note ID "what happened"   a line in its log
     python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--scale N] [--grid] [--lines]
@@ -21,7 +23,7 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
                                               [--style low_poly|accurate] [--details "..."]
                                               [--pose as_is] [--shapes 8-30|unlimited]
-                                              [--notes "..."] [--mine]
+                                              [--notes "..."] [--mine] [--check-lines]
 
 request.json is laid out as the project's records are (content::to_text): the editor and this
 file write the same text for the same request. Each request's log.txt (what its runs did,
@@ -47,6 +49,7 @@ FIELDS = {
     "shapes": {"min": 8, "max": 30, "unlimited": False},
     "notes": "",
     "mine": False,
+    "check_lines": False,
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
@@ -62,6 +65,11 @@ POSES = ("t_pose", "as_is")
 SHAPES_CAP = 100
 # in the editor's order: waiting first, failed ones above the done
 STATUSES = ("waiting", "in_progress", "failed", "done")
+# the step of a request waiting for the user to check its lines (the editor's LINES_READY)
+LINES_READY = "lines ready: check them"
+# about how much of a run the lines take (reading the pictures, the lines over them, the front
+# and the side); the model takes the rest
+LINES_PART = 0.4
 PICTURES = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -210,15 +218,17 @@ def log(root, rid, text):
 
 # ---------------------------------------------------------------- progress: the editor's bar
 
-def estimate(record):
+def estimate(record, part="all"):
     """Minutes a request takes to model, by default: a session's whole time on it (reading the
-    pictures, the script, the tries and renders, the rig, adding it)."""
+    pictures, the script, the tries and renders, the rig, adding it); with `part` "lines" only
+    up to the front and the side (a run that stops for the user's check), "model" the rest."""
     # what the first runs took: a creature about 10 minutes, a small one 2
     minutes = 12.0 if record["kind"] == "creature" else 8.0
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
-    return float(round(minutes))
+    minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART}.get(part, 1.0)
+    return float(max(1, round(minutes)))
 
 
 def start(root, rid, minutes=None):
@@ -236,6 +246,23 @@ def step(root, rid, text, done=None):
     if done is not None:
         p["done"] = round(max(p["done"], float(done)), 2)
     return update(root, rid, progress=p)
+
+
+def lines_ready(record):
+    """Waiting for the user to check its lines: the editor shows them with "The lines look
+    right: go on", which runs run_claude.py --go-on (on from the model, on those lines)."""
+    return record["status"] == "waiting" and record["progress"]["step"] == LINES_READY
+
+
+def wait_for_check(root, rid):
+    """A request that checks its lines first, its lines and its front and side drawn: waiting
+    for the user (the bar's start kept, its minutes how long the lines took)."""
+    record = load(root, rid)
+    p = dict(record["progress"])
+    took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
+    p.update(step=LINES_READY, minutes=float(round(took, 1)))
+    log(root, rid, "Lines ready: waiting for the user to check them (the editor's \"The lines look right: go on\" goes on from the model)")
+    return update(root, rid, status="waiting", progress=p)
 
 
 def fail(root, rid, reason):
@@ -494,8 +521,10 @@ def main(argv):
     verb = argv.pop(0)
     if verb == "list":
         for r in every(root):
-            extra = f" · {bar_text(r)}" if r["status"] in ("in_progress", "failed") else (f" → {r['prop']}" if r["prop"] else "")
-            print(f"{r['status']:<12} {r['id']:<24} {r['name']} ({r['kind']}, {r['height']} cells, {r['style']}{', mine' if r['mine'] else ''}), {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'}{extra}")
+            extra = (f" · {LINES_READY} (the user's turn)" if lines_ready(r) else f" · {bar_text(r)}" if r["status"] in ("in_progress", "failed")
+                     else (f" → {r['prop']}" if r["prop"] else ""))
+            settings = r["style"] + (", mine" if r["mine"] else "") + (", lines checked first" if r["check_lines"] else "")
+            print(f"{r['status']:<12} {r['id']:<24} {r['name']} ({r['kind']}, {r['height']} cells, {settings}), {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'}{extra}")
     elif verb == "start":
         minutes = option("--minutes")
         r = start(root, argv[0], minutes)
@@ -506,10 +535,16 @@ def main(argv):
         print(f"{r['id']}: {bar_text(r)}")
     elif verb == "wait":
         note = option("--note")
+        check = "--check" in argv
+        argv = [a for a in argv if a != "--check"]
         if note:
             log(root, argv[0], note)
-        r = update(root, argv[0], status="waiting", progress=dict(FIELDS["progress"]))
-        print(f"{r['id']}: waiting")
+        if check:
+            r = wait_for_check(root, argv[0])
+            print(f"{r['id']}: waiting, {LINES_READY}")
+        else:
+            r = update(root, argv[0], status="waiting", progress=dict(FIELDS["progress"]))
+            print(f"{r['id']}: waiting")
     elif verb == "fail":
         r = fail(root, argv[0], argv[1])
         print(f"{r['id']}: {r['progress']['step']}")
@@ -543,9 +578,10 @@ def main(argv):
         shapes = option("--shapes", "8-30")
         lo, _, hi = shapes.partition("-")
         fields["shapes"] = {"min": 1, "max": SHAPES_CAP, "unlimited": True} if shapes == "unlimited" else {"min": int(lo), "max": int(hi or lo), "unlimited": False}
-        if "--mine" in argv:
-            argv.remove("--mine")
-            fields["mine"] = True
+        for flag, field in (("--mine", "mine"), ("--check-lines", "check_lines")):
+            if flag in argv:
+                argv.remove(flag)
+                fields[field] = True
         if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
             raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
         r = new(root, argv[0], argv[1:], **fields)

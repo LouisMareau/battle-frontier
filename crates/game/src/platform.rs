@@ -137,8 +137,9 @@ pub fn read_dropped(files: Vec<egui::DroppedFileHandle>, out: &Dropped) {
     }
 }
 
-/// Test hooks: in the browser, `<body data-KEY="value">`; elsewhere, nothing. Written only
-/// when they change: dozens are set every frame, and each write is a trip into the page.
+/// Test hooks: in the browser, `<body data-KEY="value">`; elsewhere, nothing (but in the Rust
+/// tests, which keep them: `hook`). Written only when they change: dozens are set every frame,
+/// and each write is a trip into the page.
 #[cfg(target_arch = "wasm32")]
 pub fn set_hook(key: &str, value: &str) {
     use std::cell::RefCell;
@@ -170,7 +171,31 @@ pub fn set_hook(key: &str, value: &str) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn set_hook(_key: &str, _value: &str) {}
+pub fn set_hook(key: &str, value: &str) {
+    // the tests find a widget by its mark (where it was drawn): `hook`
+    #[cfg(test)]
+    HOOKS.with(|hooks| hooks.borrow_mut().insert(key.to_string(), value.to_string()));
+    #[cfg(not(test))]
+    let _ = (key, value);
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+thread_local! {
+    static HOOKS: std::cell::RefCell<HashMap<String, String>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// A hook as this thread last set it (the tests: a marked widget's "x,y").
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub fn hook(key: &str) -> Option<String> {
+    HOOKS.with(|hooks| hooks.borrow().get(key).cloned())
+}
+
+/// This thread's hooks forgotten (the tests: before a frame, so a widget no longer drawn has
+/// no mark).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub fn clear_hooks() {
+    HOOKS.with(|hooks| hooks.borrow_mut().clear());
+}
 
 /// Saves a text file through the browser (a download).
 #[cfg(target_arch = "wasm32")]

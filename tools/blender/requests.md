@@ -34,6 +34,7 @@ Rules that hold all the way:
   "shapes": { "min": 8, "max": 30, "unlimited": false },
   "notes": "Warm grey stone, the base a little darker...",
   "mine": false,
+  "check_lines": false,
   "status": "waiting",
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
   "images": ["round_stone_lantern.png"],
@@ -59,6 +60,10 @@ are.)
   forward, nothing curled), or `as_is` (the pose the pictures show).
 - `shapes`: how many shapes to build it from, `min` to `max`, or `unlimited`: as many as the
   design needs, up to about 100 (work out the list of parts first; take the time it takes).
+- `check_lines` (the window's **"Let me check the lines first"**): the user looks at the
+  lines before the model is built. The modelling stops once the lines and the front and the
+  side are drawn (step 5) and the request waits again, its `progress.step` saying
+  `lines ready: check them`, until the user says go on (below, "Checking the lines first").
 - `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
   stopped with an error or went silent: `progress.step` says why, `log.txt` has the rest).
   `progress` is what the editor's bar shows (in
@@ -79,18 +84,19 @@ request at once. `tools/blender/model_requests.py` reads and writes them from pl
 python tools/blender/model_requests.py list
 python tools/blender/model_requests.py start ID [--minutes N]
 python tools/blender/model_requests.py step ID "what it's doing" [--done 0.4]
-python tools/blender/model_requests.py wait ID [--note "why"]
+python tools/blender/model_requests.py wait ID [--note "why"] [--check]
 python tools/blender/model_requests.py fail ID "why"
 python tools/blender/model_requests.py note ID "what happened"
 python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--grid] [--lines]
 python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1]
 python tools/blender/model_requests.py lines ID
-python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine]
+python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine] [--check-lines]
 ```
 
 (`new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
-`fail` add a line to the request's `log.txt`, timed by the computer's clock. `zoom`, `colours`
-and `lines` are for reading the pictures: below.)
+`fail` add a line to the request's `log.txt`, timed by the computer's clock; `wait --check`
+leaves a request waiting for the user to check its lines. `zoom`, `colours` and `lines` are
+for reading the pictures: below.)
 
 ## From the editor: Start, Cancel and the console
 
@@ -123,13 +129,35 @@ on its own (it goes on if the editor closes), which:
 - meanwhile the request's panel shows what Claude draws as it draws it (**Lines**: its lines
   over the pictures, the front and the side from them, then those lines over the model with
   how far they overlap): a look says whether it read the pictures right, and Cancel stops a
-  run that didn't, before the long part;
+  run that didn't, before the long part (or tick "Let me check the lines first": below);
 - ends the request **done** when Claude has added the model (`--finish`), **failed** when
   Claude ends without it, stops with an error or isn't logged in, or says nothing for 30
   minutes (then it's stopped); **waiting** again on Cancel (the editor writes a file named
-  `stop` in the request's folder). The editor marks a request failed itself when nothing has
-  been written in its folder for 31 minutes (a run that was killed), and settles a Cancel with
-  nothing running after a few seconds.
+  `stop` in the request's folder), and once its lines are ready for the user's check (below).
+  The editor marks a request failed itself when nothing has been written in its folder for 31
+  minutes (a run that was killed), and settles a Cancel with nothing running after a few
+  seconds.
+
+### Checking the lines first
+
+Tick **"Let me check the lines first"** in the request's panel (`check_lines`) to look at the
+lines before the long part. Start then has Claude follow the recipe to step 5 and stop once
+`profiles.png` is drawn: `run_claude.py` ends that run with the request **waiting**, its step
+`lines ready: check them` (LINES READY in the list, whose row has **Check**; a run that ends
+without drawing the front and the side has failed). The request's panel then shows, at its
+top, the lines over each picture and the front and the side, what Claude says about them
+(what it took for the drawing, what it guessed), a note for what's off and **The lines look
+right: go on**, which runs
+
+```bash
+python tools/blender/run_claude.py ID --go-on [--note "the tail is longer"]
+```
+
+Claude keeps `lines.json`, fixes what the note says first (running `lines` again), and goes
+on from step 6, the model, to done. **Start over** in the panel starts again from the
+pictures instead, the note going with it: the lines there are checked against the pictures,
+fixed, and with the box still ticked it stops for the check again. The bar runs on the lines'
+part of the estimate (about two fifths), then on the model's.
 
 Claude Code must be logged in for this, once (the desktop app's own login isn't the command
 line's): until then a run fails at once with "Claude Code isn't logged in", naming the
@@ -137,7 +165,8 @@ program's path (it's often not on the PATH: `~/.local/bin/claude.exe`), and the 
 panel has a **Log in to Claude Code…** button that opens it in a terminal, in the project:
 type `/login` there, then Start again. `python tools/blender/test_run_claude.py` checks the whole of
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
-that crashes, one not logged in, one gone silent, one cancelled.
+that crashes, one not logged in, one gone silent, one cancelled, one that stops after the
+lines for the user's check and one that goes on from them with the user's note.
 
 ## The recipe
 
@@ -146,7 +175,8 @@ Blender runs through `python tools/blender/run_request.py ID [--finish]`: in the
 newest under Program Files (`"C:/Program Files/Blender Foundation/Blender 3.1/blender.exe"`
 here). Everything runs from the project folder.
 
-1. **List them**: `python tools/blender/model_requests.py list`. Take the first waiting one.
+1. **List them**: `python tools/blender/model_requests.py list`. Take the first waiting one
+   (not one whose lines wait for the user's check: its line says "lines ready: check them").
 2. **Start it**: `python tools/blender/model_requests.py start ID`. The editor's bar starts
    (the estimate: 8 minutes for a prop, 12 for a creature, a fifth less in low-poly, two and a
    half times as long accurate, half as long again with unlimited shapes; give `--minutes`
@@ -173,6 +203,12 @@ here). Everything runs from the project folder.
    another angle is drawn again, from the front and from the side, as a model sheet would show
    it. Accurate: every part and detail in both views; else the outline and the main parts.
    `lines` again draws `profiles.png`, both views in cells, the request's height marked.
+   **With `check_lines`, stop here**: `python tools/blender/model_requests.py wait ID --check`
+   leaves it waiting for the user's check (a run from the editor's Start ends that way by
+   itself, its last word kept as the request's reply), and say what was taken for the
+   drawing, what was guessed and what's unsure in the lines. Once the user says go on (the
+   window's **The lines look right: go on**, or in the session), keep `lines.json`, fix first
+   what they say is off (`lines` again), and go on from step 6.
 6. **Write `private/requests/ID/model.py`** with the kit (below), on the profiles:
    `job.profiles()` has each line in cells, as the model will stand, so each shape's size and
    place come from them (and `fit` gives it the request's height). Creatures: a metaball `blob`

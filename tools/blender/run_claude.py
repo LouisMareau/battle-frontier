@@ -1,7 +1,7 @@
 """One model request made by Claude Code, unattended, with its log: what the map editor's
 Requests window starts with its Start button (and stops with Cancel), or by hand:
 
-    python tools/blender/run_claude.py ID [--model opus|sonnet|haiku]
+    python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
 
 Claude Code (`claude`: CLAUDE names the program, else the PATH, else ~/.local/bin) gets the
 recipe (requests.md) for that one request and only the tools it needs, set in the request's
@@ -13,6 +13,12 @@ each message, tool call and answer, the end (the raw stream in run.jsonl). Meanw
 request is in progress; it ends done once Claude has added the model; failed when Claude ends
 without it, stops with an error, or says nothing for 30 minutes (then it's stopped); waiting
 again when a file named "stop" appears in its folder (the editor's Cancel).
+
+A request that checks its lines first ("Let me check the lines first": "check_lines") has
+Claude stop once it has drawn the lines and the front and the side (profiles.png): the run
+ends with the request waiting for the user's check ("lines ready: check them"). --go-on (the
+editor's "The lines look right: go on") runs again from the model, on those lines; --note is
+what the user says is off in them, which Claude fixes first (going on, or starting again).
 """
 import json
 import os
@@ -31,18 +37,22 @@ QUIET = 30 * 60
 # lines of a tool's answer kept in the log (run.jsonl has everything)
 SHOWN = 30
 
-PROMPT = """You are modelling one request of the Battle Frontier map editor, unattended: nobody can
+# The prompt, in pieces: a whole run follows the recipe from reading the request to adding the
+# model; a request that checks its lines first stops after the front and the side (LINES_RUN),
+# and once the user has looked, --go-on goes on from the model (GO_ON_RUN).
+HEAD = """You are modelling one request of the Battle Frontier map editor, unattended: nobody can
 answer a question, so decide for yourself, and say what you guessed in the reply.
 
 The request: "{name}", a {kind} {height} cells tall, in private/requests/{id}/ (its request.json
 and its pictures). Notes from the user: {notes}
 {settings}
 
-Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):
-- read private/requests/{id}/request.json and look at every picture in that folder (to see a
+"""
+READ = """- read private/requests/{id}/request.json and look at every picture in that folder (to see a
   part closer: python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1, in pixels
   or fractions of the picture, with no box it gives the size; then look at the zoom it writes);
-- before building, tell the design from the drawing (requests.md, "The design, not the
+"""
+LINES = """- before building, tell the design from the drawing (requests.md, "The design, not the
   drawing"). The design is what the model gets: its shapes, proportions, parts, colours,
   markings, patterns and materials. The drawing is how the picture shows it, and the model gets
   none of it: light and shade (shine spots and streaks; reflections, which a shiny surface
@@ -71,7 +81,8 @@ Follow tools/blender/requests.md for this one request, from its step 3 (it's sta
   sheet would show it, each part's true size worked out from how the picture foreshortens it.
   It's the long part, and the one that makes the model right. Run lines again and look at
   profiles.png (both views in cells, the request's height marked);
-- write private/requests/{id}/model.py with tools/blender/request_kit.py, built on the
+"""
+MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit.py, built on the
   profiles: job.profiles() has each of their lines in cells, as the model will stand, so
   each shape's size and place come from them. The kit is a start,
   not a limit: reshape whatever needs it with the tool that does it best for the style:
@@ -88,10 +99,38 @@ Follow tools/blender/requests.md for this one request, from its step 3 (it's sta
 - a creature: rig it and give it its idle (requests.md, step 9);
 - add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
-
+"""
+# a request that checks its lines first: where its first run stops
+STOP = """- once profiles.png is drawn and every line sits on the design, stop there: no shapes, no
+  render. The user looks at your lines first (in the editor: lines_PICTURE.png and
+  profiles.png), then says go on, maybe with a note on what's off, and another run builds the
+  model on them. This run ends with the request waiting for that check: leave its status be.
+"""
+# where a run after the user's check starts: their note (or that they look right) in {checked}
+CHECKED = """- the lines are drawn and the user has checked them: private/requests/{id}/lines.json,
+  drawn over the pictures in lines_PICTURE.png and as the front and the side in profiles.png
+  (look at them). Keep lines.json. {checked}
+- model.py may already start with the design and the drawing sorted, as comments, from the run
+  that made the lines (requests.md, "The design, not the drawing"): build on them. If it
+  doesn't, sort them first, at its top, and say in the reply what you took for the drawing;
+"""
+RULES = """
 Run commands with the Bash tool, exactly as written above. Write only inside
 private/requests/{id}/. Don't use git, don't change anything else in the project (finishing
-writes the prop itself), don't touch other requests. End with one line saying what you made."""
+writes the prop itself), don't touch other requests. {end}"""
+MADE = "End with one line saying what you made."
+
+# ({noted}: what the user said is off in the lines an earlier run made, when they start again)
+PROMPT = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
+          + READ + "{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
+LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
+             "started already), then stop: the user checks the lines before the model is built (the request\n"
+             "says \"Let me check the lines first\"):\n"
+             + READ + "{noted}" + LINES + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
+                                                           "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
+                                                           "lines you're unsure of."))
+GO_ON_RUN = (HEAD + "Follow tools/blender/requests.md for this one request from its step 6, the model (it's started\n"
+             "already):\n" + READ + CHECKED + MODEL + RULES.replace("{end}", MADE))
 
 
 def find_claude():
@@ -174,6 +213,42 @@ def settings_lines(record):
         out.append(f"Shapes: build it from {shapes['min']} to {shapes['max']} shapes (spheres, capsules, boxes, cylinders, lathes, slabs, "
                    "a blob's elements, each counts as one).")
     return "\n".join(out)
+
+
+def part_of(record, go_on=False):
+    """Which part of the recipe a run does: "all" of it; "lines", up to the front and the side,
+    for a request that checks its lines first; "model", from the model on, once they're checked."""
+    return "model" if go_on else "lines" if record["check_lines"] else "all"
+
+
+def prompt(record, go_on=False, note=""):
+    """What Claude is asked for the request: the recipe, or its part (part_of), with what the
+    user says is off in the lines (`note`, from the window's check) fixed first."""
+    rid = record["id"]
+    note = note.strip()
+    said = "\n".join("    " + line.rstrip() for line in note.splitlines())
+    if note:
+        checked = (f"What the user says is off in them:\n{said}\n"
+                   "  Fix that in lines.json first (the pictures' lines, and the front and the side with them),\n"
+                   f"  run python tools/blender/model_requests.py lines {rid} again and look at each drawing, and\n"
+                   "  leave the rest as it is;")
+    else:
+        checked = "The user says they look right: leave lines.json as it is;"
+    # starting again rather than going on: the note is about the lines there
+    noted = (f"- the user looked at the lines the last run made (lines.json) and says this is off in them:\n{said}\n"
+             "  Fix that in lines.json first (the pictures' lines, and the front and the side with them),\n"
+             "  then go on below;\n") if note else ""
+    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN}[part_of(record, go_on)]
+    return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
+                           settings=settings_lines(record), checked=checked, noted=noted)
+
+
+def drawn_since(path, since):
+    """A file written since then (a second's slack for the file system's clock)."""
+    try:
+        return path.stat().st_mtime >= since - 1.0
+    except OSError:
+        return False
 
 
 def clip(text, n=SHOWN):
@@ -269,18 +344,23 @@ def stop_tree(proc):
             proc.kill()
 
 
-def run(root, rid, model=None, quiet=QUIET):
-    """The run, start to end; the request's status as it ended."""
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
+    """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
+    the lines the user checked, `note` saying what's off in them."""
     record = mr.load(root, rid)
     here = mr.folder(root, rid)
     stop = here / "stop"
     if stop.exists():
         stop.unlink()
+    began = time.time()
+    part = part_of(record, go_on)
 
     def say(text):
         mr.log(root, rid, text)
 
     say("———————— a run starts ————————")
+    if go_on and not (here / "lines.json").is_file():
+        return mr.fail(root, rid, "nothing to go on from: no lines.json yet (Start draws the lines first)")["status"]
     claude = find_claude()
     if not claude:
         return mr.fail(root, rid, "Claude Code not found: install it, or set CLAUDE to the claude program")["status"]
@@ -294,14 +374,19 @@ def run(root, rid, model=None, quiet=QUIET):
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    prompt = PROMPT.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
-                           settings=settings_lines(record))
-    mr.start(root, rid)
+    text = prompt(record, go_on, note)
+    mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
+    if part == "lines":
+        say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
+    elif part == "model":
+        say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
+    if part != "model" and note.strip():
+        say(f"What the user says is off in the lines there: {note.strip()}")
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid)))
-    say("Prompt:\n" + prompt)
+    say("Prompt:\n" + text)
     extra = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(program(claude) + args, cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1, **extra)
@@ -337,7 +422,7 @@ def run(root, rid, model=None, quiet=QUIET):
     for t in readers:
         t.start()
     try:
-        proc.stdin.write(prompt)
+        proc.stdin.write(text)
         proc.stdin.close()
     except OSError:
         pass
@@ -368,15 +453,21 @@ def run(root, rid, model=None, quiet=QUIET):
         say(f"Done: the prop {record['prop']}")
         return "done"
     last = str(result.get("result") or "").strip()
+    if last:
+        # what it says back (for a check, what it guessed in the lines): the window shows it
+        mr.update(root, rid, reply=last)
     if state["error"] == "authentication_failed" or "Not logged in" in last:
         # the program by its path: it's often not on the PATH (the editor's "Log in" opens it)
         reason = f'Claude Code isn\'t logged in: run "{claude}" in a terminal and type /login, once (or the button below)'
     elif proc.returncode != 0 or result.get("is_error"):
         reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {proc.returncode})"
+    elif part == "lines" and drawn_since(here / "profiles.png", began):
+        # where it was asked to stop: the user's turn
+        return mr.wait_for_check(root, rid)["status"]
+    elif part == "lines":
+        reason = "Claude ended without drawing the front and the side (profiles.png)"
     else:
         reason = "Claude ended without adding the model"
-    if last:
-        mr.update(root, rid, reply=last)
     return mr.fail(root, rid, reason)["status"]
 
 
@@ -386,14 +477,16 @@ def main(argv):
     if not argv or argv[0].startswith("-"):
         print(__doc__)
         return 2
-    rid, model, quiet = argv[0], None, QUIET
+    rid, model, quiet, note = argv[0], None, QUIET, ""
     if "--model" in argv:
         model = argv[argv.index("--model") + 1]
     if "--quiet" in argv:  # seconds, for the tests
         quiet = float(argv[argv.index("--quiet") + 1])
+    if "--note" in argv:
+        note = argv[argv.index("--note") + 1]
     root = mr.find_root(Path.cwd())
-    status = run(root, rid, model, quiet)
-    print(f"{rid}: {status}")
+    status = run(root, rid, model, quiet, "--go-on" in argv, note)
+    print(f"{rid}: {status}" + (f", {mr.LINES_READY}" if status == "waiting" and mr.lines_ready(mr.load(root, rid)) else ""))
     return 0 if status in ("done", "waiting") else 1
 
 

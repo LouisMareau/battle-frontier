@@ -151,6 +151,9 @@ pub(super) struct ModelRequest {
     /// the design is the user's own, or licensed to them: its model goes to content/ (the
     /// public game); else to temporary/ (never committed)
     pub mine: bool,
+    /// the user checks the lines first: a run stops once the lines and the front and the side
+    /// are drawn, the request waiting (LINES_READY) until "The lines look right: go on"
+    pub check_lines: bool,
     pub status: Status,
     /// while it's modelled, how it goes (and once done, how long it took)
     pub progress: Progress,
@@ -181,6 +184,7 @@ impl Default for ModelRequest {
             shapes: Shapes::default(),
             notes: String::new(),
             mine: false,
+            check_lines: false,
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
@@ -189,6 +193,18 @@ impl Default for ModelRequest {
             prop: String::new(),
             reply: String::new(),
         }
+    }
+}
+
+/// The step of a request waiting for the user to check its lines (run_claude.py writes it:
+/// model_requests.py's LINES_READY).
+pub(super) const LINES_READY: &str = "lines ready: check them";
+
+impl ModelRequest {
+    /// Its lines drawn, waiting for the user's check: the window shows them with "The lines
+    /// look right: go on".
+    pub(super) fn lines_ready(&self) -> bool {
+        self.status == Status::Waiting && self.progress.step == LINES_READY
     }
 }
 
@@ -220,6 +236,10 @@ impl Requests {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((name, _, text)) = &working {
             about += &format!("\n{name}: {text}");
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        for r in self.desk.list.iter().filter(|r| r.lines_ready()) {
+            about += &format!("\n{}: {LINES_READY}", r.name);
         }
         let r = ui.selectable_label(self.open, "Requests").on_hover_text(about);
         super::mark("uiRequests", &r);
@@ -286,7 +306,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{Kind, ModelRequest, Pose, Progress, Requests, Status, Style, SHAPES_CAP};
+    use super::{Kind, ModelRequest, Pose, Progress, Requests, Status, Style, LINES_READY, SHAPES_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -792,6 +812,11 @@ mod desk {
         failed_silent: std::collections::HashSet<String>,
         /// the tools started, reaped as they end
         children: Vec<std::process::Child>,
+        /// what the user says is off in a request's lines, by id, for its next run
+        pub lines_notes: HashMap<String, String>,
+        /// the runs that would have started (the tests start none)
+        #[cfg(test)]
+        pub launched: Vec<Vec<String>>,
     }
 
     impl Desk {
@@ -917,6 +942,9 @@ mod desk {
                     if self.selected.as_deref() == Some(id) {
                         self.selected = Some(new.clone());
                     }
+                    if let Some(note) = self.lines_notes.remove(id) {
+                        self.lines_notes.insert(new.clone(), note);
+                    }
                     Some(format!("{}: now private/requests/{new}/", r.name))
                 }
                 Ok(None) => None,
@@ -932,27 +960,55 @@ mod desk {
         }
 
         /// Start: Claude Code on the request, on its own (run_claude.py, which keeps the log
-        /// and the status); the console opens on it.
-        pub(in super::super) fn start_run(&mut self, id: &str) -> String {
+        /// and the status); `go_on` ("The lines look right: go on"): from the model, on the
+        /// lines the user checked. What the user says is off in the lines goes with it. The
+        /// console opens on it.
+        pub(in super::super) fn start_run(&mut self, id: &str, go_on: bool) -> String {
             if let Some(other) = self.busy() {
                 return format!("One at a time: {other} is being made");
             }
-            let root = self.root();
-            let model = self.model.clone();
-            let mut args = vec!["tools/blender/run_claude.py", id];
-            if !model.is_empty() {
-                args.extend(["--model", model.as_str()]);
+            let mut args = vec!["tools/blender/run_claude.py".to_string(), id.to_string()];
+            if go_on {
+                args.push("--go-on".into());
             }
-            match python(&root, &args) {
-                Ok(child) => {
-                    self.children.push(child);
+            let note = self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default();
+            if !note.is_empty() {
+                args.extend(["--note".into(), note]);
+            }
+            if !self.model.is_empty() {
+                args.extend(["--model".into(), self.model.clone()]);
+            }
+            match self.launch(&args) {
+                Ok(()) => {
+                    self.lines_notes.remove(id);
                     self.starting = Some((id.to_string(), now_secs()));
                     self.selected = Some(id.to_string());
                     self.console_open = true;
                     self.failed_silent.remove(id);
-                    format!("Claude Code is starting on {id}: the console shows everything it does")
+                    if go_on {
+                        format!("Claude Code goes on with {id} from its lines: the console shows everything it does")
+                    } else {
+                        format!("Claude Code is starting on {id}: the console shows everything it does")
+                    }
                 }
                 Err(e) => format!("Not started: {e}"),
+            }
+        }
+
+        /// run_claude.py started on its own, reaped by `watch` as it ends (the tests keep what
+        /// would have run instead).
+        fn launch(&mut self, args: &[String]) -> Result<(), String> {
+            #[cfg(test)]
+            {
+                self.launched.push(args.to_vec());
+                Ok(())
+            }
+            #[cfg(not(test))]
+            {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                let child = python(&self.root(), &args)?;
+                self.children.push(child);
+                Ok(())
             }
         }
 
@@ -1145,6 +1201,24 @@ mod desk {
             }
         }
 
+        /// A request's drawings (its `lines` that are there), each with what it shows; clicked,
+        /// one opens full size. What to say when it doesn't.
+        fn drawings(&mut self, ui: &mut egui::Ui, id: &str, files: &[String]) -> Option<String> {
+            let mut said = None;
+            ui.horizontal_wrapped(|ui| {
+                for f in files {
+                    let path = self.picture_path(id, f);
+                    let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{}: click to open it", drawing_about(f)));
+                    if shown.clicked() {
+                        if let Err(e) = reveal(&path) {
+                            said = Some(e);
+                        }
+                    }
+                }
+            });
+            said
+        }
+
         /// Where the next pictures go, lit while files hover.
         fn banner(&mut self, ui: &mut egui::Ui, hovering: bool) {
             let target = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id)).map(|r| r.name.clone());
@@ -1195,11 +1269,18 @@ mod desk {
             let label = match (r.status, short) {
                 (Status::Failed, false) => "Start again",
                 (Status::Done, false) => "Make it again",
+                (Status::Waiting, false) if r.lines_ready() => "Start over",
                 _ => "Start",
+            };
+            let about = match (r.lines_ready(), r.check_lines) {
+                (true, true) => "Claude Code starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again",
+                (true, false) => "Claude Code starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time",
+                (false, true) => "Claude Code draws its lines over the pictures and the front and the side from them, then stops for you to check them; the console shows everything it does",
+                (false, false) => "Claude Code models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does",
             };
             let start = ui
                 .add_enabled(busy.is_none(), egui::Button::new(label))
-                .on_hover_text("Claude Code models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does")
+                .on_hover_text(about)
                 .on_disabled_hover_text(format!("One at a time: {} is being made", busy.unwrap_or_default()));
             mark(&format!("uiRequestStart_{}", r.id), &start);
             start.clicked().then(|| Run::Start(r.id.clone()))
@@ -1221,10 +1302,18 @@ mod desk {
                 let frame = egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
-                        chip(ui, r.status);
+                        chip(ui, r);
                         ui.label(RichText::new(&r.name).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if let Some(a) = self.run_button(ui, r, true) {
+                            if r.lines_ready() && !starting {
+                                // the user's turn: the request's panel has the lines and what's next
+                                let check = ui.button("Check").on_hover_text("Its lines are ready: see them, say what's off, and go on");
+                                mark(&format!("uiRequestCheck_{}", r.id), &check);
+                                if check.clicked() {
+                                    self.selected = Some(r.id.clone());
+                                    self.deleting = false;
+                                }
+                            } else if let Some(a) = self.run_button(ui, r, true) {
                                 asked = Some(a);
                             }
                         });
@@ -1237,6 +1326,8 @@ mod desk {
                         hint(ui, &r.progress.at(now_secs()).1);
                     } else if r.status == Status::Failed {
                         ui.label(RichText::new(&r.progress.step).size(11.5).color(FAILED));
+                    } else if r.lines_ready() {
+                        ui.label(RichText::new(LINES_READY).size(11.5).color(WAITING));
                     }
                     ui.horizontal_wrapped(|ui| {
                         for f in r.images.iter().take(4) {
@@ -1294,6 +1385,38 @@ mod desk {
             let before = self.list[i].clone();
             let mut r = before.clone();
             let mut remove = None;
+            // the drawings Claude works from, as it makes them: see how well the lines sit
+            let drawn: Vec<String> = r.lines.iter().filter(|f| self.picture_path(&r.id, f).is_file()).cloned().collect();
+            if r.lines_ready() {
+                // Claude stopped for the user's check ("Let me check the lines first"): the
+                // lines and what to do next first, in reach
+                section(ui, "Check the lines");
+                hint(ui, "Claude stopped here for you: do its lines sit on the design, and are the front and the side right? Click one to see it full size.");
+                if let Some(s) = self.drawings(ui, &r.id, &drawn) {
+                    said = Some(s);
+                }
+                if !r.reply.is_empty() {
+                    ui.label(RichText::new(format!("Claude: {}", r.reply)).size(12.0));
+                }
+                let note = self.lines_notes.entry(r.id.clone()).or_default();
+                let field = ui.add(
+                    egui::TextEdit::multiline(note)
+                        .desired_rows(2)
+                        .desired_width(420.0)
+                        .hint_text("What's off, if anything (the tail is longer, the ears sit higher): Claude fixes it first"),
+                );
+                mark("uiRequestLinesNote", &field);
+                let busy = self.busy();
+                let go = ui
+                    .add_enabled(busy.is_none(), egui::Button::new(RichText::new("The lines look right: go on").strong()))
+                    .on_hover_text("Claude keeps these lines (fixing first what you say is off) and goes on to build the model from them: the long part")
+                    .on_disabled_hover_text(format!("One at a time: {} is being made", busy.unwrap_or_default()));
+                mark("uiRequestGoOn", &go);
+                if go.clicked() {
+                    asked = Some(Run::GoOn(r.id.clone()));
+                }
+                ui.add_space(6.0);
+            }
             egui::Grid::new("request-fields").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label("Name");
                 ui.horizontal(|ui| {
@@ -1364,10 +1487,18 @@ mod desk {
                 );
                 mark("uiRequestMine", &mine);
                 ui.end_row();
+                ui.label("");
+                let check = ui.checkbox(&mut r.check_lines, "Let me check the lines first").on_hover_text(
+                    "Claude stops once it has drawn its lines over the pictures and the front and the side from them: you look, say what's off, and it goes on to the model (the long part) from there",
+                );
+                mark("uiRequestCheckLines", &check);
+                ui.end_row();
                 ui.label("Status");
                 ui.horizontal(|ui| {
-                    chip(ui, r.status);
-                    asked = self.run_button(ui, &r, false);
+                    chip(ui, &r);
+                    if let Some(a) = self.run_button(ui, &r, false) {
+                        asked = Some(a);
+                    }
                 });
                 ui.end_row();
             });
@@ -1408,22 +1539,12 @@ mod desk {
             if r.images.is_empty() {
                 hint(ui, "Drop pictures on the window to add them.");
             }
-            // the drawings Claude works from, as it makes them: see how well the lines sit
-            let drawn: Vec<String> = r.lines.iter().filter(|f| self.picture_path(&r.id, f).is_file()).cloned().collect();
-            if !drawn.is_empty() {
+            if !drawn.is_empty() && !r.lines_ready() {
                 section(ui, "Lines");
                 hint(ui, "Claude's lines over the pictures and the front and side it made from them; once rendered, those lines over the model, with how far they overlap. Click one to see it full size.");
-                ui.horizontal_wrapped(|ui| {
-                    for f in drawn {
-                        let path = self.picture_path(&r.id, &f);
-                        let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{}: click to open it", drawing_about(&f)));
-                        if shown.clicked() {
-                            if let Err(e) = reveal(&path) {
-                                said = Some(e);
-                            }
-                        }
-                    }
-                });
+                if let Some(s) = self.drawings(ui, &r.id, &drawn) {
+                    said = Some(s);
+                }
             }
             if !r.previews.is_empty() {
                 section(ui, "The model");
@@ -1459,7 +1580,7 @@ mod desk {
                     }
                 });
             }
-            if !r.reply.is_empty() {
+            if !r.reply.is_empty() && !r.lines_ready() {
                 section(ui, "What Claude says");
                 ui.label(RichText::new(&r.reply).size(12.0));
             }
@@ -1507,7 +1628,7 @@ mod desk {
         }
     }
 
-    /// What it is, in a line: "creature · 1.2 cells · smooth · mine".
+    /// What it is, in a line: "creature · 1.2 cells · smooth · mine · lines checked first".
     fn about(r: &ModelRequest) -> String {
         let kind = match r.kind {
             Kind::Creature => "creature",
@@ -1518,7 +1639,9 @@ mod desk {
             Style::LowPoly => "low-poly",
             Style::Accurate => "accurate",
         };
-        format!("{kind} · {} cells · {style}{}", r.height, if r.mine { " · mine" } else { "" })
+        let mine = if r.mine { " · mine" } else { "" };
+        let check = if r.check_lines { " · lines checked first" } else { "" };
+        format!("{kind} · {} cells · {style}{mine}{check}", r.height)
     }
 
     /// Where a value sits on the meter's track (0 to 1), from 1 to `top`.
@@ -1574,8 +1697,10 @@ mod desk {
         ui.add(bar).on_hover_text(format!("{}: {text}", r.name))
     }
 
-    fn chip(ui: &mut egui::Ui, status: Status) {
-        let (text, color) = match status {
+    /// Its status, as a tag (waiting for the user's check of its lines: LINES READY).
+    fn chip(ui: &mut egui::Ui, r: &ModelRequest) {
+        let (text, color) = match r.status {
+            Status::Waiting if r.lines_ready() => ("LINES READY", WAITING),
             Status::Waiting => ("WAITING", WAITING),
             Status::InProgress => ("IN PROGRESS", WORKING),
             Status::Failed => ("FAILED", FAILED),
@@ -1587,6 +1712,8 @@ mod desk {
     /// A run asked for from the window.
     pub(in super::super) enum Run {
         Start(String),
+        /// "The lines look right: go on": from the model, on the lines the user checked
+        GoOn(String),
         Cancel(String),
     }
 
@@ -1679,7 +1806,8 @@ mod desk {
                         });
                     });
                 match asked {
-                    Some(Run::Start(id)) => said = Some(d.start_run(&id)),
+                    Some(Run::Start(id)) => said = Some(d.start_run(&id, false)),
+                    Some(Run::GoOn(id)) => said = Some(d.start_run(&id, true)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     None => {}
                 }
@@ -1774,12 +1902,17 @@ mod tests {
         assert!(text.contains("  \"images\": [\"front.png\", \"side.jpg\"],\n"), "short lists on one line: {text}");
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
         assert!(at("images") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
+        assert!(text.contains("  \"mine\": true,\n  \"check_lines\": false,\n  \"status\""), "the lines' check after mine, as model_requests.py has it: {text}");
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
         // a short record by hand: the rest are the defaults
         let short: ModelRequest = serde_json::from_str(r#"{ "id": "x", "name": "X", "kind": "prop" }"#).unwrap();
         assert_eq!((short.kind, short.height, short.style, short.status, short.mine), (Kind::Prop, 1.0, Style::Smooth, Status::Waiting, false));
+        assert!(!short.check_lines && !short.lines_ready(), "no check unless asked");
+        let ready: ModelRequest = serde_json::from_str(r#"{ "check_lines": true, "status": "waiting", "progress": { "step": "lines ready: check them" } }"#).unwrap();
+        assert!(ready.check_lines && ready.lines_ready());
+        assert!(!ModelRequest { status: Status::InProgress, ..ready }.lines_ready(), "only while it waits");
         assert!(serde_json::from_str::<ModelRequest>(r#"{ "status": "finished" }"#).is_err(), "an unknown status is a mistake");
     }
 
@@ -2105,6 +2238,111 @@ mod tests {
         frame(&ctx, &mut req, vec![]);
         req.desk().console_open = false;
         frame(&ctx, &mut req, vec![]);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A frame of the window on a desktop's screen, with what the user does in it (the marks
+    /// say where each widget is drawn this time).
+    fn frame_with(ctx: &egui::Context, req: &mut Requests, events: Vec<egui::Event>) {
+        let content = content::Content::default();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        crate::platform::clear_hooks();
+        let mut out = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
+            req.toggle(ui);
+            req.window(ui.ctx(), &content);
+        });
+        out.textures_delta.clear();
+    }
+
+    /// Where a marked widget was drawn in the last frame.
+    fn marked(name: &str) -> Option<egui::Pos2> {
+        let at = crate::platform::hook(name)?;
+        let (x, y) = at.split_once(',')?;
+        Some(egui::pos2(x.parse().ok()?, y.parse().ok()?))
+    }
+
+    /// A click on a marked widget, as a pointer makes it: over it and down, then up.
+    fn click(ctx: &egui::Context, req: &mut Requests, name: &str) {
+        let pos = marked(name).unwrap_or_else(|| panic!("{name} isn't drawn"));
+        let button = |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        frame_with(ctx, req, vec![egui::Event::PointerMoved(pos), button(true)]);
+        frame_with(ctx, req, vec![button(false)]);
+    }
+
+    #[test]
+    fn the_lines_wait_for_the_users_check_then_go_on() {
+        let root = scratch("check");
+        let ctx = egui::Context::default();
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Moss toad.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("moss_toad".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiRequestGoOn").is_none(), "nothing to check yet");
+        // "Let me check the lines first": ticked, kept in its request.json
+        assert!(!read(&root, "moss_toad").unwrap().check_lines);
+        click(&ctx, &mut req, "uiRequestCheckLines");
+        assert!(read(&root, "moss_toad").unwrap().check_lines, "the box ticked");
+        // Start: run_claude.py on it (which, ticked, stops once the lines are drawn)
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestStart_moss_toad");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "moss_toad"]]);
+        assert_eq!(req.desk().busy().as_deref(), Some("moss_toad"));
+        // the run draws the lines and the front and the side, and leaves it waiting for the check
+        let dir = root.join("private/requests/moss_toad");
+        std::fs::write(dir.join("lines_front.png"), png(40, 30, 4)).unwrap();
+        std::fs::write(dir.join("profiles.png"), png(50, 30, 5)).unwrap();
+        let mut drawn = read(&root, "moss_toad").unwrap();
+        drawn.progress = Progress { step: LINES_READY.into(), done: 0.12, started: now_secs(), minutes: 4.0 };
+        drawn.lines = vec!["lines_front.png".into(), "profiles.png".into()];
+        drawn.reply = "Lines ready: the shine on its back is the drawing's; how long its tail is, a guess.".into();
+        save(&root, &drawn).unwrap();
+        // a second's look reads it again, the next one sees the run began
+        req.watch(1.0e9);
+        req.watch(1.5e9);
+        assert!(drawn.lines_ready() && req.desk().busy().is_none(), "the user's turn: the run seen to start and end, nothing running");
+        assert_eq!(req.waiting(), 1);
+        // the row says so, and its Check shows the request
+        req.desk().selected = None;
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestStart_moss_toad").is_none(), "the row's button is Check, not Start");
+        click(&ctx, &mut req, "uiRequestCheck_moss_toad");
+        assert_eq!(req.desk().selected.as_deref(), Some("moss_toad"));
+        // the lines, the note for what's off and the button, at the top of its panel
+        frame_with(&ctx, &mut req, vec![]);
+        let (note, go, start) = (marked("uiRequestLinesNote").unwrap(), marked("uiRequestGoOn").unwrap(), marked("uiRequestStart_moss_toad").unwrap());
+        assert!(note.y < go.y && go.y < start.y, "the check before the request's fields: {note:?} {go:?} {start:?}");
+        click(&ctx, &mut req, "uiRequestLinesNote");
+        frame_with(&ctx, &mut req, vec![egui::Event::Text("the tail is longer".into())]);
+        assert_eq!(req.desk().lines_notes.get("moss_toad").map(String::as_str), Some("the tail is longer"));
+        // one at a time: while another is being made, the button waits
+        let mut other = create(&root, "Other one.png").unwrap();
+        other.status = Status::InProgress;
+        other.progress.started = now_secs();
+        save(&root, &other).unwrap();
+        req.watch(2.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestGoOn");
+        assert_eq!(req.desk().launched.len(), 1, "nothing started while another runs");
+        other.status = Status::Done;
+        save(&root, &other).unwrap();
+        req.watch(3.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        // "The lines look right: go on": run_claude.py again, from the model, with the note
+        click(&ctx, &mut req, "uiRequestGoOn");
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--go-on", "--note", "the tail is longer"]);
+        assert_eq!(req.desk().busy().as_deref(), Some("moss_toad"), "being started: one at a time");
+        assert!(!req.desk().lines_notes.contains_key("moss_toad"), "the note went with it");
+        assert!(req.said.take().unwrap().contains("goes on with moss_toad"));
+        // clicked again while it starts: nothing more
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestGoOn");
+        assert_eq!(req.desk().launched.len(), 2);
         std::fs::remove_dir_all(&root).ok();
     }
 

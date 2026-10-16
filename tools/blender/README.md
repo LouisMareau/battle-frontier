@@ -104,8 +104,13 @@ pictures and the front and side it made from them, `request_lines.py`); the edit
 bar runs on what it writes, and its Lines row shows those drawings as they come.
 The editor's Start runs `run_claude.py ID`: Claude Code headless on the recipe for that
 request, allowed only what it needs, its whole run in the request's `log.txt` (the window's
-console); Blender is run through `run_request.py ID [--finish]`. `test_run_claude.py` checks
-the runs against a stand-in for Claude.
+console); Blender is run through `run_request.py ID [--finish]`. With **"Let me check the
+lines first"** ticked (`check_lines`), the run stops once the lines and the front and the side
+are drawn and the request waits for the user ("lines ready: check them"); the window shows the
+lines with a note for what's off and **The lines look right: go on**, which runs
+`run_claude.py ID --go-on [--note "..."]`: the lines kept, the note's fixes made first, then
+on from the model (requests.md, "Checking the lines first"). `test_run_claude.py` checks the
+runs against a stand-in for Claude, both halves of a checked one included.
 
 ## Without the add-on
 
