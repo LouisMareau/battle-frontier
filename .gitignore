@@ -8,3 +8,5 @@
 !/temporary/README.md
 # local-only tools and prototypes, never committed
 /private/
+# Python's compiled copies of the tools
+__pycache__/
