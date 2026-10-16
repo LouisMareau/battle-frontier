@@ -346,7 +346,7 @@ class editing:
         self.bm.from_mesh(self.obj.data)
         return self.bm
 
-    def __exit__(self, kind, value, trace):
+    def __exit__(self, kind, value, tb):
         try:
             if kind is None:
                 self.bm.normal_update()
