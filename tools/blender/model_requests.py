@@ -8,6 +8,8 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py wait ID [--note "why"]    back to waiting (to remake)
     python tools/blender/model_requests.py fail ID "why"             failed, and why
     python tools/blender/model_requests.py note ID "what happened"   a line in its log
+    python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--scale N]
+                                              a part of a picture, enlarged (no box: its size)
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
                                               [--style low_poly|accurate] [--details "..."]
                                               [--pose as_is] [--shapes 8-30|unlimited]
@@ -304,6 +306,45 @@ def new(root, name, pictures, **fields):
     return save(root, normal(record))
 
 
+# ---------------------------------------------------------------- a closer look at a picture
+
+def zoom(root, rid, picture, box=None, scale=None):
+    """A part of a request's picture, enlarged into its folder (zoom_<picture>_<n>.png, to look
+    at closely; never one of the request's pictures): the box in pixels (x0 y0 x1 y1), or in
+    fractions of the picture when all four are at most 1; `scale` times larger, else its longer
+    side about 1000 pixels. With no box, only the picture's size. Returns (file or None, what
+    to say)."""
+    try:
+        from PIL import Image
+    except ImportError:
+        raise SystemExit("zoom needs Pillow: pip install pillow")
+    d = folder(root, rid)
+    src = d / picture
+    if not src.is_file():
+        raise SystemExit(f"{src} isn't there: the request's pictures are {', '.join(load(root, rid)['images'])}")
+    img = Image.open(src)
+    w, h = img.size
+    if box is None:
+        return None, f"{picture}: {w} x {h} pixels (zoom ID {picture} X0 Y0 X1 Y1 enlarges a box of it)"
+    x0, y0, x1, y1 = box
+    if max(box) <= 1.0:
+        x0, y0, x1, y1 = x0 * w, y0 * h, x1 * w, y1 * h
+    x0, x1 = sorted((max(0, int(x0)), min(w, int(round(x1)))))
+    y0, y1 = sorted((max(0, int(y0)), min(h, int(round(y1)))))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        raise SystemExit(f"the box {box} is empty in a {w} x {h} picture")
+    part = img.crop((x0, y0, x1, y1))
+    k = float(scale) if scale else max(1.0, 1000.0 / max(x1 - x0, y1 - y0))
+    part = part.resize((max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))), Image.LANCZOS)
+    stem = Path(picture).stem
+    n = 1
+    while (d / f"zoom_{stem}_{n}.png").exists():
+        n += 1
+    out = d / f"zoom_{stem}_{n}.png"
+    part.convert("RGB").save(out)
+    return out, f"{out.name}: {picture} from ({x0}, {y0}) to ({x1}, {y1}), {k:.1f} times, {part.size[0]} x {part.size[1]} pixels"
+
+
 # ---------------------------------------------------------------- the command line
 
 def main(argv):
@@ -346,6 +387,11 @@ def main(argv):
         print(f"{r['id']}: {r['progress']['step']}")
     elif verb == "note":
         log(root, argv[0], argv[1])
+    elif verb == "zoom":
+        scale = option("--scale")
+        box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
+        _, said = zoom(root, argv[0], argv[1], box, scale)
+        print(said)
     elif verb == "new":
         fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", ""),
                   "details": option("--details", ""), "pose": option("--pose", "t_pose")}

@@ -31,10 +31,13 @@ fn main() {
         let file = args.get(1).unwrap_or_else(|| fail("check FILE".into()));
         let bytes = std::fs::read(file).unwrap_or_else(|e| fail(format!("{file}: {e}")));
         let m = load_model(&bytes, file).unwrap_or_else(|e| fail(format!("{file}: {e}")));
-        let tris = m.scene.plain.indices.len() / 3 + m.scene.textured.values().map(|t| t.indices.len() / 3).sum::<usize>();
+        // a rigged model's triangles are its skinned parts' (none of them in the still scene)
+        let skinned: usize = m.skinned.iter().map(|s| s.mesh.indices.len() / 3).sum();
+        let tris = m.scene.plain.indices.len() / 3 + m.scene.textured.values().map(|t| t.indices.len() / 3).sum::<usize>() + skinned;
+        let tris = if skinned > 0 { format!("{tris} triangles ({skinned} of them skinned)") } else { format!("{tris} triangles") };
         let size = m.max - m.min;
         let note = extras_note(&m);
-        println!("{file}: {tris} triangles, {} textures, {:.2} x {:.2} x {:.2} (width, height, depth), from {:?} to {:?}{}", m.images.len(), size.x, size.y, size.z, m.min.to_array(), m.max.to_array(), if note.is_empty() { String::new() } else { format!("; {note}") });
+        println!("{file}: {tris}, {} textures, {:.2} x {:.2} x {:.2} (width, height, depth), from {:?} to {:?}{}", m.images.len(), size.x, size.y, size.z, m.min.to_array(), m.max.to_array(), if note.is_empty() { String::new() } else { format!("; {note}") });
         for l in &m.lights {
             println!("  light: {} {} at {:?} aiming {:?}, intensity {}, range {}, cone {}", l.kind, l.color, l.at, l.aim, l.intensity, l.range, l.cone);
         }

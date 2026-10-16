@@ -16,6 +16,11 @@ clean mesh (voxel remesh, cuts carved, decimated) whose faces take the material 
 nearest them. Then `eyes`, `fit` (its height in cells, standing on the origin), for a creature
 `rig` (automatic weights) and `idle`, then `previews`, `compare` and `finish`. One Blender
 unit is one cell; the model faces the front view (-Y).
+
+Any shape, or the fused body, can be reshaped too: `editing` (a bmesh by hand: extrude, inset,
+bevel, move faces, edges and vertices), `modifier` (any of Blender's modifiers, applied),
+`sculpt` (grab, inflate, smooth, flatten, pinch, crease brushes), `tube` (curved parts), `fur`.
+And any of Blender's Python besides: the kit is a start, not a limit.
 """
 import math
 import subprocess
@@ -274,6 +279,155 @@ def mirrored(part, axis="x"):
     o.data.flip_normals()
     o["bf_region"] = part["bf_region"]
     return o
+
+
+def tube(points, radius, region, radius_end=None, segments=12, smoothness=8):
+    """A curved part through `points` (a horn, a tail, a tentacle, an antenna, a handle):
+    round, `radius` at the first point narrowing (or widening) to `radius_end` at the last,
+    the path smoothed through them (Catmull-Rom), its ends closed."""
+    pts = [Vector(p) for p in points]
+    if len(pts) < 2:
+        raise ValueError("a tube needs two points at least")
+    rb = radius if radius_end is None else radius_end
+    ext = [pts[0] * 2 - pts[1], *pts, pts[-1] * 2 - pts[-2]]
+    path = []
+    for i in range(1, len(ext) - 2):
+        p0, p1, p2, p3 = ext[i - 1], ext[i], ext[i + 1], ext[i + 2]
+        for k in range(smoothness):
+            t = k / smoothness
+            path.append(0.5 * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t + (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t))
+    path.append(pts[-1])
+    bm = bmesh.new()
+    rings = []
+    normal = None
+    for i, at in enumerate(path):
+        ahead = (path[min(i + 1, len(path) - 1)] - path[max(i - 1, 0)]).normalized()
+        # a frame carried along the path, so the tube doesn't twist
+        normal = ahead.orthogonal().normalized() if normal is None else (normal - ahead * normal.dot(ahead)).normalized()
+        side = ahead.cross(normal)
+        r = radius + (rb - radius) * i / (len(path) - 1)
+        rings.append([bm.verts.new(at + (normal * math.cos(a) + side * math.sin(a)) * r) for a in (k / segments * math.tau for k in range(segments))])
+    for lo, hi in zip(rings, rings[1:]):
+        for k in range(segments):
+            bm.faces.new((lo[k], lo[(k + 1) % segments], hi[(k + 1) % segments], hi[k]))
+    for ring in (rings[0], rings[-1]):
+        bm.faces.new(ring)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return _link("tube", bm, region)
+
+
+# ---------------------------------------------------------------- reshaping: by hand, modifiers, sculpting
+
+def modifier(obj, kind, **settings):
+    """Any of Blender's modifiers on a mesh, applied for good: on a shape before `fuse`, or on
+    the fused body after it. "SUBSURF" (levels=2), "BEVEL" (width=0.02, segments=3),
+    "SOLIDIFY" (thickness=0.01), "SIMPLE_DEFORM" (deform_method="BEND", angle=0.5),
+    "DISPLACE" (texture=..., strength=0.02), "CAST", "SMOOTH", "MIRROR", "ARRAY", "LATTICE",
+    "SHRINKWRAP" (target=...), "WELD", "TRIANGULATE", "REMESH"... Returns the object."""
+    _apply(obj, kind, **settings)
+    return obj
+
+
+class editing:
+    """A mesh to edit by hand, as a bmesh in the object's own space (the world's, for the
+    kit's shapes): extrude, inset, bevel, subdivide, bridge, delete, move faces, edges and
+    vertices, with any of bmesh.ops; written back when the block ends (not on an error).
+
+        with kit.editing(body) as bm:
+            top = [f for f in bm.faces if f.calc_center_median().z > 0.9]
+            kit.extrude(bm, top, (0, 0, 0.1))
+    """
+
+    def __init__(self, obj):
+        self.obj = obj
+
+    def __enter__(self):
+        self.bm = bmesh.new()
+        self.bm.from_mesh(self.obj.data)
+        return self.bm
+
+    def __exit__(self, kind, value, trace):
+        try:
+            if kind is None:
+                self.bm.normal_update()
+                self.bm.to_mesh(self.obj.data)
+                self.obj.data.update()
+        finally:
+            self.bm.free()
+        return False
+
+
+def extrude(bm, faces, move):
+    """In an `editing` block: faces pulled out by `move` with their sides, as Blender's extrude
+    does it (bmesh's own extrude keeps the old faces inside the mesh: they go here). Returns
+    the faces at the new end."""
+    made = bmesh.ops.extrude_face_region(bm, geom=list(faces))["geom"]
+    bmesh.ops.delete(bm, geom=list(faces), context="FACES_ONLY")
+    bmesh.ops.translate(bm, verts=[e for e in made if isinstance(e, bmesh.types.BMVert)], vec=Vector(move))
+    return [e for e in made if isinstance(e, bmesh.types.BMFace)]
+
+
+def _region_index(me, region):
+    index = next((i for i, m in enumerate(me.materials) if m and m.name.endswith(f" {region}")), None)
+    if index is None:
+        raise ValueError(f"no region {region!r}: {[m.name for m in me.materials]}")
+    return index
+
+
+BRUSHES = ("grab", "inflate", "smooth", "flatten", "pinch", "crease")
+
+
+def sculpt(obj, brush, at, radius, strength=1.0, direction=(0, 0, 1), region=None, times=1):
+    """Sculpting, scripted: one stroke of a brush on the mesh around `at`, its effect fading
+    smoothly to nothing at `radius` (cells), as Blender's sculpt brushes work:
+    "grab" moves the vertices by `direction` times `strength`; "inflate" pushes them out along
+    their normals by `strength` cells (negative deflates); "smooth" relaxes them towards their
+    neighbours (`strength` 0 to 1); "flatten" brings them to the plane through `at` that
+    faces `direction`; "pinch" draws them towards `at`; "crease" cuts a groove, in by
+    `strength` cells with a sharp falloff. `region`: only that colour region's vertices;
+    `times`: the stroke again. Best on the fused body, where the mesh is dense (before `rig`).
+    Returns how many vertices it moved."""
+    if brush not in BRUSHES:
+        raise ValueError(f"brush {brush!r}: one of {', '.join(BRUSHES)}")
+    me = obj.data
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.normal_update()
+    centre, way = Vector(at), Vector(direction)
+    allowed = None
+    if region is not None:
+        index = _region_index(me, region)
+        allowed = {v for f in bm.faces if f.material_index == index for v in f.verts}
+    moved = 0
+    for _ in range(max(1, times)):
+        weights = {}
+        for v in bm.verts:
+            d = (v.co - centre).length
+            if d < radius and (allowed is None or v in allowed):
+                t = d / radius
+                weights[v] = (1 - t) ** 3 if brush == "crease" else 1 - t * t * (3 - 2 * t)
+        if brush == "smooth":
+            targets = {v: sum((e.other_vert(v).co for e in v.link_edges), Vector()) / max(1, len(v.link_edges)) for v in weights}
+        for v, w in weights.items():
+            if brush == "grab":
+                v.co += way * strength * w
+            elif brush == "inflate":
+                v.co += v.normal * strength * w
+            elif brush == "smooth":
+                v.co = v.co.lerp(targets[v], min(1.0, strength * w))
+            elif brush == "flatten":
+                n = way.normalized()
+                v.co -= n * (v.co - centre).dot(n) * min(1.0, strength * w)
+            elif brush == "pinch":
+                v.co = v.co.lerp(centre, min(1.0, 0.5 * strength * w))
+            elif brush == "crease":
+                v.co -= v.normal * strength * w
+        moved = len(weights)
+        bm.normal_update()
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+    return moved
 
 
 # ---------------------------------------------------------------- one clean mesh

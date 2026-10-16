@@ -50,8 +50,12 @@ are.)
   a metre; the player is about 1.5); `style`: `smooth`, `low_poly` or `accurate` (as close to
   the pictures as it can be, whatever it takes: see "Accurate" below), and with it `details`,
   the user's word on how to build it.
-- `pose` (creatures): `t_pose` (arms or front legs straight out to the sides, legs straight,
-  tail straight back, whatever the pictures show) or `as_is` (the pose the pictures show).
+- `pose` (creatures): `t_pose`, the rest pose a rigger wants whatever the pictures show (two
+  legs: standing straight, arms straight out to the sides at shoulder height; four legs:
+  standing straight on straight legs, head forward, tail straight back; more legs: each leg
+  straight out to its side then down to the ground, evenly spread; wings: spread straight out;
+  no limbs, a grub, a snake, a fish: the body straight and level along its length, head
+  forward, nothing curled), or `as_is` (the pose the pictures show).
 - `shapes`: how many shapes to build it from, `min` to `max`, or `unlimited`: as many as the
   design needs, up to about 100 (work out the list of parts first; take the time it takes).
 - `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
@@ -135,7 +139,10 @@ here). Everything runs from the project folder.
    (the estimate: 8 minutes for a prop, 12 for a creature, a fifth less in low-poly, two and a
    half times as long accurate, half as long again with unlimited shapes; give `--minutes`
    when the pictures promise much more or less work).
-3. **Read it**: `private/requests/ID/request.json`, then every picture (look at each one).
+3. **Read it**: `private/requests/ID/request.json`, then every picture (look at each one;
+   `python tools/blender/model_requests.py zoom ID PICTURE X0 Y0 X1 Y1` enlarges a part of one
+   into the folder, the box in pixels or fractions of the picture, to look at closely: a small
+   creature in a big picture, a marking, whether those are legs).
    Note what views there are (front, side, back, details), the proportions (the height
    split into the head, the body, the legs; the widest point; where things attach), the
    colour regions with a hex for each (take them from the pictures) and the few shapes that
@@ -149,8 +156,10 @@ here). Everything runs from the project folder.
    `paint` for patterns, `light` for a lamp. Big readable shapes: it's a base to refine, seen
    from the game's camera, not a sculpt. Keep to the request's `shapes` (each shape, or a
    blob's element, counts as one; with `unlimited`, write the list of parts as a comment at
-   the top of `model.py` first). A creature in `t_pose` is built with its limbs straight out
-   whatever the pictures' pose; `as_is` follows the pictures' pose.
+   the top of `model.py` first). A creature in `t_pose` is built in the T-pose of its body
+   plan (above: limbs straight out, or its body straight) whatever the pictures' pose; `as_is`
+   follows the pictures' pose. Say in the reply which it got. The shapes are a start, not a
+   limit: reshape whatever they can't follow (below, "Reshaping").
 5. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
    `preview_three_quarter.png` (Workbench, the material colours) and `compare.png` (the
    pictures on top, the renders under them, the same height). Look at `compare.png`, and at
@@ -180,6 +189,30 @@ here). Everything runs from the project folder.
 
 A request left in progress (a session that stopped): the editor marks it failed after 31
 minutes without news; Start again (or `model_requests.py wait ID`) puts it back in the queue.
+
+## Reshaping: any tool
+
+The kit's shapes and `fuse` make a clean base fast; whatever they can't follow, reshape with
+the tool that does it best, for any style (the more so for accurate):
+
+- **by hand**: `with kit.editing(obj) as bm:` gives the mesh as a bmesh: extrude faces
+  (`kit.extrude(bm, faces, move)`: bmesh's own extrude leaves the old faces inside the mesh),
+  inset, bevel, subdivide, bridge, delete, move faces, edges and vertices (`bmesh.ops.translate`,
+  `rotate`, `scale`), on a shape before fusing or on the fused body;
+- **modifiers**: `kit.modifier(obj, "SUBSURF", levels=2)`: any of Blender's modifiers, applied
+  for good: bevel, solidify, simple deform (bend, twist, taper), displace, cast, smooth,
+  mirror, array, lattice, shrinkwrap, weld...;
+- **sculpting**: `kit.sculpt(body, brush, at, radius, strength, direction)`: the grab,
+  inflate, smooth, flatten, pinch and crease brushes, scripted, with a smooth falloff, limited
+  to a colour region if asked: best on the fused body, where the mesh is dense;
+- **curves**: `kit.tube(points, radius, region, radius_end)` for horns, tails, tentacles,
+  antennae and handles that bend;
+- anything else in Blender's Python (`bpy`, `bmesh`, `mathutils`, numpy).
+
+Mind the order: shapes, then `fuse` (it remeshes them into one mesh, softening edges at its
+voxel size: a finer `voxel` keeps them crisper), then sculpting and edits on the body, then
+`eyes`, `fit`, `fur` (and `fit` again), then the rig. Sculpt and edit before the rig, never
+after: its weights are made for the mesh as it is then.
 
 ## Accurate
 
@@ -241,6 +274,11 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}` |
 | `eyes(body, [centres], radius, colour=, look=)` | glossy eyes with a glint, seated on the body's surface (group "eyes", which the rig gives the head) |
 | `fur(body, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
+| `tube(points, radius, region, radius_end=)` | a curved part through the points, round, tapering |
+| `with editing(obj) as bm:` | the mesh as a bmesh to edit by hand (extrude, inset, bevel, move...), written back after |
+| `extrude(bm, faces, move)` | in an editing block: faces pulled out with their sides, the old ones gone |
+| `modifier(obj, kind, **settings)` | any of Blender's modifiers, applied |
+| `sculpt(obj, brush, at, radius, strength=, direction=, region=, times=)` | grab, inflate, smooth, flatten, pinch or crease, with a smooth falloff |
 | `fit([objects], height)` | scaled to `height` cells, standing on the origin |
 | `light(at, color, intensity, reach, kind="point")` | a lamp's light, which becomes the prop's (lit at night) |
 | `rig(body, {chain: [points]}, parents=)` | an armature, the body skinned with automatic weights; a chain hangs from the bone nearest its first point |

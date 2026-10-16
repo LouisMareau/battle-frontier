@@ -158,6 +158,32 @@ code, out, rec, log = run("test_eight", "finish")
 check("an accurate creature's prompt: the closest match, its details, its pose, its shapes", rec["status"] == "done" and "Style: accurate" in log and "kit.fur" in log
       and "Model details from the user: long brown fur, short round ears" in log and "Pose: as-is" in log and "as many as the design needs, up to about 100" in log)
 check("  and its estimate is longer", rec["progress"]["minutes"] >= 0 and mr.estimate(rec) > mr.estimate(mr.normal(dict(rec, style="smooth", shapes={"unlimited": False}))))
+check("  every tool allowed, for every style: edits, modifiers, sculpting", "The kit is a start" in log and "not a limit" in log and "kit.sculpt (grab, inflate" in log
+      and "kit.editing (bmesh by hand: extrude" in log and "kit.modifier" in log)
+check("  a closer look at the pictures, by zooming", "python tools/blender/model_requests.py zoom test_eight PICTURE" in log)
+sys.path.insert(0, str(HERE))
+import run_claude as rc  # noqa: E402
+tpose = rc.settings_lines(mr.normal({"kind": "creature", "pose": "t_pose"}))
+check("a T-pose creature: the T-pose of its body plan, said in the reply", "no limbs (a grub" in tpose and "more legs: each" in tpose and "wings: spread" in tpose
+      and "Say in your reply which of these it got" in tpose, tpose[:200])
+check("  a prop: no pose at all", "Pose" not in rc.settings_lines(mr.normal({"kind": "prop", "pose": "t_pose"})))
+
+# 9. zooming into a picture: a box of it, enlarged into the request's folder
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
+if Image is not None:
+    fresh("test_nine")
+    Image.new("RGB", (200, 100), (240, 220, 150)).save(mr.folder(SCRATCH, "test_nine") / "front.png")
+    _, said = mr.zoom(SCRATCH, "test_nine", "front.png")
+    check("zoom with no box: the picture's size", said.startswith("front.png: 200 x 100 pixels"), said)
+    out, said = mr.zoom(SCRATCH, "test_nine", "front.png", [0.5, 0.0, 1.0, 0.5])
+    zoomed = Image.open(out)
+    check("  a box of it, enlarged into the folder (not one of the request's pictures)", out.name == "zoom_front_1.png" and zoomed.size == (1000, 500)
+          and mr.load(SCRATCH, "test_nine")["images"] == [], f"{out.name} {zoomed.size}: {said}")
+else:
+    print("(no Pillow here: zoom not checked)")
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print("all good" if not failed else f"{len(failed)} failed", flush=True)

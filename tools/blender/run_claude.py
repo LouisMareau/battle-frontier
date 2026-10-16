@@ -39,8 +39,14 @@ and its pictures). Notes from the user: {notes}
 {settings}
 
 Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):
-- read private/requests/{id}/request.json and look at every picture in that folder;
-- write private/requests/{id}/model.py with tools/blender/request_kit.py;
+- read private/requests/{id}/request.json and look at every picture in that folder (to see a
+  part closer: python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1, in pixels
+  or fractions of the picture, with no box it gives the size; then look at the zoom it writes);
+- write private/requests/{id}/model.py with tools/blender/request_kit.py. The kit is a start,
+  not a limit: reshape whatever needs it with the tool that does it best for the style:
+  kit.editing (bmesh by hand: extrude, inset, bevel, move faces, edges and vertices),
+  kit.modifier (any of Blender's modifiers), kit.sculpt (grab, inflate, smooth, flatten,
+  pinch, crease), kit.tube for curved parts, or any of Blender's Python;
 - render it: python tools/blender/run_request.py {id}
 - compare private/requests/{id}/compare.png and the previews with the pictures, change model.py
   and render again until it matches (usually three to six tries);
@@ -97,11 +103,16 @@ STYLES = {
     "low_poly": "Style: low-poly: few faces, flat shaded (fuse with smooth=False, about 800 triangles).",
     "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour, "
                  "the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
-                 "and hair, painted colours for patterns, more shapes, cuts and slabs for the details, a finer voxel and a bigger budget "
+                 "and hair, kit.sculpt and kit.editing for what the shapes can't do, kit.tube for curved parts, painted colours for patterns, more shapes, "
+                 "cuts and slabs for the details, a finer voxel and a bigger budget "
                  "(faces=20000 or more). It may take a long time: that's fine."),
 }
 POSES = {
-    "t_pose": "Pose: T-pose: stand it with its arms (or front legs) straight out to the sides, its legs straight and its tail straight back, whatever pose the pictures show.",
+    "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
+               "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
+               "leg straight out to its side, then down to the ground, evenly spread; wings: spread straight out to the sides; no limbs (a grub, "
+               "a snake, a fish): its body straight and level along its length, head forward, nothing curled. Zoom in to be sure which it has. "
+               "Say in your reply which of these it got."),
     "as_is": "Pose: as-is: give it the pose the pictures show.",
 }
 

@@ -324,6 +324,37 @@ import model_requests as mr  # noqa: E402
 import request_kit as kit  # noqa: E402
 from mathutils.bvhtree import BVHTree  # noqa: E402
 
+# the reshaping tools: a tube, edits by hand, a modifier, sculpting
+clear()
+horn = kit.tube([(0, 0, 0), (0.1, 0, 0.3), (0.3, 0, 0.5)], 0.08, "horn", radius_end=0.01)
+lo, hi = kit.bounds([horn])
+check("a tube follows its points and tapers, its ends closed", len(horn.data.polygons) == 16 * 12 + 2 and 0.49 < hi.z < 0.53 and -0.09 < lo.z < 0.0 and hi.x > 0.29,
+      f"{len(horn.data.polygons)} faces, {lo[:]} to {hi[:]}")
+block = kit.box((0, 0, 0.5), (1, 1, 1), "stone")
+with kit.editing(block) as bm:
+    top = [f for f in bm.faces if f.calc_center_median().z > 0.99]
+    kit.extrude(bm, top, (0, 0, 0.25))
+lo, hi = kit.bounds([block])
+check("edits by hand: a box's top extruded a quarter up", abs(hi.z - 1.25) < 1e-4 and len(block.data.polygons) == 10, f"{hi.z:.3f}, {len(block.data.polygons)} faces")
+kit.modifier(block, "SUBSURF", levels=1)
+check("a modifier, applied: subdivided", len(block.data.polygons) == 40 and not block.modifiers, f"{len(block.data.polygons)} faces")
+ball = kit.sphere((0, 0, 0), 1.0, "skin", segments=32)
+before = [v.co.copy() for v in ball.data.vertices]
+moved = kit.sculpt(ball, "grab", (0, 0, 1), 0.5, strength=0.3, direction=(0, 0, 1))
+after = [v.co for v in ball.data.vertices]
+pole = max(range(len(before)), key=lambda i: before[i].z)
+south = min(range(len(before)), key=lambda i: before[i].z)
+check("sculpting: a grab lifts what's under it, fading, and leaves the rest", moved > 0 and abs(after[pole].z - before[pole].z - 0.3) < 0.01 and (after[south] - before[south]).length < 1e-6,
+      f"{moved} moved, the pole by {after[pole].z - before[pole].z:.3f}")
+smoothed = kit.sculpt(ball, "smooth", (0, 0, 1), 0.5, strength=1.0, times=3)
+try:
+    kit.sculpt(ball, "twist", (0, 0, 0), 1.0)
+    refused = False
+except ValueError:
+    refused = True
+check("  smooth too; a brush it doesn't know is refused", smoothed > 0 and refused)
+clear()
+
 picture = bpy.data.images.new("critter_ref", 32, 24)
 picture.pixels = [0.45, 0.62, 0.3, 1.0] * (32 * 24)
 picture.filepath_raw = str(scratch / "critter.png")
@@ -345,6 +376,12 @@ parts.append(kit.capsule((0, 0.25, 0.4), (0, 0.6, 0.55), 0.05, "fur", radius_b=0
 belly = kit.ellipsoid((0, -0.36, 0.36), (0.2, 0.12, 0.18), "belly")
 critter = kit.fuse(parts, "test_critter", {"fur": "#6f9a4a", "belly": "#e8dcb0", "ear": "#4d7a35"}, faces=3000, paint=[belly])
 check("one clean mesh, in one piece (ears, legs and tail all on the body)", len([o for o in bpy.data.objects if o.type == "MESH"]) == 1 and kit.pieces(critter) == 1, f"{kit.pieces(critter)} pieces")
+belly_index = [m.name for m in critter.data.materials].index("test_critter belly")
+belly_verts = {i for p in critter.data.polygons if p.material_index == belly_index for i in p.vertices}
+was = [v.co.copy() for v in critter.data.vertices]
+moved = kit.sculpt(critter, "inflate", (0, -0.4, 0.36), 0.3, strength=0.01, region="belly")
+changed = {i for i, v in enumerate(critter.data.vertices) if (v.co - was[i]).length > 1e-7}
+check("  a stroke kept to one colour region moves only that region", moved > 0 and changed and changed <= belly_verts, f"{len(changed)} moved, {len(changed - belly_verts)} outside the belly")
 face = bmesh.new()
 face.from_mesh(critter.data)
 face_tree = BVHTree.FromBMesh(face)
