@@ -37,6 +37,7 @@ node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, p
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
+python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled
 node tools/worldcheck.mjs              # the World view: a piece dragged into place, the world saved, a walk across a seam into a chunked map
 cargo run -p engine-content --bin content -- chunk MAP    # a map stored as chunk files (unchunk: rows again)
 cargo run -p engine-world --bin export-glb -- map test_meadow   # a map (or prop ID, props, building MAP ID) as .glb for Blender
@@ -282,13 +283,20 @@ request has a name (its id follows it while it waits), a kind (creature or prop)
 cells, a style (smooth or low-poly), notes, and "This design is mine or licensed" (off by
 default: the model of someone else's design goes to `temporary/`, never `content/`). It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
-committed. The list shows each request's status (waiting, in progress, done) and its pictures;
-one in progress has a bar with the time left (the top bar shows it too, the window says when
-there's been no news for a while); a done one shows the renders of its model and the prop it
-became ("Use it" puts it in the Place tool). Asked to "make the waiting requests", a Claude
-session follows `tools/blender/requests.md`: a script per request builds the model from shapes
-in Blender, renders it beside the pictures until it matches, rigs a creature with an idle
-animation, and adds it to the project.
+committed. The list shows each request's status (waiting, in progress, failed, done) and its
+pictures, with a **Start** button on each (**Cancel** while it's being made; one at a time):
+Start has Claude Code model it by itself, unattended (`tools/blender/run_claude.py`, with only
+the tools the recipe needs; **Claude:** at the top picks the model). One in progress has a bar
+with the time left (the top bar's button shows it too); it ends done by itself once the model
+is in the project, or failed (why, under it) when Claude ends without it, stops with an error,
+isn't logged in, or goes 30 minutes without a word. The **console** at the window's foot shows
+the request's log (`log.txt`, every line timed): Claude reached and the model it runs, what was
+sent, each step and tool call, the end; Copy puts it all on the clipboard. A done request shows
+the renders of its model and the prop it became ("Use it" puts it in the Place tool). Claude
+Code's command line must be logged in once (`claude`, then `/login`). The recipe is
+`tools/blender/requests.md`: a script per request builds the model from shapes in Blender,
+renders it beside the pictures until it matches, rigs a creature with an idle animation, and
+adds it to the project; a Claude session asked to "make the waiting requests" follows it too.
 
 ## Blender
 

@@ -2,9 +2,12 @@
 
 The map editor's **Requests** window (desktop) takes pictures of a creature or a prop dropped
 on it. Each request is a folder `private/requests/<id>/`: its `request.json` and the pictures.
-When the user says **"make the waiting requests"**, a Claude session follows this recipe: it
-models each waiting request in Blender, from shapes, as a clean stylized base (one mesh, a
-material per colour region, a rig for creatures), and adds it to the project as a prop.
+Its **Start** button has Claude Code follow this recipe for that request by itself
+(`run_claude.py`, below), the window's console showing everything it does; and when the user
+says **"make the waiting requests"** to a Claude session, the session follows it for each
+waiting one. Either way the request is modelled in Blender, from shapes, as a clean stylized
+base (one mesh, a material per colour region, a rig for creatures), and added to the project
+as a prop.
 
 Rules that hold all the way:
 
@@ -41,7 +44,9 @@ Rules that hold all the way:
 
 - `kind`: `creature` (rigged, with an idle animation) or `prop`; `height` in cells (a cell is
   a metre; the player is about 1.5); `style`: `smooth` or `low_poly`.
-- `status`: `waiting`, `in_progress`, `done`. `progress` is what the editor's bar shows (in
+- `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
+  stopped with an error or went silent: `progress.step` says why, `log.txt` has the rest).
+  `progress` is what the editor's bar shows (in
   the window, with the time left, and as a line along the top bar's Requests button): the
   step, how far along (0 to 1), when the modelling started (seconds since 1970) and how many
   minutes it should take; once done, how many it took.
@@ -56,16 +61,62 @@ request at once. `tools/blender/model_requests.py` reads and writes them from pl
 python tools/blender/model_requests.py list
 python tools/blender/model_requests.py start ID [--minutes N]
 python tools/blender/model_requests.py step ID "what it's doing" [--done 0.4]
-python tools/blender/model_requests.py wait ID
+python tools/blender/model_requests.py wait ID [--note "why"]
+python tools/blender/model_requests.py fail ID "why"
+python tools/blender/model_requests.py note ID "what happened"
 python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine]
 ```
 
-(`new` makes a request without the editor, from pictures on disk.)
+(`new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
+`fail` add a line to the request's `log.txt`, timed by the computer's clock.)
+
+## From the editor: Start, Cancel and the console
+
+Each request's row in the window's list, and the request's own panel, has a **Start** button
+(Start again for a failed one, Make it again for a done one) and, while it's being made, a
+**Cancel** button; one request is made at a time. **Claude:** at the top picks the model
+(Claude Code's default, or opus, sonnet, haiku). Start runs
+
+```bash
+python tools/blender/run_claude.py ID [--model opus]
+```
+
+on its own (it goes on if the editor closes), which:
+
+- finds Claude Code (`CLAUDE` names the program, else `claude` on the PATH, else
+  `~/.local/bin/claude`) and runs it headless: `claude -p --output-format stream-json
+  --verbose --permission-mode dontAsk --strict-mcp-config --no-session-persistence --settings
+  private/requests/ID/claude-settings.json`, the prompt on its input: this recipe for this
+  request, from step 3, unattended;
+- allows it only what the recipe needs, without asking (`claude-settings.json`): reading the
+  project, writing and editing in the request's folder, `python tools/blender/run_request.py
+  ID` (Blender), `python tools/blender/model_requests.py ...`, the content check and `ls`.
+  Anything else is refused, never asked: nobody is there to answer;
+- writes everything to the request's `log.txt`, a line each, timed: the run starting, the
+  program and its version, what was sent (the command, what's allowed, the prompt), "Claude
+  reached" with the model it runs, each message, thought, tool call (→) and answer (←, × for
+  an error), what was refused, the end (turns, time, cost at API prices) and Claude's last
+  word; the raw stream goes to `run.jsonl`. The window's console shows that log (its last lines
+  when folded, all of it open), Copy puts all of it on the clipboard;
+- ends the request **done** when Claude has added the model (`--finish`), **failed** when
+  Claude ends without it, stops with an error or isn't logged in, or says nothing for 30
+  minutes (then it's stopped); **waiting** again on Cancel (the editor writes a file named
+  `stop` in the request's folder). The editor marks a request failed itself when nothing has
+  been written in its folder for 31 minutes (a run that was killed), and settles a Cancel with
+  nothing running after a few seconds.
+
+Claude Code must be logged in for this, once: run `claude` in a terminal and type `/login`
+(the desktop app's own login isn't the command line's). Until then a run fails at once with
+"Claude Code isn't logged in". `python tools/blender/test_run_claude.py` checks the whole of
+it against a stand-in for Claude: a run that finishes, one that ends without the model, one
+that crashes, one not logged in, one gone silent, one cancelled.
 
 ## The recipe
 
-Blender is `"C:/Program Files/Blender Foundation/Blender 3.1/blender.exe"` here (`BLENDER`
-below); everything runs from the project folder, in the background (no window opens).
+Blender runs through `python tools/blender/run_request.py ID [--finish]`: in the background
+(no window opens), on the request's `model.py`, the program named by `BLENDER`, else the
+newest under Program Files (`"C:/Program Files/Blender Foundation/Blender 3.1/blender.exe"`
+here). Everything runs from the project folder.
 
 1. **List them**: `python tools/blender/model_requests.py list`. Take the first waiting one.
 2. **Start it**: `python tools/blender/model_requests.py start ID`. The editor's bar starts
@@ -84,8 +135,7 @@ below); everything runs from the project folder, in the background (no window op
    `lathe` for anything round, `box` and `cylinder` for hard shapes, `cuts` for openings,
    `paint` for patterns, `light` for a lamp. Big readable shapes: it's a base to refine, seen
    from the game's camera, not a sculpt.
-5. **Render it**: `BLENDER --background --factory-startup --python-exit-code 1 --python
-   private/requests/ID/model.py`. It writes `preview_front.png`, `preview_side.png`,
+5. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
    `preview_three_quarter.png` (Workbench, the material colours) and `compare.png` (the
    pictures on top, the renders under them, the same height). Look at `compare.png`, and at
    a preview at full size when a detail matters.
@@ -101,7 +151,7 @@ below); everything runs from the project folder, in the background (no window op
    Then `idle(arm)`. Render again: `preview_idle.png` shows four moments of the idle (look
    for vertices torn by the wrong bone), and the rig's line says how many vertices the
    automatic weights missed (many: a bone is outside the mesh).
-8. **Finish it**: the same command with `-- --finish` at the end. The model is added with
+8. **Finish it**: `python tools/blender/run_request.py ID --finish`. The model is added with
    the add-on's `write_prop` (to `temporary/`, or `content/` when `mine`), as the prop
    named by the request's id (numbered when another prop has it); the engine's own reading
    of the file is printed (triangles, size, its light, its rig's joints and "idle"); the
@@ -112,8 +162,8 @@ below); everything runs from the project folder, in the background (no window op
    Requests window shows the request done, with its renders and "Use it".
 10. **Next**: back to 1 until none waits. Then tell the user what was made, with the replies.
 
-A request left in progress (a session that stopped): the window says "no news" after 20
-minutes; `model_requests.py wait ID` (or the window's status) puts it back in the queue.
+A request left in progress (a session that stopped): the editor marks it failed after 31
+minutes without news; Start again (or `model_requests.py wait ID`) puts it back in the queue.
 
 ## The kit: `request_kit.py`
 

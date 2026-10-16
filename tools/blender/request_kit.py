@@ -76,7 +76,7 @@ def start(script, minutes=None):
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
     scene.unit_settings.scale_length = 1.0
-    if job.record["status"] == "waiting" or (job.record["status"] == "done" and job.finishing):
+    if job.record["status"] in ("waiting", "failed") or (job.record["status"] == "done" and job.finishing):
         job.record = mr.start(job.root, job.id, minutes)
     job.step("building the model", 0.15)
     r = job.record

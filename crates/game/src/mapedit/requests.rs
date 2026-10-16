@@ -41,12 +41,16 @@ pub(super) enum Style {
     LowPoly,
 }
 
+/// In the list's order: waiting first, failed ones above the done.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Status {
     #[default]
     Waiting,
     InProgress,
+    /// the run ended without the model, stopped with an error, or went silent (its
+    /// progress step says why; its log has the rest)
+    Failed,
     Done,
 }
 
@@ -235,15 +239,20 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{Kind, ModelRequest, Requests, Status, Style};
+    use super::{Kind, ModelRequest, Progress, Requests, Status, Style};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
     const WORKING: Color32 = Color32::from_rgb(110, 170, 255);
     const DONE: Color32 = Color32::from_rgb(110, 210, 130);
-    /// a request in progress whose record hasn't changed for this long (minutes) may have
-    /// been left: the window says so
-    const QUIET: f64 = 20.0;
+    const FAILED: Color32 = Color32::from_rgb(235, 95, 85);
+    /// a request in progress with nothing written in its folder for this long (minutes) has
+    /// failed: run_claude.py stops a silent run at 30, this catches one whose run is gone
+    pub(in super::super) const SILENT: f64 = 31.0;
+    /// the models a run can be given (the empty one: Claude Code's own default)
+    const MODELS: [(&str, &str); 4] = [("", "default model"), ("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")];
+    /// the console shows this many of the log's last lines (Copy takes them all)
+    const CONSOLE_LINES: usize = 600;
 
     /// Seconds since 1970, as the modeller writes them.
     pub(in super::super) fn now_secs() -> f64 {
@@ -454,6 +463,68 @@ mod desk {
         out
     }
 
+    // ------------------------------------------------------------ runs: Claude Code, through Python
+
+    /// Python: PYTHON names it, else `python` (or `python3`) on the PATH, never the Store's
+    /// stand-ins in WindowsApps, else Windows' `py`.
+    fn find_python() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("PYTHON") {
+            let p = PathBuf::from(p);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+        for dir in path.iter().filter(|d| !d.to_string_lossy().contains("WindowsApps")) {
+            for name in ["python.exe", "python3.exe", "python", "python3"] {
+                if dir.join(name).is_file() {
+                    return Some(dir.join(name));
+                }
+            }
+        }
+        path.iter().map(|d| d.join("py.exe")).find(|p| p.is_file())
+    }
+
+    /// One of the requests' Python tools started in the project's folder, on its own (no
+    /// console window; it outlives the editor).
+    fn python(root: &Path, args: &[&str]) -> Result<std::process::Child, String> {
+        let python = find_python().ok_or("Python not found: set PYTHON to python.exe")?;
+        let mut c = std::process::Command::new(&python);
+        c.args(args).current_dir(root).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000);
+        }
+        c.spawn().map_err(|e| format!("{}: {e}", python.display()))
+    }
+
+    /// A short one, waited for: true when it worked.
+    fn python_now(root: &Path, args: &[&str]) -> bool {
+        python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
+    }
+
+    /// The newest time anything in a request's folder changed (its run writes there as it goes).
+    fn last_word(seen: &[(PathBuf, SystemTime)], dir: &Path) -> Option<SystemTime> {
+        seen.iter().filter(|(p, _)| p.parent() == Some(dir)).map(|(_, t)| *t).max()
+    }
+
+    /// In progress with nothing written in its folder for SILENT minutes: failed.
+    pub(in super::super) fn gone_silent(r: &ModelRequest, last: Option<SystemTime>, now: SystemTime) -> bool {
+        r.status == Status::InProgress && last.and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs_f64() / 60.0 > SILENT).unwrap_or(false)
+    }
+
+    /// The last `n` lines of a log, and how many came before them.
+    pub(in super::super) fn tail(text: &str, n: usize) -> (&str, usize) {
+        let total = text.lines().count();
+        if total <= n {
+            return (text, 0);
+        }
+        let skip = total - n;
+        let at = text.match_indices('\n').nth(skip - 1).map(|(i, _)| i + 1).unwrap_or(0);
+        (&text[at..], skip)
+    }
+
     /// Opens a file or a folder the way the system does (a picture in its viewer, a folder
     /// in the file manager).
     fn reveal(path: &Path) -> Result<(), String> {
@@ -567,6 +638,20 @@ mod desk {
         renamed: Option<String>,
         /// asking whether to delete the selected request
         deleting: bool,
+        /// the model the runs ask for ("": Claude Code's default)
+        model: String,
+        /// the console open at the window's foot
+        pub console_open: bool,
+        /// the requests' logs as last read, by id, with the file's time
+        logs: HashMap<String, (SystemTime, Arc<String>)>,
+        /// a run being started (its request and when): until it says it's in progress
+        starting: Option<(String, f64)>,
+        /// a run being cancelled (its request and when): its stop file waits for the run
+        cancelling: Option<(String, f64)>,
+        /// silent requests already marked failed (once each)
+        failed_silent: std::collections::HashSet<String>,
+        /// the tools started, reaped as they end
+        children: Vec<std::process::Child>,
     }
 
     impl Desk {
@@ -586,13 +671,6 @@ mod desk {
 
         fn picture_path(&self, id: &str, file: &str) -> PathBuf {
             folder(&self.root()).join(id).join(file)
-        }
-
-        /// Minutes since the request's record last changed (its modeller's last word).
-        fn quiet_for(&self, id: &str) -> Option<f64> {
-            let path = record_path(&self.root(), id);
-            let t = self.seen.iter().find(|(p, _)| *p == path)?.1;
-            Some(SystemTime::now().duration_since(t).ok()?.as_secs_f64() / 60.0)
         }
 
         /// The first request being modelled, if any.
@@ -708,16 +786,122 @@ mod desk {
             said
         }
 
-        /// What changed on disk (Claude's work, a picture added by hand) shows within a
-        /// second.
-        pub(in super::super) fn watch(&mut self, now: f64) {
+        /// The request a run is on (or being started for), if any: one at a time.
+        pub(in super::super) fn busy(&self) -> Option<String> {
+            self.starting.as_ref().map(|(id, _)| id.clone()).or_else(|| self.in_progress().map(|r| r.id.clone()))
+        }
+
+        /// Start: Claude Code on the request, on its own (run_claude.py, which keeps the log
+        /// and the status); the console opens on it.
+        pub(in super::super) fn start_run(&mut self, id: &str) -> String {
+            if let Some(other) = self.busy() {
+                return format!("One at a time: {other} is being made");
+            }
+            let root = self.root();
+            let model = self.model.clone();
+            let mut args = vec!["tools/blender/run_claude.py", id];
+            if !model.is_empty() {
+                args.extend(["--model", model.as_str()]);
+            }
+            match python(&root, &args) {
+                Ok(child) => {
+                    self.children.push(child);
+                    self.starting = Some((id.to_string(), now_secs()));
+                    self.selected = Some(id.to_string());
+                    self.console_open = true;
+                    self.failed_silent.remove(id);
+                    format!("Claude Code is starting on {id}: the console shows everything it does")
+                }
+                Err(e) => format!("Not started: {e}"),
+            }
+        }
+
+        /// Cancel: the run's stop file (run_claude.py stops Claude and the request waits
+        /// again); with no run there to read it, the editor does that a few seconds later.
+        pub(in super::super) fn cancel_run(&mut self, id: &str) -> String {
+            let stop = folder(&self.root()).join(id).join("stop");
+            match std::fs::write(&stop, "") {
+                Ok(()) => {
+                    self.cancelling = Some((id.to_string(), now_secs()));
+                    format!("Cancelling {id}")
+                }
+                Err(e) => format!("Not cancelled: {}: {e}", stop.display()),
+            }
+        }
+
+        /// The cancel asked for `secs` earlier (the tests).
+        #[cfg(test)]
+        pub(in super::super) fn age_cancel(&mut self, secs: f64) {
+            if let Some((_, at)) = &mut self.cancelling {
+                *at -= secs;
+            }
+        }
+
+        /// A request's status set by model_requests.py (which writes the log line, timed by the
+        /// computer's clock), or here when Python can't.
+        fn settle(&mut self, id: &str, args: &[&str], fallback: impl FnOnce(&mut ModelRequest)) {
+            let root = self.root();
+            if !python_now(&root, args) {
+                if let Ok(mut r) = read(&root, id) {
+                    fallback(&mut r);
+                    let _ = save(&root, &r);
+                }
+            }
+        }
+
+        /// Each second: what changed on disk (Claude's work, a picture added by hand) shows;
+        /// a cancel nobody answered, a run that never started and a run gone silent are
+        /// settled. What to say, when there's something.
+        pub(in super::super) fn watch(&mut self, now: f64) -> Option<String> {
             if now < self.next_look {
-                return;
+                return None;
             }
             self.next_look = now + 1000.0;
-            let seen = snapshot(&self.root());
+            let root = self.root();
+            let mut said = None;
+            self.children.retain_mut(|c| matches!(c.try_wait(), Ok(None)));
+            if let Some((id, at)) = self.cancelling.clone() {
+                let stop = folder(&root).join(&id).join("stop");
+                if !stop.exists() {
+                    self.cancelling = None;
+                } else if now_secs() - at > 6.0 {
+                    // no run took it: nothing was running
+                    let _ = std::fs::remove_file(&stop);
+                    let args = ["tools/blender/model_requests.py", "wait", id.as_str(), "--note", "Cancelled from the editor: nothing was running"];
+                    self.settle(&id, &args, |r| {
+                        r.status = Status::Waiting;
+                        r.progress = Progress::default();
+                    });
+                    self.cancelling = None;
+                    said = Some(format!("{id}: nothing was running; it waits again"));
+                }
+            }
+            if let Some((id, at)) = self.starting.clone() {
+                let begun = self.list.iter().find(|r| r.id == id).map(|r| r.progress.started >= at - 2.0 || r.status == Status::Failed).unwrap_or(true);
+                if begun {
+                    self.starting = None;
+                } else if now_secs() - at > 30.0 {
+                    self.starting = None;
+                    said = Some(format!("{id}: the run didn't start (is Python there?)"));
+                }
+            }
+            let mut seen = snapshot(&root);
+            let wall = SystemTime::now();
+            for r in self.list.clone() {
+                let dir = folder(&root).join(&r.id);
+                if gone_silent(&r, last_word(&seen, &dir), wall) && self.failed_silent.insert(r.id.clone()) {
+                    let reason = format!("no news for {} min (nothing written in its folder)", SILENT as i64 - 1);
+                    let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
+                    self.settle(&r.id, &args, |rec| {
+                        rec.status = Status::Failed;
+                        rec.progress.step = format!("failed: {reason}");
+                    });
+                    said = Some(format!("{}: failed, {reason}", r.name));
+                    seen = snapshot(&root);
+                }
+            }
             if self.loaded && seen == self.seen {
-                return;
+                return said;
             }
             let before: HashMap<_, _> = self.seen.iter().cloned().collect();
             for (file, t) in &seen {
@@ -726,6 +910,77 @@ mod desk {
                 }
             }
             self.reload();
+            said
+        }
+
+        /// A request's log.txt, read again when it changes.
+        fn log_of(&mut self, id: &str) -> Option<Arc<String>> {
+            let path = folder(&self.root()).join(id).join("log.txt");
+            let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            if self.logs.get(id).map(|(at, _)| *at != t).unwrap_or(true) {
+                let text = std::fs::read_to_string(&path).ok()?;
+                self.logs.insert(id.to_string(), (t, Arc::new(text)));
+            }
+            self.logs.get(id).map(|(_, s)| s.clone())
+        }
+
+        /// The console at the window's foot: the log of the request selected (else of the one
+        /// being made), its last lines when closed, all of it open; Copy takes it all.
+        fn console(&mut self, ui: &mut egui::Ui, id: Option<String>) -> Option<String> {
+            let mut said = None;
+            let log = id.as_deref().and_then(|id| self.log_of(id));
+            ui.separator();
+            ui.horizontal(|ui| {
+                // a fold's triangle, painted (the fonts have no arrow glyphs), and its name
+                let (_, icon) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
+                egui::collapsing_header::paint_default_icon(ui, if self.console_open { 1.0 } else { 0.0 }, &icon);
+                let name = ui.add(egui::Label::new(RichText::new("Console").strong()).sense(Sense::click()));
+                let toggle = icon.union(name).on_hover_text("Everything the runs did: Claude reached, the model it runs, what was sent, each step, the end. Click to see it all, or fold it");
+                mark("uiRequestConsole", &toggle);
+                if toggle.clicked() {
+                    self.console_open = !self.console_open;
+                }
+                match (&id, &log) {
+                    (Some(id), Some(text)) => hint(ui, &format!("{id} · {} lines · private/requests/{id}/log.txt", text.lines().count())),
+                    (Some(id), None) => hint(ui, &format!("{id}: no run yet")),
+                    _ => hint(ui, "the selected request's runs"),
+                }
+                if let (Some(id), Some(text)) = (&id, &log) {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.small_button("Open log.txt").clicked() {
+                            if let Err(e) = reveal(&folder(&self.root()).join(id).join("log.txt")) {
+                                said = Some(e);
+                            }
+                        }
+                        let copy = ui.small_button("Copy").on_hover_text("The whole log, each line with its time");
+                        mark("uiRequestCopy", &copy);
+                        if copy.clicked() {
+                            ui.ctx().copy_text(text.to_string());
+                            said = Some(format!("{id}'s log copied ({} lines)", text.lines().count()));
+                        }
+                    });
+                }
+            });
+            let Some(text) = log else {
+                if self.console_open {
+                    hint(ui, "Start a request: everything Claude does shows here, and stays in its log.txt.");
+                }
+                return said;
+            };
+            if self.console_open {
+                let (shown, before) = tail(&text, CONSOLE_LINES);
+                // at least that tall once the log is longer (the window's height is its content's)
+                egui::ScrollArea::vertical().id_salt("request-console").min_scrolled_height(220.0).max_height(230.0).auto_shrink([false, true]).stick_to_bottom(true).show(ui, |ui| {
+                    if before > 0 {
+                        hint(ui, &format!("… {before} lines before these: Copy takes them all"));
+                    }
+                    ui.add(egui::Label::new(RichText::new(shown.trim_end()).monospace().size(11.0)).selectable(true).wrap());
+                });
+            } else {
+                let (last, _) = tail(&text, 3);
+                ui.add(egui::Label::new(RichText::new(last.trim_end()).monospace().size(11.0).color(Color32::from_gray(160))).truncate());
+            }
+            said
         }
 
         // ------------------------------------------------------------ drawing
@@ -764,21 +1019,54 @@ mod desk {
                 ui.set_width(ui.available_width());
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(text).color(if hovering { WAITING } else { Color32::from_gray(200) }));
-                    if target.is_some() {
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if target.is_some() {
                             let new = ui.button("New request").on_hover_text("The next pictures dropped start a new request");
                             mark("uiRequestNew", &new);
                             if new.clicked() {
                                 self.selected = None;
                                 self.deleting = false;
                             }
+                        }
+                        let shown = MODELS.iter().find(|(m, _)| *m == self.model).map(|(_, label)| *label).unwrap_or(self.model.as_str()).to_string();
+                        let pick = egui::ComboBox::from_id_salt("request-model").selected_text(shown).width(110.0).show_ui(ui, |ui| {
+                            for (m, label) in MODELS {
+                                ui.selectable_value(&mut self.model, m.to_string(), label);
+                            }
                         });
-                    }
+                        pick.response.on_hover_text("The model Claude Code runs on for the next Start (the console says which it got)");
+                        hint(ui, "Claude:");
+                    });
                 });
             });
         }
 
-        fn list_column(&mut self, ui: &mut egui::Ui) {
+        /// A request's run button: Start (Start again, Make it again) or Cancel, and what was
+        /// asked for. One run at a time.
+        fn run_button(&self, ui: &mut egui::Ui, r: &ModelRequest, short: bool) -> Option<Run> {
+            let starting = self.starting.as_ref().is_some_and(|(id, _)| *id == r.id);
+            if r.status == Status::InProgress || starting {
+                let cancelling = self.cancelling.as_ref().is_some_and(|(id, _)| *id == r.id);
+                let cancel = ui.add_enabled(!starting && !cancelling, egui::Button::new(if cancelling { "Cancelling…" } else { "Cancel" })).on_hover_text("Stops Claude Code: the request waits again, its log kept");
+                mark(&format!("uiRequestCancel_{}", r.id), &cancel);
+                return cancel.clicked().then(|| Run::Cancel(r.id.clone()));
+            }
+            let busy = self.busy();
+            let label = match (r.status, short) {
+                (Status::Failed, false) => "Start again",
+                (Status::Done, false) => "Make it again",
+                _ => "Start",
+            };
+            let start = ui
+                .add_enabled(busy.is_none(), egui::Button::new(label))
+                .on_hover_text("Claude Code models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does")
+                .on_disabled_hover_text(format!("One at a time: {} is being made", busy.unwrap_or_default()));
+            mark(&format!("uiRequestStart_{}", r.id), &start);
+            start.clicked().then(|| Run::Start(r.id.clone()))
+        }
+
+        fn list_column(&mut self, ui: &mut egui::Ui) -> Option<Run> {
+            let mut asked = None;
             let list = self.list.clone();
             if list.is_empty() && self.problems.is_empty() {
                 hint(ui, "No requests yet.");
@@ -786,16 +1074,29 @@ mod desk {
             for r in &list {
                 let chosen = self.selected.as_deref() == Some(r.id.as_str());
                 let fill = if chosen { Color32::from_rgb(38, 52, 76) } else { Color32::from_gray(28) };
+                // the row's click, under the buttons drawn on it (its size from the frame before)
+                let row_id = ui.id().with(("request-row", &r.id));
+                let row = ui.ctx().data(|d| d.get_temp::<egui::Rect>(row_id)).map(|rect| ui.interact(rect, row_id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand));
+                let starting = self.starting.as_ref().is_some_and(|(id, _)| *id == r.id);
                 let frame = egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         chip(ui, r.status);
                         ui.label(RichText::new(&r.name).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(a) = self.run_button(ui, r, true) {
+                                asked = Some(a);
+                            }
+                        });
                     });
                     hint(ui, &about(r));
-                    if r.status == Status::InProgress {
+                    if starting {
+                        hint(ui, "starting Claude Code…");
+                    } else if r.status == Status::InProgress {
                         bar(ui, r, ui.available_width(), 6.0);
                         hint(ui, &r.progress.at(now_secs()).1);
+                    } else if r.status == Status::Failed {
+                        ui.label(RichText::new(&r.progress.step).size(11.5).color(FAILED));
                     }
                     ui.horizontal_wrapped(|ui| {
                         for f in r.images.iter().take(4) {
@@ -821,30 +1122,34 @@ mod desk {
                         });
                     }
                 });
-                let row = ui.interact(frame.response.rect, ui.id().with(("request-row", &r.id)), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
-                mark(&format!("uiRequest_{}", r.id), &row);
-                if row.clicked() {
-                    self.selected = Some(r.id.clone());
-                    self.deleting = false;
+                ui.ctx().data_mut(|d| d.insert_temp(row_id, frame.response.rect));
+                if let Some(row) = row {
+                    mark(&format!("uiRequest_{}", r.id), &row);
+                    if row.clicked() {
+                        self.selected = Some(r.id.clone());
+                        self.deleting = false;
+                    }
                 }
                 ui.add_space(4.0);
             }
             for p in &self.problems {
                 warn(ui, p);
             }
+            asked
         }
 
-        /// The selected request, to edit; a prop to use when its "Use it" is clicked.
-        fn pane(&mut self, ui: &mut egui::Ui, content: &Content, name_focused: &mut bool) -> (Option<String>, Option<String>) {
-            let (mut use_prop, mut said) = (None, None);
+        /// The selected request, to edit: a prop to use when its "Use it" is clicked, what to
+        /// say, a run asked for.
+        fn pane(&mut self, ui: &mut egui::Ui, content: &Content, name_focused: &mut bool) -> (Option<String>, Option<String>, Option<Run>) {
+            let (mut use_prop, mut said, mut asked) = (None, None, None);
             let Some(i) = self.selected.as_ref().and_then(|id| self.list.iter().position(|r| &r.id == id)) else {
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("Drop pictures here").size(18.0).color(Color32::from_gray(170)));
                     hint(ui, "Front, side, back, close-ups of one creature or prop: one request.");
-                    hint(ui, "Then ask Claude to \u{201c}make the waiting requests\u{201d}.");
+                    hint(ui, "Then Start it: Claude Code models it in Blender by itself.");
                 });
-                return (None, None);
+                return (None, None, None);
             };
             let before = self.list[i].clone();
             let mut r = before.clone();
@@ -889,11 +1194,7 @@ mod desk {
                 ui.label("Status");
                 ui.horizontal(|ui| {
                     chip(ui, r.status);
-                    egui::ComboBox::from_id_salt("request-status").selected_text("change…").width(90.0).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut r.status, Status::Waiting, "waiting").on_hover_text("To model (again)");
-                        ui.selectable_value(&mut r.status, Status::InProgress, "in progress");
-                        ui.selectable_value(&mut r.status, Status::Done, "done");
-                    });
+                    asked = self.run_button(ui, &r, false);
                 });
                 ui.end_row();
             });
@@ -901,9 +1202,9 @@ mod desk {
                 section(ui, "Being modelled");
                 let shown = bar(ui, &r, 330.0, 18.0);
                 mark("uiRequestBar", &shown);
-                if let Some(quiet) = self.quiet_for(&r.id).filter(|q| *q > QUIET) {
-                    warn(ui, &format!("No news for {} min: if no Claude session is on it any more, set it back to waiting", quiet.round()));
-                }
+            } else if r.status == Status::Failed {
+                warn(ui, &r.progress.step);
+                hint(ui, "The console has its log (Copy takes it all); Start again makes it once more.");
             } else if r.status == Status::Done && r.progress.minutes > 0.0 {
                 hint(ui, &format!("Modelled in {} min", r.progress.minutes.round()));
             }
@@ -992,7 +1293,7 @@ mod desk {
                 }
             });
             if self.selected.as_deref() != Some(before.id.as_str()) {
-                return (use_prop, said);
+                return (use_prop, said, asked);
             }
             if let Some(f) = remove {
                 if let Err(e) = remove_picture(&self.root(), &mut r, &f) {
@@ -1005,7 +1306,7 @@ mod desk {
                     said = Some(e);
                 }
             }
-            (use_prop, said)
+            (use_prop, said, asked)
         }
     }
 
@@ -1028,7 +1329,7 @@ mod desk {
         let (fraction, text) = r.progress.at(now_secs());
         let mut bar = egui::ProgressBar::new(fraction).desired_width(width).desired_height(height).fill(WORKING);
         if height >= 14.0 {
-            bar = bar.text(RichText::new(&text).size(11.0).color(Color32::BLACK));
+            bar = bar.text(RichText::new(&text).size(11.0));
         }
         ui.add(bar).on_hover_text(format!("{}: {text}", r.name))
     }
@@ -1037,9 +1338,16 @@ mod desk {
         let (text, color) = match status {
             Status::Waiting => ("WAITING", WAITING),
             Status::InProgress => ("IN PROGRESS", WORKING),
+            Status::Failed => ("FAILED", FAILED),
             Status::Done => ("DONE", DONE),
         };
         ui.label(RichText::new(text).size(9.5).strong().color(Color32::BLACK).background_color(color));
+    }
+
+    /// A run asked for from the window.
+    pub(in super::super) enum Run {
+        Start(String),
+        Cancel(String),
     }
 
     impl Requests {
@@ -1065,7 +1373,9 @@ mod desk {
         }
 
         pub fn watch(&mut self, now: f64) {
-            self.desk.watch(now);
+            if let Some(s) = self.desk.watch(now) {
+                self.said = Some(s);
+            }
         }
 
         /// The window, when open (and the pictures dropped, whether or not); a prop to use
@@ -1082,24 +1392,54 @@ mod desk {
             let (mut use_prop, mut name_focused) = (None, false);
             if self.open {
                 let (mut open, hovering) = (true, self.hovering);
-                let mut said = None;
-                egui::Window::new(format!("Model requests ({})", d.list.len())).id(egui::Id::new("model-requests")).open(&mut open).default_size([780.0, 660.0]).default_pos([270.0, 70.0]).show(ctx, |ui| {
+                let (mut said, mut asked) = (None, None);
+                // as tall as the screen allows (a window grows to its content: the content's
+                // height is set here, so the console at the foot stays on the screen)
+                let tall = (ctx.content_rect().height() - 150.0).clamp(380.0, 720.0);
+                egui::Window::new(format!("Model requests ({})", d.list.len()))
+                    .id(egui::Id::new("model-requests"))
+                    .open(&mut open)
+                    .default_width(800.0)
+                    .resizable([true, false])
+                    .default_pos([270.0, 60.0])
+                    .show(ctx, |ui| {
                     d.banner(ui, hovering);
                     ui.add_space(4.0);
-                    let height = ui.available_height();
-                    ui.horizontal_top(|ui| {
+                    // the console at the foot, the list and the request above it
+                    let console = if d.console_open { 290.0 } else { 100.0 };
+                    let height = (tall - console).max(140.0);
+                    // a row of that height: its separator (which takes all the height it's
+                    // given) stops there
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), egui::Layout::left_to_right(egui::Align::Min), |ui| {
                         ui.vertical(|ui| {
-                            ui.set_width(250.0);
-                            egui::ScrollArea::vertical().id_salt("request-list").max_height(height).show(ui, |ui| d.list_column(ui));
+                            ui.set_width(270.0);
+                            egui::ScrollArea::vertical().id_salt("request-list").max_height(height).show(ui, |ui| {
+                                if let Some(a) = d.list_column(ui) {
+                                    asked = Some(a);
+                                }
+                            });
                         });
                         ui.separator();
                         ui.vertical(|ui| {
                             egui::ScrollArea::vertical().id_salt("request-pane").max_height(height).show(ui, |ui| {
-                                (use_prop, said) = d.pane(ui, content, &mut name_focused);
+                                let (prop, s, a) = d.pane(ui, content, &mut name_focused);
+                                (use_prop, said) = (prop, s);
+                                if a.is_some() {
+                                    asked = a;
+                                }
                             });
                         });
                     });
+                    let shown = d.selected.clone().or_else(|| d.busy());
+                    if let Some(s) = d.console(ui, shown) {
+                        said = Some(s);
+                    }
                 });
+                match asked {
+                    Some(Run::Start(id)) => said = Some(d.start_run(&id)),
+                    Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
+                    None => {}
+                }
                 if said.is_some() {
                     self.said = said;
                 }
@@ -1213,6 +1553,67 @@ mod tests {
         // no start yet, no estimate
         assert_eq!(Progress::default().at(5000.0).1, "starting");
         assert_eq!(Progress { started: 1000.0, ..Default::default() }.at(1000.0 + 300.0).1, "5 min so far");
+    }
+
+    #[test]
+    fn failed_requests_read_and_sort() {
+        let r: ModelRequest = serde_json::from_str(r#"{ "id": "x", "status": "failed", "progress": { "step": "failed: no word from Claude" } }"#).unwrap();
+        assert_eq!((r.status, r.progress.step.as_str()), (Status::Failed, "failed: no word from Claude"));
+        assert!(content::to_text(&r).contains("  \"status\": \"failed\",\n"));
+        // failed ones above the done, under the waiting and those in progress
+        assert!(Status::Waiting < Status::InProgress && Status::InProgress < Status::Failed && Status::Failed < Status::Done);
+    }
+
+    #[test]
+    fn the_console_shows_the_logs_end() {
+        let text: String = (1..=10).map(|i| format!("[2026-10-16 09:00:0{}] line {i}\n", i % 10)).collect();
+        let (shown, before) = tail(&text, 3);
+        assert_eq!(before, 7);
+        assert!(shown.starts_with("[2026-10-16 09:00:08] line 8\n") && shown.ends_with("line 10\n"), "{shown}");
+        assert_eq!(tail(&text, 20), (text.as_str(), 0));
+        assert_eq!(tail("", 3), ("", 0));
+    }
+
+    #[test]
+    fn a_silent_run_fails_and_a_cancel_nobody_takes_settles() {
+        use std::time::{Duration, SystemTime};
+        let root = scratch("silent");
+        let now = SystemTime::now();
+        let mut quiet = create(&root, "Quiet one.png").unwrap();
+        quiet.status = Status::InProgress;
+        quiet.progress = Progress { step: "rendering the previews".into(), done: 0.5, started: now_secs() - 3600.0, minutes: 12.0 };
+        save(&root, &quiet).unwrap();
+        assert!(!gone_silent(&quiet, Some(now - Duration::from_secs(60)), now));
+        assert!(gone_silent(&quiet, Some(now - Duration::from_secs(40 * 60)), now));
+        assert!(!gone_silent(&ModelRequest { status: Status::Waiting, ..quiet.clone() }, Some(now - Duration::from_secs(40 * 60)), now));
+        // nothing written in its folder for 40 minutes: the watch marks it failed
+        let file = std::fs::File::options().write(true).open(root.join("private/requests/quiet_one/request.json")).unwrap();
+        file.set_modified(now - Duration::from_secs(40 * 60)).unwrap();
+        drop(file);
+        let mut req = Requests::at(&root);
+        req.desk().reload();
+        let said = req.desk().watch(1.0e9);
+        let failed = read(&root, "quiet_one").unwrap();
+        assert_eq!(failed.status, Status::Failed);
+        assert!(failed.progress.step.starts_with("failed: no news for 30 min"), "{}", failed.progress.step);
+        assert!(said.unwrap().contains("failed"));
+        // a cancel with no run there to take its stop file: the request waits again
+        let mut busy = create(&root, "Busy one.png").unwrap();
+        busy.status = Status::InProgress;
+        busy.progress.started = now_secs();
+        save(&root, &busy).unwrap();
+        req.desk().reload();
+        assert_eq!(req.desk().busy().as_deref(), Some("busy_one"));
+        req.desk().cancel_run("busy_one");
+        assert!(root.join("private/requests/busy_one/stop").is_file());
+        req.desk().watch(2.0e9);
+        assert_eq!(read(&root, "busy_one").unwrap().status, Status::InProgress, "a run has a few seconds to take it");
+        req.desk().age_cancel(10.0);
+        req.desk().watch(3.0e9);
+        assert_eq!(read(&root, "busy_one").unwrap().status, Status::Waiting);
+        assert!(!root.join("private/requests/busy_one/stop").exists());
+        assert_eq!(req.desk().busy(), None);
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]
@@ -1365,6 +1766,13 @@ mod tests {
         req.desk().selected = Some("stone_lantern".into());
         frame(&ctx, &mut req, vec![]);
         assert_eq!(req.waiting(), 1);
+        // its log in the console, closed (its last lines) and open (all of it)
+        let log: String = (1..=700).map(|i| format!("[2026-10-16 09:{:02}:00] step {i}\n", i % 60)).collect();
+        std::fs::write(root.join("private/requests/stone_lantern/log.txt"), &log).unwrap();
+        frame(&ctx, &mut req, vec![]);
+        req.desk().console_open = true;
+        frame(&ctx, &mut req, vec![]);
+        assert_eq!(req.desk().busy().as_deref(), Some("stone_lantern"), "one run at a time: the others' Start waits");
         // and done
         let mut done = read(&root, "stone_lantern").unwrap();
         done.status = Status::Done;

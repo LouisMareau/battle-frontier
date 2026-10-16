@@ -5,12 +5,16 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py list
     python tools/blender/model_requests.py start ID [--minutes N]    in progress: the bar starts
     python tools/blender/model_requests.py step ID "what it's doing" [--done 0.4]
-    python tools/blender/model_requests.py wait ID                   back to waiting (to remake)
+    python tools/blender/model_requests.py wait ID [--note "why"]    back to waiting (to remake)
+    python tools/blender/model_requests.py fail ID "why"             failed, and why
+    python tools/blender/model_requests.py note ID "what happened"   a line in its log
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
                                               [--style low_poly] [--notes "..."] [--mine]
 
 request.json is laid out as the project's records are (content::to_text): the editor and this
-file write the same text for the same request.
+file write the same text for the same request. Each request's log.txt (what its runs did,
+each line timed, the computer's own clock) is written here too: run_claude.py and the
+editor's buttons go through `log`.
 """
 import json
 import re
@@ -37,7 +41,8 @@ FIELDS = {
 }
 KINDS = ("creature", "prop")
 STYLES = ("smooth", "low_poly")
-STATUSES = ("waiting", "in_progress", "done")
+# in the editor's order: waiting first, failed ones above the done
+STATUSES = ("waiting", "in_progress", "failed", "done")
 PICTURES = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -163,6 +168,25 @@ def waiting(root):
     return [r for r in every(root) if r["status"] == "waiting"]
 
 
+# ---------------------------------------------------------------- the log: log.txt, each line timed
+
+def stamp():
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def log(root, rid, text):
+    """Lines added to the request's log.txt: `[2026-10-16 09:41:07] text`, a text of several
+    lines indented under its time."""
+    path = folder(root, rid) / "log.txt"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    at = stamp()
+    lines = str(text).splitlines() or [""]
+    with open(path, "a", encoding="utf-8", newline="\n") as f:
+        f.write(f"[{at}] {lines[0]}\n")
+        for line in lines[1:]:
+            f.write(" " * (len(at) + 3) + line + "\n")
+
+
 # ---------------------------------------------------------------- progress: the editor's bar
 
 def estimate(record):
@@ -189,6 +213,14 @@ def step(root, rid, text, done=None):
     return update(root, rid, progress=p)
 
 
+def fail(root, rid, reason):
+    """Failed, and why (the editor shows it; Start again makes it once more)."""
+    record = load(root, rid)
+    p = dict(record["progress"], step=f"failed: {reason}")
+    log(root, rid, f"FAILED: {reason}")
+    return update(root, rid, status="failed", progress=p)
+
+
 def finish(root, rid, prop, previews, reply=None):
     """Done: the prop it became, its renders, and how long it took."""
     record = load(root, rid)
@@ -202,8 +234,10 @@ def finish(root, rid, prop, previews, reply=None):
 
 
 def bar_text(record, now=None):
-    """What the editor's bar says (Progress::at)."""
+    """What the editor's bar says (Progress::at); for a failed request, why."""
     p = record["progress"]
+    if record["status"] == "failed":
+        return p["step"] or "failed"
     if p["started"] <= 0:
         return p["step"] or "starting"
     gone = max(0.0, (now or time.time()) - p["started"]) / 60.0
@@ -277,7 +311,7 @@ def main(argv):
     verb = argv.pop(0)
     if verb == "list":
         for r in every(root):
-            extra = f" · {bar_text(r)}" if r["status"] == "in_progress" else (f" → {r['prop']}" if r["prop"] else "")
+            extra = f" · {bar_text(r)}" if r["status"] in ("in_progress", "failed") else (f" → {r['prop']}" if r["prop"] else "")
             print(f"{r['status']:<12} {r['id']:<24} {r['name']} ({r['kind']}, {r['height']} cells, {r['style']}{', mine' if r['mine'] else ''}), {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'}{extra}")
     elif verb == "start":
         minutes = option("--minutes")
@@ -288,8 +322,16 @@ def main(argv):
         r = step(root, argv[0], argv[1], float(done) if done else None)
         print(f"{r['id']}: {bar_text(r)}")
     elif verb == "wait":
+        note = option("--note")
+        if note:
+            log(root, argv[0], note)
         r = update(root, argv[0], status="waiting", progress=dict(FIELDS["progress"]))
         print(f"{r['id']}: waiting")
+    elif verb == "fail":
+        r = fail(root, argv[0], argv[1])
+        print(f"{r['id']}: {r['progress']['step']}")
+    elif verb == "note":
+        log(root, argv[0], argv[1])
     elif verb == "new":
         fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", "")}
         if "--mine" in argv:
