@@ -29,6 +29,9 @@ Rules that hold all the way:
   "kind": "prop",
   "height": 1.2,
   "style": "smooth",
+  "details": "",
+  "pose": "t_pose",
+  "shapes": { "min": 8, "max": 30, "unlimited": false },
   "notes": "Warm grey stone, the base a little darker...",
   "mine": false,
   "status": "waiting",
@@ -40,10 +43,17 @@ Rules that hold all the way:
 }
 ```
 
-(`progress` is laid out over several lines in the file, as the project's records are.)
+(`shapes` and `progress` are laid out over several lines in the file, as the project's records
+are.)
 
 - `kind`: `creature` (rigged, with an idle animation) or `prop`; `height` in cells (a cell is
-  a metre; the player is about 1.5); `style`: `smooth` or `low_poly`.
+  a metre; the player is about 1.5); `style`: `smooth`, `low_poly` or `accurate` (as close to
+  the pictures as it can be, whatever it takes: see "Accurate" below), and with it `details`,
+  the user's word on how to build it.
+- `pose` (creatures): `t_pose` (arms or front legs straight out to the sides, legs straight,
+  tail straight back, whatever the pictures show) or `as_is` (the pose the pictures show).
+- `shapes`: how many shapes to build it from, `min` to `max`, or `unlimited`: as many as the
+  design needs, up to about 100 (work out the list of parts first; take the time it takes).
 - `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
   stopped with an error or went silent: `progress.step` says why, `log.txt` has the rest).
   `progress` is what the editor's bar shows (in
@@ -122,8 +132,9 @@ here). Everything runs from the project folder.
 
 1. **List them**: `python tools/blender/model_requests.py list`. Take the first waiting one.
 2. **Start it**: `python tools/blender/model_requests.py start ID`. The editor's bar starts
-   (the estimate: 12 minutes for a prop, 25 for a creature, a fifth less in low-poly; give
-   `--minutes` when the pictures promise much more or less work).
+   (the estimate: 8 minutes for a prop, 12 for a creature, a fifth less in low-poly, two and a
+   half times as long accurate, half as long again with unlimited shapes; give `--minutes`
+   when the pictures promise much more or less work).
 3. **Read it**: `private/requests/ID/request.json`, then every picture (look at each one).
    Note what views there are (front, side, back, details), the proportions (the height
    split into the head, the body, the legs; the widest point; where things attach), the
@@ -136,7 +147,10 @@ here). Everything runs from the project folder.
    crests and wings, `paint` volumes for markings (a belly, spots, a mask), `eyes`. Props:
    `lathe` for anything round, `box` and `cylinder` for hard shapes, `cuts` for openings,
    `paint` for patterns, `light` for a lamp. Big readable shapes: it's a base to refine, seen
-   from the game's camera, not a sculpt.
+   from the game's camera, not a sculpt. Keep to the request's `shapes` (each shape, or a
+   blob's element, counts as one; with `unlimited`, write the list of parts as a comment at
+   the top of `model.py` first). A creature in `t_pose` is built with its limbs straight out
+   whatever the pictures' pose; `as_is` follows the pictures' pose.
 5. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
    `preview_three_quarter.png` (Workbench, the material colours) and `compare.png` (the
    pictures on top, the renders under them, the same height). Look at `compare.png`, and at
@@ -166,6 +180,29 @@ here). Everything runs from the project folder.
 
 A request left in progress (a session that stopped): the editor marks it failed after 31
 minutes without news; Start again (or `model_requests.py wait ID`) puts it back in the queue.
+
+## Accurate
+
+`"style": "accurate"` asks for the closest match to the pictures, whatever it takes, and the
+request's `details` say what matters most. Measure the proportions off the pictures (heights
+in heads, widths against heights), model every part, marking and colour they show, and use the
+most fitting tool for each part rather than the quickest:
+
+- **fur and hair**: `kit.fur(body, region, ...)`, strands grown on a colour region as
+  Blender's hair grows them, made mesh (glTF and the game have no particle hair): thousands
+  of strands for a coat (`count`), their `length`, `thickness` and `droop`; then `fit` again
+  so it stands its height with its fur on, then the rig. Short dense fur reads better than
+  long sparse fur, and each strand is 6 faces: mind the budget;
+- **details**: more shapes, `cuts` for openings and grooves, `slab`s for thin flat parts
+  (claws, fins, leaves, feathers), a finer remesh (`voxel=size/180`) and a bigger budget
+  (`faces=20000` or more) in `fuse`;
+- **patterns**: `paint` volumes for each marking, one per patch, shaped to the pictures;
+- anything else Blender does that ends as meshes with materials (the game draws triangles,
+  base colours and base colour textures): a texture painted from the pictures, displacement,
+  subdivision applied before fusing.
+
+It may take a long time, and that's fine; the editor's bar runs on a longer estimate, and the
+run keeps going while Claude writes a long script.
 
 ## The kit: `request_kit.py`
 
@@ -202,7 +239,8 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 |---|---|
 | `fuse(parts, name, colours, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | joined and voxel-remeshed into one clean watertight mesh, `cuts` carved out, each face given the material of the nearest part's region (then of the `paint` volume it's in), decimated to about `faces` triangles (smooth 6000, low-poly 800) sparing the borders between regions, smooth (weighted normals) or flat shaded |
 | `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}` |
-| `eyes(body, [centres], radius, colour=, look=)` | glossy eyes with a glint, set into the body (group "eyes", which the rig gives the head) |
+| `eyes(body, [centres], radius, colour=, look=)` | glossy eyes with a glint, seated on the body's surface (group "eyes", which the rig gives the head) |
+| `fur(body, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
 | `fit([objects], height)` | scaled to `height` cells, standing on the origin |
 | `light(at, color, intensity, reach, kind="point")` | a lamp's light, which becomes the prop's (lit at night) |
 | `rig(body, {chain: [points]}, parents=)` | an armature, the body skinned with automatic weights; a chain hangs from the bone nearest its first point |

@@ -56,6 +56,21 @@ class Job:
         return self.record["style"] != "low_poly"
 
     @property
+    def accurate(self):
+        """As close to the pictures as it can be (requests.md, "Accurate")."""
+        return self.record["style"] == "accurate"
+
+    @property
+    def pose(self):
+        """A creature's: "t_pose" or "as_is"."""
+        return self.record["pose"]
+
+    @property
+    def shapes(self):
+        """{"min", "max", "unlimited"}: how many shapes to build it from."""
+        return self.record["shapes"]
+
+    @property
     def height(self):
         return float(self.record["height"])
 
@@ -499,6 +514,70 @@ def eyes(body, centres, radius, colour="#17181c", glint="#ffffff", look=(0, -1, 
     bm.to_mesh(me)
     bm.free()
     return body
+
+
+def fur(body, region, count=1500, length=0.04, thickness=0.004, droop=0.3, seed=1, colour=None):
+    """Fur (or hair) grown on a colour region of `body` as Blender's hair would grow it, but
+    made mesh, since glTF (and the game) has no particle hair: `count` strands from the
+    region's faces (spread by their area), about `length` cells long (each a little longer or
+    shorter), `thickness` at the root tapering to a point, bending down by `droop`, in the
+    region's material (or a material of `colour`). They're part of the body: grow fur once it's
+    fitted (lengths in cells), then `fit` again (so it stands its height with its fur on), then
+    `rig`, which weights the strands too. Returns how many strands grew."""
+    import bisect
+    import random
+    me = body.data
+    index = next((i for i, m in enumerate(me.materials) if m and m.name.endswith(f" {region}")), None)
+    if index is None:
+        raise ValueError(f"{body.name} has no region {region!r}: {[m.name for m in me.materials]}")
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    faces = [f for f in bm.faces if f.material_index == index]
+    if not faces:
+        bm.free()
+        return 0
+    if colour:
+        me.materials.append(material(f"{body.name} {region} fur", colour))
+        index = len(me.materials) - 1
+    areas, total = [], 0.0
+    for f in faces:
+        total += f.calc_area()
+        areas.append(total)
+    rng = random.Random(seed)
+    turns = [k / 3 * math.tau for k in range(3)]
+    grown = []
+    for _ in range(count):
+        f = faces[min(bisect.bisect(areas, rng.random() * total), len(faces) - 1)]
+        corners = [v.co for v in f.verts]
+        i = rng.randrange(1, len(corners) - 1)
+        a, b, c = corners[0], corners[i], corners[i + 1]
+        u, w = rng.random(), rng.random()
+        if u + w > 1:
+            u, w = 1 - u, 1 - w
+        root = a + (b - a) * u + (c - a) * w
+        n = f.normal.normalized()
+        long = length * (0.7 + 0.6 * rng.random())
+        down = Vector((0.0, 0.0, -droop * long))
+        mid, tip = root + n * long * 0.5 + down * 0.25, root + n * long + down
+        side = n.orthogonal().normalized()
+        other = n.cross(side)
+
+        def ring(at, r):
+            return [bm.verts.new(at + (side * math.cos(t) + other * math.sin(t)) * r) for t in turns]
+
+        low, high, point = ring(root, thickness), ring(mid, thickness * 0.55), bm.verts.new(tip)
+        for k in range(3):
+            k1 = (k + 1) % 3
+            for made in (bm.faces.new((low[k], low[k1], high[k1], high[k])), bm.faces.new((high[k], high[k1], point))):
+                made.material_index = index
+                made.smooth = True
+                grown.append(made)
+    # facing out, each strand
+    bmesh.ops.recalc_face_normals(bm, faces=grown)
+    bm.to_mesh(me)
+    bm.free()
+    print(f"{body.name}: {count} strands of fur on {region} ({len(me.polygons)} faces now)", flush=True)
+    return count
 
 
 def fit(objects, height):

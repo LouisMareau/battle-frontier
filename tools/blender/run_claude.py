@@ -34,8 +34,9 @@ SHOWN = 30
 PROMPT = """You are modelling one request of the Battle Frontier map editor, unattended: nobody can
 answer a question, so decide for yourself, and say what you guessed in the reply.
 
-The request: "{name}", a {kind} {height} cells tall, {style}, in private/requests/{id}/ (its
-request.json and its pictures). Notes from the user: {notes}
+The request: "{name}", a {kind} {height} cells tall, in private/requests/{id}/ (its request.json
+and its pictures). Notes from the user: {notes}
+{settings}
 
 Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):
 - read private/requests/{id}/request.json and look at every picture in that folder;
@@ -91,6 +92,37 @@ def allowed(rid):
     ]
 
 
+STYLES = {
+    "smooth": "Style: smooth: rounded shapes, smooth shaded (fuse with smooth=True, about 6000 triangles).",
+    "low_poly": "Style: low-poly: few faces, flat shaded (fuse with smooth=False, about 800 triangles).",
+    "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour, "
+                 "the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
+                 "and hair, painted colours for patterns, more shapes, cuts and slabs for the details, a finer voxel and a bigger budget "
+                 "(faces=20000 or more). It may take a long time: that's fine."),
+}
+POSES = {
+    "t_pose": "Pose: T-pose: stand it with its arms (or front legs) straight out to the sides, its legs straight and its tail straight back, whatever pose the pictures show.",
+    "as_is": "Pose: as-is: give it the pose the pictures show.",
+}
+
+
+def settings_lines(record):
+    """What the request's settings ask of the model, a line each."""
+    out = [STYLES.get(record["style"], STYLES["smooth"])]
+    if record["style"] == "accurate" and record["details"].strip():
+        out.append("Model details from the user: " + record["details"].strip())
+    if record["kind"] == "creature":
+        out.append(POSES.get(record["pose"], POSES["t_pose"]))
+    shapes = record["shapes"]
+    if shapes["unlimited"]:
+        out.append(f"Shapes: as many as the design needs, up to about {mr.SHAPES_CAP}. Before writing model.py, think it through: list the parts "
+                   "the design is made of and the shape for each; a long, careful script is fine, and so is taking your time.")
+    else:
+        out.append(f"Shapes: build it from {shapes['min']} to {shapes['max']} shapes (spheres, capsules, boxes, cylinders, lathes, slabs, "
+                   "a blob's elements, each counts as one).")
+    return "\n".join(out)
+
+
 def clip(text, n=SHOWN):
     lines = text.splitlines()
     return text if len(lines) <= n else "\n".join(lines[:n]) + f"\n... ({len(lines) - n} more lines)"
@@ -122,6 +154,17 @@ def what(name, args):
 def describe(event, run):
     """What one event of Claude's stream says, as lines of the log; what the run learns."""
     kind = event.get("type")
+    if kind == "stream_event":
+        # a piece of what Claude is writing (a long script can take minutes): counted, and
+        # said once a minute
+        delta = (event.get("event") or {}).get("delta") or {}
+        run["written"] = run.get("written", 0) + len(delta.get("text") or delta.get("partial_json") or delta.get("thinking") or "")
+        if time.time() - run.get("told", 0) > 60 and run["written"]:
+            run["told"] = time.time()
+            return [f"(Claude is writing: {run['written']:,} characters so far)"]
+        return []
+    if kind == "assistant":
+        run["written"], run["told"] = 0, time.time()
     if kind == "system" and event.get("subtype") == "init":
         run["model"] = event.get("model")
         return [f"Claude reached: model {event.get('model')}, Claude Code {event.get('claude_code_version', '?')}, "
@@ -194,12 +237,12 @@ def run(root, rid, model=None, quiet=QUIET):
         version = "?"
     settings = here / "claude-settings.json"
     settings.write_text(json.dumps({"permissions": {"allow": allowed(rid)}}, indent=2) + "\n", encoding="utf-8")
-    args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
+    args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    prompt = PROMPT.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], style=record["style"].replace("_", "-"),
-                           notes=record["notes"].strip() or "(none)")
+    prompt = PROMPT.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
+                           settings=settings_lines(record))
     mr.start(root, rid)
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
@@ -217,14 +260,16 @@ def run(root, rid, model=None, quiet=QUIET):
         for line in proc.stdout:
             with lock:
                 state["last"] = time.time()
-                raw.write(line)
-                raw.flush()
                 try:
                     event = json.loads(line)
                 except ValueError:
                     if line.strip():
                         say(line.rstrip())
                     continue
+                # the whole events kept raw, not the pieces of one being written
+                if event.get("type") != "stream_event":
+                    raw.write(line)
+                    raw.flush()
                 for text in describe(event, state):
                     say(text)
 

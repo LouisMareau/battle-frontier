@@ -9,7 +9,9 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py fail ID "why"             failed, and why
     python tools/blender/model_requests.py note ID "what happened"   a line in its log
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
-                                              [--style low_poly] [--notes "..."] [--mine]
+                                              [--style low_poly|accurate] [--details "..."]
+                                              [--pose as_is] [--shapes 8-30|unlimited]
+                                              [--notes "..."] [--mine]
 
 request.json is laid out as the project's records are (content::to_text): the editor and this
 file write the same text for the same request. Each request's log.txt (what its runs did,
@@ -30,6 +32,9 @@ FIELDS = {
     "kind": "creature",
     "height": 1.0,
     "style": "smooth",
+    "details": "",
+    "pose": "t_pose",
+    "shapes": {"min": 8, "max": 30, "unlimited": False},
     "notes": "",
     "mine": False,
     "status": "waiting",
@@ -40,7 +45,10 @@ FIELDS = {
     "reply": "",
 }
 KINDS = ("creature", "prop")
-STYLES = ("smooth", "low_poly")
+STYLES = ("smooth", "low_poly", "accurate")
+POSES = ("t_pose", "as_is")
+# "unlimited" shapes stop at about this many
+SHAPES_CAP = 100
 # in the editor's order: waiting first, failed ones above the done
 STATUSES = ("waiting", "in_progress", "failed", "done")
 PICTURES = (".png", ".jpg", ".jpeg", ".webp")
@@ -118,8 +126,10 @@ def normal(record):
     out = {}
     for k, default in FIELDS.items():
         v = record.get(k, default)
-        if k == "progress":
-            v = {pk: (float(v.get(pk, pd)) if isinstance(pd, float) else v.get(pk, pd)) for pk, pd in default.items()}
+        if isinstance(default, dict):
+            # each part as the editor writes it (1.0 for a float, 8 for a count)
+            kinds = {bool: bool, int: int, float: float}
+            v = {pk: kinds.get(type(pd), lambda x: x)(v.get(pk, pd)) for pk, pd in default.items()}
         elif isinstance(default, float):
             v = float(v)
         out[k] = v
@@ -192,8 +202,12 @@ def log(root, rid, text):
 def estimate(record):
     """Minutes a request takes to model, by default: a session's whole time on it (reading the
     pictures, the script, the tries and renders, the rig, adding it)."""
-    minutes = 25.0 if record["kind"] == "creature" else 12.0
-    return float(round(minutes * (0.8 if record["style"] == "low_poly" else 1.0)))
+    # what the first runs took: a creature about 10 minutes, a small one 2
+    minutes = 12.0 if record["kind"] == "creature" else 8.0
+    minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
+    # as many shapes as it needs: worked out first, written out long
+    minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
+    return float(round(minutes))
 
 
 def start(root, rid, minutes=None):
@@ -333,12 +347,16 @@ def main(argv):
     elif verb == "note":
         log(root, argv[0], argv[1])
     elif verb == "new":
-        fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", "")}
+        fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", ""),
+                  "details": option("--details", ""), "pose": option("--pose", "t_pose")}
+        shapes = option("--shapes", "8-30")
+        lo, _, hi = shapes.partition("-")
+        fields["shapes"] = {"min": 1, "max": SHAPES_CAP, "unlimited": True} if shapes == "unlimited" else {"min": int(lo), "max": int(hi or lo), "unlimited": False}
         if "--mine" in argv:
             argv.remove("--mine")
             fields["mine"] = True
-        if fields["kind"] not in KINDS or fields["style"] not in STYLES:
-            raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}")
+        if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
+            raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
         r = new(root, argv[0], argv[1:], **fields)
         print(f"{r['id']}: a new request, {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'} (private/requests/{r['id']}/)")
     else:

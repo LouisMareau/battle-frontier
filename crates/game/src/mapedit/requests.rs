@@ -39,6 +39,38 @@ pub(super) enum Style {
     Smooth,
     /// few faces, flat shaded
     LowPoly,
+    /// as close to the pictures as it can be, whatever it takes (the model details say how)
+    Accurate,
+}
+
+/// How a creature stands in its model: the pose it's rigged in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum Pose {
+    /// arms (or front legs) straight out to the sides, legs straight, tail straight back
+    #[default]
+    TPose,
+    /// the pose the pictures show
+    AsIs,
+}
+
+/// "As many as it needs" stops at about this many shapes.
+pub(super) const SHAPES_CAP: u32 = 100;
+
+/// How many shapes (primitives) the model is built from: a range, or as many as the design
+/// needs (up to SHAPES_CAP), which has Claude think it through and take its time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct Shapes {
+    pub min: u32,
+    pub max: u32,
+    pub unlimited: bool,
+}
+
+impl Default for Shapes {
+    fn default() -> Self {
+        Shapes { min: 8, max: 30, unlimited: false }
+    }
 }
 
 /// In the list's order: waiting first, failed ones above the done.
@@ -107,6 +139,13 @@ pub(super) struct ModelRequest {
     /// how tall it stands, in cells
     pub height: f64,
     pub style: Style,
+    /// with the accurate style: how to build it, what matters most (the fur, a texture, a
+    /// detail to get exactly right)
+    pub details: String,
+    /// a creature's pose in its model
+    pub pose: Pose,
+    /// how many shapes it's built from
+    pub shapes: Shapes,
     /// what to know: colours, what the pictures don't show, what matters most
     pub notes: String,
     /// the design is the user's own, or licensed to them: its model goes to content/ (the
@@ -133,6 +172,9 @@ impl Default for ModelRequest {
             kind: Kind::Creature,
             height: 1.0,
             style: Style::Smooth,
+            details: String::new(),
+            pose: Pose::TPose,
+            shapes: Shapes::default(),
             notes: String::new(),
             mine: false,
             status: Status::Waiting,
@@ -239,7 +281,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{Kind, ModelRequest, Progress, Requests, Status, Style};
+    use super::{Kind, ModelRequest, Pose, Progress, Requests, Status, Style, SHAPES_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -553,6 +595,33 @@ mod desk {
     /// In progress with nothing written in its folder for SILENT minutes: failed.
     pub(in super::super) fn gone_silent(r: &ModelRequest, last: Option<SystemTime>, now: SystemTime) -> bool {
         r.status == Status::InProgress && last.and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs_f64() / 60.0 > SILENT).unwrap_or(false)
+    }
+
+    /// How long a log line's time is (`[2026-10-16 09:41:07] `: 22 characters), or 0 when it
+    /// has none (a line going on under the one before).
+    pub(in super::super) fn stamp_len(line: &str) -> usize {
+        let b = line.as_bytes();
+        let stamped = b.len() >= 22 && b[0] == b'[' && b[20] == b']' && b[21] == b' ' && b[1..20].iter().all(|c| c.is_ascii_digit() || matches!(c, b'-' | b':' | b' '));
+        if stamped {
+            22
+        } else {
+            0
+        }
+    }
+
+    /// The log as the console shows it: each line's time in a darker grey than its words.
+    pub(in super::super) fn console_text(text: &str, folded: bool) -> egui::text::LayoutJob {
+        let font = egui::FontId::monospace(11.0);
+        let (stamp, words) = (Color32::from_gray(100), Color32::from_gray(if folded { 165 } else { 222 }));
+        let mut job = egui::text::LayoutJob::default();
+        for line in text.split_inclusive('\n') {
+            let cut = stamp_len(line);
+            if cut > 0 {
+                job.append(&line[..cut], 0.0, egui::TextFormat::simple(font.clone(), stamp));
+            }
+            job.append(&line[cut..], 0.0, egui::TextFormat::simple(font.clone(), words));
+        }
+        job
     }
 
     /// The last `n` lines of a log, and how many came before them.
@@ -970,7 +1039,7 @@ mod desk {
         fn console(&mut self, ui: &mut egui::Ui, id: Option<String>) -> Option<String> {
             let mut said = None;
             let log = id.as_deref().and_then(|id| self.log_of(id));
-            ui.separator();
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
                 // a fold's triangle, painted (the fonts have no arrow glyphs), and its name
                 let (_, icon) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::click());
@@ -1010,16 +1079,16 @@ mod desk {
             };
             if self.console_open {
                 let (shown, before) = tail(&text, CONSOLE_LINES);
-                // at least that tall once the log is longer (the window's height is its content's)
-                egui::ScrollArea::vertical().id_salt("request-console").min_scrolled_height(220.0).max_height(230.0).auto_shrink([false, true]).stick_to_bottom(true).show(ui, |ui| {
+                // all of its panel's height (its top edge drags it taller)
+                egui::ScrollArea::vertical().id_salt("request-console").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
                     if before > 0 {
                         hint(ui, &format!("… {before} lines before these: Copy takes them all"));
                     }
-                    ui.add(egui::Label::new(RichText::new(shown.trim_end()).monospace().size(11.0)).selectable(true).wrap());
+                    ui.add(egui::Label::new(console_text(shown.trim_end(), false)).selectable(true).wrap());
                 });
             } else {
                 let (last, _) = tail(&text, 3);
-                ui.add(egui::Label::new(RichText::new(last.trim_end()).monospace().size(11.0).color(Color32::from_gray(160))).truncate());
+                ui.add(egui::Label::new(console_text(last.trim_end(), true)).truncate());
             }
             said
         }
@@ -1220,6 +1289,39 @@ mod desk {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.style, Style::Smooth, "smooth").on_hover_text("Rounded, smooth shaded");
                     ui.selectable_value(&mut r.style, Style::LowPoly, "low-poly").on_hover_text("Few faces, flat shaded");
+                    let accurate = ui.selectable_value(&mut r.style, Style::Accurate, "accurate").on_hover_text(
+                        "As close to the pictures as it can be, whatever it takes: Claude uses the fitting tool for each part (fur, textures...) and may take a long time",
+                    );
+                    mark("uiRequestAccurate", &accurate);
+                });
+                ui.end_row();
+                if r.style == Style::Accurate {
+                    ui.label("Model details");
+                    let details = ui.add(
+                        egui::TextEdit::multiline(&mut r.details).desired_rows(3).desired_width(330.0).hint_text("How to build it, what matters most: the fur, a marking, a detail to get exactly right"),
+                    );
+                    mark("uiRequestDetails", &details);
+                    ui.end_row();
+                }
+                if r.kind == Kind::Creature {
+                    ui.label("Default pose");
+                    ui.horizontal(|ui| {
+                        ui.selectable_value(&mut r.pose, Pose::TPose, "T-pose").on_hover_text("Arms (or front legs) straight out to the sides, legs straight, tail straight back: the easiest to rig and animate");
+                        ui.selectable_value(&mut r.pose, Pose::AsIs, "as-is").on_hover_text("The pose the pictures show");
+                    });
+                    ui.end_row();
+                }
+                ui.label("Shapes");
+                ui.horizontal(|ui| {
+                    let meter = ui
+                        .add_enabled_ui(!r.shapes.unlimited, |ui| range_meter(ui, &mut r.shapes.min, &mut r.shapes.max, SHAPES_CAP))
+                        .inner
+                        .on_hover_text("How many shapes (primitives) Claude should build it from: drag either end");
+                    mark("uiRequestShapes", &meter);
+                    ui.checkbox(&mut r.shapes.unlimited, "unlimited").on_hover_text(format!(
+                        "As many as the design needs, up to about {SHAPES_CAP}: Claude works out which parts it's made of first, and may take a long time"
+                    ));
+                    hint(ui, &if r.shapes.unlimited { format!("up to ~{SHAPES_CAP}") } else { format!("{} to {}", r.shapes.min, r.shapes.max) });
                 });
                 ui.end_row();
                 ui.label("Notes");
@@ -1367,8 +1469,51 @@ mod desk {
         let style = match r.style {
             Style::Smooth => "smooth",
             Style::LowPoly => "low-poly",
+            Style::Accurate => "accurate",
         };
         format!("{kind} · {} cells · {style}{}", r.height, if r.mine { " · mine" } else { "" })
+    }
+
+    /// Where a value sits on the meter's track (0 to 1), from 1 to `top`.
+    pub(in super::super) fn meter_place(v: u32, top: u32) -> f32 {
+        (v.clamp(1, top) - 1) as f32 / (top.max(2) - 1) as f32
+    }
+
+    /// The value at a place on the meter's track (0 to 1).
+    pub(in super::super) fn meter_value(t: f32, top: u32) -> u32 {
+        (t.clamp(0.0, 1.0) * (top.max(2) - 1) as f32).round() as u32 + 1
+    }
+
+    /// A track with two handles, from 1 to `top`: the least and the most. The handle nearer
+    /// where the pointer went down follows it; the least never passes the most.
+    fn range_meter(ui: &mut egui::Ui, lo: &mut u32, hi: &mut u32, top: u32) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(200.0, 20.0), Sense::click_and_drag());
+        let track = rect.shrink2(egui::vec2(8.0, 0.0));
+        let x_of = |v: u32| track.left() + meter_place(v, top) * track.width();
+        let grabbed = response.id.with("handle");
+        if let Some(p) = response.interact_pointer_pos() {
+            if response.drag_started() || response.clicked() {
+                let high = (p.x - x_of(*hi)).abs() < (p.x - x_of(*lo)).abs() || (*lo == *hi && p.x > x_of(*hi));
+                ui.data_mut(|d| d.insert_temp(grabbed, high));
+            }
+            if response.dragged() || response.clicked() {
+                let v = meter_value((p.x - track.left()) / track.width(), top);
+                if ui.data(|d| d.get_temp::<bool>(grabbed)).unwrap_or(false) {
+                    *hi = v.max(*lo);
+                } else {
+                    *lo = v.min(*hi);
+                }
+            }
+        }
+        let painter = ui.painter();
+        let y = rect.center().y;
+        let lit = if ui.is_enabled() { WORKING } else { Color32::from_gray(90) };
+        painter.line_segment([egui::pos2(track.left(), y), egui::pos2(track.right(), y)], egui::Stroke::new(4.0, Color32::from_gray(55)));
+        painter.line_segment([egui::pos2(x_of(*lo), y), egui::pos2(x_of(*hi), y)], egui::Stroke::new(4.0, lit));
+        for v in [*lo, *hi] {
+            painter.circle(egui::pos2(x_of(v), y), 6.0, ui.style().interact(&response).bg_fill, egui::Stroke::new(1.5, lit));
+        }
+        response
     }
 
     /// A request's progress bar, `width` by `height`, with its words on it when it's tall
@@ -1441,48 +1586,51 @@ mod desk {
             if self.open {
                 let (mut open, hovering) = (true, self.hovering);
                 let (mut said, mut asked) = (None, None);
-                // as tall as the screen allows (a window grows to its content: the content's
-                // height is set here, so the console at the foot stays on the screen)
-                let tall = (ctx.content_rect().height() - 150.0).clamp(380.0, 720.0);
+                // resizable every way (its corner too); the console in a panel at its foot (open,
+                // its top edge drags), the list and the request in what's left
                 egui::Window::new(format!("Model requests ({})", d.list.len()))
                     .id(egui::Id::new("model-requests"))
                     .open(&mut open)
-                    .default_width(800.0)
-                    .resizable([true, false])
+                    .default_size([840.0, 760.0])
+                    .min_size([620.0, 420.0])
+                    .resizable(true)
                     .default_pos([270.0, 60.0])
                     .show(ctx, |ui| {
-                    d.banner(ui, hovering);
-                    ui.add_space(4.0);
-                    // the console at the foot, the list and the request above it
-                    let console = if d.console_open { 290.0 } else { 100.0 };
-                    let height = (tall - console).max(140.0);
-                    // a row of that height: its separator (which takes all the height it's
-                    // given) stops there
-                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                        ui.vertical(|ui| {
-                            ui.set_width(270.0);
-                            egui::ScrollArea::vertical().id_salt("request-list").max_height(height).show(ui, |ui| {
-                                if let Some(a) = d.list_column(ui) {
-                                    asked = Some(a);
-                                }
+                        d.banner(ui, hovering);
+                        ui.add_space(4.0);
+                        let shown = d.selected.clone().or_else(|| d.busy());
+                        let console = if d.console_open {
+                            egui::Panel::bottom("request-console-open").resizable(true).default_size(260.0).min_size(120.0).show(ui, |ui| d.console(ui, shown))
+                        } else {
+                            egui::Panel::bottom("request-console-folded").resizable(false).exact_size(84.0).show(ui, |ui| d.console(ui, shown))
+                        };
+                        if let Some(s) = console.inner {
+                            said = Some(s);
+                        }
+                        // a row of what's left: its separator (which takes all the height it's
+                        // given) stops there
+                        let height = ui.available_height();
+                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), height), egui::Layout::left_to_right(egui::Align::Min), |ui| {
+                            ui.vertical(|ui| {
+                                ui.set_width(270.0);
+                                egui::ScrollArea::vertical().id_salt("request-list").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+                                    if let Some(a) = d.list_column(ui) {
+                                        asked = Some(a);
+                                    }
+                                });
                             });
-                        });
-                        ui.separator();
-                        ui.vertical(|ui| {
-                            egui::ScrollArea::vertical().id_salt("request-pane").max_height(height).show(ui, |ui| {
-                                let (prop, s, a) = d.pane(ui, content, &mut name_focused);
-                                (use_prop, said) = (prop, s);
-                                if a.is_some() {
-                                    asked = a;
-                                }
+                            ui.separator();
+                            ui.vertical(|ui| {
+                                egui::ScrollArea::vertical().id_salt("request-pane").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+                                    let (prop, s, a) = d.pane(ui, content, &mut name_focused);
+                                    (use_prop, said) = (prop, s.or(said.take()));
+                                    if a.is_some() {
+                                        asked = a;
+                                    }
+                                });
                             });
                         });
                     });
-                    let shown = d.selected.clone().or_else(|| d.busy());
-                    if let Some(s) = d.console(ui, shown) {
-                        said = Some(s);
-                    }
-                });
                 match asked {
                     Some(Run::Start(id)) => said = Some(d.start_run(&id)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
@@ -1601,6 +1749,49 @@ mod tests {
         // no start yet, no estimate
         assert_eq!(Progress::default().at(5000.0).1, "starting");
         assert_eq!(Progress { started: 1000.0, ..Default::default() }.at(1000.0 + 300.0).1, "5 min so far");
+    }
+
+    #[test]
+    fn accurate_requests_say_how_their_poses_and_their_shapes() {
+        let r = ModelRequest {
+            style: Style::Accurate,
+            details: "long brown fur".into(),
+            pose: Pose::AsIs,
+            shapes: Shapes { min: 1, max: SHAPES_CAP, unlimited: true },
+            ..Default::default()
+        };
+        let text = content::to_text(&r);
+        assert!(text.contains("  \"style\": \"accurate\",\n  \"details\": \"long brown fur\",\n  \"pose\": \"as_is\",\n"), "{text}");
+        assert!(text.contains("  \"shapes\": {\n    \"min\": 1,\n    \"max\": 100,\n    \"unlimited\": true\n  },\n"), "{text}");
+        assert_eq!(serde_json::from_str::<ModelRequest>(&text).unwrap(), r);
+        // an older record, without them: a T-pose, 8 to 30 shapes
+        let old: ModelRequest = serde_json::from_str(r#"{ "id": "x", "style": "smooth" }"#).unwrap();
+        assert_eq!((old.pose, old.shapes, old.details.as_str()), (Pose::TPose, Shapes { min: 8, max: 30, unlimited: false }, ""));
+        assert_eq!(serde_json::from_str::<ModelRequest>(r#"{ "pose": "t_pose" }"#).unwrap().pose, Pose::TPose);
+    }
+
+    #[test]
+    fn the_shapes_meter_reads_its_track() {
+        assert_eq!((meter_value(0.0, 100), meter_value(1.0, 100), meter_value(0.5, 100)), (1, 100, 51));
+        assert_eq!((meter_value(-3.0, 100), meter_value(7.0, 100)), (1, 100));
+        assert_eq!((meter_place(1, 100), meter_place(100, 100)), (0.0, 1.0));
+        for v in [1, 8, 30, 77, 100] {
+            assert_eq!(meter_value(meter_place(v, 100), 100), v, "{v} there and back");
+        }
+    }
+
+    #[test]
+    fn the_console_greys_each_lines_time() {
+        assert_eq!(stamp_len("[2026-10-16 12:31:26] Claude reached"), 22);
+        assert_eq!(stamp_len("                      the prompt goes on"), 0);
+        assert_eq!(stamp_len("[not a time] at all, but long enough"), 0);
+        let job = console_text("[2026-10-16 12:31:26] Claude reached\n                      more of it\n", false);
+        let colours: Vec<_> = job.sections.iter().map(|s| (&job.text[s.byte_range.start.0..s.byte_range.end.0], s.format.color)).collect();
+        // the time, then the words: the line going on under it is words too (one run of them)
+        assert_eq!(colours.len(), 2, "{colours:?}");
+        assert_eq!(colours[0].0, "[2026-10-16 12:31:26] ");
+        assert!(colours[0].1.r() < colours[1].1.r(), "the time darker than the words: {colours:?}");
+        assert_eq!(colours[1].0, "Claude reached\n                      more of it\n");
     }
 
     #[test]
@@ -1840,6 +2031,15 @@ mod tests {
         req.desk().selected = Some("toad".into());
         frame(&ctx, &mut req, vec![]);
         assert_eq!(req.waiting(), 0);
+        // an accurate creature: its model details, its pose and its shapes drawn
+        toad.style = Style::Accurate;
+        toad.details = "short ears".into();
+        toad.shapes.unlimited = true;
+        save(&root, &toad).unwrap();
+        req.watch(4.0e9);
+        frame(&ctx, &mut req, vec![]);
+        req.desk().console_open = false;
+        frame(&ctx, &mut req, vec![]);
         std::fs::remove_dir_all(&root).ok();
     }
 

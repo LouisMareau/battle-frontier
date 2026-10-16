@@ -95,7 +95,7 @@ Pictures dropped on the map editor's **Requests** window (desktop) become reques
 `private/requests/<id>/`, which a Claude session models when asked to "make the waiting
 requests": `requests.md` is its recipe. Each request gets a `model.py` that builds the model
 with `request_kit.py` (shapes and metaballs fused into one clean mesh, a material per colour
-region, glossy eyes, a rig and an idle for creatures), renders it beside the pictures to
+region, glossy eyes, fur as mesh strands, a rig and an idle for creatures), renders it beside the pictures to
 compare, and adds it through `write_prop` (to `temporary/`, or `content/` when the design is
 the user's). `model_requests.py` reads and writes the requests from plain Python (`list`,
 `start`, `step`, `wait`, `fail`, `note`, `new`); the editor's progress bar runs on what it writes.

@@ -357,6 +357,12 @@ check("  the eyes seated on its face, not floating", all(g < 0.02 for g in gaps)
 kit.fit([critter], job.height)
 lo, hi = kit.bounds([critter])
 check("  as tall as asked, on the origin", abs(hi.z - 0.8) < 1e-3 and abs(lo.z) < 1e-3 and abs(lo.x + hi.x) < 0.02, f"{len(critter.data.polygons)} faces, {lo[:]} to {hi[:]}")
+# fur on its fur, made mesh: strands the game draws (glTF has no particle hair)
+before_fur = len(critter.data.polygons)
+grown = kit.fur(critter, "fur", count=200, length=0.03)
+fur_faces = sum(1 for p in critter.data.polygons[before_fur:] if critter.data.materials[p.material_index].name == "test_critter fur")
+check("fur grown on its region, made mesh", grown == 200 and len(critter.data.polygons) == before_fur + 200 * 6 and fur_faces == 200 * 6, f"{len(critter.data.polygons) - before_fur} new faces")
+kit.fit([critter], job.height)  # its height with its fur on
 names = [m.name for m in critter.data.materials]
 used = {p.material_index for p in critter.data.polygons}
 check("a material per colour region, glossy eyes, every one used", names == ["test_critter fur", "test_critter ear", "test_critter belly", "test_critter eye", "test_critter eye glint"] and used == set(range(5))

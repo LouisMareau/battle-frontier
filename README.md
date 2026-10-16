@@ -280,8 +280,11 @@ on the window while it's open (models dropped meanwhile still go to the asset br
 pictures go to it only while it's open). The first drop starts a request named after the
 first picture; the next ones add to the selected request ("New request" starts another). A
 request has a name (its id follows it while it waits), a kind (creature or prop), its height in
-cells, a style (smooth or low-poly), notes, and "This design is mine or licensed" (off by
-default: the model of someone else's design goes to `temporary/`, never `content/`). It's kept
+cells, a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
+it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
+to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
+100), notes, and "This design is mine or licensed" (off by default: the model of someone else's
+design goes to `temporary/`, never `content/`). It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
 committed. The list shows each request's status (waiting, in progress, failed, done) and its
 pictures, with a **Start** button on each (**Cancel** while it's being made; one at a time):
@@ -290,10 +293,10 @@ the tools the recipe needs; **Claude:** at the top picks the model). One in prog
 with the time left (the top bar's button shows it too); it ends done by itself once the model
 is in the project, or failed (why, under it) when Claude ends without it, stops with an error,
 isn't logged in, or goes 30 minutes without a word. The **console** at the window's foot shows
-the request's log (`log.txt`, every line timed): Claude reached and the model it runs, what was
+the request's log (`log.txt`, every line timed, the times greyed): Claude reached and the model it runs, what was
 sent, each step and tool call, the end; Copy puts it all on the clipboard. A done request shows
-the renders of its model and the prop it became ("Use it" puts it in the Place tool). Claude
-Code's command line must be logged in once: a request that failed for that has a "Log in to
+the renders of its model and the prop it became ("Use it" puts it in the Place tool). The
+window resizes every way. Claude Code's command line must be logged in once: a request that failed for that has a "Log in to
 Claude Code…" button, which opens it in a terminal (type `/login`). The recipe is
 `tools/blender/requests.md`: a script per request builds the model from shapes in Blender,
 renders it beside the pictures until it matches, rigs a creature with an idle animation, and

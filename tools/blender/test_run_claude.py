@@ -33,7 +33,7 @@ if args == ["--version"]:
     print("9.9.9 (stand-in)")
     sys.exit(0)
 prompt = sys.stdin.read()
-need = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "dontAsk", "--settings"]
+need = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--settings"]
 if not all(a in args for a in need) or "private/requests/" not in prompt:
     print("started wrongly: " + " ".join(args), file=sys.stderr)
     sys.exit(9)
@@ -58,6 +58,8 @@ if mode == "error":
     print("something broke", file=sys.stderr, flush=True)
     sys.exit(3)
 if mode == "finish":
+    for piece in ("model", ".py ", "being written"):
+        say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
     mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png"], "made a test prop")
 say({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "duration_ms": 61000, "total_cost_usd": 0.42, "result": "Made it.",
       "permission_denials": [{{"tool_name": "Bash", "tool_input": {{"command": "git status"}}}}]}})
@@ -74,11 +76,13 @@ def check(what, ok, detail=""):
         failed.append(what)
 
 
-def fresh(rid):
+def fresh(rid, **fields):
     """A scratch project with one waiting request."""
     if (SCRATCH / "private" / "requests" / rid).exists():
         shutil.rmtree(SCRATCH / "private" / "requests" / rid)
-    mr.save(SCRATCH, mr.normal(dict(mr.FIELDS, id=rid, name=rid.replace("_", " ").title(), kind="prop", notes="a test")))
+    record = dict(mr.FIELDS, id=rid, name=rid.replace("_", " ").title(), kind="prop", notes="a test")
+    record.update(fields)
+    mr.save(SCRATCH, mr.normal(record))
 
 
 def run(rid, mode, *extra, stop_after=None):
@@ -115,7 +119,9 @@ allow = settings["permissions"]["allow"]
 check("  its tools: reading, writing in its folder, Blender through run_request.py, nothing else", "Write(private/requests/test_one/**)" in allow
       and "Bash(python tools/blender/run_request.py test_one *)" in allow and not any(a in ("Write", "Edit", "Bash") or a.startswith("Bash(git") for a in allow), str(allow))
 raw = (mr.folder(SCRATCH, "test_one") / "run.jsonl").read_text(encoding="utf-8").splitlines()
-check("  the raw stream kept", len(raw) == 4 and json.loads(raw[0])["model"] == "claude-test-1", f"{len(raw)} lines")
+check("  the raw stream kept, without the pieces of what was being written", len(raw) == 4 and json.loads(raw[0])["model"] == "claude-test-1"
+      and "stream_event" not in log and "partial_json" not in log, f"{len(raw)} lines")
+check("  a smooth prop's prompt: its style and its shapes, no pose", "Style: smooth" in log and "Shapes: build it from 8 to 30 shapes" in log and "Pose:" not in log)
 
 # 2. it ends without the model: failed, why, its last word kept
 fresh("test_two")
@@ -145,6 +151,13 @@ check("cancelled: waiting again, the stop file gone", rec["status"] == "waiting"
 # 7. a second run adds to the log
 code, out, rec, log = run("test_six", "finish")
 check("a second run: done, the first run's log still there", rec["status"] == "done" and log.count("a run starts") == 2 and "Cancelled from the editor" in log)
+
+# 8. an accurate creature, as the pictures stand, as many shapes as it needs: all in its prompt
+fresh("test_eight", kind="creature", style="accurate", details="long brown fur, short round ears", pose="as_is", shapes={"min": 1, "max": 100, "unlimited": True})
+code, out, rec, log = run("test_eight", "finish")
+check("an accurate creature's prompt: the closest match, its details, its pose, its shapes", rec["status"] == "done" and "Style: accurate" in log and "kit.fur" in log
+      and "Model details from the user: long brown fur, short round ears" in log and "Pose: as-is" in log and "as many as the design needs, up to about 100" in log)
+check("  and its estimate is longer", rec["progress"]["minutes"] >= 0 and mr.estimate(rec) > mr.estimate(mr.normal(dict(rec, style="smooth", shapes={"unlimited": False}))))
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print("all good" if not failed else f"{len(failed)} failed", flush=True)
