@@ -5,7 +5,7 @@
 //!                       [--no-vsync] [--mute]
 //! (--requests opens the map editor with its Requests window; --mute plays no sound)
 //!        game --link battlefrontier://edit/PROP [--root PROJECT]   (opens Blender on the prop)
-//!        game --register-links                                    (sets those links up; done at every start too)
+//!        game --register-links                                    (sets those links up; a release build does it at every start too)
 //! (--stats prints frames per second and processor time each second; with --no-vsync the
 //! frame rate is uncapped: what the machine can do, not the screen's rate)
 //! (content from ./content and ./temporary, or under $GAME_ROOT)
@@ -52,7 +52,11 @@ fn main() -> eframe::Result {
                 mapedit::register_links(&at);
                 return Ok(());
             }
-            std::thread::spawn(move || mapedit::register_links(&at));
+            // a debug build (a console program, slow to start) leaves the links to the
+            // release build, unless asked with --register-links
+            if !cfg!(debug_assertions) {
+                std::thread::spawn(move || mapedit::register_links(&at));
+            }
         }
     }
     let mut i = 0;

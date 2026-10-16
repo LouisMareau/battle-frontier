@@ -196,18 +196,42 @@ pub fn link_target(url: &str) -> Option<String> {
     (!id.is_empty() && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')).then(|| id.to_string())
 }
 
+/// A path as people and other programs write it: Windows' canonical paths come as
+/// `\\?\F:\...` (or `\\?\UNC\server\...`), which Blender takes for a relative path (it puts
+/// its own folder in front, and finds nothing).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn plain_path(p: &std::path::Path) -> std::path::PathBuf {
+    let s = p.to_string_lossy();
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}").into();
+    }
+    match s.strip_prefix(r"\\?\") {
+        Some(rest) => rest.into(),
+        None => p.to_path_buf(),
+    }
+}
+
 /// Opens Blender on a prop of the project at `root`: the add-on is set up, the prop
 /// imported, and it's written back to the project by itself as it's edited
 /// (`tools/blender/open_prop.py`).
 #[cfg(not(target_arch = "wasm32"))]
 pub fn open_in_blender(root: &std::path::Path, id: &str) -> Result<String, String> {
-    let root = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let root = plain_path(&std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()));
     let blender = find_blender().ok_or("Blender not found: set BLENDER to blender.exe, or put it on the PATH")?;
     let script = root.join("tools").join("blender").join("open_prop.py");
     if !script.is_file() {
         return Err(format!("{} isn't there: is {} the project?", script.display(), root.display()));
     }
-    std::process::Command::new(&blender).arg("--python").arg(&script).arg("--").arg(&root).arg(id).spawn().map_err(|e| format!("Blender ({}) wouldn't start: {e}", blender.display()))?;
+    // from the project's folder (a link from the browser starts this program anywhere)
+    std::process::Command::new(&blender)
+        .arg("--python")
+        .arg(&script)
+        .arg("--")
+        .arg(&root)
+        .arg(id)
+        .current_dir(&root)
+        .spawn()
+        .map_err(|e| format!("Blender ({}) wouldn't start: {e}", blender.display()))?;
     Ok(format!("Blender is opening {id}: what you change there is saved into the project by itself (and with Ctrl+S), and shows here within a second"))
 }
 
@@ -217,9 +241,7 @@ pub fn open_in_blender(root: &std::path::Path, id: &str) -> Result<String, Strin
 pub fn register_links(root: &std::path::Path) {
     use std::os::windows::process::CommandExt;
     let (Ok(exe), Ok(root)) = (std::env::current_exe(), std::fs::canonicalize(root)) else { return };
-    // the plain form of the path (canonicalize gives \\?\ ones)
-    let plain = |p: &std::path::Path| p.display().to_string().trim_start_matches(r"\\?\").to_string();
-    let command = format!("\"{}\" --root \"{}\" --link \"%1\"", plain(&exe), plain(&root));
+    let command = format!("\"{}\" --root \"{}\" --link \"%1\"", plain_path(&exe).display(), plain_path(&root).display());
     let key = r"HKCU\Software\Classes\battlefrontier";
     let open = format!(r"{key}\shell\open\command");
     for args in [vec!["add", key, "/ve", "/d", "URL:Battle Frontier", "/f"], vec!["add", key, "/v", "URL Protocol", "/d", "", "/f"], vec!["add", open.as_str(), "/ve", "/d", command.as_str(), "/f"]] {
@@ -264,7 +286,16 @@ fn find_blender() -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::link_target;
+    use super::{link_target, plain_path};
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn blender_gets_plain_paths() {
+        assert_eq!(plain_path(Path::new(r"\\?\F:\Emulation\BattleFrontier")), PathBuf::from(r"F:\Emulation\BattleFrontier"));
+        assert_eq!(plain_path(Path::new(r"\\?\UNC\server\share\game")), PathBuf::from(r"\\server\share\game"));
+        assert_eq!(plain_path(Path::new(r"F:\Emulation\BattleFrontier")), PathBuf::from(r"F:\Emulation\BattleFrontier"));
+        assert_eq!(plain_path(Path::new("/home/someone/game")), PathBuf::from("/home/someone/game"));
+    }
 
     #[test]
     fn links_name_a_prop() {

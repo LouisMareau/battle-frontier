@@ -222,9 +222,10 @@ there is written back to the project by itself (a moment after each change, and 
 Ctrl+S: the .blend lives in `build/blender/`), into the space it came from (a placeholder
 stays in `temporary/`), its record's facts and folders kept, and the editor shows it within
 a second. In the browser the button opens a `battlefrontier://edit/<prop>` link, which the
-desktop game answers (it sets the link up in the user's registry each time it starts, or
-`game --register-links`; `reg delete HKCU\Software\Classesattlefrontier /f` takes it
-away): Blender opens the same way, on the project the desktop game was started in;
+desktop game answers (its release build sets the link up in the user's registry each time
+it starts, a debug build only with `game --register-links`; `reg delete
+HKCU\Software\Classes\battlefrontier /f` takes it away): Blender opens the same way, on
+the project the desktop game was started in;
 **Trees** paints tree areas and edits their settings; **Build** draws a building's
 footprint, then designs it floor by floor: the floors above are cut away and the rest of the
 map is darkened, and nothing lands outside the building. *Structure* is flooring, walls and
