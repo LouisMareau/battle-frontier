@@ -10,6 +10,9 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py note ID "what happened"   a line in its log
     python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--scale N]
                                               a part of a picture, enlarged (no box: its size)
+    python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
+                                              a picture's (or a box's) main colours: each one's
+                                              share, hex, name and place
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
                                               [--style low_poly|accurate] [--details "..."]
                                               [--pose as_is] [--shapes 8-30|unlimited]
@@ -308,24 +311,25 @@ def new(root, name, pictures, **fields):
 
 # ---------------------------------------------------------------- a closer look at a picture
 
-def zoom(root, rid, picture, box=None, scale=None):
-    """A part of a request's picture, enlarged into its folder (zoom_<picture>_<n>.png, to look
-    at closely; never one of the request's pictures): the box in pixels (x0 y0 x1 y1), or in
-    fractions of the picture when all four are at most 1; `scale` times larger, else its longer
-    side about 1000 pixels. With no box, only the picture's size. Returns (file or None, what
-    to say)."""
+def _pillow(what):
     try:
         from PIL import Image
     except ImportError:
-        raise SystemExit("zoom needs Pillow: pip install pillow")
-    d = folder(root, rid)
-    src = d / picture
+        raise SystemExit(f"{what} needs Pillow: pip install pillow")
+    return Image
+
+
+def _picture(root, rid, picture, Image):
+    src = folder(root, rid) / picture
     if not src.is_file():
         raise SystemExit(f"{src} isn't there: the request's pictures are {', '.join(load(root, rid)['images'])}")
-    img = Image.open(src)
-    w, h = img.size
-    if box is None:
-        return None, f"{picture}: {w} x {h} pixels (zoom ID {picture} X0 Y0 X1 Y1 enlarges a box of it)"
+    return Image.open(src)
+
+
+def _box(size, box):
+    """A box of a picture in whole pixels: given in pixels (x0 y0 x1 y1), or in fractions of
+    the picture when all four are at most 1."""
+    w, h = size
     x0, y0, x1, y1 = box
     if max(box) <= 1.0:
         x0, y0, x1, y1 = x0 * w, y0 * h, x1 * w, y1 * h
@@ -333,6 +337,22 @@ def zoom(root, rid, picture, box=None, scale=None):
     y0, y1 = sorted((max(0, int(y0)), min(h, int(round(y1)))))
     if x1 - x0 < 2 or y1 - y0 < 2:
         raise SystemExit(f"the box {box} is empty in a {w} x {h} picture")
+    return x0, y0, x1, y1
+
+
+def zoom(root, rid, picture, box=None, scale=None):
+    """A part of a request's picture, enlarged into its folder (zoom_<picture>_<n>.png, to look
+    at closely; never one of the request's pictures): the box in pixels (x0 y0 x1 y1), or in
+    fractions of the picture when all four are at most 1; `scale` times larger, else its longer
+    side about 1000 pixels. With no box, only the picture's size. Returns (file or None, what
+    to say)."""
+    Image = _pillow("zoom")
+    d = folder(root, rid)
+    img = _picture(root, rid, picture, Image)
+    w, h = img.size
+    if box is None:
+        return None, f"{picture}: {w} x {h} pixels (zoom ID {picture} X0 Y0 X1 Y1 enlarges a box of it)"
+    x0, y0, x1, y1 = _box(img.size, box)
     part = img.crop((x0, y0, x1, y1))
     k = float(scale) if scale else max(1.0, 1000.0 / max(x1 - x0, y1 - y0))
     part = part.resize((max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))), Image.LANCZOS)
@@ -343,6 +363,102 @@ def zoom(root, rid, picture, box=None, scale=None):
     out = d / f"zoom_{stem}_{n}.png"
     part.convert("RGB").save(out)
     return out, f"{out.name}: {picture} from ({x0}, {y0}) to ({x1}, {y1}), {k:.1f} times, {part.size[0]} x {part.size[1]} pixels"
+
+
+# ---------------------------------------------------------------- a picture's colours, measured
+
+# each hue's name, up to its angle
+HUES = ((15, "crimson"), (40, "orange"), (65, "yellow"), (160, "green"), (195, "cyan"), (255, "blue"), (290, "violet"), (335, "pink"), (360, "crimson"))
+# what colours says under them: how to read them
+READING = ("Light and shade change a colour's lightness (and an artist's shade often leans toward blue or purple): tones of one\n"
+           "colour on one part are that part in light and shade, so give it its lit tone, neither its shine nor its shade; another\n"
+           "colour with an edge of its own is a marking or another part.")
+
+
+def colour_name(rgb):
+    """A colour said plainly: "light violet grey", "dark brown", "near white"."""
+    import colorsys
+    r, g, b = (c / 255 for c in rgb)
+    hue, lightness, _ = colorsys.rgb_to_hls(r, g, b)
+    chroma = max(r, g, b) - min(r, g, b)
+    tone = ("near black" if lightness < 0.12 else "dark" if lightness < 0.35 else "mid" if lightness < 0.62
+            else "light" if lightness < 0.9 else "near white")
+    name = next(n for angle, n in HUES if hue * 360 < angle)
+    if name in ("orange", "yellow") and lightness < 0.5 and chroma >= 0.15:
+        name = "brown"
+    if tone.startswith("near"):
+        return tone if chroma < 0.05 else f"{tone}, {name} tinted"
+    if chroma < 0.05:
+        return f"{tone} grey"
+    return f"{tone} {name} grey" if chroma < 0.15 else f"{tone} {name}"
+
+
+def _where(n, sx, sy, sxx, syy):
+    """Where a colour's pixels mostly are, in a box measured 0 to 1 each way."""
+    mx, my = sx / n, sy / n
+    if sxx / n - mx * mx > 0.24 ** 2 and syy / n - my * my > 0.24 ** 2:
+        return "all over"
+    row = "top" if my < 1 / 3 else "bottom" if my > 2 / 3 else ""
+    col = "left" if mx < 1 / 3 else "right" if mx > 2 / 3 else ""
+    return " ".join(w for w in (row, col) if w) or "middle"
+
+
+def colours(root, rid, picture, box=None, count=8):
+    """The main colours of a request's picture, or of a box of it (as zoom's), to take a part's
+    colour from the picture rather than guess it: the most covered first, each with its share,
+    its hex (as the kit's colours take it), its name and where it mostly is; the colour along
+    most of the box's edges said to be the likely background. See-through pixels don't count.
+    Returns the lines to say."""
+    Image = _pillow("colours")
+    img = _picture(root, rid, picture, Image).convert("RGBA")
+    x0, y0, x1, y1 = _box(img.size, box) if box else (0, 0, *img.size)
+    part = img.crop((x0, y0, x1, y1))
+    # a sample of at most 300 x 300, nearest: the picture's own colours, not blends of them
+    k = min(1.0, 300.0 / max(part.size))
+    if k < 1.0:
+        part = part.resize((max(1, round(part.width * k)), max(1, round(part.height * k))), Image.NEAREST)
+    pw, ph = part.size
+    data = part.tobytes()
+    seen = [(i % pw, i // pw, data[j:j + 3]) for i, j in enumerate(range(0, len(data), 4)) if data[j + 3] >= 128]
+    if not seen:
+        raise SystemExit(f"{picture}: nothing but see-through pixels there")
+    strip = Image.frombytes("RGB", (len(seen), 1), b"".join(p for _, _, p in seen))
+    q = strip.quantize(colors=max(2, min(16, int(count))), method=Image.Quantize.MEDIANCUT, kmeans=4)
+    palette = q.getpalette()
+    found = {}
+    for (x, y, _), i in zip(seen, q.tobytes()):
+        u, v = (x + 0.5) / pw, (y + 0.5) / ph
+        f = found.setdefault(i, [0, 0.0, 0.0, 0.0, 0.0, 0])
+        f[0] += 1
+        f[1] += u
+        f[2] += v
+        f[3] += u * u
+        f[4] += v * v
+        f[5] += x in (0, pw - 1) or y in (0, ph - 1)
+    # the quantizer can split one colour in two: those join again
+    kept = []
+    for i, f in sorted(found.items(), key=lambda kv: -kv[1][0]):
+        rgb = palette[i * 3:i * 3 + 3]
+        same = next((c for c in kept if sum((a - b) ** 2 for a, b in zip(c[0], rgb)) < 14 ** 2), None)
+        if same is None:
+            kept.append([list(rgb), f])
+        else:
+            n = same[1][0] + f[0]
+            same[0] = [round((a * same[1][0] + b * f[0]) / n) for a, b in zip(same[0], rgb)]
+            same[1] = [a + b for a, b in zip(same[1], f)]
+    edges = sum(f[5] for _, f in kept)
+    background = max(kept, key=lambda c: c[1][5]) if edges else None
+    if background is not None and background[1][5] < 0.4 * edges:
+        background = None
+    out = [f"{picture}, from ({x0}, {y0}) to ({x1}, {y1}): its main colours, the most covered first"]
+    for rgb, f in kept:
+        share = f[0] / len(seen)
+        if share < 0.005:
+            continue
+        hexa = "#%02x%02x%02x" % tuple(rgb)
+        extra = ", along most of the box's edges: the background?" if background is not None and rgb == background[0] else ""
+        out.append(f"  {share * 100:4.1f}%  {hexa}  {colour_name(rgb)}, {_where(*f[:5])}{extra}")
+    return out + [READING]
 
 
 # ---------------------------------------------------------------- the command line
@@ -392,6 +508,10 @@ def main(argv):
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
         _, said = zoom(root, argv[0], argv[1], box, scale)
         print(said)
+    elif verb == "colours":
+        count = option("--count", "8")
+        box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
+        print("\n".join(colours(root, argv[0], argv[1], box, int(count))))
     elif verb == "new":
         fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", ""),
                   "details": option("--details", ""), "pose": option("--pose", "t_pose")}

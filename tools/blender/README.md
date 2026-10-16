@@ -98,7 +98,8 @@ with `request_kit.py` (shapes and metaballs fused into one clean mesh, a materia
 region, glossy eyes, fur as mesh strands, a rig and an idle for creatures), renders it beside the pictures to
 compare, and adds it through `write_prop` (to `temporary/`, or `content/` when the design is
 the user's). `model_requests.py` reads and writes the requests from plain Python (`list`,
-`start`, `step`, `wait`, `fail`, `note`, `new`); the editor's progress bar runs on what it writes.
+`start`, `step`, `wait`, `fail`, `note`, `new`; `zoom` and `colours` look closer at a picture:
+a box of it enlarged, its main colours measured); the editor's progress bar runs on what it writes.
 The editor's Start runs `run_claude.py ID`: Claude Code headless on the recipe for that
 request, allowed only what it needs, its whole run in the request's `log.txt` (the window's
 console); Blender is run through `run_request.py ID [--finish]`. `test_run_claude.py` checks

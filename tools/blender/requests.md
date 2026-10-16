@@ -145,9 +145,11 @@ here). Everything runs from the project folder.
    creature in a big picture, a marking, whether those are legs).
    Note what views there are (front, side, back, details), the proportions (the height
    split into the head, the body, the legs; the widest point; where things attach), the
-   colour regions with a hex for each (take them from the pictures) and the few shapes that
-   make the silhouette. The notes win over the pictures. What no picture shows, guess from
-   the design's own logic, and say so in the reply.
+   colour regions with a hex for each (their lit tones, measured:
+   `python tools/blender/model_requests.py colours ID PICTURE X0 Y0 X1 Y1`) and the few shapes
+   that make the silhouette. Then tell the design from the drawing (below, "The design, not
+   the drawing"), before building anything. The notes win over the pictures. What no picture
+   shows, guess from the design's own logic, and say so in the reply.
 4. **Write `private/requests/ID/model.py`** with the kit (below). Build at any scale (the
    pictures' pixels, say): `fit` gives it the request's height. Creatures: a metaball `blob`
    for each soft mass (body, head), `capsule`s for limbs and tails, `slab`s for ears, fins,
@@ -169,7 +171,8 @@ here). Everything runs from the project folder.
    masses, then the colour regions and their borders, then the details that carry the
    character (the eyes' size and place, ears, a tail's curve). Edit `model.py`, render again.
    Stop when the renders read as the pictures' design at a glance; don't chase a sketch's
-   wobbles.
+   wobbles. The renders are lit evenly on purpose: compare shapes and colours, not light (a
+   picture's shine, shade or rim light is no difference to fix).
 7. **Creatures: rig it** in `model.py` after `fit`: `rig(body, chains)` from the model's own
    landmarks (in cells, the model on the origin facing -Y): `spine` (hips to chest), `neck`
    and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`, `ear.L`...
@@ -189,6 +192,58 @@ here). Everything runs from the project folder.
 
 A request left in progress (a session that stopped): the editor marks it failed after 31
 minutes without news; Start again (or `model_requests.py wait ID`) puts it back in the queue.
+
+## The design, not the drawing
+
+A picture shows a design through a drawing. The model gets the design and none of the
+drawing, so sort what each picture shows before building, whatever the style:
+
+- **the design**: what the thing is, held in the hand: its shapes and proportions, its parts,
+  its colours, markings and patterns, its eyes, holes and grooves, and its materials (shiny,
+  matt, metal, glowing);
+- **light and shade**: shine spots and streaks (highlights), reflections, rim light along an
+  edge, shading and the shade side, shadows one part throws on another, glow halos and bloom,
+  a tint from the light or from the background bouncing in;
+- **the artist's ways**: outlines and ink lines, cel-shading bands, hatching, brush and paper
+  texture, sparkles, motion and impact lines, blur, perspective (near parts drawn bigger, far
+  ones smaller), a squash or stretch for the action;
+- **around it**: the background, text and numbers (a "Lv. 10"), other creatures, a frame, the
+  ground and its shadow on it.
+
+How to tell them apart:
+
+- The light comes from one side: shine sits on the side facing it on every part, shade on the
+  other side and underneath. A light or dark patch that follows the light is light; one with
+  its own shape and place, whichever way the light comes (and in every picture), is a marking.
+- Light and shade change a colour's lightness (and an artist's shade often leans toward blue or
+  purple); a marking is another colour with an edge of its own.
+  `python tools/blender/model_requests.py colours ID PICTURE X0 Y0 X1 Y1` lists a box's main
+  colours, the most covered first, each with its share, hex, name and where it is in the box
+  (the colour along most of its edges is the background): one part's tones from light to dark
+  are one colour in light and shade.
+- A shiny surface (metal, chrome, pearl, glass, lacquer, a beetle's shell, wet eyes) is drawn
+  with its reflections: dark and light blobs or bands curving round its shape, white glints in
+  them, the same on each shiny part. That's its material, not spots.
+- An outline runs along the silhouette and where parts overlap, about as wide everywhere; a
+  line that ends inside a surface, or crosses it, can be a groove, a seam, a crack or a
+  marking: zoom in, and look at the other pictures.
+- Between several pictures, what changes is the drawing; what stays is the design.
+- What the notes or the details say a thing is, it is.
+
+What the drawing becomes:
+
+- shine and reflections: a glossy material in the part's lit tone (`dict(kit.GLOSSY,
+  color="#e9e4ee")`; `"metal": 1.0` and a little roughness for metal), never a white or dark
+  patch. The game draws base colours and lights them itself (the kit, below: what the engine
+  does with it), so a shine painted into a colour would be wrong under any other light;
+- a glow: `"glow"` in the material (and a `light` for a lamp);
+- shade, shadows, rim light, a tint: nothing; the part gets its lit tone;
+- outlines, sketch lines, the background, text, other creatures: nothing;
+- perspective: the design's real proportions, from the other views or its own logic.
+
+Write the sorting at the top of `model.py`, as comments, before any shape: the design (each
+part, its colour's hex, its material) and the drawing (what was left out, and why). The reply
+says what was taken for the drawing, and anything unsure.
 
 ## Reshaping: any tool
 
@@ -271,7 +326,7 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | Making it one model | |
 |---|---|
 | `fuse(parts, name, colours, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | joined and voxel-remeshed into one clean watertight mesh, `cuts` carved out, each face given the material of the nearest part's region (then of the `paint` volume it's in), decimated to about `faces` triangles (smooth 6000, low-poly 800) sparing the borders between regions, smooth (weighted normals) or flat shaded |
-| `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}` |
+| `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}`: the region's lit tone, its shine as roughness (above, "The design, not the drawing") |
 | `eyes(body, [centres], radius, colour=, look=)` | glossy eyes with a glint, seated on the body's surface (group "eyes", which the rig gives the head) |
 | `fur(body, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
 | `tube(points, radius, region, radius_end=)` | a curved part through the points, round, tapering |

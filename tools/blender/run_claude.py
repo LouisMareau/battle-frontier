@@ -42,14 +42,28 @@ Follow tools/blender/requests.md for this one request, from its step 3 (it's sta
 - read private/requests/{id}/request.json and look at every picture in that folder (to see a
   part closer: python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1, in pixels
   or fractions of the picture, with no box it gives the size; then look at the zoom it writes);
+- before building, tell the design from the drawing (requests.md, "The design, not the
+  drawing"). The design is what the model gets: its shapes, proportions, parts, colours,
+  markings, patterns and materials. The drawing is how the picture shows it, and the model gets
+  none of it: light and shade (shine spots and streaks; reflections, which a shiny surface
+  shows as dark and light blobs curving round it, with white glints; rim light, shading,
+  shadows, glow halos, a tint from the light or the background), the artist's ways (outlines,
+  ink lines, cel-shading bands, brush texture, sparkles, motion lines, perspective) and what's
+  around it (the background, text, other creatures, its shadow on the ground). Shine and
+  reflections make a glossy material, a glow a glowing one, never pale or dark patches; a
+  part's colour is its lit tone, neither its shine nor its shade (python
+  tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1 lists a box's main
+  colours). What the notes or the details say a thing is, it is. Write both lists as comments
+  at the top of model.py before any shape, and say in the reply what you took for the drawing;
 - write private/requests/{id}/model.py with tools/blender/request_kit.py. The kit is a start,
   not a limit: reshape whatever needs it with the tool that does it best for the style:
   kit.editing (bmesh by hand: extrude, inset, bevel, move faces, edges and vertices),
   kit.modifier (any of Blender's modifiers), kit.sculpt (grab, inflate, smooth, flatten,
   pinch, crease), kit.tube for curved parts, or any of Blender's Python;
 - render it: python tools/blender/run_request.py {id}
-- compare private/requests/{id}/compare.png and the previews with the pictures, change model.py
-  and render again until it matches (usually three to six tries);
+- compare private/requests/{id}/compare.png and the previews with the pictures (the shapes,
+  proportions and colours, not the light: the previews are lit evenly, on purpose), change
+  model.py and render again until it matches (usually three to six tries);
 - a creature: rig it and give it its idle (requests.md, step 7);
 - add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
@@ -101,8 +115,8 @@ def allowed(rid):
 STYLES = {
     "smooth": "Style: smooth: rounded shapes, smooth shaded (fuse with smooth=True, about 6000 triangles).",
     "low_poly": "Style: low-poly: few faces, flat shaded (fuse with smooth=False, about 800 triangles).",
-    "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour, "
-                 "the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
+    "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour "
+                 "of the design (none of the drawing's light, shade or lines), the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
                  "and hair, kit.sculpt and kit.editing for what the shapes can't do, kit.tube for curved parts, painted colours for patterns, more shapes, "
                  "cuts and slabs for the details, a finer voxel and a bigger budget "
                  "(faces=20000 or more). It may take a long time: that's fine."),

@@ -161,6 +161,12 @@ check("  and its estimate is longer", rec["progress"]["minutes"] >= 0 and mr.est
 check("  every tool allowed, for every style: edits, modifiers, sculpting", "The kit is a start" in log and "not a limit" in log and "kit.sculpt (grab, inflate" in log
       and "kit.editing (bmesh by hand: extrude" in log and "kit.modifier" in log)
 check("  a closer look at the pictures, by zooming", "python tools/blender/model_requests.py zoom test_eight PICTURE" in log)
+check("  the design told from the drawing before building: light, the artist's ways, what's around it", "tell the design from the drawing" in log
+      and "light and shade (shine spots" in log and "the artist's ways (outlines" in log and "around it (the background" in log
+      and "reflections make a glossy material" in log and "model_requests.py colours test_eight PICTURE" in log
+      and "Write both lists as comments" in log and "what you took for the drawing" in log, log[:200])
+check("  compared on shapes and colours, not light; accurate copies none of the drawing", "not the light: the previews are lit evenly" in log
+      and "none of the drawing's light, shade or lines" in log)
 sys.path.insert(0, str(HERE))
 import run_claude as rc  # noqa: E402
 tpose = rc.settings_lines(mr.normal({"kind": "creature", "pose": "t_pose"}))
@@ -182,8 +188,32 @@ if Image is not None:
     zoomed = Image.open(out)
     check("  a box of it, enlarged into the folder (not one of the request's pictures)", out.name == "zoom_front_1.png" and zoomed.size == (1000, 500)
           and mr.load(SCRATCH, "test_nine")["images"] == [], f"{out.name} {zoomed.size}: {said}")
+
+    # 10. a picture's colours: a part's lit tone, its shade and its shine apart, the background
+    # said, see-through pixels left out
+    from PIL import ImageDraw
+    pic = Image.new("RGBA", (200, 100), (240, 220, 150, 255))
+    draw = ImageDraw.Draw(pic)
+    draw.rectangle((60, 20, 140, 60), fill=(200, 190, 225, 255))
+    draw.rectangle((60, 60, 140, 90), fill=(110, 100, 140, 255))
+    draw.rectangle((70, 25, 84, 34), fill=(255, 255, 255, 255))
+    draw.rectangle((0, 0, 30, 99), fill=(0, 0, 0, 0))
+    pic.save(mr.folder(SCRATCH, "test_nine") / "side.png")
+    said = mr.colours(SCRATCH, "test_nine", "side.png")
+    text = "\n".join(said)
+    check("colours: the main ones, the most covered first, the background said", said[0].startswith("side.png, from (0, 0) to (200, 100)")
+          and "#f0dc96  light yellow, all over, along most of the box's edges: the background?" in said[1], text)
+    check("  a part's lit tone, its shade underneath, its shine: each its own", "#c8bee1  light violet grey, middle" in text
+          and "#6e648c  mid violet, bottom" in text and "#ffffff  near white, top" in text, text)
+    check("  see-through pixels left out, and how to read it said", "#000000" not in text and "lit tone, neither its shine nor its shade" in text, text)
+    boxed = mr.colours(SCRATCH, "test_nine", "side.png", [60, 20, 141, 60])
+    check("  a box of it: only what's in the box", boxed[0].startswith("side.png, from (60, 20) to (141, 60)") and "#c8bee1" in boxed[1]
+          and "#f0dc96" not in "\n".join(boxed), "\n".join(boxed))
+    check("  colour names", mr.colour_name((200, 40, 30)) == "mid crimson" and mr.colour_name((90, 60, 30)) == "dark brown"
+          and mr.colour_name((20, 20, 22)) == "near black" and mr.colour_name((128, 128, 128)) == "mid grey",
+          [mr.colour_name(c) for c in ((200, 40, 30), (90, 60, 30), (20, 20, 22), (128, 128, 128))])
 else:
-    print("(no Pillow here: zoom not checked)")
+    print("(no Pillow here: zoom and colours not checked)")
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print("all good" if not failed else f"{len(failed)} failed", flush=True)
