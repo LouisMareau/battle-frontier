@@ -271,7 +271,8 @@ def run(root, rid, model=None, quiet=QUIET):
         return "done"
     last = str(result.get("result") or "").strip()
     if state["error"] == "authentication_failed" or "Not logged in" in last:
-        reason = "Claude Code isn't logged in: run claude in a terminal and type /login, once"
+        # the program by its path: it's often not on the PATH (the editor's "Log in" opens it)
+        reason = f'Claude Code isn\'t logged in: run "{claude}" in a terminal and type /login, once (or the button below)'
     elif proc.returncode != 0 or result.get("is_error"):
         reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {proc.returncode})"
     else:

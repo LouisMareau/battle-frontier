@@ -105,9 +105,11 @@ on its own (it goes on if the editor closes), which:
   been written in its folder for 31 minutes (a run that was killed), and settles a Cancel with
   nothing running after a few seconds.
 
-Claude Code must be logged in for this, once: run `claude` in a terminal and type `/login`
-(the desktop app's own login isn't the command line's). Until then a run fails at once with
-"Claude Code isn't logged in". `python tools/blender/test_run_claude.py` checks the whole of
+Claude Code must be logged in for this, once (the desktop app's own login isn't the command
+line's): until then a run fails at once with "Claude Code isn't logged in", naming the
+program's path (it's often not on the PATH: `~/.local/bin/claude.exe`), and the request's
+panel has a **Log in to Claude Code…** button that opens it in a terminal, in the project:
+type `/login` there, then Start again. `python tools/blender/test_run_claude.py` checks the whole of
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
 that crashes, one not logged in, one gone silent, one cancelled.
 

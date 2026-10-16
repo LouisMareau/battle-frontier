@@ -504,6 +504,47 @@ mod desk {
         python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
     }
 
+    /// Claude Code, where run_claude.py looks for it: CLAUDE, the PATH, ~/.local/bin.
+    fn find_claude() -> Option<PathBuf> {
+        if let Ok(p) = std::env::var("CLAUDE") {
+            let p = PathBuf::from(p);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        let path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
+        for dir in &path {
+            for name in ["claude.exe", "claude.cmd", "claude"] {
+                if dir.join(name).is_file() {
+                    return Some(dir.join(name));
+                }
+            }
+        }
+        let home = PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?);
+        [home.join(".local/bin/claude.exe"), home.join(".local/bin/claude"), home.join(".claude/local/claude")].into_iter().find(|p| p.is_file())
+    }
+
+    /// Claude Code in a terminal of its own, in the project, to log in (`/login`): a run needs
+    /// its command line logged in once, apart from the desktop app's.
+    fn open_login(root: &Path) -> Result<String, String> {
+        let claude = find_claude().ok_or("Claude Code not found: install it, or set CLAUDE to the claude program")?;
+        #[cfg(windows)]
+        {
+            std::process::Command::new("cmd")
+                .args(["/c", "start", "Claude Code: type /login"])
+                .arg(&claude)
+                .current_dir(root)
+                .spawn()
+                .map(|_| "Claude Code is opening in a terminal: type /login there (once), then Start again".to_string())
+                .map_err(|e| format!("{}: {e}", claude.display()))
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = root;
+            Err(format!("Run {} in a terminal and type /login there (once), then Start again", claude.display()))
+        }
+    }
+
     /// The newest time anything in a request's folder changed (its run writes there as it goes).
     fn last_word(seen: &[(PathBuf, SystemTime)], dir: &Path) -> Option<SystemTime> {
         seen.iter().filter(|(p, _)| p.parent() == Some(dir)).map(|(_, t)| *t).max()
@@ -1204,6 +1245,13 @@ mod desk {
                 mark("uiRequestBar", &shown);
             } else if r.status == Status::Failed {
                 warn(ui, &r.progress.step);
+                if r.progress.step.contains("logged in") {
+                    let login = ui.button("Log in to Claude Code…").on_hover_text("Opens Claude Code in a terminal: type /login there, once, then Start again");
+                    mark("uiRequestLogin", &login);
+                    if login.clicked() {
+                        said = Some(open_login(&self.root()).unwrap_or_else(|e| e));
+                    }
+                }
                 hint(ui, "The console has its log (Copy takes it all); Start again makes it once more.");
             } else if r.status == Status::Done && r.progress.minutes > 0.0 {
                 hint(ui, &format!("Modelled in {} min", r.progress.minutes.round()));
@@ -1783,6 +1831,15 @@ mod tests {
         frame(&ctx, &mut req, vec![]);
         assert_eq!(read(&root, "stone_lantern").unwrap().status, Status::Done);
         assert_eq!(req.waiting(), 1);
+        // failed for want of a login: its reason, and the way to log in
+        let mut toad = read(&root, "toad").unwrap();
+        toad.status = Status::Failed;
+        toad.progress.step = "failed: Claude Code isn't logged in: run \"claude\" in a terminal and type /login, once".into();
+        save(&root, &toad).unwrap();
+        req.watch(3.0e9);
+        req.desk().selected = Some("toad".into());
+        frame(&ctx, &mut req, vec![]);
+        assert_eq!(req.waiting(), 0);
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -293,7 +293,8 @@ isn't logged in, or goes 30 minutes without a word. The **console** at the windo
 the request's log (`log.txt`, every line timed): Claude reached and the model it runs, what was
 sent, each step and tool call, the end; Copy puts it all on the clipboard. A done request shows
 the renders of its model and the prop it became ("Use it" puts it in the Place tool). Claude
-Code's command line must be logged in once (`claude`, then `/login`). The recipe is
+Code's command line must be logged in once: a request that failed for that has a "Log in to
+Claude Code…" button, which opens it in a terminal (type `/login`). The recipe is
 `tools/blender/requests.md`: a script per request builds the model from shapes in Blender,
 renders it beside the pictures until it matches, rigs a creature with an idle animation, and
 adds it to the project; a Claude session asked to "make the waiting requests" follows it too.

@@ -130,7 +130,8 @@ check("a run that crashes: failed, its error in the log", rec["status"] == "fail
 # 4. not logged in
 fresh("test_four")
 code, out, rec, log = run("test_four", "login")
-check("not logged in: failed, saying how to log in", rec["status"] == "failed" and "/login" in rec["progress"]["step"], rec["progress"]["step"])
+check("not logged in: failed, saying how to log in, with the program's own path", rec["status"] == "failed" and "/login" in rec["progress"]["step"]
+      and str(SCRATCH / "fake_claude.py") in rec["progress"]["step"], rec["progress"]["step"])
 # 5. silent: stopped after the quiet time, failed
 fresh("test_five")
 began = time.time()
