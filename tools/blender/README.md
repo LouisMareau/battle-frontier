@@ -89,6 +89,17 @@ size measured again. The panel says what was saved last, and "Save it to the pro
 does it at once. The editor shows the change within a second. From the browser the button
 opens a `battlefrontier://edit/<id>` link, answered by the desktop game (`game --link`).
 
+## Model requests
+
+Pictures dropped on the map editor's **Requests** window (desktop) become requests in
+`private/requests/<id>/`, which a Claude session models when asked to "make the waiting
+requests": `requests.md` is its recipe. Each request gets a `model.py` that builds the model
+with `request_kit.py` (shapes and metaballs fused into one clean mesh, a material per colour
+region, glossy eyes, a rig and an idle for creatures), renders it beside the pictures to
+compare, and adds it through `write_prop` (to `temporary/`, or `content/` when the design is
+the user's). `model_requests.py` reads and writes the requests from plain Python (`list`,
+`start`, `step`, `wait`, `new`); the editor's progress bar runs on what it writes.
+
 ## Without the add-on
 
 - `cargo run -p engine-world --bin export-glb -- prop ID | props | map ID | building MAP ID`
@@ -109,4 +120,7 @@ blender --background --factory-startup --python-exit-code 1 --python tools/blend
 ```
 
 It works on a scratch copy (`build/blender-project`), never on `content/`, except that the
-project exports a map to `build/exports/`.
+project exports a map to `build/exports/`. It also makes a small creature and a pot through
+the requests' kit there: one mesh with its regions and eyes, a rig with every vertex
+weighted, the idle, the renders, the prop in `temporary/` (or `content/` for a design of the
+user's), the request done, and the engine reading the rig and the idle.

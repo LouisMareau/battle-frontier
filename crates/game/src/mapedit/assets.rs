@@ -5,7 +5,8 @@
 //! or, while a building is designed, what goes inside or outside it (if it's in that
 //! folder). Files dropped on the window (.glb or .gltf, from Blender or anywhere) become
 //! props in the folder they're dropped on: on the desktop written to content/ (or
-//! temporary/) at once, in the browser kept until saved (downloaded). On the desktop the
+//! temporary/) at once, in the browser kept until saved (downloaded); pictures dropped while
+//! the Requests window is open go to it (`requests.rs`). On the desktop the
 //! props' records and models on disk are watched: what changes there (the Blender add-on's
 //! "Add to project", an edit) shows at once.
 
@@ -17,7 +18,7 @@ use egui::{Color32, RichText, Sense};
 use world::gltf_in::load_model;
 
 use super::build::Clicks;
-use super::{badge, hint, mark, section, swatch, MapEditor};
+use super::{badge, hint, mark, requests, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
@@ -77,7 +78,7 @@ fn in_folder(p: &Prop, folder: &str) -> bool {
 }
 
 /// A file name made into an id: lowercase letters, digits and _.
-fn slug(name: &str) -> String {
+pub(super) fn slug(name: &str) -> String {
     let mut out = String::new();
     for c in name.chars().flat_map(char::to_lowercase) {
         if c.is_ascii_alphanumeric() {
@@ -90,7 +91,7 @@ fn slug(name: &str) -> String {
 }
 
 /// A file name made into a name: "stone_well-2" -> "Stone well 2".
-fn title(stem: &str) -> String {
+pub(super) fn title(stem: &str) -> String {
     let words = stem.replace(['_', '-', '.'], " ");
     let words = words.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut c = words.chars();
@@ -670,12 +671,21 @@ impl MapEditor {
     // ------------------------------------------------------------ files dropped in
 
     /// Files hovering or dropped on the window: the browser opens, models become props.
+    /// While the Requests window is open, pictures go to it instead.
     pub(super) fn take_drops(&mut self, ctx: &egui::Context) {
-        let (hovering, files, pos) = ctx.input(|i| (!i.raw.hovered_files.is_empty(), i.raw.dropped_files.clone(), i.pointer.latest_pos()));
+        let (hovered, files, pos) = ctx.input(|i| (i.raw.hovered_files.clone(), i.raw.dropped_files.clone(), i.pointer.latest_pos()));
+        let to_requests = self.requests.open;
+        let (pictures, others): (Vec<_>, Vec<_>) = hovered.iter().partition(|h| to_requests && requests::hovered_picture(h));
+        self.requests.hovering = !pictures.is_empty();
+        let hovering = !others.is_empty();
         if hovering {
             self.assets.open = true;
         }
         self.assets.hovering = hovering;
+        let (pictures, files): (Vec<_>, Vec<_>) = files.into_iter().partition(|f| to_requests && requests::is_picture(&f.path().to_string_lossy()));
+        if !pictures.is_empty() {
+            self.requests.take(pictures);
+        }
         if !files.is_empty() {
             self.assets.open = true;
             // the folder under the pointer, else the one shown
@@ -699,6 +709,9 @@ impl MapEditor {
             "glb"
         } else if lower.ends_with(".gltf") {
             "gltf"
+        } else if requests::is_picture(name) {
+            self.status = format!("{name}: only glTF models (.glb, .gltf) become props; for a model made from a picture, drop it on the Requests window");
+            return;
         } else {
             self.status = format!("{name}: only glTF models (.glb, .gltf) become props");
             return;

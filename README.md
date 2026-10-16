@@ -36,7 +36,7 @@ node tools/perf.mjs [tile=4] [size=3840x2160]   # how fast it draws, uncapped: m
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
-node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves
+node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
 node tools/worldcheck.mjs              # the World view: a piece dragged into place, the world saved, a walk across a seam into a chunked map
 cargo run -p engine-content --bin content -- chunk MAP    # a map stored as chunk files (unchunk: rows again)
 cargo run -p engine-world --bin export-glb -- map test_meadow   # a map (or prop ID, props, building MAP ID) as .glb for Blender
@@ -45,7 +45,8 @@ node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from command
 
 The desktop build takes `--preset ID` (start that encounter), `--auto` (the AI plays your
 side), `--time morning|day|night`, `--levels 1-5` (every move at that level), `--maps [ID]` (the
-map editor), `--exit-after SECONDS`, `--stats` (frames per second, the worst frame
+map editor), `--requests` (the map editor with its Requests window open), `--mute` (no sound at all),
+`--exit-after SECONDS`, `--stats` (frames per second, the worst frame
 gap and the time each frame keeps the processor busy, printed every second) and `--no-vsync`
 (draws as fast as it can, not at the screen's rate: with `--stats`, what the machine could
 do). The browser build takes the same as
@@ -57,7 +58,7 @@ read in progress), and in the map editor `data-map`, `data-mapsize`, `data-tool`
 `data-props`, `data-areas`, `data-dirty`, `data-buildings`, `data-build`, `data-draft`,
 `data-selection`, `data-walker`, `data-zones`, `data-links`, `data-roamers`, `data-roaming`,
 `data-pool`, `data-rooms` (a building's inside and outside while it's designed), `data-status`,
-`data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models`, `data-chunked`,
+`data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models`, `data-requests`, `data-chunked`,
 `data-loading`, `data-squares` (the ground's squares held / in the map), `data-world`,
 `data-pieces` and the places of the buttons the checks press (`data-ui-*`) on `<body>`;
 `view:x,z,distance,yaw,pitch` points the editor's camera and `point:x,y,z` reports where a
@@ -72,7 +73,7 @@ Two spaces with the same layout, `data/<collection>/<id>.json` (one record per f
 |---|---|---|
 | `content/` | The game's own content. What the public game ships. | Yes |
 | `temporary/` | Local placeholders, imported by a private tool that isn't part of the repository: creatures, moves, abilities, items, types, pictures and battle maps to develop with until the game has its own. | Never (`.gitignore`) |
-| `private/` | The author's local tools and prototypes. | Never (`.gitignore`) |
+| `private/` | The author's local tools and prototypes, and the map editor's model requests (`private/requests/`: pictures, often other artists' work). | Never (`.gitignore`) |
 
 The collections: `types`, `creatures`, `moves`, `abilities`, `items`, `natures`,
 `growth_rates`, `egg_groups`, `regions`, `encounters`, `parties`, and for the world
@@ -271,6 +272,23 @@ with the box ticked), kept until Save in the browser (its record and model downl
 desktop, `data/props` and `assets/models` of both spaces are watched: a record or model
 changed there (the Blender add-on's Add to project, a re-export) shows within a second.
 
+**Requests** (in the top bar; the desktop only, the browser's window says why) is where the
+pictures of a creature or a prop go for Claude to model in Blender: drop PNG, JPG or WebP files
+on the window while it's open (models dropped meanwhile still go to the asset browser, and
+pictures go to it only while it's open). The first drop starts a request named after the
+first picture; the next ones add to the selected request ("New request" starts another). A
+request has a name (its id follows it while it waits), a kind (creature or prop), its height in
+cells, a style (smooth or low-poly), notes, and "This design is mine or licensed" (off by
+default: the model of someone else's design goes to `temporary/`, never `content/`). It's kept
+in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
+committed. The list shows each request's status (waiting, in progress, done) and its pictures;
+one in progress has a bar with the time left (the top bar shows it too, the window says when
+there's been no news for a while); a done one shows the renders of its model and the prop it
+became ("Use it" puts it in the Place tool). Asked to "make the waiting requests", a Claude
+session follows `tools/blender/requests.md`: a script per request builds the model from shapes
+in Blender, renders it beside the pictures until it matches, rigs a creature with an idle
+animation, and adds it to the project.
+
 ## Blender
 
 Props, buildings and maps go to Blender, and models made in Blender come into the game, as
@@ -288,7 +306,8 @@ keeps materials, rigs and animations as Blender writes them: the engine draws ba
 and textures, and a rigged model plays its "idle" animation (`crates/world/src/anim.rs`
 poses it, the renderer skins it, shadows included); a camera never goes into a model, the
 game has its own. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
-the origin, its front to Blender's front view.
+the origin, its front to Blender's front view. Models made from the editor's requests come
+through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 
 ## Layout
 
@@ -298,7 +317,7 @@ the origin, its front to Blender's front view.
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window and their files, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
 | `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing

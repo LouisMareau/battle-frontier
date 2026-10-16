@@ -317,6 +317,90 @@ check("  written back to temporary/, never content/", (scratch / "temporary" / "
 del bpy.context.scene["bf_editing"]
 clear()
 
+# 5c. a model request made into a model (request_kit.py, the recipe in requests.md): a small
+# creature of shapes, fused, with eyes, fitted, rigged with an idle, rendered and added; a
+# design that isn't the user's goes to temporary/, one that is to content/
+import model_requests as mr  # noqa: E402
+import request_kit as kit  # noqa: E402
+from mathutils.bvhtree import BVHTree  # noqa: E402
+
+picture = bpy.data.images.new("critter_ref", 32, 24)
+picture.pixels = [0.45, 0.62, 0.3, 1.0] * (32 * 24)
+picture.filepath_raw = str(scratch / "critter.png")
+picture.file_format = "PNG"
+picture.save()
+made = mr.new(scratch, "Test critter", [scratch / "critter.png"], kind="creature", height=0.8, notes="a round green critter")
+check("a request made from a picture, laid out as the editor writes it", made["id"] == "test_critter" and (scratch / "private" / "requests" / "test_critter" / "critter.png").is_file()
+      and (scratch / "private" / "requests" / "test_critter" / "request.json").read_text(encoding="utf-8") == bf.to_text(mr.normal(made)))
+job = kit.start(scratch / "private" / "requests" / "test_critter" / "model.py")
+job.finishing = True
+progress = job.record["progress"]
+check("started: in progress, its bar running on an estimate", job.record["status"] == "in_progress" and progress["started"] > 0 and progress["minutes"] == mr.estimate(made) and progress["step"] == "building the model", json.dumps(progress))
+parts = [kit.blob([("ellipsoid", (0, 0, 0.42), 0.42, (1.0, 1.15, 0.9)), ("ball", (0, -0.34, 0.66), 0.3)], "fur")]
+for side in (-1, 1):
+    parts.append(kit.capsule((0.17 * side, -0.14, 0.24), (0.19 * side, -0.16, 0.03), 0.07, "fur"))
+    parts.append(kit.capsule((0.17 * side, 0.2, 0.24), (0.19 * side, 0.22, 0.03), 0.07, "fur"))
+    parts.append(kit.slab([(-0.05, 0.0), (0.05, 0.0), (0.0, 0.2)], 0.03, "ear", at=(0.11 * side, -0.32, 0.72), rotation=(0, 20 * side, 0)))
+parts.append(kit.capsule((0, 0.25, 0.4), (0, 0.6, 0.55), 0.05, "fur", radius_b=0.03))
+belly = kit.ellipsoid((0, -0.36, 0.36), (0.2, 0.12, 0.18), "belly")
+critter = kit.fuse(parts, "test_critter", {"fur": "#6f9a4a", "belly": "#e8dcb0", "ear": "#4d7a35"}, faces=3000, paint=[belly])
+check("one clean mesh, in one piece (ears, legs and tail all on the body)", len([o for o in bpy.data.objects if o.type == "MESH"]) == 1 and kit.pieces(critter) == 1, f"{kit.pieces(critter)} pieces")
+face = bmesh.new()
+face.from_mesh(critter.data)
+face_tree = BVHTree.FromBMesh(face)
+face.free()
+# the eyes asked for in front of the face (where metaballs leave it is hard to tell): seated on it
+kit.eyes(critter, [(-0.1, -0.7, 0.72), (0.1, -0.7, 0.72)], 0.055)
+eye_index = critter.vertex_groups["eyes"].index
+gaps = [min(face_tree.find_nearest(v.co)[3] for v in critter.data.vertices if any(g.group == eye_index for g in v.groups) and (v.co.x > 0) == right) for right in (False, True)]
+check("  the eyes seated on its face, not floating", all(g < 0.02 for g in gaps), f"{gaps}")
+kit.fit([critter], job.height)
+lo, hi = kit.bounds([critter])
+check("  as tall as asked, on the origin", abs(hi.z - 0.8) < 1e-3 and abs(lo.z) < 1e-3 and abs(lo.x + hi.x) < 0.02, f"{len(critter.data.polygons)} faces, {lo[:]} to {hi[:]}")
+names = [m.name for m in critter.data.materials]
+used = {p.material_index for p in critter.data.polygons}
+check("a material per colour region, glossy eyes, every one used", names == ["test_critter fur", "test_critter ear", "test_critter belly", "test_critter eye", "test_critter eye glint"] and used == set(range(5))
+      and critter.data.materials["test_critter eye"].node_tree.nodes["Principled BSDF"].inputs["Roughness"].default_value < 0.1, f"{names}, used {sorted(used)}")
+arm = kit.rig(critter, {"spine": [(0, 0.25, 0.4), (0, -0.05, 0.42), (0, -0.25, 0.48)], "head": [(0, -0.25, 0.48), (0, -0.32, 0.78)],
+                        "leg.L": [(0.17, -0.14, 0.24), (0.19, -0.16, 0.02)], "leg.R": [(-0.17, -0.14, 0.24), (-0.19, -0.16, 0.02)],
+                        "tail": [(0, 0.3, 0.38), (0, 0.42, 0.45), (0, 0.5, 0.52)]})
+groups = {g.index: g.name for g in critter.vertex_groups}
+bones = {b.name for b in arm.data.bones}
+unweighted = [v.index for v in critter.data.vertices if not any(groups[g.group] in bones and g.weight > 1e-4 for g in v.groups)]
+eye_index = critter.vertex_groups["eyes"].index
+on_head = all(any(groups[g.group] == "head" and g.weight > 0.99 for g in v.groups) for v in critter.data.vertices if any(g.group == eye_index for g in v.groups))
+check("rigged: spine, head, legs, tail, every vertex weighted, the eyes on the head", bones == {"spine.1", "spine.2", "head", "leg.L", "leg.R", "tail.1", "tail.2"} and not unweighted and on_head,
+      f"{sorted(bones)}, {len(unweighted)} unweighted")
+kit.idle(arm)
+files = kit.previews(job, [critter, arm], size=200)
+sheet = kit.compare(job, files, height=120)
+folder_ = scratch / "private" / "requests" / "test_critter"
+check("rendered from the front, the side, three-quarters, the idle in four moments, and the sheet", files == ["preview_front.png", "preview_side.png", "preview_three_quarter.png"]
+      and all((folder_ / f).is_file() for f in files + ["preview_idle.png", "compare.png"]) and sheet == folder_ / "compare.png")
+kit.finish(job, [critter, arm], files, reply="test")
+done = mr.load(scratch, "test_critter")
+critter_glb = scratch / "temporary" / "assets" / "models" / "test_critter.glb"
+critter_record = scratch / "temporary" / "data" / "props" / "test_critter.json"
+check("added to temporary/ (not the user's design), never content/", critter_glb.is_file() and critter_record.is_file() and not (scratch / "content" / "data" / "props" / "test_critter.json").exists())
+record = json.loads(critter_record.read_text(encoding="utf-8")) if critter_record.is_file() else {}
+check("  a character, measured", record.get("category") == "character" and record.get("model") == "models/test_critter.glb" and abs(record.get("height", 0) - 0.8) < 0.01, json.dumps(record))
+check("the request done: its renders, its prop, its bar full", done["status"] == "done" and done["prop"] == "test_critter" and done["previews"] == files and done["progress"]["done"] == 1.0 and done["reply"] == "test", json.dumps(done))
+critter_doc = glb_doc(critter_glb) if critter_glb.is_file() else {}
+check("its rig and its idle in the model", len(critter_doc.get("skins", [])) == 1 and [a.get("name") for a in critter_doc.get("animations", [])] == ["idle"], f"{len(critter_doc.get('skins', []))} skins")
+run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(critter_glb)], cwd=str(project), capture_output=True, text=True)
+check("the engine reads its rig and its idle", "a rig of 7 joints" in run.stdout and "idle (2.0 s)" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-300:])
+# a design that is the user's: into content/
+mr.new(scratch, "Test pot", [scratch / "critter.png"], kind="prop", height=0.5, mine=True)
+job = kit.start(scratch / "private" / "requests" / "test_pot" / "model.py")
+job.finishing = True
+pot = kit.fuse([kit.lathe([(0.0, 0.0), (0.2, 0.0), (0.28, 0.2), (0.18, 0.45), (0.2, 0.5), (0.0, 0.5)], "clay")], "test_pot", {"clay": "#b8693e"}, smooth=False)
+kit.fit([pot], job.height)
+kit.finish(job, [pot], [])
+check("a design of the user's goes to content/", (scratch / "content" / "data" / "props" / "test_pot.json").is_file() and (scratch / "content" / "assets" / "models" / "test_pot.glb").is_file()
+      and not (scratch / "temporary" / "data" / "props" / "test_pot.json").exists() and mr.load(scratch, "test_pot")["status"] == "done")
+check("  low-poly: flat shaded, few faces", not any(p.use_smooth for p in pot.data.polygons) and len(pot.data.polygons) <= 800, f"{len(pot.data.polygons)} faces")
+clear()
+
 # 6. a whole map, exported by the project itself
 os.environ["BATTLE_FRONTIER_ROOT"] = str(project)
 clear()

@@ -1,7 +1,9 @@
 //! The game: one program for the browser (WebAssembly, WebGPU or WebGL 2) and the desktop.
 //!
 //! Desktop options: game [--preset ID] [--auto] [--time morning|day|night] [--levels 1-5]
-//!                       [--maps [ID]] [--explore [ID]] [--exit-after SECONDS] [--stats] [--no-vsync]
+//!                       [--maps [ID]] [--requests] [--explore [ID]] [--exit-after SECONDS] [--stats]
+//!                       [--no-vsync] [--mute]
+//! (--requests opens the map editor with its Requests window; --mute plays no sound)
 //!        game --link battlefrontier://edit/PROP [--root PROJECT]   (opens Blender on the prop)
 //!        game --register-links                                    (sets those links up; done at every start too)
 //! (--stats prints frames per second and processor time each second; with --no-vsync the
@@ -94,6 +96,11 @@ fn main() -> eframe::Result {
             "--auto" => cli.auto = true,
             "--stats" => cli.stats = true,
             "--no-vsync" => cli.no_vsync = true,
+            "--mute" => cli.mute = true,
+            "--requests" => {
+                cli.requests = true;
+                cli.maps.get_or_insert_with(String::new);
+            }
             "--root" | "--register-links" => {
                 if args[i] == "--root" {
                     i += 1;

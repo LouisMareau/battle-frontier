@@ -1,7 +1,9 @@
 // The asset browser, driven in a headless Chrome: opens it, shows a folder, drags a prop's
-// row onto another folder (it's in both), makes a prop unstackable, drops a .glb from
-// "Blender" on a folder (it becomes a prop there, its model loads, the Place tool puts it
-// down), refuses an unstackable prop on another, and saves (downloads) what changed.
+// row onto another folder (it's in both), makes a prop unstackable, opens the Requests window
+// (in the browser, a note: requests need the desktop; a picture dropped on it isn't kept),
+// closes it, drops a .glb from "Blender" on a folder (it becomes a prop there, its model
+// loads, the Place tool puts it down), refuses an unstackable prop on another, and saves
+// (downloads) what changed.
 // Screenshots go to screenshots/assets-*.png.
 //     node tools/assetcheck.mjs
 import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -22,6 +24,9 @@ mkdirSync(work, { recursive: true });
 // a model "from Blender": the well, under another name
 const model = join(work, 'Garden Lamp.glb');
 copyFileSync(join(root, 'content', 'assets', 'models', 'stone_well.glb'), model);
+// a picture for the Requests window
+const picture = join(work, 'creature front.png');
+copyFileSync(join(root, 'crates', 'game', 'assets', 'icon-192.png'), picture);
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const server = await serve(0);
@@ -96,7 +101,21 @@ try {
   await expect('still one prop changed', 'assetsdirty', 1);
   await shot('2-dragged');
 
-  // 4. a .glb dropped on the Buildings/Outside folder: a prop, there, its model loading
+  // 3b. the Requests window: in the browser only a note (requests live on the desktop); a
+  // picture dropped while it's open is refused, and nothing becomes a prop
+  await press('uiRequests');
+  await expect('the Requests window opens, saying it needs the desktop', 'requests', 'note');
+  const before = Number(await data('assets'));
+  await browser.drop([picture], 700, 450);
+  for (let i = 0; i < 40 && !(await data('status')).includes('desktop editor'); i++) await sleep(100);
+  check('  a picture dropped on it is refused, and why', (await data('status')).includes('desktop editor'), await data('status'));
+  await expect('  and becomes no prop', 'assets', before);
+  await shot('2b-requests');
+  await press('uiRequests');
+  await expect('closed again', 'requests', '');
+
+  // 4. with the Requests window closed, a .glb dropped on the Buildings/Outside folder: a
+  // prop, there, its model loading
   await press('uiFolder_Buildings_Outside');
   const models0 = Number(await data('models'));
   const [ox, oy] = await ui('uiFolder_Buildings_Outside');

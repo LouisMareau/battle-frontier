@@ -81,6 +81,10 @@ pub struct Cli {
     /// draw as fast as possible, not at the screen's rate (to measure; the desktop only)
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub no_vsync: bool,
+    /// the map editor with its Requests window open
+    pub requests: bool,
+    /// no sound at all (checks, screenshots)
+    pub mute: bool,
 }
 
 struct Loading {
@@ -233,10 +237,12 @@ impl GameApp {
             auto: cli.auto,
             graphics: Graphics::default(),
         };
+        let mut audio = crate::audio::Audio::new();
+        audio.enabled = !cli.mute;
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
-            draws: DrawStats::default(), perf_panel: false, audio: crate::audio::Audio::new(), parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
+            draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
         }
     }
 
@@ -575,6 +581,9 @@ impl GameApp {
         if let Some(m) = self.cli.maps.take() {
             cmds.push(if m.is_empty() { "maps".into() } else { format!("map:{m}") });
         }
+        if std::mem::take(&mut self.cli.requests) {
+            cmds.push("requests".into());
+        }
         if let Some(m) = self.cli.explore.take() {
             cmds.push(if m.is_empty() { "explore".into() } else { format!("explore:{m}") });
         }
@@ -651,6 +660,11 @@ impl GameApp {
                 "point" => {
                     if let Some(ed) = self.editor_mut() {
                         ed.probe(arg);
+                    }
+                }
+                "requests" => {
+                    if let Some(ed) = self.editor_mut() {
+                        ed.open_requests();
                     }
                 }
                 "walkto" => {

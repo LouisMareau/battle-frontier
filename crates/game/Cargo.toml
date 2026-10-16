@@ -32,3 +32,5 @@ web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode",
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }
+# the Requests window's pictures: PNG, JPG and WebP
+image = { workspace = true, features = ["jpeg", "webp"] }

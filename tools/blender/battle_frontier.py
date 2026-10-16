@@ -426,8 +426,8 @@ def light_record(o, offset, existing=None):
         "intensity": round(data.energy / WATTS_PER_INTENSITY, 2),
         "range": round(float(data.cutoff_distance), 2) if data.use_custom_distance else float(old.get("range", 6.0)),
         "cone": round(math.degrees(data.spot_size), 1) if spot else 180.0,
-        "at": [round(v, 2) for v in to_engine(at)],
-        "aim": [round(v, 2) for v in to_engine(aim)] if spot else [0.0, -1.0, 0.0],
+        "at": [round(v, 2) + 0.0 for v in to_engine(at)],  # + 0.0: never a -0.0
+        "aim": [round(v, 2) + 0.0 for v in to_engine(aim)] if spot else [0.0, -1.0, 0.0],
         "night": bool(old.get("night", True)),
     }
 
@@ -454,7 +454,7 @@ def sound_record(o, offset, root, aid, space="content"):
         "file": f"sounds/{name}",
         "volume": round(float(data.volume), 2),
         "range": round(float(data.distance_max), 2) if data.distance_max < 1e6 else 8.0,
-        "at": [round(v, 2) for v in to_engine(at)],
+        "at": [round(v, 2) + 0.0 for v in to_engine(at)],
     }
 
 
@@ -757,8 +757,16 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     model_rel = f"models/{aid}.glb"
     glb = root / space / "assets" / model_rel
     record_path = root / space / "data" / "props" / f"{aid}.json"
-    # its size, in the world
+    # its size, in the world, at rest: the model is written at rest (a rig's animation poses
+    # it), so the pose it's in now doesn't count
+    posed = [m for o in meshes for m in o.modifiers if m.type == "ARMATURE" and m.show_viewport]
+    for m in posed:
+        m.show_viewport = False
+    context.view_layer.update()
     corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+    for m in posed:
+        m.show_viewport = True
+    context.view_layer.update()
     lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
     hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
     offset = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)) if recentre else Vector((0, 0, 0))

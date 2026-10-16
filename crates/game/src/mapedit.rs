@@ -14,6 +14,7 @@ mod assets;
 mod build;
 mod events;
 mod models;
+mod requests;
 mod rooms;
 mod sounds;
 mod stream;
@@ -200,6 +201,8 @@ pub struct MapEditor {
     focus_sent: Option<Vec<(i32, i32)>>,
     /// the asset browser
     assets: assets::Assets,
+    /// pictures for Claude to model in Blender
+    requests: requests::Requests,
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
@@ -391,6 +394,7 @@ impl MapEditor {
             selected_building: None,
             focus_sent: None,
             assets: assets::Assets::default(),
+            requests: requests::Requests::default(),
             probe: None,
             walker: None,
             fade: None,
@@ -516,6 +520,11 @@ impl MapEditor {
     }
 
     /// Points the camera (tests and screenshots): "x,z[,distance[,yaw[,pitch]]]".
+    /// The Requests window open (`--requests`, `<body data-cmd="requests">`).
+    pub fn open_requests(&mut self) {
+        self.requests.open = true;
+    }
+
     pub fn set_view(&mut self, args: &str) {
         let v: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse().ok()).collect();
         if v.len() >= 2 {
@@ -1037,11 +1046,18 @@ impl MapEditor {
         let mut back = false;
         self.take_drops(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        self.watch_assets(now);
+        {
+            self.watch_assets(now);
+            self.requests.watch(now);
+        }
         self.keys(&ctx);
         egui::Panel::top("maps-top").show(ui, |ui| {
             ui.add_space(4.0);
-            ui.horizontal(|ui| {
+            // one row at the window's first size (1400 wide), a second one when narrower,
+            // rather than buttons off the edge
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 6.0;
+                ui.spacing_mut().button_padding.x = 3.0;
                 ui.label(RichText::new("Maps").size(16.0).strong());
                 if ui.button("Back to the game").clicked() {
                     back = true;
@@ -1120,6 +1136,7 @@ impl MapEditor {
                 if assets.clicked() {
                     self.assets.open = !self.assets.open;
                 }
+                self.requests.toggle(ui);
                 let worlds = ui.selectable_label(self.worlds.open, "World").on_hover_text("Maps stitched into a world: place this map next to others");
                 mark("uiWorld", &worlds);
                 if worlds.clicked() {
@@ -1174,6 +1191,14 @@ impl MapEditor {
             egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
         });
         self.light_window(ui);
+        if let Some(id) = self.requests.window(&ctx, &self.content) {
+            self.use_prop(&id);
+            self.tool = Tool::Place;
+            self.status = format!("{id}: the Place tool puts it down");
+        }
+        if let Some(said) = self.requests.said.take() {
+            self.status = said;
+        }
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
