@@ -29,10 +29,14 @@ export class Browser {
     mkdirSync(profiles, { recursive: true });
     const profile = mkdtempSync(join(profiles, 'gameengine-chrome-'));
     const args = [`--remote-debugging-port=${port}`, `--user-data-dir=${profile}`, `--window-size=${width},${height}`, '--no-first-run', '--no-default-browser-check',
-      '--enable-unsafe-swiftshader', '--force-device-scale-factor=1', ...extra, 'about:blank'];
+      '--enable-unsafe-swiftshader', '--force-device-scale-factor=1',
+      // never a sound out of a check: the game plays real audio, from a browser nobody sees
+      '--mute-audio', ...extra, 'about:blank'];
     if (headless) args.unshift('--headless=new');
     const child = spawn(binary, args, { stdio: 'ignore' });
     const browser = new Browser(child, profile, port);
+    // a browser that quits fails what's waiting on it, instead of leaving the check hanging
+    child.on('exit', (code, signal) => browser.lost(`Chrome quit (${signal ?? `exit code ${code}`})`));
     try {
       await browser.connect();
     } catch (error) {
@@ -58,10 +62,13 @@ export class Browser {
     if (!target) throw new Error('Chrome did not start');
     this.socket = new WebSocket(target.webSocketDebuggerUrl);
     await new Promise((resolve, reject) => { this.socket.onopen = resolve; this.socket.onerror = () => reject(new Error('no connection to Chrome')); });
+    this.socket.onclose = () => this.lost('Chrome closed the connection (the page or the browser crashed?)');
     this.socket.onmessage = (event) => {
       const message = JSON.parse(event.data);
       if (message.id) {
-        const { resolve, reject } = this.waiting.get(message.id);
+        const pending = this.waiting.get(message.id);
+        if (!pending) return; // given up on already
+        const { resolve, reject } = pending;
         this.waiting.delete(message.id);
         message.error ? reject(new Error(message.error.message)) : resolve(message.result);
       } else if (this.listeners.has(message.method)) {
@@ -77,10 +84,25 @@ export class Browser {
     await this.send('Runtime.enable');
   }
 
-  send(method, params = {}) {
+  /// Chrome is gone: everything waiting on it fails with why, and so does what's asked next.
+  lost(why) {
+    if (this.gone) return;
+    this.gone = why;
+    for (const { reject } of this.waiting.values()) reject(new Error(why));
+    this.waiting.clear();
+  }
+
+  /// A DevTools call; it fails if Chrome is gone or doesn't answer within `timeout` ms.
+  send(method, params = {}, timeout = 120000) {
+    if (this.gone) return Promise.reject(new Error(`${method}: ${this.gone}`));
     const id = ++this.id;
     return new Promise((resolve, reject) => {
-      this.waiting.set(id, { resolve, reject });
+      const timer = setTimeout(() => {
+        this.waiting.delete(id);
+        reject(new Error(`Chrome didn't answer ${method} in ${timeout / 1000} s`));
+      }, timeout);
+      const done = (f) => (v) => { clearTimeout(timer); f(v); };
+      this.waiting.set(id, { resolve: done(resolve), reject: done(reject) });
       this.socket.send(JSON.stringify({ id, method, params }));
     });
   }
@@ -123,6 +145,7 @@ export class Browser {
     const end = Date.now() + timeout;
     while (Date.now() < end) {
       if (await this.evaluate(expression).catch(() => false)) return;
+      if (this.gone) throw new Error(`Waiting for ${what}: ${this.gone}`);
       await sleep(100);
     }
     throw new Error(`Timed out waiting for ${what}`);
