@@ -55,16 +55,37 @@ Follow tools/blender/requests.md for this one request, from its step 3 (it's sta
   tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1 lists a box's main
   colours). What the notes or the details say a thing is, it is. Write both lists as comments
   at the top of model.py before any shape, and say in the reply what you took for the drawing;
-- write private/requests/{id}/model.py with tools/blender/request_kit.py. The kit is a start,
+- draw the design's lines over each picture (requests.md, "Lines and profiles"): write
+  private/requests/{id}/lines.json with each picture's outline (a closed line named
+  "outline"), each part's outline, its middle line and its markings, in the picture's pixels,
+  and its camera (turn and tilt: where it was seen from). Then
+  python tools/blender/model_requests.py lines {id}
+  draws them over the picture (lines_PICTURE.png, which the user sees too): look at each, and
+  fix lines.json until every line sits on the design. To see a part closer, its pixels marked:
+  python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1 --grid --lines
+  A lines.json from an earlier run may be there: check it against the pictures, keep what's
+  right;
+- then draw the front and the side in lines.json from those lines, in the model's pose, at
+  the pictures' scale: a picture from the front or the side gives that view; a picture from
+  another angle means drawing the design again, from the front and from the side, as a model
+  sheet would show it, each part's true size worked out from how the picture foreshortens it.
+  It's the long part, and the one that makes the model right. Run lines again and look at
+  profiles.png (both views in cells, the request's height marked);
+- write private/requests/{id}/model.py with tools/blender/request_kit.py, built on the
+  profiles: job.profiles() has each of their lines in cells, as the model will stand, so
+  each shape's size and place come from them. The kit is a start,
   not a limit: reshape whatever needs it with the tool that does it best for the style:
   kit.editing (bmesh by hand: extrude, inset, bevel, move faces, edges and vertices),
   kit.modifier (any of Blender's modifiers), kit.sculpt (grab, inflate, smooth, flatten,
   pinch, crease), kit.tube for curved parts, or any of Blender's Python;
-- render it: python tools/blender/run_request.py {id}
+- render it: python tools/blender/run_request.py {id} (it lays the lines on the model too)
 - compare private/requests/{id}/compare.png and the previews with the pictures (the shapes,
-  proportions and colours, not the light: the previews are lit evenly, on purpose), change
-  model.py and render again until it matches (usually three to six tries);
-- a creature: rig it and give it its idle (requests.md, step 7);
+  proportions and colours, not the light: the previews are lit evenly, on purpose); its last
+  row has the lines on the model and how far each outline and the model overlap (aim for
+  about 85% or more), and where one goes past the other (a model posed otherwise than a
+  picture can't match it where the poses differ: judge those parts by the front and the
+  side). Change model.py and render again until it matches (usually three to six tries);
+- a creature: rig it and give it its idle (requests.md, step 9);
 - add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 
@@ -121,6 +142,12 @@ STYLES = {
                  "cuts and slabs for the details, a finer voxel and a bigger budget "
                  "(faces=20000 or more). It may take a long time: that's fine."),
 }
+LINES = {
+    "smooth": "Lines: the outline and the main parts, over the pictures and in the front and the side.",
+    "low_poly": "Lines: the outline and the main parts, over the pictures and in the front and the side.",
+    "accurate": ("Lines: every part, marking and detail, each where the pictures put it, over the pictures and in the front and "
+                 "the side too: the model is only as close as these are."),
+}
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -136,6 +163,7 @@ def settings_lines(record):
     out = [STYLES.get(record["style"], STYLES["smooth"])]
     if record["style"] == "accurate" and record["details"].strip():
         out.append("Model details from the user: " + record["details"].strip())
+    out.append(LINES.get(record["style"], LINES["smooth"]))
     if record["kind"] == "creature":
         out.append(POSES.get(record["pose"], POSES["t_pose"]))
     shapes = record["shapes"]

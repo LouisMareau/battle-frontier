@@ -8,8 +8,13 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py wait ID [--note "why"]    back to waiting (to remake)
     python tools/blender/model_requests.py fail ID "why"             failed, and why
     python tools/blender/model_requests.py note ID "what happened"   a line in its log
-    python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--scale N]
-                                              a part of a picture, enlarged (no box: its size)
+    python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--scale N] [--grid] [--lines]
+                                              a part of a picture, enlarged (no box: its size);
+                                              --grid: the picture's pixels marked on it,
+                                              --lines: its lines from lines.json drawn on it
+    python tools/blender/model_requests.py lines ID
+                                              lines.json drawn: each picture's lines over it,
+                                              the front and the side in cells (request_lines.py)
     python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
@@ -45,6 +50,7 @@ FIELDS = {
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
+    "lines": [],
     "previews": [],
     "prop": "",
     "reply": "",
@@ -340,12 +346,13 @@ def _box(size, box):
     return x0, y0, x1, y1
 
 
-def zoom(root, rid, picture, box=None, scale=None):
+def zoom(root, rid, picture, box=None, scale=None, grid=False, lines=False):
     """A part of a request's picture, enlarged into its folder (zoom_<picture>_<n>.png, to look
     at closely; never one of the request's pictures): the box in pixels (x0 y0 x1 y1), or in
     fractions of the picture when all four are at most 1; `scale` times larger, else its longer
-    side about 1000 pixels. With no box, only the picture's size. Returns (file or None, what
-    to say)."""
+    side about 1000 pixels. With `grid`, the picture's own pixels marked along it (to read
+    where things are); with `lines`, the picture's lines from lines.json drawn on it. With no
+    box, only the picture's size. Returns (file or None, what to say)."""
     Image = _pillow("zoom")
     d = folder(root, rid)
     img = _picture(root, rid, picture, Image)
@@ -353,9 +360,14 @@ def zoom(root, rid, picture, box=None, scale=None):
     if box is None:
         return None, f"{picture}: {w} x {h} pixels (zoom ID {picture} X0 Y0 X1 Y1 enlarges a box of it)"
     x0, y0, x1, y1 = _box(img.size, box)
-    part = img.crop((x0, y0, x1, y1))
     k = float(scale) if scale else max(1.0, 1000.0 / max(x1 - x0, y1 - y0))
-    part = part.resize((max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))), Image.LANCZOS)
+    if grid or lines:
+        import request_lines as rl
+        data = rl.read(root, rid) if lines else {}
+        items = data.get("pictures", {}).get(picture, {}).get("lines", [])
+        part = rl.draw_picture(img, (x0, y0, x1, y1), k, items, rl.pens(data, load(root, rid)["images"]), grid=grid)
+    else:
+        part = img.crop((x0, y0, x1, y1)).resize((max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))), Image.LANCZOS)
     stem = Path(picture).stem
     n = 1
     while (d / f"zoom_{stem}_{n}.png").exists():
@@ -505,9 +517,22 @@ def main(argv):
         log(root, argv[0], argv[1])
     elif verb == "zoom":
         scale = option("--scale")
+        flags = {f: f"--{f}" in argv for f in ("grid", "lines")}
+        argv = [a for a in argv if a not in ("--grid", "--lines")]
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
-        _, said = zoom(root, argv[0], argv[1], box, scale)
+        try:
+            _, said = zoom(root, argv[0], argv[1], box, scale, **flags)
+        except ValueError as e:
+            print(e)
+            return 1
         print(said)
+    elif verb == "lines":
+        import request_lines as rl
+        try:
+            print("\n".join(rl.lines(root, argv[0])))
+        except rl.LinesError as e:
+            print(e)
+            return 1
     elif verb == "colours":
         count = option("--count", "8")
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None

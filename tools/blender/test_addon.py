@@ -415,9 +415,28 @@ on_head = all(any(groups[g.group] == "head" and g.weight > 0.99 for g in v.group
 check("rigged: spine, head, legs, tail, every vertex weighted, the eyes on the head", bones == {"spine.1", "spine.2", "head", "leg.L", "leg.R", "tail.1", "tail.2"} and not unweighted and on_head,
       f"{sorted(bones)}, {len(unweighted)} unweighted")
 kit.idle(arm)
+# its lines: the picture's, seen from a three-quarter; the front and the side drawn from them
+folder_ = scratch / "private" / "requests" / "test_critter"
+(folder_ / "lines.json").write_text(json.dumps({
+    "pictures": {"critter.png": {"view": "three-quarter", "camera": {"turn": 35, "tilt": 20},
+                                 "lines": [{"name": "outline", "closed": True, "points": [[3, 3], [29, 3], [29, 21], [3, 21]]}]}},
+    "front": {"lines": [{"name": "outline", "closed": True, "points": [[10, 40], [90, 40], [90, 120], [10, 120]]}, {"name": "eye", "mark": [40, 60]}]},
+    "side": {"lines": [{"name": "outline", "closed": True, "points": [[0, 50], [150, 50], [150, 120], [0, 120]]}]}}), encoding="utf-8")
+drawn = job.profiles()
+front = drawn.get("front", {}).get("outline", [])
+check("its front and side from lines.json, in cells as it stands: the height asked, on the ground, centred", sorted(drawn) == ["front", "side"]
+      and min(p[1] for p in front) == 0 and abs(max(p[1] for p in front) - 0.8) < 1e-9 and abs(min(p[0] for p in front) + 0.4) < 1e-9
+      and drawn["front"]["eye"] == [(-0.1, 0.6)] and abs(max(p[0] for p in drawn["side"]["outline"]) - 0.857143) < 1e-5, json.dumps(drawn)[:300])
+looks = [tuple(round(c, 6) for c in kit.camera_direction(t, 0)) for t in (0, 90, -90)]
+check("  a picture's camera: 0 the front, 90 from the model's left, -90 from its right", looks == [(0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (-1.0, 0.0, 0.0)], f"{looks}")
 files = kit.previews(job, [critter, arm], size=200)
 sheet = kit.compare(job, files, height=120)
-folder_ = scratch / "private" / "requests" / "test_critter"
+views = json.loads((folder_ / "views.json").read_text(encoding="utf-8")) if (folder_ / "views.json").is_file() else {}
+seen = views.get("seen_critter.png", {}).get("box", [0, 0, 0, 0])
+front_box = views.get("preview_front.png", {}).get("box", [0, 0, 0, 0])
+check("  the model seen from the picture's camera too, and how each render sees the world", sorted(views) == ["preview_front.png", "preview_side.png", "seen_critter.png"]
+      and (folder_ / "seen_critter.png").is_file() and abs((front_box[0] + front_box[2]) / 2 - 100) < 2 and abs((front_box[1] + front_box[3]) / 2 - 100) < 2
+      and abs(max(seen[2] - seen[0], seen[3] - seen[1]) - 200 / 1.15) < 2 and views["preview_side.png"]["right"] == [0.0, 1.0, 0.0], json.dumps(views)[:400])
 check("rendered from the front, the side, three-quarters, the idle in four moments, and the sheet", files == ["preview_front.png", "preview_side.png", "preview_three_quarter.png"]
       and all((folder_ / f).is_file() for f in files + ["preview_idle.png", "compare.png"]) and sheet == folder_ / "compare.png")
 kit.finish(job, [critter, arm], files, reply="test")

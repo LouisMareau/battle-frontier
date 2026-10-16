@@ -167,12 +167,18 @@ check("  the design told from the drawing before building: light, the artist's w
       and "Write both lists as comments" in log and "what you took for the drawing" in log, log[:200])
 check("  compared on shapes and colours, not light; accurate copies none of the drawing", "not the light: the previews are lit evenly" in log
       and "none of the drawing's light, shade or lines" in log)
+check("  lines first: over each picture, the front and the side drawn from them, the model built on those", "draw the design's lines over each picture" in log
+      and "python tools/blender/model_requests.py lines test_eight\n" in log and "python tools/blender/model_requests.py zoom test_eight PICTURE X0 Y0 X1 Y1 --grid --lines" in log
+      and "then draw the front and the side in lines.json" in log and "means drawing the design again, from the front and from the side" in log
+      and "job.profiles() has each of their lines in cells" in log and "row has the lines on the model and how far each outline and the model overlap" in log)
 sys.path.insert(0, str(HERE))
 import run_claude as rc  # noqa: E402
 tpose = rc.settings_lines(mr.normal({"kind": "creature", "pose": "t_pose"}))
 check("a T-pose creature: the T-pose of its body plan, said in the reply", "no limbs (a grub" in tpose and "more legs: each" in tpose and "wings: spread" in tpose
       and "Say in your reply which of these it got" in tpose, tpose[:200])
 check("  a prop: no pose at all", "Pose" not in rc.settings_lines(mr.normal({"kind": "prop", "pose": "t_pose"})))
+check("accurate: every part and detail in the lines; else the outline and the main parts", "Lines: every part, marking and detail" in log
+      and "Lines: the outline and the main parts" in rc.settings_lines(mr.normal({"style": "smooth"})))
 
 # 9. zooming into a picture: a box of it, enlarged into the request's folder
 try:
@@ -212,6 +218,70 @@ if Image is not None:
     check("  colour names", mr.colour_name((200, 40, 30)) == "mid crimson" and mr.colour_name((90, 60, 30)) == "dark brown"
           and mr.colour_name((20, 20, 22)) == "near black" and mr.colour_name((128, 128, 128)) == "mid grey",
           [mr.colour_name(c) for c in ((200, 40, 30), (90, 60, 30), (20, 20, 22), (128, 128, 128))])
+
+    # 11. lines: traced on a picture, the front and the side drawn from them, then laid on renders
+    import request_lines as rl
+    fresh("test_ten", kind="creature", height=1.0, images=["front.png"])
+    ten = mr.folder(SCRATCH, "test_ten")
+    pic = Image.new("RGB", (400, 300), (240, 230, 200))
+    ImageDraw.Draw(pic).rectangle((150, 100, 250, 200), fill=(120, 90, 160))
+    pic.save(ten / "front.png")
+    square = [[150, 100], [250, 100], [250, 200], [150, 200]]
+    lines_json = {"pictures": {"front.png": {"view": "front", "camera": {"turn": 0, "tilt": 0}, "lines": [{"name": "outline", "closed": True, "points": square},
+                                                                                                    {"name": "eye", "ellipse": [200, 130, 10, 6]}]}},
+                  "front": {"lines": [{"name": "outline", "closed": True, "points": square}, {"name": "eye", "mark": [180, 130]}]},
+                  "side": {"lines": [{"name": "outline", "closed": True, "points": [[0, 0], [100, 0], [100, 50], [0, 50]]}, {"name": "head", "ellipse": [85, 20, 10, 10]}]}}
+    (ten / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    said = rl.lines(SCRATCH, "test_ten")
+    rec = mr.load(SCRATCH, "test_ten")
+    check("lines: each picture's lines drawn over it, the front and the side in cells, listed for the editor", (ten / "lines_front.png").is_file() and (ten / "profiles.png").is_file()
+          and rec["lines"] == ["lines_front.png", "profiles.png"] and any(s.startswith("lines_front.png: 2 lines on front.png (front, camera turn 0, tilt 0)") for s in said), "\n".join(said))
+    check("  what's off said: a side facing the other way than it says", any("the side's head is on its right: say \"faces\": \"right\"" in s for s in said), "\n".join(said))
+    cells = rl.profiles(SCRATCH, "test_ten")
+    check("  in cells as the model stands: the height asked, on the ground, centred; a mark one point", sorted(p[0] for p in cells["front"]["outline"])[:1] == [-0.5]
+          and max(p[1] for p in cells["front"]["outline"]) == 1.0 and cells["front"]["eye"] == [(-0.2, 0.7)] and max(p[0] for p in cells["side"]["outline"]) == 1.0, json.dumps(cells)[:300])
+    lines_json["side"]["faces"] = "right"
+    (ten / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    cells = rl.profiles(SCRATCH, "test_ten")
+    check("  a side drawn facing right is turned to face left", min(p[0] for p in cells["side"]["head"]) < -0.5 and not any("faces" in s for s in rl.lines(SCRATCH, "test_ten")))
+    bad = dict(lines_json, pictures={"back.png": {"lines": [{"name": "eye", "ellipse": [1, 2]}, {"points": [[0, 0]]}]}})
+    (ten / "lines.json").write_text(json.dumps(bad), encoding="utf-8")
+    try:
+        rl.lines(SCRATCH, "test_ten")
+        wrong = ""
+    except rl.LinesError as e:
+        wrong = str(e)
+    check("  a wrong lines.json: all that's wrong said at once", "pictures.back.png: not one of the request's pictures (front.png)" in wrong
+          and "(eye): an \"ellipse\" is [x, y, its half width, its half height]" in wrong and "lines[1]: it needs a \"name\"" in wrong, wrong)
+    (ten / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    # renders as request_kit.py's previews leave them: the model a dark square on the grey
+    for name, box in (("preview_front.png", (50, 50, 150, 150)), ("preview_side.png", (60, 20, 140, 150)), ("seen_front.png", (30, 30, 170, 170))):
+        render = Image.new("RGB", (200, 200), (190, 190, 186))
+        ImageDraw.Draw(render).rectangle((box[0], box[1], box[2] - 1, box[3] - 1), fill=(60, 50, 80))
+        render.save(ten / name)
+    views = {"preview_front.png": {"size": [200, 200], "centre": [0, 0, 0.5], "right": [1, 0, 0], "up": [0, 0, 1], "scale": 2.0, "box": [50, 50, 150, 150]},
+             "preview_side.png": {"size": [200, 200], "centre": [0, 0, 0.5], "right": [0, 1, 0], "up": [0, 0, 1], "scale": 2.0, "box": [60, 20, 140, 150]},
+             "seen_front.png": {"size": [200, 200], "centre": [0, 0, 0.5], "right": [1, 0, 0], "up": [0, 0, 1], "scale": 2.0, "box": [30, 30, 170, 170]}}
+    (ten / "views.json").write_text(json.dumps(views), encoding="utf-8")
+    sheet = Image.new("RGB", (400, 2 * (100 + 12) + 12), (237, 235, 230))
+    sheet.save(ten / "compare.png")
+    began = time.time() - 5
+    said = rl.on_renders(SCRATCH, "test_ten", since=began)
+    text = "\n".join(said)
+    front_said = next((s for s in said if s.startswith("fit_front.png")), "")
+    share = float(front_said.split("overlap ")[1].split("%")[0]) if "overlap " in front_said else 0
+    check("on the renders: the front's lines where they fall in cells, how far the outline and the model overlap", (ten / "fit_front.png").is_file() and share >= 95, text)
+    side_said = next((s for s in said if s.startswith("fit_side.png")), "")
+    check("  the side's too: a model taller than its lines said, and where", "the model goes" in side_said and "past it (top)" in side_said, side_said)
+    check("  each picture's lines on the model seen from its camera, lined up on the outline's box", (ten / "match_front.png").is_file()
+          and "match_front.png: front.png's lines on the model, seen from its camera: the outline and the model overlap" in text, text)
+    grown = Image.open(ten / "compare.png").size
+    rec = mr.load(SCRATCH, "test_ten")
+    check("  compare.png a row longer; the editor lists them all", grown == (400, 236 + 100 + 12) and rec["lines"] == ["lines_front.png", "profiles.png", "fit_front.png", "fit_side.png", "match_front.png"],
+          f"{grown} {rec['lines']}")
+    check("  an old render isn't drawn on again", rl.on_renders(SCRATCH, "test_ten", since=time.time() + 60) == [])
+    zoomed, said = mr.zoom(SCRATCH, "test_ten", "front.png", [140, 90, 260, 210], grid=True, lines=True)
+    check("zoom with the picture's pixels marked and its lines on it", zoomed.is_file() and Image.open(zoomed).size[0] > 1000, said)
 else:
     print("(no Pillow here: zoom and colours not checked)")
 

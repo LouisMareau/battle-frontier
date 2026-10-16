@@ -156,6 +156,10 @@ pub(super) struct ModelRequest {
     pub progress: Progress,
     /// the reference pictures: files in its folder
     pub images: Vec<String>,
+    /// the drawings the modeller made to work from and to check by: its lines over each
+    /// picture, the front and the side drawn from them, and once rendered those lines over the model
+    /// (files in its folder; tools/blender/request_lines.py)
+    pub lines: Vec<String>,
     /// once done, renders of the model (front, side, three-quarter): files in its folder
     pub previews: Vec<String>,
     /// once done, the prop it became
@@ -180,6 +184,7 @@ impl Default for ModelRequest {
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
+            lines: vec![],
             previews: vec![],
             prop: String::new(),
             reply: String::new(),
@@ -442,10 +447,18 @@ mod desk {
         Ok(Added::New(file))
     }
 
-    /// A picture taken out of the request: its copy in the folder goes too.
+    /// A picture taken out of the request: its copy in the folder goes too, and the lines
+    /// drawn over it.
     pub(in super::super) fn remove_picture(root: &Path, r: &mut ModelRequest, file: &str) -> Result<(), String> {
         r.images.retain(|f| f != file);
-        let path = folder(root).join(&r.id).join(file);
+        let dir = folder(root).join(&r.id);
+        let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
+        let drawn = [format!("lines_{stem}.png"), format!("match_{stem}.png"), format!("seen_{stem}.png")];
+        r.lines.retain(|f| !drawn.contains(f));
+        for f in &drawn {
+            std::fs::remove_file(dir.join(f)).ok();
+        }
+        let path = dir.join(file);
         match std::fs::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -595,6 +608,23 @@ mod desk {
     /// In progress with nothing written in its folder for SILENT minutes: failed.
     pub(in super::super) fn gone_silent(r: &ModelRequest, last: Option<SystemTime>, now: SystemTime) -> bool {
         r.status == Status::InProgress && last.and_then(|t| now.duration_since(t).ok()).map(|d| d.as_secs_f64() / 60.0 > SILENT).unwrap_or(false)
+    }
+
+    /// What one of a request's drawings (its `lines`) shows, for its tooltip.
+    pub(in super::super) fn drawing_about(file: &str) -> String {
+        let stem = file.strip_suffix(".png").unwrap_or(file);
+        if let Some(p) = stem.strip_prefix("lines_") {
+            format!("Claude's lines over {p}")
+        } else if let Some(p) = stem.strip_prefix("match_") {
+            format!("{p}'s lines over the model, seen from where {p} was drawn")
+        } else {
+            match stem {
+                "profiles" => "The front and the side Claude made from the lines, in cells".into(),
+                "fit_front" => "The front's lines over the model's front".into(),
+                "fit_side" => "The side's lines over the model's side".into(),
+                _ => file.to_string(),
+            }
+        }
     }
 
     /// How long a log line's time is (`[2026-10-16 09:41:07] `: 22 characters), or 0 when it
@@ -1378,6 +1408,23 @@ mod desk {
             if r.images.is_empty() {
                 hint(ui, "Drop pictures on the window to add them.");
             }
+            // the drawings Claude works from, as it makes them: see how well the lines sit
+            let drawn: Vec<String> = r.lines.iter().filter(|f| self.picture_path(&r.id, f).is_file()).cloned().collect();
+            if !drawn.is_empty() {
+                section(ui, "Lines");
+                hint(ui, "Claude's lines over the pictures and the front and side it made from them; once rendered, those lines over the model, with how far they overlap. Click one to see it full size.");
+                ui.horizontal_wrapped(|ui| {
+                    for f in drawn {
+                        let path = self.picture_path(&r.id, &f);
+                        let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{}: click to open it", drawing_about(&f)));
+                        if shown.clicked() {
+                            if let Err(e) = reveal(&path) {
+                                said = Some(e);
+                            }
+                        }
+                    }
+                });
+            }
             if !r.previews.is_empty() {
                 section(ui, "The model");
                 ui.horizontal_wrapped(|ui| {
@@ -1718,12 +1765,15 @@ mod tests {
             status: Status::InProgress,
             progress: Progress { step: "building the model".into(), done: 0.2, started: 1760000000.0, minutes: 25.0 },
             images: vec!["front.png".into(), "side.jpg".into()],
+            lines: vec!["lines_front.png".into(), "profiles.png".into()],
             ..Default::default()
         };
         let text = content::to_text(&r);
         assert!(text.contains("  \"kind\": \"creature\",\n") && text.contains("  \"style\": \"low_poly\",\n") && text.contains("  \"status\": \"in_progress\",\n"), "{text}");
         assert!(text.contains("  \"progress\": {\n    \"step\": \"building the model\",\n    \"done\": 0.2,\n    \"started\": 1760000000.0,\n    \"minutes\": 25.0\n  },\n"), "{text}");
         assert!(text.contains("  \"images\": [\"front.png\", \"side.jpg\"],\n"), "short lists on one line: {text}");
+        let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
+        assert!(at("images") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
@@ -2031,6 +2081,21 @@ mod tests {
         req.desk().selected = Some("toad".into());
         frame(&ctx, &mut req, vec![]);
         assert_eq!(req.waiting(), 0);
+        // the lines Claude made, shown as they come (a listed one not there yet isn't); taking a
+        // picture out takes its lines too
+        let dir = root.join("private/requests/stone_lantern");
+        std::fs::write(dir.join("lines_stone_lantern.png"), png(40, 30, 4)).unwrap();
+        std::fs::write(dir.join("profiles.png"), png(50, 30, 5)).unwrap();
+        let mut sketched = read(&root, "stone_lantern").unwrap();
+        sketched.lines = vec!["lines_stone_lantern.png".into(), "profiles.png".into(), "fit_front.png".into()];
+        save(&root, &sketched).unwrap();
+        req.watch(2.5e9);
+        req.desk().selected = Some("stone_lantern".into());
+        frame(&ctx, &mut req, vec![]);
+        remove_picture(&root, &mut sketched, "stone_lantern.png").unwrap();
+        assert_eq!(sketched.lines, ["profiles.png", "fit_front.png"]);
+        assert!(!dir.join("lines_stone_lantern.png").exists() && dir.join("profiles.png").exists());
+        req.desk().selected = Some("toad".into());
         // an accurate creature: its model details, its pose and its shapes drawn
         toad.style = Style::Accurate;
         toad.details = "short ears".into();
@@ -2041,6 +2106,14 @@ mod tests {
         req.desk().console_open = false;
         frame(&ctx, &mut req, vec![]);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_drawings_say_what_they_show() {
+        assert_eq!(drawing_about("lines_front.png"), "Claude's lines over front");
+        assert_eq!(drawing_about("match_side_view.png"), "side_view's lines over the model, seen from where side_view was drawn");
+        assert!(drawing_about("profiles.png").starts_with("The front and the side"));
+        assert_eq!(drawing_about("fit_side.png"), "The side's lines over the model's side");
     }
 
     #[test]

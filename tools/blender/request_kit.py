@@ -21,7 +21,13 @@ Any shape, or the fused body, can be reshaped too: `editing` (a bmesh by hand: e
 bevel, move faces, edges and vertices), `modifier` (any of Blender's modifiers, applied),
 `sculpt` (grab, inflate, smooth, flatten, pinch, crease brushes), `tube` (curved parts), `fur`.
 And any of Blender's Python besides: the kit is a start, not a limit.
+
+With the request's lines.json (request_lines.py: the lines traced on its pictures, the front
+and the side drawn from them), `job.profiles()` gives the front and the side in cells to build
+on, and `previews` also renders the model from each picture's camera (seen_<picture>.png) and
+writes views.json, which run_request.py uses to lay the lines on the renders.
 """
+import json
 import math
 import subprocess
 import sys
@@ -36,6 +42,7 @@ from mathutils.bvhtree import BVHTree
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import battle_frontier as bf  # noqa: E402
 import model_requests as mr  # noqa: E402
+import request_lines as rl  # noqa: E402
 
 
 # ---------------------------------------------------------------- the request
@@ -81,6 +88,20 @@ class Job:
 
     def pictures(self):
         return [self.dir / f for f in self.record["images"]]
+
+    def profiles(self):
+        """The front and the side from lines.json, in cells as the model stands (request_lines.py):
+        {"front": {name: [(x, z), ...]}, "side": {name: [(y, z), ...]}}, each view the request's
+        height tall from z 0, centred across (fit stands the model the same way); the side's
+        front toward -y. Empty until lines.json has them."""
+        return rl.profiles(self.root, self.id, height=self.height)
+
+    def cameras(self):
+        """Where lines.json says each picture was seen from: [(picture, direction)], the
+        direction from the model toward the eye (camera_direction)."""
+        data = rl.read(self.root, self.id)
+        return [(pic, camera_direction(part["camera"].get("turn", 0), part["camera"].get("tilt", 0)))
+                for pic, part in data.get("pictures", {}).items() if part.get("camera") is not None]
 
     def step(self, text, done):
         """What the editor's bar says now (only while it's being made)."""
@@ -463,9 +484,9 @@ def _apply(o, kind, **settings):
     bpy.data.meshes.remove(old)
 
 
-def bounds(objects):
-    """The meshes' box in the world, from their vertices as they are now (an object's
-    bound_box lags behind until the scene updates, and follows a rig's pose)."""
+def _points(objects):
+    """The meshes' vertices in the world as they are now (at rest: a rig's pose isn't in them),
+    n x 3."""
     points = []
     for o in objects:
         if o.type != "MESH" or not o.data.vertices:
@@ -474,7 +495,13 @@ def bounds(objects):
         o.data.vertices.foreach_get("co", co)
         m = np.array(o.matrix_world)
         points.append(co.reshape(-1, 3) @ m[:3, :3].T + m[:3, 3])
-    p = np.concatenate(points)
+    return np.concatenate(points)
+
+
+def bounds(objects):
+    """The meshes' box in the world, from their vertices as they are now (an object's
+    bound_box lags behind until the scene updates, and follows a rig's pose)."""
+    p = _points(objects)
     return Vector(p.min(axis=0)), Vector(p.max(axis=0))
 
 
@@ -916,13 +943,60 @@ def _render(scene, path):
     bpy.ops.render.render(write_still=True)
 
 
+def camera_direction(turn, tilt):
+    """Where a picture was seen from, as a direction from the model toward the eye: `turn`
+    degrees round from the front (0 the front, 90 from the model's left, so it faces your left,
+    -90 from its right, 180 the back), `tilt` degrees above (below when negative)."""
+    t, p = math.radians(turn), math.radians(max(-85.0, min(85.0, tilt)))
+    return (math.sin(t) * math.cos(p), -math.cos(t) * math.cos(p), math.sin(p))
+
+
+def _basis(direction):
+    """A camera looking back along `direction`: the direction, and the camera's right and up
+    in the world."""
+    d = Vector(direction).normalized()
+    r = (-d).cross(Vector((0, 0, 1)))
+    r = r.normalized() if r.length > 1e-6 else Vector((1, 0, 0))
+    return d, r, r.cross(-d).normalized()
+
+
+def _frame(cam, points, direction, margin=1.15):
+    """An ortho camera along `direction` with the whole model in view, a margin round it.
+    Returns the middle of the view in the world."""
+    d, r, u = _basis(direction)
+    a, b, c = points @ np.array(r), points @ np.array(u), points @ np.array(d)
+    centre = r * (float(a.min() + a.max()) / 2) + u * (float(b.min() + b.max()) / 2) + d * (float(c.min() + c.max()) / 2)
+    cam.data.type = "ORTHO"
+    cam.data.ortho_scale = max(float(a.max() - a.min()), float(b.max() - b.min()), 1e-4) * margin
+    cam.location = centre + d * (float(c.max() - c.min()) + cam.data.ortho_scale + 2.0)
+    cam.rotation_euler = (-d).to_track_quat("-Z", "Y").to_euler()
+    cam.data.clip_start, cam.data.clip_end = 0.01, 1000
+    return centre
+
+
+def _mapping(cam, size, centre, direction, points):
+    """How the world lands in an ortho render (what views.json keeps): the view's middle, the
+    camera's right and up, the width it sees (ortho_scale), and the model's box in the render's
+    pixels (x0, y0, x1, y1, y down)."""
+    _, r, u = _basis(direction)
+    rel = points - np.array(centre)
+    px = size / 2 + (rel @ np.array(r)) / cam.data.ortho_scale * size
+    py = size / 2 - (rel @ np.array(u)) / cam.data.ortho_scale * size
+    return {"size": [size, size], "centre": [round(float(c), 6) for c in centre], "right": [round(float(c), 6) for c in r],
+            "up": [round(float(c), 6) for c in u], "scale": round(float(cam.data.ortho_scale), 6),
+            "box": [round(float(px.min()), 2), round(float(py.min()), 2), round(float(px.max()), 2), round(float(py.max()), 2)]}
+
+
 VIEWS = (("front", (0, -1, 0), True), ("side", (1, 0, 0), True), ("three_quarter", (0.62, -0.78, 0.38), False))
 
 
 def previews(job, objects, size=640):
     """Workbench renders into the request's folder: front and side (straight on, like a
     turnaround sheet) and three-quarter; with a rig, preview_idle.png too: four moments of the
-    idle side by side. Returns the files (the three views), for `compare` and `finish`."""
+    idle side by side. With lines.json, the model seen from each picture's camera too
+    (seen_<picture>.png), and views.json: how each straight-on render sees the world, for
+    request_lines.py to lay the lines on them (run_request.py does after Blender). Returns the
+    files (the three views), for `compare` and `finish`."""
     job.step("rendering the previews", 0.5)
     scene = bpy.context.scene
     scene.render.engine = "BLENDER_WORKBENCH"
@@ -949,14 +1023,24 @@ def previews(job, objects, size=640):
     for a in arms:
         a.data.pose_position = "REST"
     lo, hi = bounds(meshes)
+    points = _points(meshes)
     cam = bpy.data.objects.new("preview camera", bpy.data.cameras.new("preview camera"))
     bpy.context.collection.objects.link(cam)
     scene.camera = cam
-    files = []
+    files, views = [], {}
     for view, direction, ortho in VIEWS:
         _view(scene, cam, lo, hi, direction, ortho)
         _render(scene, job.dir / f"preview_{view}.png")
         files.append(f"preview_{view}.png")
+        if ortho:
+            views[f"preview_{view}.png"] = _mapping(cam, size, (lo + hi) / 2, direction, points)
+    # the model seen as each picture was drawn, to lay the picture's lines on it
+    for picture, direction in job.cameras():
+        centre = _frame(cam, points, direction)
+        name = f"seen_{Path(picture).stem}.png"
+        _render(scene, job.dir / name)
+        views[name] = _mapping(cam, size, centre, direction, points)
+    (job.dir / "views.json").write_text(json.dumps(views, indent=1), encoding="utf-8")
     if arms and arms[0].animation_data and arms[0].animation_data.action:
         arms[0].data.pose_position = "POSE"
         _view(scene, cam, lo - Vector((0.1, 0.1, 0.0)) * job.height, hi + Vector((0.1, 0.1, 0.1)) * job.height, (0.62, -0.78, 0.38), False)
@@ -975,7 +1059,8 @@ def previews(job, objects, size=640):
     for a in arms:
         a.data.pose_position = "POSE"
     bpy.data.objects.remove(cam, do_unlink=True)
-    print(f"rendered {', '.join(files)}" + (" and preview_idle.png" if arms else "") + f" in {job.dir}", flush=True)
+    seen = [n for n in views if n.startswith("seen_")]
+    print(f"rendered {', '.join(files + seen)}" + (" and preview_idle.png" if arms else "") + f" in {job.dir}", flush=True)
     return files
 
 

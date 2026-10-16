@@ -37,6 +37,7 @@ Rules that hold all the way:
   "status": "waiting",
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
   "images": ["round_stone_lantern.png"],
+  "lines": [],
   "previews": [],
   "prop": "",
   "reply": ""
@@ -64,6 +65,9 @@ are.)
   the window, with the time left, and as a line along the top bar's Requests button): the
   step, how far along (0 to 1), when the modelling started (seconds since 1970) and how many
   minutes it should take; once done, how many it took.
+- `lines`: the drawings the modeller made to work from (below, "Lines and profiles"): its
+  lines over each picture, the front and the side drawn from them, and once rendered those lines over the
+  model, in the folder; the window shows them as they come.
 - `previews`: the renders of the model, in the folder; `prop`: the prop it became; `reply`:
   what the modeller says back (what it guessed, what to look at).
 
@@ -78,11 +82,15 @@ python tools/blender/model_requests.py step ID "what it's doing" [--done 0.4]
 python tools/blender/model_requests.py wait ID [--note "why"]
 python tools/blender/model_requests.py fail ID "why"
 python tools/blender/model_requests.py note ID "what happened"
+python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--grid] [--lines]
+python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1]
+python tools/blender/model_requests.py lines ID
 python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine]
 ```
 
 (`new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
-`fail` add a line to the request's `log.txt`, timed by the computer's clock.)
+`fail` add a line to the request's `log.txt`, timed by the computer's clock. `zoom`, `colours`
+and `lines` are for reading the pictures: below.)
 
 ## From the editor: Start, Cancel and the console
 
@@ -112,6 +120,10 @@ on its own (it goes on if the editor closes), which:
   an error), what was refused, the end (turns, time, cost at API prices) and Claude's last
   word; the raw stream goes to `run.jsonl`. The window's console shows that log (its last lines
   when folded, all of it open), Copy puts all of it on the clipboard;
+- meanwhile the request's panel shows what Claude draws as it draws it (**Lines**: its lines
+  over the pictures, the front and the side from them, then those lines over the model with
+  how far they overlap): a look says whether it read the pictures right, and Cancel stops a
+  run that didn't, before the long part;
 - ends the request **done** when Claude has added the model (`--finish`), **failed** when
   Claude ends without it, stops with an error or isn't logged in, or says nothing for 30
   minutes (then it's stopped); **waiting** again on Cancel (the editor writes a file named
@@ -150,8 +162,20 @@ here). Everything runs from the project folder.
    that make the silhouette. Then tell the design from the drawing (below, "The design, not
    the drawing"), before building anything. The notes win over the pictures. What no picture
    shows, guess from the design's own logic, and say so in the reply.
-4. **Write `private/requests/ID/model.py`** with the kit (below). Build at any scale (the
-   pictures' pixels, say): `fit` gives it the request's height. Creatures: a metaball `blob`
+4. **Draw the lines** of each picture in `private/requests/ID/lines.json` (below, "Lines and
+   profiles"): the design's outline, each part's outline, its middle line and its markings, in
+   the picture's pixels, and where the picture was seen from (its `camera`). Then
+   `python tools/blender/model_requests.py lines ID` draws them over the picture
+   (`lines_PICTURE.png`, which the editor shows the user as it comes): look, and move the lines
+   until they sit on the design. Draw the design's lines, not the drawing's: no shine, shade or ink.
+5. **Draw the front and the side** in `lines.json` from those lines, in the model's pose (a
+   T-pose when asked): a picture from the front or the side gives its view as it is; one from
+   another angle is drawn again, from the front and from the side, as a model sheet would show
+   it. Accurate: every part and detail in both views; else the outline and the main parts.
+   `lines` again draws `profiles.png`, both views in cells, the request's height marked.
+6. **Write `private/requests/ID/model.py`** with the kit (below), on the profiles:
+   `job.profiles()` has each line in cells, as the model will stand, so each shape's size and
+   place come from them (and `fit` gives it the request's height). Creatures: a metaball `blob`
    for each soft mass (body, head), `capsule`s for limbs and tails, `slab`s for ears, fins,
    crests and wings, `paint` volumes for markings (a belly, spots, a mask), `eyes`. Props:
    `lathe` for anything round, `box` and `cylinder` for hard shapes, `cuts` for openings,
@@ -162,33 +186,35 @@ here). Everything runs from the project folder.
    plan (above: limbs straight out, or its body straight) whatever the pictures' pose; `as_is`
    follows the pictures' pose. Say in the reply which it got. The shapes are a start, not a
    limit: reshape whatever they can't follow (below, "Reshaping").
-5. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
+7. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
    `preview_three_quarter.png` (Workbench, the material colours) and `compare.png` (the
-   pictures on top, the renders under them, the same height). Look at `compare.png`, and at
-   a preview at full size when a detail matters.
-6. **Compare and try again**, usually three to six times: the silhouette first (front and
+   pictures on top, the renders under them, the same height, and a row of the lines laid on
+   the model: below, "Lines and profiles"). Look at `compare.png`, and at a preview at full
+   size when a detail matters.
+8. **Compare and try again**, usually three to six times: how far each outline and the model
+   overlap (the lines' row says, and where one goes past the other), then the silhouette (front and
    side outlines: proportions, the head against the body, where limbs attach), then the
    masses, then the colour regions and their borders, then the details that carry the
    character (the eyes' size and place, ears, a tail's curve). Edit `model.py`, render again.
    Stop when the renders read as the pictures' design at a glance; don't chase a sketch's
    wobbles. The renders are lit evenly on purpose: compare shapes and colours, not light (a
    picture's shine, shade or rim light is no difference to fix).
-7. **Creatures: rig it** in `model.py` after `fit`: `rig(body, chains)` from the model's own
+9. **Creatures: rig it** in `model.py` after `fit`: `rig(body, chains)` from the model's own
    landmarks (in cells, the model on the origin facing -Y): `spine` (hips to chest), `neck`
    and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`, `ear.L`...
    Then `idle(arm)`. Render again: `preview_idle.png` shows four moments of the idle (look
    for vertices torn by the wrong bone), and the rig's line says how many vertices the
    automatic weights missed (many: a bone is outside the mesh).
-8. **Finish it**: `python tools/blender/run_request.py ID --finish`. The model is added with
+10. **Finish it**: `python tools/blender/run_request.py ID --finish`. The model is added with
    the add-on's `write_prop` (to `temporary/`, or `content/` when `mine`), as the prop
    named by the request's id (numbered when another prop has it); the engine's own reading
    of the file is printed (triangles, size, its light, its rig's joints and "idle"); the
    request is done, with its renders, the prop, the reply and the time it took. Put the
    reply in `model.py` (`finish(..., reply=...)`): what was guessed, what to look at.
-9. **Check it**: `cargo run -p engine-content --bin content -- check`. The prop shows in the
+11. **Check it**: `cargo run -p engine-content --bin content -- check`. The prop shows in the
    map editor's asset browser at once (with a TEMPORARY tag when it went there), and the
    Requests window shows the request done, with its renders and "Use it".
-10. **Next**: back to 1 until none waits. Then tell the user what was made, with the replies.
+12. **Next**: back to 1 until none waits. Then tell the user what was made, with the replies.
 
 A request left in progress (a session that stopped): the editor marks it failed after 31
 minutes without news; Start again (or `model_requests.py wait ID`) puts it back in the queue.
@@ -244,6 +270,83 @@ What the drawing becomes:
 Write the sorting at the top of `model.py`, as comments, before any shape: the design (each
 part, its colour's hex, its material) and the drawing (what was left out, and why). The reply
 says what was taken for the drawing, and anything unsure.
+
+## Lines and profiles
+
+Before any shape, the run draws what it will build, in two steps (recipe, steps 4 and 5), and
+the drawings check the model after each render:
+
+1. **Lines on the pictures.** In `lines.json`, each picture's lines in its own pixels (x to the
+   right, y down, as `zoom --grid` marks them): the outline of the whole design (a closed line
+   named `outline`: what the model is measured against), each part's outline (head, body, each
+   segment, horn, ears, limbs, tail), the middle line where it's symmetric, the markings'
+   edges, and marks for landmarks (an eye's middle, a horn's tip, where a limb joins). And the
+   picture's `camera`, where it was seen from: `turn`, degrees round from the front (0 straight
+   at its front; 90 from its left, so it faces your left; -90 from its right, so it faces your
+   right; 180 from behind; a three-quarter view about 30 to 50 either way) and `tilt`, degrees
+   above it (negative: below).
+2. **The front and the side**, from those lines: `"front"` as seen straight from the front,
+   `"side"` straight from its left, facing left (`"faces": "right"` when it's drawn facing
+   right), both at about the pictures' scale, in pixels as the pictures are, each standing on
+   its lowest point, in the model's pose. A picture from the front or the side gives its view
+   straight. A picture from another angle doesn't: the design is drawn again from the front
+   and from the side, as a model sheet would show it, each part's true length worked out from
+   how much the picture foreshortens it, its depth from another picture or from its round
+   shapes, what's hidden from the design's own logic. That's the expensive part, and the one
+   that makes the model right: take the time it takes.
+
+```json
+{
+  "pictures": {
+    "beetle.png": {
+      "view": "three-quarter, from its front right, a little above",
+      "camera": { "turn": -45, "tilt": 15 },
+      "lines": [
+        { "name": "outline", "closed": true, "smooth": true, "points": [[118, 528], [112, 505], [125, 490]] },
+        { "name": "head", "ellipse": [180, 450, 32, 34] },
+        { "name": "horn", "closed": true, "points": [[205, 425], [240, 358], [258, 445]] },
+        { "name": "eye", "ellipse": [215, 462, 12, 9], "angle": 20 },
+        { "name": "horn tip", "mark": [242, 359] }
+      ]
+    }
+  },
+  "front": { "lines": [{ "name": "outline", "closed": true, "smooth": true, "points": [[170, 535], [165, 500], [195, 380]] }] },
+  "side": { "lines": [{ "name": "outline", "closed": true, "smooth": true, "points": [[60, 535], [55, 500], [195, 380]] }] }
+}
+```
+
+A line is `points` (`closed` for an outline, `smooth` for a curve through them), an `ellipse`
+(`[x, y, half its width, half its height]`, turned by `angle` degrees) or a `mark` (`[x, y]`);
+a name keeps its colour in every drawing. `python tools/blender/model_requests.py lines ID`
+checks the file (saying all that's wrong at once) and draws:
+
+- `lines_PICTURE.png`: the part of the picture the lines are in, enlarged, the lines over it,
+  its pixels marked along the edges. The editor shows these to the user as they come (the
+  **Lines** row): they're how the user sees that the run read the pictures right. Move the
+  lines until each sits on the design; `zoom ID PICTURE X0 Y0 X1 Y1 --grid --lines` shows a
+  part closer, the picture's pixels marked;
+- `profiles.png`: the front and the side in cells, the request's height a dashed line, the
+  ground and the middle;
+- what's missing: a picture with no lines, no outline or no camera, no front or side yet, a
+  side facing the other way than it says.
+
+In `model.py`, `job.profiles()` gives both views in cells, as the model will stand (`fit`
+stands it the same way): `{"front": {name: [(x, z), ...]}, "side": {name: [(y, z), ...]}}`,
+each the request's height tall from z 0 and centred across, the front's x to the right as seen
+from the front (the model's left), the side's front toward -y; a name used twice gets " 2".
+Size and place each shape from them: a part's height and width are its extents in the front,
+its depth and where it sits front to back its extents in the side (`min` and `max` of its
+points); a flat part's front outline is a `slab` as it is; a round part's `lathe` profile is
+half its front outline.
+
+After each render, `run_request.py` lays the lines on the model: `fit_front.png` and
+`fit_side.png` (the front's and the side's lines on the straight renders, where they fall in
+cells) and `match_PICTURE.png` (the picture's lines on the model seen from its camera, lined up
+on the outline's box), each saying how far the outline and the model's silhouette overlap and
+where one goes past the other; they're `compare.png`'s last row, and the editor shows them. A
+close model overlaps about 85% or more in each. A T-pose model differs from a picture in
+another pose where the poses differ (limbs, a curled body): judge those parts by the front and
+the side.
 
 ## Reshaping: any tool
 
@@ -338,7 +441,8 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `light(at, color, intensity, reach, kind="point")` | a lamp's light, which becomes the prop's (lit at night) |
 | `rig(body, {chain: [points]}, parents=)` | an armature, the body skinned with automatic weights; a chain hangs from the bone nearest its first point |
 | `idle(arm, seconds=2.0, amount=1.0)` | a looping "idle" action from the bones' names: spine breathes, neck and head nod and look, tail/ear/antenna sway, arms and fins swing, wings stir, legs stay |
-| `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above) |
+| `job.profiles()` | the front and the side from `lines.json`, in cells as the model stands (above, "Lines and profiles") |
+| `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
 | `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done |
 
 The steps set the editor's bar by themselves: reading the pictures (5%), building (15%),
