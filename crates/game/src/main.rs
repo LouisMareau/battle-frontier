@@ -104,7 +104,7 @@ fn main() -> eframe::Result {
         i += 1;
     }
     let options = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default().with_title("Battle engine").with_inner_size([1400.0, 900.0]).with_min_inner_size([800.0, 500.0]),
+        viewport: egui::ViewportBuilder::default().with_title("Battle Frontier").with_inner_size([1400.0, 900.0]).with_min_inner_size([800.0, 500.0]),
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };

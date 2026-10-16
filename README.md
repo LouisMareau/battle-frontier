@@ -11,6 +11,12 @@ Everything the game is made of is data, in `content/`. Until it has its own crea
 moves, the author develops with local placeholders in `temporary/`, a space that is never
 committed (see below): without them the game has no battles yet, and the editors work.
 
+**Play it in the browser: [battle-frontier.pages.dev](https://battle-frontier.pages.dev)**
+(the latest of `main`, deployed by Cloudflare Pages). It installs as an app: in Chrome or
+Edge, the install button at the end of the address bar (or the menu's "Cast, save and
+share" > "Install page as app"). Installed, it opens in its own window, and once opened it
+starts without a network too.
+
 ## Running it
 
 Needs Rust (stable, with the `wasm32-unknown-unknown` target), [Trunk](https://trunkrs.dev)
@@ -293,7 +299,7 @@ the origin, its front to Blender's front view.
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, cliff faces, tall grass, props' stand-in models from their parts). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops through the ground shader, which draws terrain borders from a texture of the cells; vertex-coloured cliffs, props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

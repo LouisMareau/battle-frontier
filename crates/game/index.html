@@ -3,11 +3,21 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>Battle engine</title>
+  <title>Battle Frontier</title>
+  <meta name="description" content="A creature RPG of timed battles, with its map and content editors, in the browser.">
   <meta name="theme-color" content="#0c111c">
   <base data-trunk-public-url />
   <link data-trunk rel="rust" data-bin="game" data-wasm-opt="2" />
   <link data-trunk rel="copy-dir" href="../../content" />
+  <!-- installable as an app (Chrome, Edge: the address bar's install button) -->
+  <link data-trunk rel="copy-file" href="assets/manifest.json" />
+  <link data-trunk rel="copy-file" href="assets/sw.js" />
+  <link data-trunk rel="copy-file" href="assets/icon-192.png" />
+  <link data-trunk rel="copy-file" href="assets/icon-512.png" />
+  <link data-trunk rel="copy-file" href="assets/icon-maskable-512.png" />
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <style>
     html, body { margin: 0; height: 100%; overflow: hidden; background: #0c111c; color: #ddd; font: 16px system-ui, sans-serif; }
     html { touch-action: manipulation; overscroll-behavior: none; }
@@ -21,5 +31,30 @@
   <noscript><p style="position:absolute;inset:0;padding:24px">The game is a WebAssembly app: it needs JavaScript.</p></noscript>
   <!-- F3 shows the game's frame-time details, not the browser's search -->
   <script>addEventListener('keydown', (e) => { if (e.key === 'F3') e.preventDefault(); });</script>
+  <script>
+    // The service worker: the site installs as an app and starts offline once opened. When
+    // the game is up (it removes the loading text), the program files it runs on are kept
+    // and older versions' dropped.
+    if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
+      const started = new Promise((resolve) => {
+        const look = () => { if (!document.getElementById('loading')) { observer.disconnect(); resolve(); } };
+        const observer = new MutationObserver(look);
+        observer.observe(document.body, { childList: true });
+        look();
+      });
+      window.addEventListener('load', async () => {
+        try {
+          await navigator.serviceWorker.register('sw.js');
+          const registration = await navigator.serviceWorker.ready;
+          await started;
+          const mine = performance.getEntriesByType('resource').map((entry) => entry.name).filter((url) => url.startsWith(location.origin));
+          registration.active.postMessage({ keep: [location.href.split(/[?#]/)[0], ...new Set(mine)] });
+          document.body.dataset.serviceworker = 'ready';
+        } catch (error) {
+          console.warn('The game works, but not offline:', error);
+        }
+      });
+    }
+  </script>
 </body>
 </html>
