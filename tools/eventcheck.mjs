@@ -1,7 +1,9 @@
 // The story in the built site, in a real browser: the test meadow's actors and events.
+// The server holds the flag pole's model back, so the map is built without it and must be
+// built again when it comes (the pole showed up missing once, its flag waving alone).
 // Walks up to the signpost and reads it, talks to Bo and takes a choice (the camera goes
 // to the well and back, a flag is remembered), steps into the well's cells once, sees the
-// flag pole wave, and hears the place. Exits 1 when something fails.
+// flag pole wave on its pole, and hears the place. Exits 1 when something fails.
 //     node tools/eventcheck.mjs
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -19,7 +21,8 @@ const check = (what, ok, detail = '') => {
   if (!ok) failed++;
 };
 
-const server = await serve(0);
+// the flag pole's model comes 2.5 s late: after the map's props were built
+const server = await serve(0, { delay: (path) => (path.endsWith('models/flag_pole.glb') ? 2500 : 0) });
 const browser = await Browser.launch({ width: 1400, height: 900, port: 9493, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu', '--autoplay-policy=no-user-gesture-required'] });
 const data = (key) => browser.evaluate(`document.body.dataset.${key} ?? ''`);
 const cmd = (c) => browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringify(c)}, true)`);
@@ -47,6 +50,15 @@ try {
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
   await sleep(1500);
   await browser.click(700, 500);
+
+  // 0. the props built without the flag pole's model, then again with it when it comes
+  check('the flag pole\'s model held back', Number(await data('models')) <= 1, `${await data('models')} models`);
+  await waitFor('document.body.dataset.squares === "1/1"', 'the map built');
+  const bare = Number(await data('propsverts'));
+  await waitFor('Number(document.body.dataset.models) >= 2', 'the flag pole\'s model, late');
+  await sleep(400);
+  const whole = Number(await data('propsverts'));
+  check('the props built again when it came', whole > bare, `${bare} -> ${whole} vertices`);
 
   // 1. the Events tool lists what the map has
   await browser.key('7');
@@ -108,8 +120,35 @@ try {
   await sleep(600);
   check('and not again', (await data('dialog')) === '', await data('dialog'));
 
-  // 5. the flag waves, the place is heard
+  // 5. the flag waves on its pole (grey, against the grass south of it), the place is heard
   check('a rigged prop posed', Number(await data('animated')) >= 1, await data('animated'));
+  await browser.key('Escape'); // the walk ends: the camera is free again
+  await sleep(200);
+  await cmd('view:16.5,12.5,9,180,40');
+  await sleep(1200);
+  const at = async (x, y, z) => {
+    await cmd(`point:${x},${y},${z}`);
+    await sleep(120);
+    return (await data('point')).split(',').map(Number);
+  };
+  const [fx, fy] = await at(16.05, 0.1, 12.5);
+  const [tx, ty] = await at(16.05, 2.9, 12.5);
+  const shot5 = await browser.pixels(join(shots, 'events-5-pole.png'));
+  let hits = 0;
+  const samples = 12;
+  for (let k = 0; k < samples; k++) {
+    const [cx, cy] = [Math.round(fx + (tx - fx) * k / (samples - 1)), Math.round(fy + (ty - fy) * k / (samples - 1))];
+    let grey = false;
+    for (let y = cy - 4; y <= cy + 4 && !grey; y++) {
+      for (let x = cx - 5; x <= cx + 5 && !grey; x++) {
+        const i = (y * shot5.width + x) * 4;
+        const [r, g, b] = [shot5.rgba[i], shot5.rgba[i + 1], shot5.rgba[i + 2]];
+        grey = Math.max(r, g, b) - Math.min(r, g, b) < 28 && r > 70 && r < 230;
+      }
+    }
+    hits += grey;
+  }
+  check('the pole drawn, all the way up', hits >= samples - 2, `${hits} of ${samples} points along it`);
   console.log('audio', await data('audio'), '· sounds playing', await data('sounds'));
   check('sounds asked for', (await data('audio')) === 'off' || Number(await data('sounds')) >= 1, `${await data('audio')} ${await data('sounds')}`);
   await shot('4-flag');

@@ -15,7 +15,8 @@ const TYPES = {
 };
 
 /// `rewrite(path, body)`: a check's chance to change what's served (a Buffer back, or the same).
-export function serve(port = 8080, { rewrite } = {}) {
+/// `delay(path)`: milliseconds to hold a file back before serving it (a model that comes late).
+export function serve(port = 8080, { rewrite, delay } = {}) {
   const server = createServer(async (req, res) => {
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
     const local = /^temporary[\\/]/.test(path); // normalize() gives backslashes on Windows
@@ -24,7 +25,10 @@ export function serve(port = 8080, { rewrite } = {}) {
     if (!file.startsWith(base)) { res.writeHead(403).end(); return; }
     try {
       let body = await readFile(file);
-      if (rewrite) body = rewrite(path.split('\\').join('/'), body);
+      const web = path.split('\\').join('/');
+      if (rewrite) body = rewrite(web, body);
+      const hold = delay ? delay(web) : 0;
+      if (hold > 0) await new Promise((r) => setTimeout(r, hold));
       res.writeHead(200, { 'content-type': TYPES[extname(file)] || 'application/octet-stream', 'cache-control': 'no-store' });
       res.end(body);
     } catch {

@@ -203,6 +203,9 @@ pub struct MapEditor {
     arrive: Option<((i32, i32), f32)>,
     /// props' real models, loaded (by prop id), and the ones that wouldn't load
     models: world::mesh::Models,
+    /// each loaded model's generation, one more each time its file is read: what was built
+    /// with another (a square built before the file came) is built again
+    model_versions: std::collections::HashMap<String, u64>,
     model_failed: std::collections::HashSet<String>,
     /// the building being drawn or designed
     draft: Option<build::Draft>,
@@ -405,6 +408,7 @@ impl MapEditor {
             worlds: worlds::Worlds::default(),
             arrive: None,
             models: world::mesh::Models::new(),
+            model_versions: Default::default(),
             model_failed: std::collections::HashSet::new(),
             draft: None,
             selected_building: None,

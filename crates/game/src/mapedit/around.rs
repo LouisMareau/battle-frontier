@@ -54,6 +54,9 @@ pub(super) struct Around {
     edge: u64,
     /// the content the maps were last built from (another one: their props again)
     content: usize,
+    /// the models' generations when they were last built (a sum): a model come since
+    /// builds their props again
+    models: u64,
 }
 
 /// The maps next to one being built, in its own coordinates.
@@ -100,8 +103,10 @@ impl MapEditor {
     pub(super) fn hold_around(&mut self) {
         // another content (a prop's record changed): their props, trees and buildings again
         let c = std::sync::Arc::as_ptr(&self.content) as usize;
-        if c != self.around.content {
+        let epoch: u64 = self.model_versions.values().sum();
+        if c != self.around.content || epoch != self.around.models {
             self.around.content = c;
+            self.around.models = epoch;
             for n in self.around.maps.values_mut() {
                 (n.need.props, n.need.trees, n.need.buildings) = (true, true, true);
             }
@@ -235,6 +240,7 @@ impl MapEditor {
                     gpu: &mut n.gpu,
                     content: &self.content,
                     models: &self.models,
+                    model_versions: &self.model_versions,
                     level_height: self.level_height,
                     beyond: &next,
                     target: t - offset,

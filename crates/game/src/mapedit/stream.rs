@@ -5,8 +5,10 @@
 //! blocks, a canopy over the woods, a box per building) so a map of any size shows whole
 //! from afar, and a square swaps between the two as the camera moves. An edit rebuilds the
 //! squares it touched and no more, since every layer keeps a digest of what each square was
-//! built from. A map's edges look past it into the maps next to it: no cliff at a seam on
-//! one level, terrain borders running across.
+//! built from; a prop's model arriving (or read again) counts as a change to every square
+//! that uses the prop, so a square built before the file came is built again with it. A
+//! map's edges look past it into the maps next to it: no cliff at a seam on one level,
+//! terrain borders running across.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
@@ -40,8 +42,9 @@ pub(super) struct GpuState {
     sources: BTreeMap<&'static str, BTreeMap<(i32, i32), u64>>,
     /// the trees, as last laid out
     trees: Vec<Tree>,
-    /// how many models were loaded when the digests were taken (one more changes meshes)
-    models: usize,
+    /// the props layer's vertices, by square (a hook for the checks: it grows when a model
+    /// comes late)
+    props_vertices: BTreeMap<(i32, i32), usize>,
     /// the maps around it when its edges were last built (`Around::version`)
     around: u64,
 }
@@ -76,6 +79,8 @@ pub(super) struct Feed<'a> {
     pub gpu: &'a mut GpuState,
     pub content: &'a Content,
     pub models: &'a Models,
+    /// the models' generations (`MapEditor::model_versions`)
+    pub model_versions: &'a HashMap<String, u64>,
     pub level_height: f32,
     /// the maps next to it
     pub beyond: &'a dyn Beyond,
@@ -121,15 +126,17 @@ fn squares_of(map: &WorldMap) -> Vec<(i32, i32)> {
     (0..gz).flat_map(|z| (0..gx).map(move |x| (x, z))).collect()
 }
 
-/// Each prop record's digest: a square whose props, trees or buildings use one that changed
-/// (made toon, given another model...) is built again.
-fn record_digests(content: &Content) -> HashMap<&str, u64> {
+/// Each prop record's digest, its model's generation in it: a square whose props, trees or
+/// buildings use one that changed (made toon, given another model, its model's file come or
+/// read again) is built again.
+fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> HashMap<&'a str, u64> {
     content
         .props
         .iter()
         .map(|p| {
             let mut h = DefaultHasher::new();
             format!("{p:?}").hash(&mut h);
+            versions.get(&p.id).hash(&mut h);
             (p.id.as_str(), h.finish())
         })
         .collect()
@@ -261,7 +268,7 @@ impl Feed<'_> {
     }
 
     /// Builds one square of one layer and sends it.
-    fn build_square(&self, r: &mut SceneRenderer, device: &eframe::wgpu::Device, layer: &str, s: (i32, i32)) {
+    fn build_square(&mut self, r: &mut SceneRenderer, device: &eframe::wgpu::Device, layer: &str, s: (i32, i32)) {
         let (reg, lh, id) = (region(s), self.level_height, self.id);
         match layer {
             "ground" => {
@@ -281,6 +288,7 @@ impl Feed<'_> {
                     }
                 }
                 r.set_chunk(device, id, "props", s, &models::batches(&scene));
+                self.gpu.props_vertices.insert(s, scene.plain.vertices.len() + scene.textured.values().map(|m| m.vertices.len()).sum::<usize>());
             }
             "trees" => {
                 let scene = mesh::trees_from(&self.gpu.trees, self.content, self.models, reg);
@@ -335,13 +343,6 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         mark_focus(f.map, &mut cells, f.focus);
         r.set_world_cells(&rs.queue, f.id, &cells);
     }
-    // a model that arrived changes every mesh it's in
-    if f.models.len() != f.gpu.models {
-        f.gpu.models = f.models.len();
-        need.props = true;
-        need.trees = true;
-        need.buildings = true;
-    }
     f.gpu.around = f.around_version;
     // what changed, square by square
     if need.ground || edges {
@@ -349,7 +350,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         f.refresh("ground", d);
     }
     if need.props || need.trees || need.buildings {
-        let records = record_digests(f.content);
+        let records = record_digests(f.content, f.model_versions);
         if need.trees {
             f.gpu.trees = trees(f.map, f.level_height);
             let d = f.tree_digests(&records);
@@ -379,6 +380,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
                 b.remove(&s);
             }
         }
+        f.gpu.props_vertices.remove(&s);
     }
     // the squares in reach, nearest first and in full, as many as the frame's budget allows
     let over = || crate::platform::now_ms() - start > BUDGET_MS;
@@ -453,6 +455,7 @@ impl MapEditor {
             gpu: &mut self.gpu,
             content: &self.content,
             models: &self.models,
+            model_versions: &self.model_versions,
             level_height: self.level_height,
             beyond: &next,
             target: self.cam.target,
@@ -481,5 +484,25 @@ impl MapEditor {
         let (held, total) = self.gpu.held(&self.map);
         crate::platform::set_hook("squares", &format!("{held}/{total}"));
         crate::platform::set_hook("far", &self.gpu.built.get(FAR).map(|b| b.len()).unwrap_or(0).to_string());
+        crate::platform::set_hook("propsverts", &self.gpu.props_vertices.values().sum::<usize>().to_string());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use content::{Prop, Space};
+
+    #[test]
+    fn a_model_arriving_changes_its_props_digest() {
+        let mut c = Content::default();
+        c.props.put(Prop { id: "pole".into(), model: Some("models/pole.glb".into()), ..Default::default() }, Space::Content);
+        let before = record_digests(&c, &HashMap::new())["pole"];
+        let mut loaded = HashMap::new();
+        loaded.insert("pole".to_string(), 1u64);
+        let after = record_digests(&c, &loaded)["pole"];
+        assert_ne!(before, after, "the file came: the squares using the prop are built again");
+        loaded.insert("pole".to_string(), 2);
+        assert_ne!(after, record_digests(&c, &loaded)["pole"], "read again: again");
     }
 }

@@ -49,6 +49,7 @@ impl MapEditor {
                         // its moving parts (if rigged) go to the renderer below
                         self.skinned_sent.remove(id);
                         self.models.insert(id.clone(), m);
+                        *self.model_versions.entry(id.clone()).or_default() += 1;
                         self.need_props = true;
                         self.need_trees = true;
                         self.need_buildings = true;
