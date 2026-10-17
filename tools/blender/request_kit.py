@@ -24,7 +24,7 @@ And any of Blender's Python besides: the kit is a start, not a limit.
 
 With the request's lines.json (request_lines.py: the lines traced on its pictures, the front
 and the side drawn from them), `job.profiles()` gives the front and the side in cells to build
-on, and `previews` also renders the model from each picture's camera (seen_<picture>.png) and
+on (and `job.chains()` the rig's chains, from the bones the user has drawn, carried into them), and `previews` also renders the model from each picture's camera (seen_<picture>.png) and
 writes views.json, which run_request.py uses to lay the lines on the renders.
 """
 import json
@@ -95,6 +95,16 @@ class Job:
         height tall from z 0, centred across (fit stands the model the same way); the side's
         front toward -y. Empty until lines.json has them."""
         return rl.profiles(self.root, self.id, height=self.height)
+
+    def chains(self):
+        """The user's bones as the rig's chains (request_lines.py chains: the front's and the side's
+        lines named "bone CHAIN", which the run carries over from the bones the user has drawn), in
+        cells as the model stands, the body's chain first: {chain: [(x, y, z), ...]}, for
+        `rig(body, job.chains())`. Empty when there are none; what's wrong with them is printed."""
+        found, problems = rl.chains(self.profiles())
+        for p in problems:
+            print(f"bones: {p}", flush=True)
+        return found
 
     def cameras(self):
         """Where lines.json says each picture was seen from: [(picture, direction)], the
@@ -815,7 +825,7 @@ def _seg_dist(p, a, b):
 def rig(body, chains, parents=None, name="rig"):
     """An armature from `chains`: {"spine": [hips, chest], "head": [neck, top], "leg.L":
     [hip, knee, foot], "tail": [...]...}, each a run of connected bones through its points
-    (in the model as it stands, after `fit`). The first chain is the root; each other one hangs
+    (in the model as it stands, after `fit`; `job.chains()` gives them from the user's bones). The first chain is the root; each other one hangs
     from the bone nearest its first point, or from the chain (or bone) `parents` names for it.
     The body is skinned with automatic weights (bone heat); a vertex it misses goes to its
     nearest bone, the eyes to the head. Returns the armature."""

@@ -14,6 +14,11 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               a part of a picture, enlarged (no box: its size);
                                               --grid: the picture's pixels marked on it,
                                               --lines: its lines from lines.json drawn on it
+    python tools/blender/model_requests.py bones ID
+                                              the bones the user has drawn over the pictures (the
+                                              editor's Bones window): each picture's drawn
+                                              (bones_PICTURE.png) and listed, with what lines.json
+                                              says each is on (request_lines.py)
     python tools/blender/model_requests.py lines ID
                                               lines.json drawn: each picture's lines over it
                                               (how far its outline and the picture's silhouette
@@ -55,6 +60,7 @@ FIELDS = {
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
+    "bones": {},
     "lines": [],
     "previews": [],
     "prop": "",
@@ -147,7 +153,7 @@ def normal(record):
     out = {}
     for k, default in FIELDS.items():
         v = record.get(k, default)
-        if isinstance(default, dict):
+        if isinstance(default, dict) and default:
             # each part as the editor writes it (1.0 for a float, 8 for a count)
             kinds = {bool: bool, int: int, float: float}
             v = {pk: kinds.get(type(pd), lambda x: x)(v.get(pk, pd)) for pk, pd in default.items()}
@@ -541,7 +547,9 @@ def main(argv):
             extra = (f" · {LINES_READY} (the user's turn)" if lines_ready(r) else f" · {bar_text(r)}" if r["status"] in ("in_progress", "failed")
                      else (f" → {r['prop']}" if r["prop"] else ""))
             settings = r["style"] + (", mine" if r["mine"] else "") + (", lines checked first" if r["check_lines"] else "")
-            print(f"{r['status']:<12} {r['id']:<24} {r['name']} ({r['kind']}, {r['height']} cells, {settings}), {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'}{extra}")
+            drawn = sum(len(b) for b in (r.get("bones") or {}).values())
+            bones = f", {drawn} bone line{'' if drawn == 1 else 's'} drawn by the user" if drawn else ""
+            print(f"{r['status']:<12} {r['id']:<24} {r['name']} ({r['kind']}, {r['height']} cells, {settings}), {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'}{bones}{extra}")
     elif verb == "start":
         minutes = option("--minutes")
         r = start(root, argv[0], minutes)
@@ -582,6 +590,13 @@ def main(argv):
         import request_lines as rl
         try:
             print("\n".join(rl.lines(root, argv[0])))
+        except rl.LinesError as e:
+            print(e)
+            return 1
+    elif verb == "bones":
+        import request_lines as rl
+        try:
+            print("\n".join(rl.bones(root, argv[0])))
         except rl.LinesError as e:
             print(e)
             return 1

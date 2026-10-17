@@ -14,6 +14,10 @@ request is in progress; it ends done once Claude has added the model; failed whe
 without it, stops with an error, or says nothing for 30 minutes (then it's stopped); waiting
 again when a file named "stop" appears in its folder (the editor's Cancel).
 
+A request whose pictures the user has drawn the creature's bones over (the editor's Bones window:
+request.json's "bones") has Claude read the pictures by them, say what each line is on, and
+rig the creature on them.
+
 A request that checks its lines first ("Let me check the lines first": "check_lines") has
 Claude stop once it has drawn the lines and the front and the side (profiles.png): the run
 ends with the request waiting for the user's check ("lines ready: check them"). --go-on (the
@@ -31,6 +35,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import model_requests as mr  # noqa: E402
+import request_lines as rl  # noqa: E402
 
 # seconds without a word from Claude: the run is stopped, the request failed
 QUIET = 30 * 60
@@ -51,6 +56,24 @@ and its pictures). Notes from the user: {notes}
 READ = """- read private/requests/{id}/request.json and look at every picture in that folder (to see a
   part closer: python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1, in pixels
   or fractions of the picture, with no box it gives the size; then look at the zoom it writes);
+"""
+# the user has drawn the creature's bones over the pictures (the editor's Bones window): the run reads
+# the pictures by them ({drawn}: on which pictures, how many lines)
+BONES = """- the user has drawn the creature's bones over its pictures in the editor's Bones window, on
+  {drawn}: request.json's "bones" has, for each picture, lines of joints in its pixels, each
+  from its root (a hip, a shoulder, the neck, a tail's base) out, each one a part: leg, arm,
+  torso, head, ear, horn, tail, wing, or misc, a piece the user gave a name of their own. Run
+  python tools/blender/model_requests.py bones {id}
+  and look at each bones_PICTURE.png: work out which part of the creature in the picture each
+  line is on (which leg, of which side, front or back; which ear; what each named piece is).
+  It's the user's reading of the body: take it over your own (the parts there are, how many,
+  where they join and bend), and say in the reply where you think it's off. Say it in
+  lines.json, each picture's "bones": one for each of the user's lines, in their order,
+  {{"is": "its front left leg", "chain": "leg.L"}}, the chain being the one the rig gets
+  (spine, neck, head, leg.L, arm.R, tail, ear.L, horn, wing.L...; a named piece by its name).
+  Draw your lines with them: each part's outline round its bone line, a mark at each joint.
+  In the front and the side, carry them over as lines named "bone CHAIN" ("bone leg.L"), the
+  same joints in both views, in the model's pose: the creature is rigged on them;
 """
 LINES = """- before building, tell the design from the drawing (requests.md, "The design, not the
   drawing"). The design is what the model gets: its shapes, proportions, parts, colours,
@@ -104,7 +127,7 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   about 85% or more), and where one goes past the other (a model posed otherwise than a
   picture can't match it where the poses differ: judge those parts by the front and the
   side). Change model.py and render again until it matches (usually three to six tries);
-- a creature: rig it and give it its idle (requests.md, step 9);
+- a creature: rig it{rig} and give it its idle (requests.md, step 9);
 - add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """
@@ -130,11 +153,11 @@ MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
 PROMPT = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
-          + READ + "{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
+          + READ + "{bones}{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
 LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
              "started already), then stop: the user checks the lines before the model is built (the request\n"
              "says \"Let me check the lines first\"):\n"
-             + READ + "{noted}" + LINES + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
+             + READ + "{bones}{noted}" + LINES + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
                                                            "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
                                                            "lines you're unsure of."))
 GO_ON_RUN = (HEAD + "Follow tools/blender/requests.md for this one request from its step 6, the model (it's started\n"
@@ -246,9 +269,21 @@ def prompt(record, go_on=False, note=""):
     noted = (f"- the user looked at the lines the last run made (lines.json) and says this is off in them:\n{said}\n"
              "  Fix that in lines.json first (the pictures' lines, and the front and the side with them),\n"
              "  then go on below;\n") if note else ""
+    drawn = rl.user_bones(record)
+    bones = BONES.format(id=rid, drawn=bones_drawn(drawn)) if drawn else ""
+    # the rig on the bones carried into the front and the side
+    rig = (" on the user's bones (kit.rig(body, job.chains()): the front's and the side's \"bone\" lines as chains in cells, "
+           "the body's first)") if drawn else ""
     template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN}[part_of(record, go_on)]
     return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
-                           settings=settings_lines(record), checked=checked, noted=noted)
+                           settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig)
+
+
+def bones_drawn(drawn):
+    """Which pictures the user has drawn bones on, and how many lines: "front.png (5 lines) and
+    side.png (3 lines)"."""
+    said = [f"{pic} ({len(lines)} line{'' if len(lines) == 1 else 's'})" for pic, lines in drawn.items()]
+    return said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1]
 
 
 def drawn_since(path, since):
@@ -392,6 +427,9 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
         say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
     if part != "model" and note.strip():
         say(f"What the user says is off in the lines there: {note.strip()}")
+    drawn = rl.user_bones(record)
+    if drawn:
+        say(f"The user has drawn the creature's bones over {bones_drawn(drawn)}: Claude reads the pictures by them")
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid)))
     say("Prompt:\n" + text)

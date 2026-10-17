@@ -7,7 +7,9 @@ The stand-in (written into the scratch project, CLAUDE points at it) checks how 
 started, then plays one ending each time: it finishes the request, quits without it, crashes,
 isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or draws the
 lines and the front and the side and stops there (a request that checks its lines first,
-which a run with --go-on then finishes). Exits 1 when a check fails.
+which a run with --go-on then finishes). Then the bones the user has drawn over the pictures: in the
+record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
+Exits 1 when a check fails.
 """
 import json
 import os
@@ -259,7 +261,50 @@ check("a session by hand: wait ID --check leaves it for the user's check", mr.li
 made = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "new", "Checked one", "--check-lines"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")
 check("  and new --check-lines asks for it", mr.load(SCRATCH, "checked_one")["check_lines"] is True, made.stdout + made.stderr)
 
-# 10. zooming into a picture: a box of it, enlarged into the request's folder
+# 10. the bones the user has drawn (the editor's Bones window): kept in the record as the editor writes
+# them, and a run reads the pictures by them and rigs the creature on them
+BONES = {"front.png": [{"part": "leg", "points": [[1, 2], [3, 4]]}, {"part": "misc", "name": "crest", "points": [[5, 6], [7, 8]]}]}
+# the same text as the editor's test (crates/game/src/mapedit/requests.rs, BONES_TEXT)
+BONES_TEXT = ('  "bones": {\n    "front.png": [\n      {\n        "part": "leg",\n        "points": [\n          [1, 2],\n          [3, 4]\n        ]\n      },\n'
+              '      {\n        "part": "misc",\n        "name": "crest",\n        "points": [\n          [5, 6],\n          [7, 8]\n        ]\n      }\n    ]\n  },\n')
+text = mr.to_text(mr.normal({"id": "b", "name": "B", "images": ["front.png"], "bones": BONES}))
+check("the user's bones in request.json: kept, laid out as the editor writes them, between the pictures and the drawings", BONES_TEXT in text
+      and text.index('"images"') < text.index('"bones"') < text.index('"lines"') and mr.normal({"bones": BONES})["bones"] == BONES, text)
+fresh("test_bones", kind="creature", images=["front.png"], bones=BONES)
+code, out, rec, log = run("test_bones", "finish")
+asked = " ".join(rc.prompt(rec).split())
+check("a creature with bones: the run reads the pictures by them", "the user has drawn the creature's bones over its pictures in the editor's Bones window, on front.png (2 lines)" in asked
+      and "python tools/blender/model_requests.py bones test_bones" in asked and "work out which part of the creature in the picture each line is on" in asked
+      and "take it over your own" in asked and '{"is": "its front left leg", "chain": "leg.L"}' in asked
+      and 'carry them over as lines named "bone CHAIN"' in asked, asked[:600])
+check("  and rigs it on them; the log says the bones are there", "rig it on the user's bones (kit.rig(body, job.chains())" in asked
+      and "The user has drawn the creature's bones over front.png (2 lines): Claude reads the pictures by them" in log, log[-800:])
+checked_first = " ".join(rc.prompt(dict(rec, check_lines=True)).split())
+going_on = " ".join(rc.prompt(dict(rec, check_lines=True), go_on=True).split())
+check("  the lines' run reads them too; the run after the check rigs on them, the lines kept", "python tools/blender/model_requests.py bones test_bones" in checked_first
+      and "model_requests.py bones" not in going_on and "kit.rig(body, job.chains())" in going_on)
+plain = rc.prompt(mr.normal(dict(rec, bones={})))
+check("  none drawn: no word of them", "Bones window" not in plain and "job.chains()" not in plain and "- a creature: rig it and give it its idle" in plain)
+listed = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "list"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8").stdout
+check("  model_requests.py list says how many lines the user has drawn", any("test_bones" in line and "2 bone lines drawn by the user" in line for line in listed.splitlines()), listed)
+import request_lines as rl  # noqa: E402
+gone = {"front.png": BONES["front.png"] + [{"part": "tail", "points": [[1, 1]]}], "back.png": BONES["front.png"]}
+check("  a picture the request doesn't have, or a line of one joint, left out", rl.user_bones(dict(rec, bones=gone)) == BONES)
+check("  a request made a prop since: no bones, nor a word of them", rl.user_bones(dict(rec, kind="prop")) == {} and "Bones window" not in rc.prompt(mr.normal(dict(rec, kind="prop"))))
+check("  each line named as the editor names it", rl.bone_names([{"part": "leg"}, {"part": "tail"}, {"part": "leg"}, {"part": "misc", "name": "crest"}, {"part": "misc"}, {"part": "misc", "name": " "}])
+      == ["leg 1", "tail", "leg 2", "crest", "misc 1", "misc 2"])
+views = {"front": {"outline": [(0, 0)], "bone leg.L": [(0.2, 0.5), (0.25, 0.2), (0.25, 0.0)], "bone tail": [(0.0, 0.3), (0.0, 0.5)], "bone spine": [(0.0, 0.4), (0.0, 0.8)],
+                   "bone arm.R": [(-0.3, 0.7), (-0.6, 0.7)]},
+         "side": {"outline": [(0, 0)], "bone leg.L": [(0.1, 0.52), (0.12, 0.2), (0.05, 0.0)], "bone tail": [(0.3, 0.3), (0.5, 0.45), (0.6, 0.6)], "bone spine": [(0.1, 0.4), (-0.1, 0.8)],
+                  "bone ear.L": [(-0.2, 0.9), (-0.2, 1.0)]}}
+found, wrong = rl.chains(views)
+check("the rig's chains from the front's and the side's bone lines: x from the front, y from the side, the height from both, the body's first",
+      list(found) == ["spine", "leg.L", "arm.R", "ear.L"] and found["leg.L"][0] == (0.2, 0.1, 0.51) and found["arm.R"][1] == (-0.6, 0.0, 0.7)
+      and found["ear.L"][0] == (0.0, -0.2, 0.9), str(found))
+check("  what's wrong said: other joints in each view, a side's chain only in the side", "tail" not in found
+      and any(w.startswith("bone tail: 2 joints in the front, 3 in the side") for w in wrong) and any(w.startswith("bone ear.L: only in the side") for w in wrong), str(wrong))
+
+# 11. zooming into a picture: a box of it, enlarged into the request's folder
 try:
     from PIL import Image
 except ImportError:
@@ -274,7 +319,7 @@ if Image is not None:
     check("  a box of it, enlarged into the folder (not one of the request's pictures)", out.name == "zoom_front_1.png" and zoomed.size == (1000, 500)
           and mr.load(SCRATCH, "test_nine")["images"] == [], f"{out.name} {zoomed.size}: {said}")
 
-    # 11. a picture's colours: a part's lit tone, its shade and its shine apart, the background
+    # 12. a picture's colours: a part's lit tone, its shade and its shine apart, the background
     # said, see-through pixels left out
     from PIL import ImageDraw
     pic = Image.new("RGBA", (200, 100), (240, 220, 150, 255))
@@ -298,7 +343,7 @@ if Image is not None:
           and mr.colour_name((20, 20, 22)) == "near black" and mr.colour_name((128, 128, 128)) == "mid grey",
           [mr.colour_name(c) for c in ((200, 40, 30), (90, 60, 30), (20, 20, 22), (128, 128, 128))])
 
-    # 12. lines: traced on a picture, the front and the side drawn from them, then laid on renders
+    # 13. lines: traced on a picture, the front and the side drawn from them, then laid on renders
     import request_lines as rl
     fresh("test_ten", kind="creature", height=1.0, images=["front.png"])
     ten = mr.folder(SCRATCH, "test_ten")
@@ -364,7 +409,7 @@ if Image is not None:
     zoomed, said = mr.zoom(SCRATCH, "test_ten", "front.png", [140, 90, 260, 210], grid=True, lines=True)
     check("zoom with the picture's pixels marked and its lines on it", zoomed.is_file() and Image.open(zoomed).size[0] > 1000, said)
 
-    # 13. each outline on its own picture: how far it and the picture's silhouette overlap (all in
+    # 14. each outline on its own picture: how far it and the picture's silhouette overlap (all in
     # the outline's box that isn't the background, nor the creature's shadow on the ground under
     # it), and where one goes past the other; a busy background can't be scored; a picture with
     # see-through edges goes by its alpha
@@ -448,6 +493,62 @@ if Image is not None:
     snug_drawn = drawn_with(close)
     under_it, tinted = over(snug_drawn, close, (205, 236)), rl._tint(*rl._masks(flat, close)[:2]).getchannel("A").getbbox()
     check("  a close outline: no tint at all (they part by a pixel at most), nor on the shadow", tinted is None and like(under_it, ground_tone), f"{tinted} {under_it}")
+
+    # 15. the user's bones drawn over the picture for the run, and what it says each is on
+    drawn_bones = [{"part": "leg", "points": [[150, 200], [140, 250], [140, 290]]}, {"part": "leg", "points": [[250, 200], [260, 250], [260, 290]]},
+                   {"part": "misc", "name": "crest", "points": [[200, 90], [200, 40]]}]
+    fresh("test_drawn", kind="creature", height=1.0, images=["front.png", "side.png"], bones={"front.png": drawn_bones})
+    dr = mr.folder(SCRATCH, "test_drawn")
+    pic = Image.new("RGB", (400, 300), (240, 230, 200))
+    ImageDraw.Draw(pic).ellipse((130, 60, 270, 290), fill=(120, 90, 160))
+    pic.save(dr / "front.png")
+    pic.save(dr / "side.png")
+    said = rl.bones(SCRATCH, "test_drawn")
+    text = "\n".join(said)
+    rec = mr.load(SCRATCH, "test_drawn")
+    check("bones: the user's lines drawn over the picture they're on, listed for the editor", (dr / "bones_front.png").is_file() and not (dr / "bones_side.png").exists()
+          and rec["lines"] == ["bones_front.png"] and said[0].startswith("bones_front.png: the user's 3 bone lines on front.png (400 x 300 pixels)"), text)
+    check("  each line's joints, the root first, named as the editor names them", "1. leg 1: 3 joints (150, 200) (140, 250) (140, 290), 2 bones, 91 pixels along" in text
+          and "3. crest (a piece the user named): 2 joints (200, 90) (200, 40), 1 bone" in text, text)
+    check("  what's not said yet: what each is on", "missing: front.png: say what each of the user's 3 bone lines is on" in text and "(leg 1, leg 2, crest)" in text, text)
+    seen = Image.open(dr / "bones_front.png").convert("RGB")
+    colours = {c for _, c in seen.getcolors(1 << 20)}
+    check("  in each part's colour, the parts' key under it", any(like(c, rl._rgb(rl.BONE_PARTS["leg"]), 6) for c in colours) and any(like(c, rl._rgb(rl.BONE_PARTS["misc"]), 6) for c in colours)
+          and seen.height > seen.width, f"{seen.size}, {len(colours)} colours")
+    line = {"name": "outline", "ellipse": [200, 175, 70, 115]}
+    said_bones = [{"is": "its front left leg", "chain": "leg.L"}, {"is": "its front right leg", "chain": "leg.R"}, {"is": "the crest on its head", "chain": "crest"}]
+    tall = [[0, 0], [100, 0], [100, 300], [0, 300]]
+    lines_json = {"pictures": {"front.png": {"view": "front", "camera": {"turn": 0, "tilt": 0}, "bones": said_bones, "lines": [line]},
+                               "side.png": {"view": "side", "camera": {"turn": 90, "tilt": 0}, "lines": [line]}},
+                  "front": {"lines": [{"name": "outline", "closed": True, "points": tall}, {"name": "bone leg.L", "points": [[60, 150], [60, 300]]}]},
+                  "side": {"lines": [{"name": "outline", "closed": True, "points": tall}, {"name": "bone leg.L", "points": [[50, 150], [50, 300]]},
+                                     {"name": "head", "ellipse": [20, 40, 10, 10]}]}}
+    (dr / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    said = rl.lines(SCRATCH, "test_drawn")
+    text = "\n".join(said)
+    check("lines: the bones drawn again with what the run took each for, nothing missing of them", "1. leg 1: 3 joints (150, 200) (140, 250) (140, 290), 2 bones, 91 pixels along; you took it for its front left leg, chain leg.L" in text
+          and "say what each of the user's" not in text and mr.load(SCRATCH, "test_drawn")["lines"][:2] == ["bones_front.png", "lines_front.png"], text)
+    check("  the rig's chains it finds in the front and the side", "the rig's chains, from the front's and the side's bone lines: leg.L (2 joints)" in text, text)
+    lines_json["pictures"]["front.png"]["bones"] = said_bones[:2]
+    del lines_json["front"]["lines"][1]
+    (dr / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    text = "\n".join(rl.lines(SCRATCH, "test_drawn"))
+    check("  a line not said: the count said; bones only in the side: said too", "lines.json says 2 of the user's 3 bone lines: one for each, in their order" in text
+          and "bone leg.L: only in the side" in text, text)
+    del lines_json["side"]["lines"][1]
+    (dr / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    text = "\n".join(rl.lines(SCRATCH, "test_drawn"))
+    check("  none carried into the front and the side: said", "the user's bones aren't in the front and the side yet" in text, text)
+    lines_json["pictures"]["front.png"]["bones"] = [{"chain": "leg.L"}]
+    (dr / "lines.json").write_text(json.dumps(lines_json), encoding="utf-8")
+    try:
+        rl.lines(SCRATCH, "test_drawn")
+        wrong = ""
+    except rl.LinesError as e:
+        wrong = str(e)
+    check("  what's wrong with what it says of them: said", "pictures.front.png.bones: one for each of the user's bone lines on it" in wrong, wrong)
+    fresh("test_boneless", kind="creature", images=["front.png"])
+    check("bones with none drawn: read the pictures as they are", rl.bones(SCRATCH, "test_boneless")[0].startswith("The user has drawn no bones"))
 else:
     print("(no Pillow here: zoom, colours and the lines not checked)")
 

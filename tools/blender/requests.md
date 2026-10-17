@@ -38,6 +38,7 @@ Rules that hold all the way:
   "status": "waiting",
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
   "images": ["round_stone_lantern.png"],
+  "bones": {},
   "lines": [],
   "previews": [],
   "prop": "",
@@ -70,6 +71,10 @@ are.)
   the window, with the time left, and as a line along the top bar's Requests button): the
   step, how far along (0 to 1), when the modelling started (seconds since 1970) and how many
   minutes it should take; once done, how many it took.
+- `bones` (creatures): the bones the user has drawn over the pictures in the editor's Bones window,
+  by picture (below, "The user's bones"): lines of joints in the picture's pixels, each a part
+  (`leg`, `arm`, `torso`, `head`, `ear`, `horn`, `tail`, `wing`, or `misc` with the `name` the
+  user gave the piece). Empty when the user has drawn none.
 - `lines`: the drawings the modeller made to work from (below, "Lines and profiles"): its
   lines over each picture, the front and the side drawn from them, and once rendered those lines over the
   model, in the folder; the window shows them as they come.
@@ -89,16 +94,26 @@ python tools/blender/model_requests.py fail ID "why"
 python tools/blender/model_requests.py note ID "what happened"
 python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--grid] [--lines]
 python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1]
+python tools/blender/model_requests.py bones ID
 python tools/blender/model_requests.py lines ID
 python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine] [--check-lines]
 ```
 
 (`new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
 `fail` add a line to the request's `log.txt`, timed by the computer's clock; `wait --check`
-leaves a request waiting for the user to check its lines. `zoom`, `colours` and `lines` are
-for reading the pictures: below.)
+leaves a request waiting for the user to check its lines. `zoom`, `colours`, `bones` and
+`lines` are for reading the pictures: below.)
 
-## From the editor: Start, Cancel and the console
+## From the editor: the bones, Start, Cancel and the console
+
+Before Start, a creature's panel has **Draw the bones…**: a window with one of its pictures
+large, to draw the creature's bones over it, a colour per part (`leg`, `arm`, `torso`, `head`,
+`ear`, `horn`, `tail`, `wing`, and `misc` for any piece with no name there, which the user
+names: a crest, a shell, a fin). A click starts a line and adds each joint, chained, from its
+root out (a hip, then the knee, then the foot); a right-click puts the last joint and ends the
+line; Backspace takes a joint back, Escape drops the line being drawn, Undo takes back the last
+joint or line, Clear empties the picture. Each line is kept in the request's `bones` at once,
+and the run reads the pictures by them (below, "The user's bones").
 
 Each request's row in the window's list, and the request's own panel, has a **Start** button
 (Start again for a failed one, Make it again for a done one) and, while it's being made, a
@@ -191,10 +206,14 @@ here). Everything runs from the project folder.
    `python tools/blender/model_requests.py colours ID PICTURE X0 Y0 X1 Y1`) and the few shapes
    that make the silhouette. Then tell the design from the drawing (below, "The design, not
    the drawing"), before building anything. The notes win over the pictures. What no picture
-   shows, guess from the design's own logic, and say so in the reply.
+   shows, guess from the design's own logic, and say so in the reply. When the user has drawn the
+   creature's bones over the pictures (`bones`), `python tools/blender/model_requests.py bones
+   ID` draws them over each one: read the pictures by them (below, "The user's bones").
 4. **Draw the lines** of each picture in `private/requests/ID/lines.json` (below, "Lines and
    profiles"): the design's outline, each part's outline, its middle line and its markings, in
-   the picture's pixels, and where the picture was seen from (its `camera`). Then
+   the picture's pixels, and where the picture was seen from (its `camera`); with the user's
+   bones, what each of their lines is on (the picture's `bones`), each part's outline round its
+   bone line. Then
    `python tools/blender/model_requests.py lines ID` draws them over the picture
    (`lines_PICTURE.png`, which the editor shows the user as it comes) and says how far each
    outline and the picture's silhouette overlap (crimson on the drawing where the picture goes
@@ -205,7 +224,9 @@ here). Everything runs from the project folder.
    T-pose when asked): a picture from the front or the side gives its view as it is; one from
    another angle is drawn again, from the front and from the side, as a model sheet would show
    it. Accurate: every part and detail in both views; else the outline and the main parts.
-   `lines` again draws `profiles.png`, both views in cells, the request's height marked.
+   With the user's bones, each carried over too, as a line named `bone CHAIN`, the same joints
+   in both views. `lines` again draws `profiles.png`, both views in cells, the request's
+   height marked.
    **With `check_lines`, stop here**: `python tools/blender/model_requests.py wait ID --check`
    leaves it waiting for the user's check (a run from the editor's Start ends that way by
    itself, its last word kept as the request's reply), and say what was taken for the
@@ -240,7 +261,9 @@ here). Everything runs from the project folder.
    picture's shine, shade or rim light is no difference to fix).
 9. **Creatures: rig it** in `model.py` after `fit`: `rig(body, chains)` from the model's own
    landmarks (in cells, the model on the origin facing -Y): `spine` (hips to chest), `neck`
-   and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`, `ear.L`...
+   and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`, `ear.L`...;
+   with the user's bones, `rig(body, job.chains())`: their chains, carried into the front and
+   the side, in cells (below, "The user's bones").
    Then `idle(arm)`. Render again: `preview_idle.png` shows four moments of the idle (look
    for vertices torn by the wrong bone), and the rig's line says how many vertices the
    automatic weights missed (many: a bone is outside the mesh).
@@ -403,6 +426,58 @@ close model overlaps about 85% or more in each. A T-pose model differs from a pi
 another pose where the poses differ (limbs, a curled body): judge those parts by the front and
 the side.
 
+## The user's bones
+
+The user can draw a creature's bones over its pictures before Start (the editor's **Draw the
+bones…**, above): request.json's `bones` has, for each picture they've drawn on, its lines in the
+order drawn, each a part and its joints in the picture's pixels, from its root out (a hip, a
+shoulder, the neck, a tail's base), each pair of joints a bone:
+
+```json
+"bones": {
+  "front.png": [
+    { "part": "leg", "points": [[320, 660], [300, 720], [300, 795]] },
+    { "part": "misc", "name": "chest fluff", "points": [[330, 400], [380, 455]] }
+  ]
+}
+```
+
+(laid out over more lines in the file.) The parts are `leg`, `arm`, `torso`, `head`, `ear`,
+`horn`, `tail`, `wing` and `misc`, a piece with no name in that list, which carries the `name`
+the user gave it. They're the user's reading of the body: which parts there are, how many, where
+they join and where they bend. Take it over your own, and say in the reply where you think
+it's off.
+
+`python tools/blender/model_requests.py bones ID` draws them over each picture
+(`bones_PICTURE.png`, the editor shows it too: each line in its part's colour, its root ringed,
+numbered and named as the editor names it, "leg 1", "leg 2", "chest fluff") and lists each
+line's joints. Work out which part of the creature in the picture each line is on (which leg,
+of which side, front or back; which ear; what each named piece is) and say it in `lines.json`,
+the picture's `bones`: one for each of the user's lines, in their order, what it's on and the
+rig's chain it becomes:
+
+```json
+"front.png": {
+  "view": "front", "camera": { "turn": 0, "tilt": 0 },
+  "bones": [{ "is": "its right leg", "chain": "leg.R" }, { "is": "the fluff on its chest", "chain": "fluff" }],
+  "lines": [...]
+}
+```
+
+The chains are the kit's names (step 9): `spine` (or `torso`), `neck`, `head`, a side for
+each pair (`leg.L`, `arm.R`, `ear.L`, `wing.R`), `tail`, `horn`; a named piece by its name.
+`lines` then draws `bones_PICTURE.png` again with what each line was taken for under it (for
+the user to check, with "Let me check the lines first"), and says what's not said yet.
+
+Draw the lines with them: each part's outline round its bone line, its joints as marks where
+they help. In the front and the side, carry each bone line over as a line named `bone CHAIN`
+(`bone leg.L`, `bone tail`), the same joints in both views, in the model's pose (straightened
+in a T-pose). `lines` lists the chains it finds in both and says what's wrong (a chain with
+other joints in the front than in the side; a `.L` or `.R` chain only in the side, which then
+stands in the middle). In `model.py`, `job.chains()` makes them the rig's chains in cells as
+the model stands (each joint's x from the front, its y from the side, its height from both),
+the body's chain first: `kit.rig(body, job.chains())`.
+
 ## Reshaping: any tool
 
 The kit's shapes and `fuse` make a clean base fast; whatever they can't follow, reshape with
@@ -497,6 +572,7 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `rig(body, {chain: [points]}, parents=)` | an armature, the body skinned with automatic weights; a chain hangs from the bone nearest its first point |
 | `idle(arm, seconds=2.0, amount=1.0)` | a looping "idle" action from the bones' names: spine breathes, neck and head nod and look, tail/ear/antenna sway, arms and fins swing, wings stir, legs stay |
 | `job.profiles()` | the front and the side from `lines.json`, in cells as the model stands (above, "Lines and profiles") |
+| `job.chains()` | the user's bones carried into the front and the side (`bone CHAIN` lines) as the rig's chains, in cells, the body's first (above, "The user's bones") |
 | `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
 | `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done |
 

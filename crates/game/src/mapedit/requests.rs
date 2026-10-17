@@ -9,7 +9,66 @@
 // the record is the desktop's: the browser's window only says it can't keep requests
 #![cfg_attr(target_arch = "wasm32", allow(dead_code))]
 
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
+
+/// The parts the user draws bones for in the Bones window, each with its colour (the same
+/// in tools/blender/request_lines.py, which draws them over the pictures for Claude). "misc"
+/// is any piece that has no name here: the user gives each misc line a name of their own.
+pub(super) const BONE_PARTS: [(&str, [u8; 3]); 9] = [
+    ("leg", [255, 138, 0]),
+    ("arm", [0, 229, 255]),
+    ("torso", [255, 230, 0]),
+    ("head", [255, 61, 240]),
+    ("ear", [125, 255, 58]),
+    ("horn", [255, 77, 106]),
+    ("tail", [77, 139, 255]),
+    ("wing", [183, 123, 255]),
+    ("misc", [225, 225, 225]),
+];
+
+/// A part's colour (a light grey for one not in the list).
+pub(super) fn bone_colour(part: &str) -> [u8; 3] {
+    BONE_PARTS.iter().find(|(p, _)| *p == part).map(|(_, c)| *c).unwrap_or([225, 225, 225])
+}
+
+/// A line of bones the user has drawn over a picture: which part it is, and its joints in the
+/// picture's pixels (x right, y down), the root first (a hip, a shoulder, a tail's base);
+/// each pair of joints is a bone. A misc line carries the name the user gave the piece.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct Bone {
+    pub part: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    pub points: Vec<[i32; 2]>,
+}
+
+/// What each of a picture's bone lines is called: its name when it has one, else its part,
+/// numbered when the picture has several of that part ("leg 1", "leg 2", "tail", "spike").
+pub(super) fn bone_names(bones: &[Bone]) -> Vec<String> {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for b in bones.iter().filter(|b| b.name.trim().is_empty()) {
+        *counts.entry(b.part.as_str()).or_default() += 1;
+    }
+    let mut seen: BTreeMap<&str, usize> = BTreeMap::new();
+    bones
+        .iter()
+        .map(|b| {
+            if !b.name.trim().is_empty() {
+                return b.name.trim().to_string();
+            }
+            let n = seen.entry(b.part.as_str()).or_default();
+            *n += 1;
+            if counts.get(b.part.as_str()).copied().unwrap_or(0) > 1 {
+                format!("{} {n}", b.part)
+            } else {
+                b.part.clone()
+            }
+        })
+        .collect()
+}
 
 /// A picture by its file name: PNG, JPG or WebP.
 pub(super) fn is_picture(name: &str) -> bool {
@@ -159,6 +218,10 @@ pub(super) struct ModelRequest {
     pub progress: Progress,
     /// the reference pictures: files in its folder
     pub images: Vec<String>,
+    /// the bones the user has drawn over the pictures (the Bones window), by picture: the body
+    /// plan as they see it, which parts there are and where they join, for Claude to read the
+    /// pictures by and to rig the creature on
+    pub bones: BTreeMap<String, Vec<Bone>>,
     /// the drawings the modeller made to work from and to check by: its lines over each
     /// picture, the front and the side drawn from them, and once rendered those lines over the model
     /// (files in its folder; tools/blender/request_lines.py)
@@ -188,6 +251,7 @@ impl Default for ModelRequest {
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
+            bones: BTreeMap::new(),
             lines: vec![],
             previews: vec![],
             prop: String::new(),
@@ -278,6 +342,10 @@ impl Requests {
         0
     }
 
+    pub fn drawing_bones(&self) -> bool {
+        false
+    }
+
     /// The window: a note.
     pub fn window(&mut self, ctx: &egui::Context, _content: &content::Content) -> Option<String> {
         crate::platform::set_hook("requests", if self.open { "note" } else { "" });
@@ -306,7 +374,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{Kind, ModelRequest, Pose, Progress, Requests, Status, Style, LINES_READY, SHAPES_CAP};
+    use super::{bone_colour, bone_names, Bone, Kind, ModelRequest, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -467,13 +535,14 @@ mod desk {
         Ok(Added::New(file))
     }
 
-    /// A picture taken out of the request: its copy in the folder goes too, and the lines
-    /// drawn over it.
+    /// A picture taken out of the request: its copy in the folder goes too, the lines drawn
+    /// over it, and the bones the user has drawn on it.
     pub(in super::super) fn remove_picture(root: &Path, r: &mut ModelRequest, file: &str) -> Result<(), String> {
         r.images.retain(|f| f != file);
+        r.bones.remove(file);
         let dir = folder(root).join(&r.id);
         let stem = file.rsplit_once('.').map(|(s, _)| s).unwrap_or(file);
-        let drawn = [format!("lines_{stem}.png"), format!("match_{stem}.png"), format!("seen_{stem}.png")];
+        let drawn = [format!("bones_{stem}.png"), format!("lines_{stem}.png"), format!("match_{stem}.png"), format!("seen_{stem}.png")];
         r.lines.retain(|f| !drawn.contains(f));
         for f in &drawn {
             std::fs::remove_file(dir.join(f)).ok();
@@ -633,7 +702,9 @@ mod desk {
     /// What one of a request's drawings (its `lines`) shows, for its tooltip.
     pub(in super::super) fn drawing_about(file: &str) -> String {
         let stem = file.strip_suffix(".png").unwrap_or(file);
-        if let Some(p) = stem.strip_prefix("lines_") {
+        if let Some(p) = stem.strip_prefix("bones_") {
+            format!("The bones you've drawn over {p}, with the part of the creature Claude took each for")
+        } else if let Some(p) = stem.strip_prefix("lines_") {
             format!("Claude's lines over {p}")
         } else if let Some(p) = stem.strip_prefix("match_") {
             format!("{p}'s lines over the model, seen from where {p} was drawn")
@@ -700,54 +771,69 @@ mod desk {
 
     // ------------------------------------------------------------ thumbnails
 
-    /// A picture made small for the window: at most 320 pixels on its longer side.
-    pub(in super::super) fn thumbnail(path: &Path) -> Result<egui::ColorImage, String> {
+    /// A picture made small for the window: at most `max` pixels on its longer side (never
+    /// enlarged), and the picture's own size in pixels.
+    pub(in super::super) fn thumbnail(path: &Path, max: u32) -> Result<(egui::ColorImage, egui::Vec2), String> {
         let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let img = image::load_from_memory(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
-        let small = img.thumbnail(320, 320).to_rgba8();
+        let full = egui::vec2(img.width() as f32, img.height() as f32);
+        let small = if img.width().max(img.height()) > max { img.thumbnail(max, max) } else { img }.to_rgba8();
         let (w, h) = small.dimensions();
-        Ok(egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], small.as_raw()))
+        Ok((egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], small.as_raw()), full))
     }
 
-    /// A picture read on the thread: which file, which time it was asked for, what came of it.
-    type Read = (PathBuf, u64, Result<egui::ColorImage, String>);
+    /// A picture read on the thread: which file at which size, which time it was asked for,
+    /// what came of it.
+    type Read = (PathBuf, u32, u64, Result<(egui::ColorImage, egui::Vec2), String>);
 
-    /// The pictures' textures, read by a thread of their own so the window never waits.
+    /// The pictures' textures, read by a thread of their own so the window never waits: the
+    /// small ones the lists show, and a picture large for the Bones window.
     #[derive(Default)]
     pub(in super::super) struct Thumbs {
-        made: HashMap<PathBuf, Result<egui::TextureHandle, String>>,
+        made: HashMap<(PathBuf, u32), Result<(egui::TextureHandle, egui::Vec2), String>>,
         /// on their way, with the number of the asking (a file forgotten and asked again
         /// takes only its latest reading)
-        asked: HashMap<PathBuf, u64>,
+        asked: HashMap<(PathBuf, u32), u64>,
         asks: u64,
-        jobs: Option<mpsc::Sender<(PathBuf, u64)>>,
+        jobs: Option<mpsc::Sender<(PathBuf, u32, u64)>>,
         done: Arc<Mutex<Vec<Read>>>,
     }
 
+    /// The lists' pictures are at most this many pixels across; the Bones window's this many.
+    const SMALL: u32 = 320;
+    const LARGE: u32 = 1024;
+
     impl Thumbs {
-        /// A picture's texture and its size, once read (None while on its way).
+        /// A picture's small texture and the picture's own size in pixels, once read (None
+        /// while on its way).
         pub(in super::super) fn get(&mut self, ctx: &egui::Context, path: &Path) -> Option<Result<(egui::TextureId, egui::Vec2), String>> {
-            match self.made.get(path) {
-                Some(Ok(t)) => return Some(Ok((t.id(), t.size_vec2()))),
+            self.at(ctx, path, SMALL)
+        }
+
+        /// A picture's texture at most `max` pixels across, and the picture's own size.
+        pub(in super::super) fn at(&mut self, ctx: &egui::Context, path: &Path, max: u32) -> Option<Result<(egui::TextureId, egui::Vec2), String>> {
+            let key = (path.to_path_buf(), max);
+            match self.made.get(&key) {
+                Some(Ok((t, full))) => return Some(Ok((t.id(), *full))),
                 Some(Err(e)) => return Some(Err(e.clone())),
                 None => {}
             }
-            if !self.asked.contains_key(path) {
+            if !self.asked.contains_key(&key) {
                 self.asks += 1;
-                self.asked.insert(path.to_path_buf(), self.asks);
+                self.asked.insert(key, self.asks);
                 let jobs = self.jobs.get_or_insert_with(|| {
-                    let (tx, rx) = mpsc::channel::<(PathBuf, u64)>();
+                    let (tx, rx) = mpsc::channel::<(PathBuf, u32, u64)>();
                     let (done, ctx) = (self.done.clone(), ctx.clone());
                     std::thread::spawn(move || {
-                        for (path, n) in rx {
-                            let made = thumbnail(&path);
-                            done.lock().unwrap().push((path, n, made));
+                        for (path, max, n) in rx {
+                            let made = thumbnail(&path, max);
+                            done.lock().unwrap().push((path, max, n, made));
                             ctx.request_repaint();
                         }
                     });
                     tx
                 });
-                let _ = jobs.send((path.to_path_buf(), self.asks));
+                let _ = jobs.send((path.to_path_buf(), max, self.asks));
             }
             None
         }
@@ -755,20 +841,21 @@ mod desk {
         /// The pictures read since last time, made textures.
         pub(in super::super) fn take(&mut self, ctx: &egui::Context) {
             let done = std::mem::take(&mut *self.done.lock().unwrap());
-            for (path, n, made) in done {
-                if self.asked.get(&path) != Some(&n) {
+            for (path, max, n, made) in done {
+                let key = (path, max);
+                if self.asked.get(&key) != Some(&n) {
                     continue; // forgotten meanwhile, or asked again since
                 }
-                self.asked.remove(&path);
-                let made = made.map(|img| ctx.load_texture(path.to_string_lossy(), img, egui::TextureOptions::LINEAR));
-                self.made.insert(path, made);
+                self.asked.remove(&key);
+                let made = made.map(|(img, full)| (ctx.load_texture(format!("{}@{max}", key.0.to_string_lossy()), img, egui::TextureOptions::LINEAR), full));
+                self.made.insert(key, made);
             }
         }
 
-        /// A file changed or gone: read again next time.
+        /// A file changed or gone: read again next time, at every size.
         pub(in super::super) fn forget(&mut self, path: &Path) {
-            self.made.remove(path);
-            self.asked.remove(path);
+            self.made.retain(|(p, _), _| p != path);
+            self.asked.retain(|(p, _), _| p != path);
         }
 
         /// The pictures read so far (the tests wait on them).
@@ -814,9 +901,106 @@ mod desk {
         children: Vec<std::process::Child>,
         /// what the user says is off in a request's lines, by id, for its next run
         pub lines_notes: HashMap<String, String>,
+        /// the Bones window: the user drawing the body's bones over a picture
+        pub bones: Sketch,
         /// the runs that would have started (the tests start none)
         #[cfg(test)]
         pub launched: Vec<Vec<String>>,
+    }
+
+    /// The Bones window's state: which request and picture are drawn on, the part the next
+    /// line is, the line being drawn.
+    #[derive(Default)]
+    pub(in super::super) struct Sketch {
+        pub open: bool,
+        /// the request it's on (another selected: it starts afresh)
+        of: String,
+        /// the picture drawn on (None, or one gone: the request's first)
+        pub picture: Option<String>,
+        /// the part the next line is ("": BONE_PARTS' first)
+        pub part: String,
+        /// the name the next misc line gets
+        pub name: String,
+        /// the line being drawn: its joints so far, in the picture's pixels
+        pub drawing: Vec<[i32; 2]>,
+    }
+
+    /// Where a point of the canvas (`rect`, showing a picture `size` pixels across and down)
+    /// is in the picture's pixels, kept within it.
+    pub(in super::super) fn on_picture(rect: egui::Rect, size: egui::Vec2, p: egui::Pos2) -> [i32; 2] {
+        let u = ((p.x - rect.left()) / rect.width().max(1.0) * size.x).round();
+        let v = ((p.y - rect.top()) / rect.height().max(1.0) * size.y).round();
+        [u.clamp(0.0, size.x) as i32, v.clamp(0.0, size.y) as i32]
+    }
+
+    /// A joint added to the line being drawn, unless it's where the last one is.
+    fn add_joint(line: &mut Vec<[i32; 2]>, at: [i32; 2]) {
+        if line.last() != Some(&at) {
+            line.push(at);
+        }
+    }
+
+    /// The bone lines over the picture on the canvas: each in its part's colour, a dot per
+    /// joint, a ring on its root and its name there; then the line being drawn (the sketch's),
+    /// its next bone following the pointer (`hover`).
+    fn draw_bones(p: &egui::Painter, rect: egui::Rect, size: egui::Vec2, bones: &[Bone], sketch: &Sketch, hover: Option<egui::Pos2>) {
+        let (drawing, part, name) = (&sketch.drawing, sketch.part.as_str(), sketch.name.as_str());
+        let to_screen = |j: &[i32; 2]| rect.min + egui::vec2(j[0] as f32 / size.x.max(1.0) * rect.width(), j[1] as f32 / size.y.max(1.0) * rect.height());
+        let halo = Color32::from_rgba_unmultiplied(20, 20, 24, 200);
+        let line = |pts: &[egui::Pos2], colour: Color32| {
+            for pair in pts.windows(2) {
+                p.line_segment([pair[0], pair[1]], egui::Stroke::new(5.0, halo));
+            }
+            for pair in pts.windows(2) {
+                p.line_segment([pair[0], pair[1]], egui::Stroke::new(2.5, colour));
+            }
+            for (i, at) in pts.iter().enumerate() {
+                p.circle(*at, 3.5, colour, egui::Stroke::new(1.0, halo));
+                if i == 0 {
+                    p.circle_stroke(*at, 6.5, egui::Stroke::new(2.0, colour));
+                }
+            }
+        };
+        // each name by its root: right of it and up, else down, else left, so none covers another
+        let mut taken: Vec<egui::Rect> = vec![];
+        let mut label = |at: egui::Pos2, text: &str, colour: Color32| {
+            let galley = p.layout_no_wrap(text.to_string(), egui::FontId::proportional(11.0), colour);
+            let s = galley.size();
+            let tries = [egui::vec2(9.0, -s.y - 4.0), egui::vec2(9.0, 5.0), egui::vec2(-9.0 - s.x, -s.y - 4.0), egui::vec2(-9.0 - s.x, 5.0)];
+            let fits = |r: egui::Rect| rect.contains_rect(r) && !taken.iter().any(|t| t.intersects(r));
+            let pos = tries.iter().map(|d| at + *d).find(|pos| fits(egui::Rect::from_min_size(*pos, s).expand(2.0))).unwrap_or(at + tries[0]);
+            let r = egui::Rect::from_min_size(pos, s).expand(2.0);
+            taken.push(r);
+            p.rect_filled(r, 2.0, halo);
+            p.galley(pos, galley, colour);
+        };
+        // the lines, then their names over them all: (root, name, colour)
+        let mut names = vec![];
+        for (i, (b, name)) in bones.iter().zip(bone_names(bones)).enumerate() {
+            let c = bone_colour(&b.part);
+            let colour = Color32::from_rgb(c[0], c[1], c[2]);
+            let pts: Vec<egui::Pos2> = b.points.iter().map(to_screen).collect();
+            line(&pts, colour);
+            if let Some(root) = pts.first() {
+                names.push((*root, format!("{}. {name}", i + 1), colour));
+            }
+        }
+        if !drawing.is_empty() {
+            let c = bone_colour(part);
+            let colour = Color32::from_rgb(c[0], c[1], c[2]);
+            let pts: Vec<egui::Pos2> = drawing.iter().map(to_screen).collect();
+            line(&pts, colour);
+            if let (Some(last), Some(h)) = (pts.last(), hover) {
+                let next = h.clamp(rect.min, rect.max);
+                p.add(egui::Shape::dashed_line(&[*last, next], egui::Stroke::new(2.0, colour.gamma_multiply(0.75)), 6.0, 4.0));
+                p.circle_stroke(next, 3.5, egui::Stroke::new(1.5, colour));
+            }
+            let text = if part == "misc" && !name.trim().is_empty() { name.trim().to_string() } else { part.to_string() };
+            names.push((pts[0], text, colour));
+        }
+        for (at, text, colour) in &names {
+            label(*at, text, *colour);
+        }
     }
 
     impl Desk {
@@ -1539,6 +1723,20 @@ mod desk {
             if r.images.is_empty() {
                 hint(ui, "Drop pictures on the window to add them.");
             }
+            if r.kind == Kind::Creature && !r.images.is_empty() {
+                ui.horizontal(|ui| {
+                    let open = self.bones.open && self.bones.of == r.id;
+                    let b = ui.button(if open { "Drawing the bones…" } else { "Draw the bones…" }).on_hover_text(
+                        "A window with a picture large, to draw the body's bones over it, a colour per part: Claude reads them when it draws its own lines, and rigs the creature on them. Best drawn before Start",
+                    );
+                    mark("uiRequestBones", &b);
+                    if b.clicked() {
+                        self.bones.open = !open;
+                    }
+                    let n: usize = r.bones.values().map(Vec::len).sum();
+                    hint(ui, &if n == 0 { "no bones drawn yet".to_string() } else { format!("{n} bone line{} drawn", if n == 1 { "" } else { "s" }) });
+                });
+            }
             if !drawn.is_empty() && !r.lines_ready() {
                 section(ui, "Lines");
                 hint(ui, "Claude's lines over the pictures and the front and side it made from them; once rendered, those lines over the model, with how far they overlap. Click one to see it full size.");
@@ -1625,6 +1823,231 @@ mod desk {
                 }
             }
             (use_prop, said, asked)
+        }
+
+        // ------------------------------------------------------------ the Bones window
+
+        /// The Bones window, while it's open: the selected request's picture, large, with the
+        /// bone lines the user draws over it. What changed is written at once.
+        pub(in super::super) fn bones_window(&mut self, ctx: &egui::Context) -> Option<String> {
+            if !self.bones.open {
+                return None;
+            }
+            // a creature's (a prop has no bones)
+            let Some(before) = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id && r.kind == Kind::Creature)).cloned() else {
+                self.bones.open = false;
+                return None;
+            };
+            if self.bones.of != before.id {
+                self.bones = Sketch { open: true, of: before.id.clone(), ..Default::default() };
+            }
+            let mut r = before.clone();
+            let mut open = true;
+            let screen = ctx.content_rect();
+            // the picture as large as the screen leaves room for
+            let room = egui::vec2((screen.width() - 400.0).clamp(240.0, 900.0), (screen.height() - 330.0).clamp(200.0, 640.0));
+            let mut said = None;
+            egui::Window::new(format!("Bones: {}", r.name)).id(egui::Id::new("request-bones")).open(&mut open).collapsible(false).resizable(false).default_pos([300.0, 70.0]).show(ctx, |ui| {
+                said = self.bones_pane(ui, &mut r, room);
+            });
+            self.bones.open = open;
+            if r != before {
+                if let Err(e) = self.keep(&before, r) {
+                    said = Some(e);
+                }
+            }
+            said
+        }
+
+        /// Inside the Bones window: which picture, which part, the canvas (a click starts a
+        /// line and adds each joint, a right-click ends it there, Escape drops it, Backspace
+        /// takes the last joint back), and the lines drawn, each with its name and its ×.
+        fn bones_pane(&mut self, ui: &mut egui::Ui, r: &mut ModelRequest, room: egui::Vec2) -> Option<String> {
+            if r.images.is_empty() {
+                hint(ui, "Drop pictures on the Requests window first.");
+                return None;
+            }
+            let picture = match self.bones.picture.clone().filter(|p| r.images.contains(p)) {
+                Some(p) => p,
+                None => r.images[0].clone(),
+            };
+            if self.bones.picture.as_deref() != Some(picture.as_str()) {
+                self.bones.picture = Some(picture.clone());
+                self.bones.drawing.clear();
+            }
+            if self.bones.part.is_empty() {
+                self.bones.part = BONE_PARTS[0].0.to_string();
+            }
+            let path = self.picture_path(&r.id, &picture);
+            let texture = self.thumbs.at(ui.ctx(), &path, LARGE);
+            // the picture fitted into the room (a small one at most six times its size); the
+            // window as wide as it, its rows wrapping under it
+            let fitted = |size: egui::Vec2| {
+                let k = (room.x / size.x.max(1.0)).min(room.y / size.y.max(1.0)).min(6.0);
+                egui::vec2((size.x * k).max(120.0), (size.y * k).max(80.0))
+            };
+            let width = match &texture {
+                Some(Ok((_, size))) => fitted(*size).x,
+                _ => 480.0,
+            };
+            ui.set_max_width(width.max(480.0));
+            hint(ui, "The body's bones over the picture, a colour per part: a click starts a line and adds each joint (hip, knee, foot...), a right-click ends it there.");
+            hint(ui, "Claude reads them when it draws its own lines (which part of the drawing each is on) and rigs the creature on them.");
+            if r.images.len() > 1 {
+                ui.horizontal_wrapped(|ui| {
+                    hint(ui, "On");
+                    for f in r.images.clone() {
+                        let n = r.bones.get(&f).map(Vec::len).unwrap_or(0);
+                        let pick = ui.selectable_label(f == picture, if n > 0 { format!("{f} ({n})") } else { f.clone() });
+                        mark(&format!("uiRequestBonesOn_{f}"), &pick);
+                        if pick.clicked() {
+                            self.bones.picture = Some(f.clone());
+                            self.bones.drawing.clear();
+                        }
+                    }
+                });
+            }
+            ui.horizontal_wrapped(|ui| {
+                for (part, c) in BONE_PARTS {
+                    let colour = Color32::from_rgb(c[0], c[1], c[2]);
+                    let b = ui.selectable_label(self.bones.part == part, RichText::new(part).color(colour).strong()).on_hover_text(if part == "misc" {
+                        "Any piece that has no name here (a crest, a shell, a fin...): give it a name of your own"
+                    } else {
+                        "The next line is this part"
+                    });
+                    mark(&format!("uiRequestBone_{part}"), &b);
+                    if b.clicked() {
+                        self.bones.part = part.to_string();
+                    }
+                }
+                // always there (greyed but for misc), so the picture never moves as parts change
+                let misc = self.bones.part == "misc";
+                let name = ui
+                    .add_enabled(misc, egui::TextEdit::singleline(&mut self.bones.name).desired_width(110.0).hint_text("misc: named…"))
+                    .on_hover_text("What the piece is: the next misc line gets this name")
+                    .on_disabled_hover_text("Pick misc to draw a piece with no part of its own here, named as you like");
+                mark("uiRequestBoneName", &name);
+                ui.separator();
+                let undo = ui.small_button("Undo").on_hover_text("Takes back the last joint, or the last line (Backspace does too)");
+                mark("uiRequestBonesUndo", &undo);
+                if undo.clicked() && self.bones.drawing.pop().is_none() {
+                    if let Some(list) = r.bones.get_mut(&picture) {
+                        list.pop();
+                    }
+                }
+                let clear = ui.small_button("Clear").on_hover_text("Every line on this picture, gone");
+                mark("uiRequestBonesClear", &clear);
+                if clear.clicked() {
+                    r.bones.remove(&picture);
+                    self.bones.drawing.clear();
+                }
+            });
+            let (id, size) = match texture {
+                Some(Ok(t)) => t,
+                Some(Err(e)) => {
+                    warn(ui, &e);
+                    return None;
+                }
+                None => {
+                    hint(ui, "Reading the picture…");
+                    return None;
+                }
+            };
+            let (rect, resp) = ui.allocate_exact_size(fitted(size), Sense::click());
+            platform::set_hook("requestbones", &format!("{:.0},{:.0},{:.0},{:.0}", rect.left(), rect.top(), rect.width(), rect.height()));
+            let p = ui.painter_at(rect);
+            p.image(id, rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Outside);
+            let hover = resp.hover_pos();
+            if let Some(at) = hover.map(|h| on_picture(rect, size, h)) {
+                if resp.clicked() {
+                    add_joint(&mut self.bones.drawing, at);
+                }
+                if resp.secondary_clicked() {
+                    add_joint(&mut self.bones.drawing, at);
+                    let points = std::mem::take(&mut self.bones.drawing);
+                    if points.len() >= 2 {
+                        let name = if self.bones.part == "misc" { self.bones.name.trim().to_string() } else { String::new() };
+                        r.bones.entry(picture.clone()).or_default().push(Bone { part: self.bones.part.clone(), name, points });
+                    }
+                }
+            }
+            // while a line is drawn these keys are the window's (the editor's own stand aside:
+            // MapEditor::keys), unless a name is being typed
+            if !self.bones.drawing.is_empty() && !ui.ctx().egui_wants_keyboard_input() {
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.bones.drawing.clear();
+                } else if ui.input(|i| i.key_pressed(egui::Key::Backspace)) {
+                    self.bones.drawing.pop();
+                }
+            }
+            let drawn = r.bones.get(&picture).cloned().unwrap_or_default();
+            draw_bones(&p, rect, size, &drawn, &self.bones, hover);
+            resp.on_hover_cursor(egui::CursorIcon::Crosshair);
+            let joints = self.bones.drawing.len();
+            hint(
+                ui,
+                &if joints == 0 {
+                    format!("{} line{} on {picture} · click to start a {} line", drawn.len(), if drawn.len() == 1 { "" } else { "s" }, self.bones.part)
+                } else {
+                    format!("a {} line, {joints} joint{} so far · click for the next joint, right-click for the last (Escape drops the line)", self.bones.part, if joints == 1 { "" } else { "s" })
+                },
+            );
+            // the lines drawn, each named (a misc line's name to type), its × taking it out
+            let names = bone_names(&drawn);
+            let mut gone = None;
+            // in rows as wide as the picture, each line whole (its number, its name, its ×)
+            let font = egui::TextStyle::Body.resolve(ui.style());
+            let wide = |text: String| ui.painter().layout_no_wrap(text, font.clone(), Color32::WHITE).size().x;
+            let mut rows: Vec<Vec<usize>> = vec![vec![]];
+            let mut used = 0.0;
+            for (i, (b, name)) in drawn.iter().zip(&names).enumerate() {
+                let w = wide(format!("{}.", i + 1)) + if b.part == "misc" { 90.0 } else { wide(name.clone()) } + 40.0;
+                if used + w > width && !rows.last().is_some_and(Vec::is_empty) {
+                    rows.push(vec![]);
+                    used = 0.0;
+                }
+                rows.last_mut().unwrap().push(i);
+                used += w;
+            }
+            for row in rows.iter().filter(|row| !row.is_empty()) {
+                ui.horizontal(|ui| {
+                    for &i in row {
+                        let (b, name) = (&drawn[i], &names[i]);
+                        let c = bone_colour(&b.part);
+                        let colour = Color32::from_rgb(c[0], c[1], c[2]);
+                        let joints = format!("{} joint{}", b.points.len(), if b.points.len() == 1 { "" } else { "s" });
+                        ui.label(RichText::new(format!("{}.", i + 1)).color(colour));
+                        if b.part == "misc" {
+                            if let Some(line) = r.bones.get_mut(&picture).and_then(|l| l.get_mut(i)) {
+                                let field = ui
+                                    .add(egui::TextEdit::singleline(&mut line.name).desired_width(90.0).hint_text("misc: named…").text_color(colour))
+                                    .on_hover_text(format!("A misc piece ({joints}): what it is, in your words"));
+                                mark(&format!("uiRequestBoneName_{i}"), &field);
+                            }
+                        } else {
+                            ui.label(RichText::new(name).color(colour)).on_hover_text(format!("A {} line, {joints}", b.part));
+                        }
+                        let x = ui.small_button("×").on_hover_text(format!("Takes the {name} line out"));
+                        mark(&format!("uiRequestBoneOut_{i}"), &x);
+                        if x.clicked() {
+                            gone = Some(i);
+                        }
+                        ui.add_space(8.0);
+                    }
+                });
+            }
+            if let Some(i) = gone {
+                if let Some(list) = r.bones.get_mut(&picture) {
+                    if i < list.len() {
+                        list.remove(i);
+                    }
+                }
+            }
+            if r.bones.get(&picture).is_some_and(Vec::is_empty) {
+                r.bones.remove(&picture);
+            }
+            None
         }
     }
 
@@ -1739,6 +2162,11 @@ mod desk {
             self.desk.list.iter().filter(|r| r.status == Status::Waiting).count()
         }
 
+        /// A bone line being drawn in the Bones window: Escape and Backspace are its.
+        pub fn drawing_bones(&self) -> bool {
+            self.open && self.desk.bones.open && !self.desk.bones.drawing.is_empty()
+        }
+
         pub fn watch(&mut self, now: f64) {
             if let Some(s) = self.desk.watch(now) {
                 self.said = Some(s);
@@ -1811,10 +2239,16 @@ mod desk {
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     None => {}
                 }
+                if let Some(s) = d.bones_window(ctx) {
+                    said = Some(s);
+                }
                 if said.is_some() {
                     self.said = said;
                 }
                 self.open = open;
+            } else {
+                // the Bones window goes with it
+                self.desk.bones.open = false;
             }
             // the name no longer being typed (or the request no longer shown): its folder follows
             if !name_focused {
@@ -1893,15 +2327,22 @@ mod tests {
             status: Status::InProgress,
             progress: Progress { step: "building the model".into(), done: 0.2, started: 1760000000.0, minutes: 25.0 },
             images: vec!["front.png".into(), "side.jpg".into()],
+            bones: BTreeMap::from([(
+                "front.png".to_string(),
+                vec![Bone { part: "leg".into(), name: String::new(), points: vec![[1, 2], [3, 4]] }, Bone { part: "misc".into(), name: "crest".into(), points: vec![[5, 6], [7, 8]] }],
+            )]),
             lines: vec!["lines_front.png".into(), "profiles.png".into()],
             ..Default::default()
         };
         let text = content::to_text(&r);
+        // the bones as model_requests.py writes them too (test_run_claude.py has the same text):
+        // a name only on a line that has one
+        assert!(text.contains(BONES_TEXT), "{text}");
         assert!(text.contains("  \"kind\": \"creature\",\n") && text.contains("  \"style\": \"low_poly\",\n") && text.contains("  \"status\": \"in_progress\",\n"), "{text}");
         assert!(text.contains("  \"progress\": {\n    \"step\": \"building the model\",\n    \"done\": 0.2,\n    \"started\": 1760000000.0,\n    \"minutes\": 25.0\n  },\n"), "{text}");
         assert!(text.contains("  \"images\": [\"front.png\", \"side.jpg\"],\n"), "short lists on one line: {text}");
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
-        assert!(at("images") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
+        assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"mine\": true,\n  \"check_lines\": false,\n  \"status\""), "the lines' check after mine, as model_requests.py has it: {text}");
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
@@ -1914,6 +2355,23 @@ mod tests {
         assert!(ready.check_lines && ready.lines_ready());
         assert!(!ModelRequest { status: Status::InProgress, ..ready }.lines_ready(), "only while it waits");
         assert!(serde_json::from_str::<ModelRequest>(r#"{ "status": "finished" }"#).is_err(), "an unknown status is a mistake");
+    }
+
+    /// A request's bones as request.json has them (tools/blender/test_run_claude.py checks
+    /// model_requests.py writes the same).
+    const BONES_TEXT: &str = "  \"bones\": {\n    \"front.png\": [\n      {\n        \"part\": \"leg\",\n        \"points\": [\n          [1, 2],\n          [3, 4]\n        ]\n      },\n      {\n        \"part\": \"misc\",\n        \"name\": \"crest\",\n        \"points\": [\n          [5, 6],\n          [7, 8]\n        ]\n      }\n    ]\n  },\n";
+
+    #[test]
+    fn bone_lines_are_named_by_their_part_or_the_users_name() {
+        let line = |part: &str, name: &str| Bone { part: part.into(), name: name.into(), points: vec![[0, 0], [1, 1]] };
+        let bones = [line("leg", ""), line("tail", ""), line("leg", ""), line("misc", "crest"), line("misc", ""), line("misc", "  ")];
+        assert_eq!(bone_names(&bones), ["leg 1", "tail", "leg 2", "crest", "misc 1", "misc 2"]);
+        assert_eq!(bone_colour("horn"), [255, 77, 106]);
+        assert_eq!(BONE_PARTS.iter().map(|(p, _)| *p).collect::<Vec<_>>(), ["leg", "arm", "torso", "head", "ear", "horn", "tail", "wing", "misc"]);
+        // where the canvas's points are on the picture, kept on it
+        let rect = egui::Rect::from_min_size(egui::pos2(100.0, 50.0), egui::vec2(400.0, 200.0));
+        assert_eq!(on_picture(rect, egui::vec2(200.0, 100.0), egui::pos2(300.0, 150.0)), [100, 50]);
+        assert_eq!(on_picture(rect, egui::vec2(200.0, 100.0), egui::pos2(0.0, 999.0)), [0, 100]);
     }
 
     #[test]
@@ -2126,11 +2584,15 @@ mod tests {
         for (file, bytes) in [("a.png", png(640, 320, 5)), ("b.jpg", encoded(image::ImageFormat::Jpeg)), ("c.webp", encoded(image::ImageFormat::WebP))] {
             let path = root.join(file);
             std::fs::write(&path, bytes).unwrap();
-            let t = thumbnail(&path).unwrap();
+            let (t, full) = thumbnail(&path, 320).unwrap();
             assert!(t.size[0] <= 320 && t.size[1] <= 320 && t.size[0] == 2 * t.size[1], "{file}: {:?}", t.size);
+            assert_eq!(full.x, 2.0 * full.y, "{file}: the picture's own size, {full:?}");
         }
+        // larger for the Bones window, never enlarged
+        let (big, full) = thumbnail(&root.join("a.png"), 1024).unwrap();
+        assert_eq!((big.size, full), ([640, 320], egui::vec2(640.0, 320.0)));
         std::fs::write(root.join("d.png"), b"nope").unwrap();
-        assert!(thumbnail(&root.join("d.png")).is_err());
+        assert!(thumbnail(&root.join("d.png"), 320).is_err());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -2343,6 +2805,205 @@ mod tests {
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestGoOn");
         assert_eq!(req.desk().launched.len(), 2);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A click (or a right-click) at a point of the screen, as a pointer makes it.
+    fn click_at(ctx: &egui::Context, req: &mut Requests, pos: egui::Pos2, button: egui::PointerButton) {
+        let event = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
+        frame_with(ctx, req, vec![egui::Event::PointerMoved(pos), event(true)]);
+        frame_with(ctx, req, vec![event(false)]);
+    }
+
+    fn press(ctx: &egui::Context, req: &mut Requests, key: egui::Key) {
+        frame_with(ctx, req, vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
+        frame_with(ctx, req, vec![]);
+    }
+
+    /// The Bones window's canvas, once its picture is read and the window has settled its
+    /// size (its hints wrap otherwise while it grows): where it is and how big.
+    fn canvas(ctx: &egui::Context, req: &mut Requests) -> egui::Rect {
+        let (mut last, mut same) = (String::new(), 0);
+        for _ in 0..300 {
+            frame_with(ctx, req, vec![]);
+            match crate::platform::hook("requestbones") {
+                Some(at) if at == last => same += 1,
+                Some(at) => (last, same) = (at, 0),
+                None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+            if same >= 3 {
+                let v: Vec<f32> = last.split(',').map(|n| n.parse().unwrap()).collect();
+                return egui::Rect::from_min_size(egui::pos2(v[0], v[1]), egui::vec2(v[2], v[3]));
+            }
+        }
+        panic!("the Bones window's picture never came");
+    }
+
+    #[test]
+    fn the_bones_are_drawn_over_a_picture() {
+        let root = scratch("bones");
+        let ctx = egui::Context::default();
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Moss toad.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(200, 100, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("moss_toad".into());
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestBones");
+        assert!(req.desk().bones.open, "Draw the bones… opens its window");
+        let c = canvas(&ctx, &mut req);
+        let at = |u: f32, v: f32| c.min + egui::vec2(u * c.width(), v * c.height());
+        let bones = |root: &Path| read(root, "moss_toad").unwrap().bones.get("front.png").cloned().unwrap_or_default();
+        // a leg: a click for each joint, chained, and a right-click for the last
+        click_at(&ctx, &mut req, at(0.25, 0.5), egui::PointerButton::Primary);
+        assert!(req.drawing_bones(), "a line being drawn: the editor's own Escape and Backspace stand aside");
+        click_at(&ctx, &mut req, at(0.5, 0.5), egui::PointerButton::Primary);
+        assert!(bones(&root).is_empty(), "nothing kept until the line ends");
+        click_at(&ctx, &mut req, at(0.75, 0.6), egui::PointerButton::Secondary);
+        assert!(!req.drawing_bones());
+        assert_eq!(bones(&root), [Bone { part: "leg".into(), name: String::new(), points: vec![[50, 50], [100, 50], [150, 60]] }], "kept in request.json at once");
+        // Backspace takes a joint back, Escape drops the line being drawn
+        click_at(&ctx, &mut req, at(0.1, 0.1), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.2, 0.1), egui::PointerButton::Primary);
+        press(&ctx, &mut req, egui::Key::Backspace);
+        assert_eq!(req.desk().bones.drawing, [[20, 10]]);
+        press(&ctx, &mut req, egui::Key::Escape);
+        assert!(req.desk().bones.drawing.is_empty() && bones(&root).len() == 1, "the line dropped, the leg kept");
+        // a right-click on its own makes no line
+        click_at(&ctx, &mut req, at(0.3, 0.3), egui::PointerButton::Secondary);
+        assert_eq!(bones(&root).len(), 1);
+        // another part: a tail, then a misc piece named as it's drawn
+        click(&ctx, &mut req, "uiRequestBone_tail");
+        click_at(&ctx, &mut req, at(0.9, 0.5), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.95, 0.2), egui::PointerButton::Secondary);
+        click(&ctx, &mut req, "uiRequestBone_misc");
+        click(&ctx, &mut req, "uiRequestBoneName");
+        frame_with(&ctx, &mut req, vec![egui::Event::Text("crest".into())]);
+        click_at(&ctx, &mut req, at(0.4, 0.1), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.6, 0.05), egui::PointerButton::Secondary);
+        let drawn = bones(&root);
+        assert_eq!(drawn.iter().map(|b| (b.part.as_str(), b.name.as_str())).collect::<Vec<_>>(), [("leg", ""), ("tail", ""), ("misc", "crest")]);
+        // its name changed in the list under the picture
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestBoneName_2");
+        frame_with(&ctx, &mut req, vec![egui::Event::Text(" spike".into())]);
+        assert_eq!(bones(&root)[2].name, "crest spike");
+        // the record says so on disk as the editor and model_requests.py write it
+        let text = std::fs::read_to_string(root.join("private/requests/moss_toad/request.json")).unwrap();
+        assert!(text.contains("\"part\": \"misc\",\n        \"name\": \"crest spike\",") && !text.contains("\"name\": \"\""), "{text}");
+        // a line taken out by its ×, the last by Undo
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestBoneOut_0");
+        assert_eq!(bones(&root).iter().map(|b| b.part.as_str()).collect::<Vec<_>>(), ["tail", "misc"]);
+        click(&ctx, &mut req, "uiRequestBonesUndo");
+        assert_eq!(bones(&root).iter().map(|b| b.part.as_str()).collect::<Vec<_>>(), ["tail"]);
+        // a second picture: its own lines
+        let mut r = read(&root, "moss_toad").unwrap();
+        add_picture(&root, &mut r, "side.png", &png(100, 100, 9)).unwrap();
+        save(&root, &r).unwrap();
+        req.watch(1.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestBonesOn_side.png");
+        crate::platform::clear_hooks();
+        let c = canvas(&ctx, &mut req);
+        let at = |u: f32, v: f32| c.min + egui::vec2(u * c.width(), v * c.height());
+        click(&ctx, &mut req, "uiRequestBone_ear");
+        assert_eq!(canvas(&ctx, &mut req), c, "the picture stays put as the part changes");
+        click_at(&ctx, &mut req, at(0.5, 0.5), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.5, 0.1), egui::PointerButton::Secondary);
+        let all = read(&root, "moss_toad").unwrap().bones;
+        assert_eq!(all.keys().collect::<Vec<_>>(), ["front.png", "side.png"]);
+        assert_eq!(all["side.png"], [Bone { part: "ear".into(), name: String::new(), points: vec![[50, 50], [50, 10]] }]);
+        // Clear empties a picture; a picture taken out takes its bones with it
+        click(&ctx, &mut req, "uiRequestBonesClear");
+        assert!(!read(&root, "moss_toad").unwrap().bones.contains_key("side.png"));
+        let mut r = read(&root, "moss_toad").unwrap();
+        remove_picture(&root, &mut r, "front.png").unwrap();
+        assert!(r.bones.is_empty(), "{:?}", r.bones);
+        // the window goes with the Requests window
+        req.open = false;
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(!req.desk().bones.open);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A look by eye at the Requests window and its Bones window: a picture of them with bones
+    /// drawn and one being drawn (on SHOT_PICTURE when it names a picture, else on one made
+    /// here), written to build/shots/requests-bones.png. It needs a GPU, so it's run by hand:
+    ///     cargo test -p engine-game -- --ignored shot
+    #[test]
+    #[ignore]
+    fn shot_of_the_bones_window() {
+        let root = scratch("shot");
+        let ctx = egui::Context::default();
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let bytes = std::env::var("SHOT_PICTURE").ok().map(|p| std::fs::read(p).unwrap()).unwrap_or_else(|| png(682, 852, 140));
+        let mut r = create(&root, "Moss toad.png").unwrap();
+        let Ok(Added::New(file)) = add_picture(&root, &mut r, "front.png", &bytes) else { panic!("the picture") };
+        let size = image::load_from_memory(&bytes).unwrap();
+        let (w, h) = (size.width() as f32, size.height() as f32);
+        // where a bear's bones would be, in fractions of the picture
+        let line = |part: &str, name: &str, pts: &[[f32; 2]]| Bone { part: part.into(), name: name.into(), points: pts.iter().map(|p| [(p[0] * w) as i32, (p[1] * h) as i32]).collect() };
+        r.bones.insert(
+            file.clone(),
+            vec![
+                line("torso", "", &[[0.557, 0.763], [0.55, 0.61], [0.535, 0.469]]),
+                line("head", "", &[[0.535, 0.469], [0.564, 0.293]]),
+                line("arm", "", &[[0.44, 0.469], [0.345, 0.376], [0.279, 0.235]]),
+                line("arm", "", &[[0.645, 0.493], [0.667, 0.616], [0.557, 0.692]]),
+                line("leg", "", &[[0.469, 0.775], [0.44, 0.845], [0.44, 0.933]]),
+                line("leg", "", &[[0.645, 0.775], [0.674, 0.845], [0.689, 0.933]]),
+                line("ear", "", &[[0.469, 0.205], [0.455, 0.15]]),
+                line("ear", "", &[[0.733, 0.235], [0.799, 0.217]]),
+                line("tail", "", &[[0.733, 0.704], [0.77, 0.622]]),
+                line("misc", "chest fluff", &[[0.484, 0.469], [0.557, 0.534]]),
+            ],
+        );
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some(r.id.clone());
+        req.desk().bones.open = true;
+        let mut shooter = crate::shot::Shooter::new().unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let content = content::Content::default();
+        let mut run = |req: &mut Requests, events: Vec<egui::Event>| {
+            crate::platform::clear_hooks();
+            let mut out = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
+                req.toggle(ui);
+                req.window(ui.ctx(), &content);
+            });
+            shooter.textures(&mut out.textures_delta);
+            out
+        };
+        // the picture read, the window settled
+        let mut c = None;
+        for _ in 0..300 {
+            run(&mut req, vec![]);
+            if let Some(at) = crate::platform::hook("requestbones") {
+                c = Some(at);
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for _ in 0..5 {
+            run(&mut req, vec![]);
+        }
+        let v: Vec<f32> = crate::platform::hook("requestbones").or(c).unwrap().split(',').map(|n| n.parse().unwrap()).collect();
+        let at = |u: f32, t: f32| egui::pos2(v[0] + u * v[2], v[1] + t * v[3]);
+        // a misc piece being drawn, named, its next bone following the pointer
+        let d = req.desk();
+        d.bones.part = "misc".into();
+        d.bones.name = "crest".into();
+        d.bones.drawing = vec![[(0.53 * w) as i32, (0.16 * h) as i32], [(0.6 * w) as i32, (0.12 * h) as i32]];
+        run(&mut req, vec![egui::Event::PointerMoved(at(0.66, 0.14))]);
+        let out = run(&mut req, vec![]);
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots/requests-bones.png");
+        shooter.shoot(&ctx, out.shapes, [1400, 900], &path).unwrap();
+        println!("{}", path.display());
         std::fs::remove_dir_all(&root).ok();
     }
 

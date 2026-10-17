@@ -22,6 +22,8 @@ mod mapedit;
 mod menu;
 mod platform;
 mod presets;
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod shot;
 mod stage;
 
 #[cfg(not(target_arch = "wasm32"))]

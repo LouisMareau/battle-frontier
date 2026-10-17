@@ -99,7 +99,9 @@ region, glossy eyes, fur as mesh strands, a rig and an idle for creatures), rend
 compare, and adds it through `write_prop` (to `temporary/`, or `content/` when the design is
 the user's). `model_requests.py` reads and writes the requests from plain Python (`list`,
 `start`, `step`, `wait`, `fail`, `note`, `new`; `zoom` and `colours` look closer at a picture:
-a box of it enlarged, its main colours measured; `lines` draws the lines a run traced on the
+a box of it enlarged, its main colours measured; `bones` draws the bones the user has drawn over the
+pictures in the editor's Bones window, which the run reads the pictures by and rigs the
+creature on (`job.chains()`); `lines` draws the lines a run traced on the
 pictures, with how far each outline and the picture's own silhouette overlap and where they
 part, and the front and side it made from them, `request_lines.py`); the editor's progress
 bar runs on what it writes, and its Lines row shows those drawings as they come.

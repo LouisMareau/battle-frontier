@@ -22,6 +22,16 @@ the same way, at about the pictures' scale, standing on their lowest point (or "
 centred on their middle (or "centre": x): the front as seen from the front, the side facing
 left (or "faces": "right" when it's drawn the other way). Plain Python: drawing needs Pillow,
 `profiles` (which request_kit.py reads in Blender) doesn't.
+
+The user can draw the creature's bones over the pictures first (the editor's Bones window:
+request.json's "bones", a list of lines of joints for each picture, each line a part: leg, arm,
+torso, head, ear, horn, tail, wing, or misc with a name of the user's). `bones` draws them over
+each picture (bones_<picture>.png) for the run to read the pictures by; the run says in each
+picture's "bones" in lines.json what each line is on ({"is": "its front left leg", "chain":
+"leg.L"}, in the user's order), and carries them into the front and the side as lines named
+"bone CHAIN", which `chains` makes the rig's chains in cells.
+
+    python tools/blender/model_requests.py bones ID
 """
 import json
 import math
@@ -34,8 +44,14 @@ VIEWS = ("front", "side")
 # a pen for each line's name, the same in every drawing: the first names first
 PENS = ("#00e5ff", "#ff3df0", "#ffe600", "#7dff3a", "#ff8a00", "#4d8bff", "#ff4d6a", "#b77bff", "#00ffa8", "#f5f5f5", "#c8ff00", "#ff9ecb")
 HALO = (20, 20, 24, 210)
-# what the editor shows, in order (lines_* and match_* once per picture)
-SHOWN = ("lines_{}", "profiles", "fit_front", "fit_side", "match_{}")
+# what the editor shows, in order (bones_*, lines_* and match_* once per picture)
+SHOWN = ("bones_{}", "lines_{}", "profiles", "fit_front", "fit_side", "match_{}")
+# the user's bones (request.json "bones"): a colour for each part, as the editor's Bones window
+# draws them (crates/game/src/mapedit/requests.rs, BONE_PARTS); "misc" is a piece the user named
+BONE_PARTS = {"leg": "#ff8a00", "arm": "#00e5ff", "torso": "#ffe600", "head": "#ff3df0", "ear": "#7dff3a", "horn": "#ff4d6a", "tail": "#4d8bff",
+              "wing": "#b77bff", "misc": "#e1e1e1"}
+# a chain the rig hangs the others from, by its first word (`chains` puts it first)
+ROOT_CHAINS = ("spine", "torso", "body", "hips", "chest", "back")
 # a picture's silhouette (outline_score) is measured at most this many pixels across
 SCORED = 600
 # how far off the background's colour a pixel may be and still be background (in the channel
@@ -125,6 +141,12 @@ def check(data, images):
         cam = pic.get("camera")
         if cam is not None and not (isinstance(cam, dict) and all(_num(cam.get(k, 0)) for k in ("turn", "tilt"))):
             out.append(f"{where}.camera: {{\"turn\": degrees, \"tilt\": degrees}}")
+        said = pic.get("bones")
+        if said is not None:
+            if not isinstance(said, list) or not all(isinstance(b, dict) and isinstance(b.get("is"), str) and b["is"].strip() for b in said):
+                out.append(f"{where}.bones: one for each of the user's bone lines on it, in their order: {{\"is\": \"what it's on\", \"chain\": \"leg.L\"}}")
+            elif any("chain" in b and not (isinstance(b["chain"], str) and b["chain"].strip()) for b in said):
+                out.append(f"{where}.bones: a \"chain\" is the rig's chain the line becomes (\"leg.L\", \"tail\", \"spine\")")
         out += _check_lines(pic, where)
     for view in VIEWS:
         if view not in data:
@@ -279,6 +301,72 @@ def profiles(root, rid, data=None, height=None):
             named[key] = pts
         out[view] = named
     return out
+
+
+# ---------------------------------------------------------------- the user's bones
+
+def user_bones(record):
+    """The bones the user has drawn (request.json "bones", the editor's Bones window) on the request's
+    pictures: {picture: [{"part", "name", "points"}, ...]}, each line in the order drawn, its
+    joints in the picture's pixels, the root first; a line of fewer than two joints left out.
+    None for a prop (a request made a prop after its bones were drawn)."""
+    out = {}
+    if record.get("kind", "creature") != "creature":
+        return out
+    for pic, lines_ in (record.get("bones") or {}).items():
+        if pic not in record.get("images", []) or not isinstance(lines_, list):
+            continue
+        good = [b for b in lines_ if isinstance(b, dict) and isinstance(b.get("points"), list) and len(b["points"]) >= 2 and all(_point(q) for q in b["points"])]
+        if good:
+            out[pic] = good
+    return out
+
+
+def bone_names(bones):
+    """What each of a picture's bone lines is called, as the editor says it: the name the user
+    gave it (a misc piece's), else its part, numbered when the picture has several of that part
+    ("leg 1", "leg 2", "tail")."""
+    unnamed = [b.get("part", "") for b in bones if not str(b.get("name", "")).strip()]
+    seen, out = {}, []
+    for b in bones:
+        name = str(b.get("name", "")).strip()
+        if name:
+            out.append(name)
+            continue
+        part = b.get("part", "")
+        seen[part] = seen.get(part, 0) + 1
+        out.append(f"{part} {seen[part]}" if unnamed.count(part) > 1 else part)
+    return out
+
+
+def chains(views):
+    """The bones carried into the front and the side (their lines named "bone CHAIN": "bone
+    leg.L", "bone tail") as the rig's chains, in cells as the model stands (`views` is
+    `profiles`): ({chain: [(x, y, z), ...]}, what's wrong). Each joint as drawn: the front gives
+    its x, the side its y, both its height (their mean); a chain in one view only stands in the
+    middle of the other (x 0 or y 0). The body's chain (spine, torso...) comes first: the rig
+    hangs the others from it. A chain whose two views have other numbers of joints is left out,
+    and said."""
+    def bones_in(view):
+        return {name[5:].strip(): pts for name, pts in views.get(view, {}).items() if name.startswith("bone ") and name[5:].strip()}
+
+    front, side = bones_in("front"), bones_in("side")
+    found, problems = {}, []
+    for chain in list(front) + [c for c in side if c not in front]:
+        f, sd = front.get(chain), side.get(chain)
+        if f and sd and len(f) != len(sd):
+            problems.append(f"bone {chain}: {len(f)} joints in the front, {len(sd)} in the side (each joint is in both views: give them the same)")
+            continue
+        if f and sd:
+            found[chain] = [(round(a[0], 5), round(b[0], 5), round((a[1] + b[1]) / 2, 5)) for a, b in zip(f, sd)]
+        elif f:
+            found[chain] = [(round(a[0], 5), 0.0, round(a[1], 5)) for a in f]
+        else:
+            if chain[-2:] in (".L", ".R", ".l", ".r"):
+                problems.append(f"bone {chain}: only in the side, so it stands in the middle across: draw it in the front too")
+            found[chain] = [(0.0, round(b[0], 5), round(b[1], 5)) for b in sd]
+    order = sorted(found, key=lambda c: 0 if c.split(".")[0].lower() in ROOT_CHAINS else 1)
+    return {c: found[c] for c in order}, problems
 
 
 # ---------------------------------------------------------------- drawing (Pillow)
@@ -452,6 +540,120 @@ def draw_profiles(data, height, colours):
     return sheet
 
 
+def _free_spot(d, text, font, at, step, taken, size):
+    """Where a label goes near a point (`at`) without covering one already there (`taken`, their
+    boxes, this one's added) nor leaving the drawing: right of it and up, then down, then left."""
+    x, y = at
+    tries = [((x + step * 4, y - step * 2), "ls"), ((x + step * 4, y + step * 6), "ls"), ((x - step * 4, y - step * 2), "rs"),
+             ((x - step * 4, y + step * 6), "rs"), ((x + step * 4, y + step * 12), "ls"), ((x + step * 4, y - step * 8), "ls")]
+
+    def fits(box):
+        inside = box[0] >= 0 and box[1] >= 0 and box[2] <= size[0] and box[3] <= size[1]
+        return inside and not any(box[0] < t[2] and t[0] < box[2] and box[1] < t[3] and t[1] < box[3] for t in taken)
+
+    for pos, anchor in tries:
+        box = d.textbbox(pos, text, font=font, anchor=anchor)
+        if fits(box):
+            taken.append(box)
+            return pos, anchor
+    pos, anchor = tries[0]
+    taken.append(d.textbbox(pos, text, font=font, anchor=anchor))
+    return pos, anchor
+
+
+def draw_bones(img, bones, said=None):
+    """The user's bones over a picture: the part of it they're in, enlarged (as lines_<picture>.png
+    is) with its pixels marked, each line in its part's colour, a dot on each joint, a ring on its
+    root, its number and name by it; under it a key of the parts there and, once lines.json says
+    it (`said`, in the same order), what the run took each line for."""
+    from PIL import Image, ImageDraw
+    names = bone_names(bones)
+    items = [{"name": n, "points": b["points"]} for n, b in zip(names, bones)]
+    box = around(items, img.size)
+    k = max(1.0, min(6.0, 1100.0 / max(box[2] - box[0], box[3] - box[1])))
+    base = draw_picture(img, box, k, [], {}, grid=True, labels=False).convert("RGBA")
+    margin, ss = 36, 2
+    layer = Image.new("RGBA", (base.width * ss, base.height * ss), (0, 0, 0, 0))
+    d = ImageDraw.Draw(layer)
+
+    def at(q):
+        return ((margin + (q[0] - box[0]) * k) * ss, (margin + (q[1] - box[1]) * k) * ss)
+
+    drawn = [([at(q) for q in b["points"]], _rgb(BONE_PARTS.get(b.get("part"), BONE_PARTS["misc"]))) for b in bones]
+    w = 3 * ss
+    for halo in (True, False):
+        for pts, colour in drawn:
+            d.line(pts, fill=HALO if halo else colour + (255,), width=w * 2 if halo else w, joint="curve")
+            for i, (x, y) in enumerate(pts):
+                r = (w * 1.6 if halo else w * 1.1) + (w * 0.6 if i == 0 else 0)
+                d.ellipse((x - r, y - r, x + r, y + r), fill=HALO if halo else colour + (255,))
+                if i == 0 and not halo:
+                    ring = w * 2.8
+                    d.ellipse((x - ring, y - ring, x + ring, y + ring), outline=colour + (255,), width=ss * 2)
+    font, taken = _font(14 * ss), []
+    for i, ((pts, colour), name) in enumerate(zip(drawn, names)):
+        pos, anchor = _free_spot(d, f"{i + 1}. {name}", font, pts[0], w, taken, layer.size)
+        d.text(pos, f"{i + 1}. {name}", fill=colour + (255,), font=font, anchor=anchor, stroke_width=max(2, ss * 2), stroke_fill=HALO)
+    out = Image.alpha_composite(base, layer.resize(base.size, Image.LANCZOS)).convert("RGB")
+    parts = [p for p in BONE_PARTS if any(b.get("part") == p for b in bones)]
+    words = "the bones the user has drawn, the root of each ringed" + ("" if said else "; what each is on: not said yet")
+    caption = [words] + [(p, _rgb(BONE_PARTS[p])) for p in parts]
+    for i, name in enumerate(names):
+        took = said[i] if said and i < len(said) and isinstance(said[i], dict) else None
+        if took:
+            chain = str(took.get("chain", "")).strip()
+            caption.append(f"{i + 1}. {name}: {took.get('is', '').strip()}" + (f" ({chain})" if chain else ""))
+    return _caption(out, caption, below=True)
+
+
+def _user_bones_drawn(root, rid, record, data):
+    """Each picture's user bones drawn (bones_<picture>.png), with what lines.json says each is;
+    (what to say, what's missing)."""
+    from PIL import Image
+    d = mr.folder(root, rid)
+    said_lines, missing = [], []
+    for pic, lines_ in user_bones(record).items():
+        said = data.get("pictures", {}).get(pic, {}).get("bones")
+        img = Image.open(d / pic)
+        out = f"bones_{Path(pic).stem}.png"
+        # what lines.json says, once it says it of each line (else they'd be named wrong)
+        draw_bones(img, lines_, said if isinstance(said, list) and len(said) == len(lines_) else None).save(d / out)
+        said_lines.append(f"{out}: the user's {len(lines_)} bone line{'' if len(lines_) == 1 else 's'} on {pic} ({img.width} x {img.height} pixels), "
+                          "each from its root (a hip, a shoulder, the neck, a tail's base) along its joints:")
+        for i, (name, b) in enumerate(zip(bone_names(lines_), lines_)):
+            pts = b["points"]
+            along = sum(math.dist(a, c) for a, c in zip(pts, pts[1:]))
+            part = b.get("part", "")
+            kind = " (a piece the user named)" if part == "misc" and str(b.get("name", "")).strip() else ""
+            took = said[i] if isinstance(said, list) and len(said) == len(lines_) else None
+            is_ = f"; you took it for {took['is'].strip()}" + (f", chain {took['chain'].strip()}" if str(took.get("chain", "")).strip() else "") if took else ""
+            said_lines.append(f"  {i + 1}. {name}{kind}: {len(pts)} joints {' '.join(f'({round(x)}, {round(y)})' for x, y in pts)}, "
+                              f"{len(pts) - 1} bone{'' if len(pts) == 2 else 's'}, {along:.0f} pixels along{is_}")
+        if said is None:
+            missing.append(f"{pic}: say what each of the user's {len(lines_)} bone lines is on: its \"bones\" in lines.json, "
+                           f"[{{\"is\": ..., \"chain\": ...}}, ...], one for each in their order ({', '.join(bone_names(lines_))})")
+        elif not isinstance(said, list) or len(said) != len(lines_):
+            missing.append(f"{pic}: lines.json says {len(said) if isinstance(said, list) else 0} of the user's {len(lines_)} bone lines: one for each, in their order "
+                           f"({', '.join(bone_names(lines_))})")
+    return said_lines, missing
+
+
+def bones(root, rid):
+    """The command: the bones the user has drawn over each picture (bones_<picture>.png, which the
+    editor shows too), with what lines.json says each line is on once it does; the request lists
+    the drawings. Returns what to say: each line's joints, what isn't said yet."""
+    mr._pillow("bones")
+    record = mr.load(root, rid)
+    if not user_bones(record):
+        return ["The user has drawn no bones over this request's pictures (the editor's Bones window): read the pictures as they are."]
+    data = read(root, rid)
+    said, missing = _user_bones_drawn(root, rid, record, data)
+    mr.update(root, rid, lines=shown(root, rid))
+    return said + [f"missing: {m}" for m in missing] + [
+        "They're the user's reading of the body: look at each drawing, work out which part of the creature each line is on "
+        "(which leg, of which side, front or back; which ear; what each named piece is), and say it in lines.json."]
+
+
 # ---------------------------------------------------------------- the lines command
 
 def shown(root, rid):
@@ -503,6 +705,10 @@ def lines(root, rid):
             missing.append(f"{pic} has no outline (a closed line named \"outline\"): the model can't be measured against it")
         if cam is None:
             missing.append(f"{pic} has no camera: the model won't be rendered from where it was drawn")
+    if user_bones(record):
+        bones_said, bones_missing = _user_bones_drawn(root, rid, record, data)
+        said += bones_said
+        missing += bones_missing
     sheet = draw_profiles(data, float(record["height"]), colours)
     if sheet is not None:
         sheet.save(d / "profiles.png")
@@ -519,6 +725,14 @@ def lines(root, rid):
         if view == "side" and facing_wrong(data[view]):
             other = "right" if data[view].get("faces", "left") == "left" else "left"
             missing.append(f"the side's head is on its {other}: say \"faces\": \"{other}\" (or draw it facing the other way)")
+    if user_bones(record) and record["kind"] == "creature" and all(data.get(v, {}).get("lines") for v in VIEWS):
+        found, wrong = chains(profiles(root, rid, data, float(record["height"])))
+        if found:
+            said.append(f"the rig's chains, from the front's and the side's bone lines: {', '.join(f'{c} ({len(p)} joints)' for c, p in found.items())}")
+        else:
+            missing.append("the user's bones aren't in the front and the side yet: carry each over as a line named \"bone CHAIN\" "
+                           "(\"bone leg.L\"), the same joints in both views, in the model's pose: the creature is rigged on them (job.chains())")
+        missing += wrong
     mr.update(root, rid, lines=shown(root, rid))
     if record["status"] == "in_progress":
         mr.step(root, rid, "drawing the front and the side" if sheet is not None else "tracing the lines", 0.12 if sheet is not None else 0.08)

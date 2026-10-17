@@ -420,9 +420,15 @@ folder_ = scratch / "private" / "requests" / "test_critter"
 (folder_ / "lines.json").write_text(json.dumps({
     "pictures": {"critter.png": {"view": "three-quarter", "camera": {"turn": 35, "tilt": 20},
                                  "lines": [{"name": "outline", "closed": True, "points": [[3, 3], [29, 3], [29, 21], [3, 21]]}]}},
-    "front": {"lines": [{"name": "outline", "closed": True, "points": [[10, 40], [90, 40], [90, 120], [10, 120]]}, {"name": "eye", "mark": [40, 60]}]},
-    "side": {"lines": [{"name": "outline", "closed": True, "points": [[0, 50], [150, 50], [150, 120], [0, 120]]}]}}), encoding="utf-8")
+    "front": {"lines": [{"name": "outline", "closed": True, "points": [[10, 40], [90, 40], [90, 120], [10, 120]]}, {"name": "eye", "mark": [40, 60]},
+                        {"name": "bone leg.L", "points": [[70, 90], [72, 120]]}]},
+    "side": {"lines": [{"name": "outline", "closed": True, "points": [[0, 50], [150, 50], [150, 120], [0, 120]]},
+                       {"name": "bone leg.L", "points": [[40, 95], [38, 120]]}]}}), encoding="utf-8")
 drawn = job.profiles()
+chains = job.chains()
+want = [(0.2, -0.4, 0.292857), (0.22, -0.422857, 0.0)]
+check("the user's bones carried into the front and the side: the rig's chains in cells (x from the front, y from the side)", list(chains) == ["leg.L"]
+      and all(abs(a - b) < 1e-4 for got, w in zip(chains["leg.L"], want) for a, b in zip(got, w)), str(chains))
 front = drawn.get("front", {}).get("outline", [])
 check("its front and side from lines.json, in cells as it stands: the height asked, on the ground, centred", sorted(drawn) == ["front", "side"]
       and min(p[1] for p in front) == 0 and abs(max(p[1] for p in front) - 0.8) < 1e-9 and abs(min(p[0] for p in front) + 0.4) < 1e-9
