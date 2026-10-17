@@ -182,8 +182,9 @@ impl Feed<'_> {
         self.gpu.built.get(layer).map(|b| b.contains(&s)).unwrap_or(false)
     }
 
-    /// The ground: each square's levels and terrains, and the cells around it (the cliff
-    /// faces look across), past the edge the next maps'.
+    /// The ground: each square's levels and terrains, and two cells around it (the cliff
+    /// faces come down onto the ground across, which comes up to them), past the edge the
+    /// next maps'.
     fn ground_digests(&self) -> BTreeMap<(i32, i32), u64> {
         let m = self.map;
         squares_of(m)
@@ -191,8 +192,8 @@ impl Feed<'_> {
             .map(|s| {
                 let r = region(s);
                 let mut h = DefaultHasher::new();
-                for z in r[1] - 1..(r[3] + 1).min(m.height as i32 + 1) {
-                    for x in r[0] - 1..(r[2] + 1).min(m.width as i32 + 1) {
+                for z in r[1] - 2..(r[3] + 2).min(m.height as i32 + 2) {
+                    for x in r[0] - 2..(r[2] + 2).min(m.width as i32 + 2) {
                         match m.index(x, z) {
                             Some(i) => (m.level[i], m.terrain[i]).hash(&mut h),
                             None => (self.beyond.level(x, z), self.beyond.terrain(x, z)).hash(&mut h),
