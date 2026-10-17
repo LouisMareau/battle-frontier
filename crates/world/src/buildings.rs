@@ -196,6 +196,15 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     let trim = color(wall.map(|w| w.color(1)).unwrap_or("#b89f7e"));
     let kind = wall.map(|w| w.pattern.as_str()).unwrap_or("plaster");
     let body = if matches!(kind, "plaster" | "") { main } else { trim };
+    // what's made here from the wall and roof props is toon if they are
+    let toon_from = |m: &mut Mesh, from: usize, toon: bool| {
+        if toon {
+            for v in &mut m.vertices[from..] {
+                v.toon = 1.0;
+            }
+        }
+    };
+    let wall_toon = wall.map(|w| w.toon).unwrap_or(false);
     let shown = floors.end;
     let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
     let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
@@ -264,7 +273,9 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                 put(&mut m, &mut textured, &tile, Mat4::from_translation(at));
             }
         }
+        let from = m.vertices.len();
         rim(&mut m, &holes, y0, trim);
+        toon_from(&mut m, from, wall_toon);
         // the walls, with their doors and windows
         for &(side, l, p0, p1) in &runs {
             let inside_row = match side {
@@ -309,8 +320,10 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             let mut cur = start;
             let solid = |m: &mut Mesh, a0: f32, a1: f32, v0: f32, v1: f32| {
                 if a1 - a0 > 0.001 && v1 - v0 > 0.001 {
+                    let from = m.vertices.len();
                     line.piece(m, origin + a0, origin + a1, y0 + v0, y0 + v1, body);
                     pattern(m, line, kind, main, trim, origin + a0, origin + a1, v0, v1, y0, lh);
+                    toon_from(m, from, wall_toon);
                 }
             };
             for &(h0, h1, bottom, top) in &holes {
@@ -354,10 +367,12 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     if with_roof && !b.floors.is_empty() {
         let top = base + b.floors.len() as f32 * lh;
         let holes = b.stairwells(b.floors.len(), &stairs);
+        let from = m.vertices.len();
         roof(&mut m, b, content, top, main, &holes);
         if b.roof_is_flat() {
             rim(&mut m, &holes, top + 0.14, trim);
         }
+        toon_from(&mut m, from, content.props.get(&b.roof).map(|p| p.toon).unwrap_or(false));
     }
     textured.plain = m;
     textured

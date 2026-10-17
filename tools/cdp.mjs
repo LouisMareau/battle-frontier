@@ -6,6 +6,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { inflateSync } from 'node:zlib';
 
 const CANDIDATES = [
   process.env.CHROME,
@@ -159,6 +160,15 @@ export class Browser {
     return path;
   }
 
+  /// The page as pixels: { width, height, rgba } (a Buffer, 4 bytes a pixel), and saved to
+  /// `path` too when given.
+  async pixels(path) {
+    const { data } = await this.send('Page.captureScreenshot', { format: 'png' });
+    const png = Buffer.from(data, 'base64');
+    if (path) writeFileSync(path, png);
+    return decodePng(png);
+  }
+
   // -- the pointer ---------------------------------------------------------------
 
   async move(x, y, buttons = 0) {
@@ -168,6 +178,12 @@ export class Browser {
 
   async press(button = 'left') {
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...this.mouse, button, buttons: button === 'left' ? 1 : 2, clickCount: 1 });
+  }
+
+  /// Scrolls with the wheel over a point (`dy` pixels; positive: down the page).
+  async wheel(x, y, dy) {
+    this.mouse = { x, y };
+    await this.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x, y, deltaX: 0, deltaY: dy });
   }
 
   async release(button = 'left') {
@@ -233,4 +249,54 @@ export class Browser {
     await sleep(400);
     try { rmSync(this.profile, { recursive: true, force: true }); } catch { /* Chrome may still hold a file: the system's temp cleanup gets it */ }
   }
+}
+
+/// An 8-bit, non-interlaced RGB or RGBA PNG (what Chrome's screenshots are) as RGBA pixels.
+export function decodePng(png) {
+  let pos = 8;
+  let width = 0, height = 0, type = 0;
+  const idat = [];
+  while (pos < png.length) {
+    const len = png.readUInt32BE(pos);
+    const kind = png.toString('ascii', pos + 4, pos + 8);
+    const body = png.subarray(pos + 8, pos + 8 + len);
+    if (kind === 'IHDR') {
+      width = body.readUInt32BE(0);
+      height = body.readUInt32BE(4);
+      if (body[8] !== 8 || body[12] !== 0) throw new Error('only 8-bit, non-interlaced PNGs');
+      type = body[9];
+    } else if (kind === 'IDAT') idat.push(body);
+    else if (kind === 'IEND') break;
+    pos += 12 + len;
+  }
+  const channels = type === 6 ? 4 : type === 2 ? 3 : 0;
+  if (!channels) throw new Error(`PNG colour type ${type}: only RGB or RGBA`);
+  const raw = inflateSync(Buffer.concat(idat));
+  const stride = width * channels;
+  const out = Buffer.alloc(width * height * 4);
+  let prev = Buffer.alloc(stride);
+  for (let y = 0; y < height; y++) {
+    const filter = raw[y * (stride + 1)];
+    const line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+    for (let i = 0; i < stride; i++) {
+      const a = i >= channels ? line[i - channels] : 0;
+      const b = prev[i];
+      const c = i >= channels ? prev[i - channels] : 0;
+      let v = line[i];
+      if (filter === 1) v += a;
+      else if (filter === 2) v += b;
+      else if (filter === 3) v += (a + b) >> 1;
+      else if (filter === 4) {
+        const p = a + b - c;
+        const [pa, pb, pc] = [Math.abs(p - a), Math.abs(p - b), Math.abs(p - c)];
+        v += pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+      }
+      line[i] = v & 255;
+    }
+    for (let x = 0; x < width; x++) {
+      for (let k = 0; k < 4; k++) out[(y * width + x) * 4 + k] = k < channels ? line[x * channels + k] : 255;
+    }
+    prev = line;
+  }
+  return { width, height, rgba: out };
 }

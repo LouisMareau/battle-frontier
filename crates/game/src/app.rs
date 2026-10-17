@@ -549,6 +549,7 @@ impl GameApp {
             },
         );
         let mut stage = Stage::new(spot, period);
+        stage.toon = crate::stage::toon_look(&content.world().toon);
         stage.add_people(player_key, foe_key);
         let hud = Hud { icons: self.icons.clone(), ..Default::default() };
         Director::new(battle, stage, hud, self.options.auto, [220.0, 420.0, 700.0][self.options.text])

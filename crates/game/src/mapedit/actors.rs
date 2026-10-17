@@ -260,7 +260,7 @@ impl MapEditor {
             let pos = self.actor_pos(i, now);
             let step = step_of(self.live[i].facing);
             let heading = Vec2::new(step.0 as f32, step.1 as f32);
-            let (path, uv, h) = match a.look.split_once(':') {
+            let (path, uv, h, toon) = match a.look.split_once(':') {
                 Some(("creature", id)) => {
                     let Some(e) = content.creatures.entry(id) else { continue };
                     let c = &e.value;
@@ -268,11 +268,11 @@ impl MapEditor {
                     let (p, b) = if back { (&c.sprites.back, c.sprites.back_box) } else { (&c.sprites.front, c.sprites.front_box) };
                     let Some(p) = p.as_ref().map(|p| e.space.asset(p)) else { continue };
                     let h = ((c.body.height_m as f32) * 1.1).clamp(0.45, 2.4);
-                    (p, Some(b), h)
+                    (p, Some(b), h, c.toon)
                 }
                 Some(("sprite", file)) => {
                     let space = content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
-                    (space.asset(file), None, 1.6)
+                    (space.asset(file), None, 1.6, false)
                 }
                 _ => continue,
             };
@@ -291,6 +291,7 @@ impl MapEditor {
                         uv: [b[0] as f32 / w, b[1] as f32 / ht, b[2] as f32 / w, b[3] as f32 / ht],
                         color: tint,
                         casts_shadow: false,
+                        toon,
                     });
                 }
                 Some(None) => {}

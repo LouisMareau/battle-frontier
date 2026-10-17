@@ -77,6 +77,8 @@ pub struct Species {
     /// a sound it makes as it goes about, and its cry (a file under its space's assets)
     pub sound: Option<content::Sound>,
     pub cry: Option<String>,
+    /// drawn with the toon look
+    pub toon: bool,
     /// asset paths from the project root (space folder included)
     pub front: Option<String>,
     pub back: Option<String>,
@@ -184,6 +186,7 @@ impl Dex {
                     s
                 }),
                 cry: path(&cr.cry),
+                toon: cr.toon,
                 back_box: cr.sprites.back_box,
                 front: path(&cr.sprites.front),
                 back: path(&cr.sprites.back),

@@ -1,5 +1,7 @@
 // The scene's shaders: the map (lit, with the sun's shadow), sprites and effects
-// (unlit, tinted), the shadow pass, and the blit to the screen.
+// (unlit, tinted), the shadow pass, and the blit to the screen with the toon look's ink
+// lines. What's solid also writes its look (toon or not, how far, which way it faces) to a
+// second target, which the lines are found in.
 // Everything here works on WebGL 2 as well as WebGPU: uniform buffers only.
 
 struct Globals {
@@ -18,6 +20,16 @@ struct Globals {
     shadow: vec4<f32>,       // x: normal offset (world), y: depth margin (light depth), z: a texel (uv)
     focus: vec4<f32>,        // the editor's focus box: x0, z0, x1, z1 (when editor.y is on)
     light_count: vec4<f32>,  // x: how many lamps
+    // the toon look: a: bands, softness, shadow tint's strength, rim; b: shadow tint (rgb),
+    // rim width; c: glint, glint size, ink width (pixels of the scene), ink opacity;
+    // d: ink colour (rgb), depth step that draws a line (share of the distance);
+    // e: x: cos of the fold that draws a line (over 1: none), y: ink lines on, z: colour
+    // steps over the whole picture (0: none), w: how soft their edges are
+    toon_a: vec4<f32>,
+    toon_b: vec4<f32>,
+    toon_c: vec4<f32>,
+    toon_d: vec4<f32>,
+    toon_e: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -76,6 +88,8 @@ struct MapIn {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
+    // 1: drawn with the toon look
+    @location(4) toon: f32,
 };
 
 struct MapOut {
@@ -85,7 +99,43 @@ struct MapOut {
     @location(2) world: vec3<f32>,
     @location(3) light_pos: vec4<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) toon: f32,
 };
+
+// what something solid writes: its colour, and its look for the ink lines
+struct Solid {
+    @location(0) color: vec4<f32>,
+    @location(1) look: vec4<u32>,
+};
+
+// how far the look's distances reach
+const LOOK_FAR: f32 = 1000.0;
+
+// a direction folded onto a square, -1 to 1 (octahedral)
+fn octa(n: vec3<f32>) -> vec2<f32> {
+    let p = n.xy / (abs(n.x) + abs(n.y) + abs(n.z));
+    if (n.z < 0.0) {
+        return (1.0 - abs(p.yx)) * select(vec2<f32>(-1.0), vec2<f32>(1.0), p >= vec2<f32>(0.0));
+    }
+    return p;
+}
+
+fn unocta(e: vec2<f32>) -> vec3<f32> {
+    var n = vec3<f32>(e.x, e.y, 1.0 - abs(e.x) - abs(e.y));
+    let t = max(-n.z, 0.0);
+    n.x = n.x + select(t, -t, n.x >= 0.0);
+    n.y = n.y + select(t, -t, n.y >= 0.0);
+    return normalize(n);
+}
+
+// the look of a point: toon or not, how far from the eye (near: high; nothing: 0), and
+// the way it faces
+fn look(world: vec3<f32>, n: vec3<f32>, toon: f32) -> vec4<u32> {
+    let d = distance(world, g.camera.xyz);
+    let depth = u32(clamp(1.0 - sqrt(d / LOOK_FAR), 0.0, 1.0) * 65535.0);
+    let e = vec2<u32>(clamp((octa(normalize(n)) * 0.5 + 0.5) * 65535.0, vec2<f32>(0.0), vec2<f32>(65535.0)));
+    return vec4<u32>(select(0u, 1u, toon > 0.5), depth, e.x, e.y);
+}
 
 @vertex
 fn vs_map(v: MapIn) -> MapOut {
@@ -98,6 +148,7 @@ fn vs_map(v: MapIn) -> MapOut {
     // enough to part a shadow from its caster
     o.light_pos = g.light_view_proj * vec4<f32>(v.pos + v.normal * g.shadow.x, 1.0);
     o.color = v.color;
+    o.toon = v.toon;
     return o;
 }
 
@@ -128,21 +179,65 @@ fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32
     return lit;
 }
 
+// light in steps: `toon_a.x` of them from dark to lit, each step's edge as soft as
+// `toon_a.y` says
+fn bands(x: f32) -> f32 {
+    let n = max(g.toon_a.x, 1.0);
+    let k = clamp(x, 0.0, 1.0) * n;
+    let s = max(g.toon_a.y, 0.002) * 0.5;
+    return (floor(k) + smoothstep(0.5 - s, 0.5 + s, fract(k))) / n;
+}
+
+// the toon look's light: the sun's and the lamps' in steps, the shade tinted, a rim of
+// light round the edge and a glint where the sun catches
+fn toon_light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32> {
+    let n = normalize(normal);
+    let v = normalize(g.camera.xyz - world);
+    let sun = bands(max(dot(n, g.sun_dir.xyz), 0.0) * lit_by_sun(light_pos));
+    let hemi = mix(g.hemi_ground.rgb, g.hemi_sky.rgb, select(0.3, 0.8, n.y > 0.0));
+    var lamps = vec3<f32>(0.0);
+    for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
+        let c = g.lights[k * 3 + 2].rgb;
+        let amount = dot(lamp(k, world, n), vec3<f32>(1.0)) / max(dot(c, vec3<f32>(1.0)), 0.0001);
+        lamps = lamps + c * bands(amount);
+    }
+    let shade = mix(vec3<f32>(1.0), g.toon_b.rgb, g.toon_a.z * (1.0 - sun));
+    var lit = (g.ambient.rgb + hemi) * shade + g.sun_color.rgb * sun + lamps;
+    let edge = 1.0 - max(dot(n, v), 0.0);
+    let rim = smoothstep(1.0 - g.toon_b.w - 0.03, 1.0 - g.toon_b.w + 0.03, edge) * g.toon_a.w * (0.35 + 0.65 * sun);
+    let reach = 1.0 - g.toon_c.y * 0.25;
+    let glint = smoothstep(reach - 0.004, reach + 0.004, dot(n, normalize(g.sun_dir.xyz + v))) * g.toon_c.x * sun;
+    return lit + g.sun_color.rgb * (rim + glint);
+}
+
+fn light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>, toon: f32) -> vec3<f32> {
+    if (toon > 0.5) {
+        return toon_light(normal, light_pos, world);
+    }
+    return sunlit(normal, light_pos, world);
+}
+
 @fragment
-fn fs_map(i: MapOut) -> @location(0) vec4<f32> {
+fn fs_map(i: MapOut) -> Solid {
     let c = textureSample(tex, samp, i.uv) * i.color;
     if (c.a < 0.5) {
         discard;
     }
-    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
+    var o: Solid;
+    o.color = vec4<f32>(fog(focus_dim(c.rgb * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
+    o.look = look(i.world, i.normal, i.toon);
+    return o;
 }
 
 // the same without cut-outs (vertex colours on white): with no discard, the GPU can skip
 // what's hidden before shading it
 @fragment
-fn fs_map_opaque(i: MapOut) -> @location(0) vec4<f32> {
+fn fs_map_opaque(i: MapOut) -> Solid {
     let c = textureSample(tex, samp, i.uv) * i.color;
-    return vec4<f32>(fog(focus_dim(c.rgb * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), 1.0);
+    var o: Solid;
+    o.color = vec4<f32>(fog(focus_dim(c.rgb * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
+    o.look = look(i.world, i.normal, i.toon);
+    return o;
 }
 
 // a fading mesh: its depth alone first (its nearest surfaces, so each pixel blends once)
@@ -162,7 +257,7 @@ fn fs_map_fade(i: MapOut) -> @location(0) vec4<f32> {
         discard;
     }
     let c = t.rgb * i.color.rgb;
-    return vec4<f32>(fog(focus_dim(c * sunlit(i.normal, i.light_pos, i.world), i.world), i.world), i.color.a);
+    return vec4<f32>(fog(focus_dim(c * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), i.color.a);
 }
 
 // ---------------------------------------------------------------- the world's ground
@@ -347,7 +442,7 @@ fn rock(c: vec3<f32>, q: vec2<f32>) -> Rock {
 }
 
 @fragment
-fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
+fn fs_ground(i: MapOut) -> Solid {
     let p = i.world.xz;
     let own_cell = vec2<i32>(floor(i.uv));
     let own = cell_at(own_cell);
@@ -386,7 +481,10 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
     }
-    return vec4<f32>(fog(col * sunlit(n, i.light_pos, i.world), i.world), 1.0);
+    var o: Solid;
+    o.color = vec4<f32>(fog(col * sunlit(n, i.light_pos, i.world), i.world), 1.0);
+    o.look = look(i.world, n, 0.0);
+    return o;
 }
 
 // a cell top's colour at p: its terrain, the borders with the terrains around, and the
@@ -471,6 +569,7 @@ fn vs_map_shadow(v: MapIn) -> MapOut {
     o.world = v.pos;
     o.light_pos = o.clip;
     o.color = v.color;
+    o.toon = v.toon;
     return o;
 }
 
@@ -483,6 +582,7 @@ struct SkinIn {
     @location(3) color: vec4<f32>,
     @location(4) joints: vec4<u32>,
     @location(5) weights: vec4<f32>,
+    @location(6) toon: f32,
 };
 
 // each model's joint matrices (placed in the world already), at the draw's offset
@@ -504,6 +604,7 @@ fn vs_skinned(v: SkinIn) -> MapOut {
     o.world = p;
     o.light_pos = g.light_view_proj * vec4<f32>(p + n * g.shadow.x, 1.0);
     o.color = v.color;
+    o.toon = v.toon;
     return o;
 }
 
@@ -518,6 +619,7 @@ fn vs_skinned_shadow(v: SkinIn) -> MapOut {
     o.world = p;
     o.light_pos = o.clip;
     o.color = v.color;
+    o.toon = v.toon;
     return o;
 }
 
@@ -527,6 +629,7 @@ struct SpriteIn {
     @location(0) pos: vec3<f32>,
     @location(1) uv: vec2<f32>,
     @location(2) color: vec4<f32>,
+    @location(3) toon: f32,
 };
 
 struct SpriteOut {
@@ -534,6 +637,7 @@ struct SpriteOut {
     @location(0) uv: vec2<f32>,
     @location(1) color: vec4<f32>,
     @location(2) world: vec3<f32>,
+    @location(3) toon: f32,
 };
 
 @vertex
@@ -543,6 +647,7 @@ fn vs_sprite(v: SpriteIn) -> SpriteOut {
     o.uv = v.uv;
     o.color = v.color;
     o.world = v.pos;
+    o.toon = v.toon;
     return o;
 }
 
@@ -553,13 +658,15 @@ fn vs_sprite_shadow(v: SpriteIn) -> SpriteOut {
     o.uv = v.uv;
     o.color = v.color;
     o.world = v.pos;
+    o.toon = v.toon;
     return o;
 }
 
 // billboards: alpha-tested, tinted (a tint over 1 flashes them white), and lit by the
-// lamps as if they faced them and up (they turn with the camera)
+// lamps as if they faced them and up (they turn with the camera); a toon one gets the
+// ink lines round it
 @fragment
-fn fs_sprite_cutout(i: SpriteOut) -> @location(0) vec4<f32> {
+fn fs_sprite_cutout(i: SpriteOut) -> Solid {
     let c = textureSample(tex, samp, i.uv);
     if (c.a < 0.4) {
         discard;
@@ -569,7 +676,10 @@ fn fs_sprite_cutout(i: SpriteOut) -> @location(0) vec4<f32> {
     for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
         lamps = lamps + lamp(k, i.world, n);
     }
-    return vec4<f32>(fog(focus_dim(c.rgb * (i.color.rgb + lamps), i.world), i.world), 1.0);
+    var o: Solid;
+    o.color = vec4<f32>(fog(focus_dim(c.rgb * (i.color.rgb + lamps), i.world), i.world), 1.0);
+    o.look = look(i.world, normalize(g.camera.xyz - i.world), i.toon);
+    return o;
 }
 
 @fragment
@@ -609,9 +719,96 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
 
+// the looks the solid things wrote (see `look`)
+@group(1) @binding(4) var looks: texture_2d<u32>;
+
+struct Look {
+    toon: bool,
+    dist: f32,
+    n: vec3<f32>,
+};
+
+fn look_at(p: vec2<i32>) -> Look {
+    let size = vec2<i32>(textureDimensions(looks));
+    let v = textureLoad(looks, clamp(p, vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0);
+    var l: Look;
+    l.toon = v.x == 1u;
+    let k = 1.0 - f32(v.y) / 65535.0;
+    l.dist = k * k * LOOK_FAR;
+    l.n = unocta(vec2<f32>(f32(v.z), f32(v.w)) / 65535.0 * 2.0 - 1.0);
+    return l;
+}
+
+// how much ink a pixel of the scene gets, and how far the ink's surface is: a band
+// `toon_c.z` pixels wide round what's toon, outside it, where it stands in front of what's
+// behind it (its outline; soft at its outer edge), and a pixel-wide line where its surface
+// folds sharply (its creases)
+fn ink(p: vec2<i32>) -> vec2<f32> {
+    let width = max(g.toon_c.z, 0.5);
+    let reach = i32(ceil(width + 0.5));
+    let me = look_at(p);
+    var nearest = 99.0;
+    var near = me.dist;
+    let dirs = array<vec2<i32>, 8>(
+        vec2<i32>(1, 0), vec2<i32>(0, 1), vec2<i32>(-1, 0), vec2<i32>(0, -1),
+        vec2<i32>(1, 1), vec2<i32>(-1, -1), vec2<i32>(1, -1), vec2<i32>(-1, 1),
+    );
+    for (var k = 0; k < 8; k = k + 1) {
+        let step = select(1.0, 1.41421, k >= 4);
+        for (var s = 1; s <= reach; s = s + 1) {
+            let d = f32(s) * step;
+            if (d >= nearest) {
+                break;
+            }
+            let o = look_at(p + dirs[k] * s);
+            // the nearer of the two owns the edge, if it's toon
+            if (o.toon && o.dist < me.dist - g.toon_d.w * o.dist - 0.02) {
+                nearest = d;
+                near = min(near, o.dist);
+                break;
+            }
+        }
+    }
+    var amount = clamp(width + 0.5 - nearest, 0.0, 1.0);
+    if (me.toon && g.toon_e.x <= 1.0) {
+        for (var k = 0; k < 2; k = k + 1) {
+            let o = look_at(p + dirs[k]);
+            if (o.toon && abs(o.dist - me.dist) < g.toon_d.w * me.dist + 0.05 && dot(o.n, me.n) < g.toon_e.x) {
+                amount = 1.0;
+            }
+        }
+    }
+    return vec2<f32>(amount, near);
+}
+
+// the light in steps (`toon_e.z` of them, even to the eye), over the whole picture: its
+// brightness only, so the colours stay; each step's edge as soft as `toon_e.w` says
+fn color_steps(c: vec3<f32>) -> vec3<f32> {
+    let n = g.toon_e.z;
+    let l = max(dot(c, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.00001);
+    let k = pow(l, 1.0 / 2.2) * n;
+    let f = fract(k);
+    let s = max(g.toon_e.w, 0.002);
+    let q = clamp((floor(k) + 0.5 + smoothstep(1.0 - s, 1.0, f)) / n, 0.0, 1.0);
+    return min(c * (pow(q, 2.2) / l), vec3<f32>(1.0));
+}
+
+// the scene to the screen: in colour steps if asked, with the toon look's ink lines over
+// it (faded by the fog)
 @fragment
 fn fs_blit(i: BlitOut) -> @location(0) vec4<f32> {
-    let c = textureSample(tex, samp, i.uv).rgb;
+    var c = textureSample(tex, samp, i.uv).rgb;
+    if (g.toon_e.z > 0.5) {
+        c = color_steps(c);
+    }
+    if (g.toon_e.y > 0.5) {
+        let size = vec2<f32>(textureDimensions(looks));
+        let e = ink(vec2<i32>(i.uv * size));
+        if (e.x > 0.0) {
+            let f = smoothstep(g.fog_color.w, g.params.x, e.y);
+            c = mix(c, g.toon_d.rgb, e.x * g.toon_c.w * (1.0 - f));
+        }
+    }
     if (g.params.z > 0.5) {
         return vec4<f32>(to_srgb(c), 1.0);
     }

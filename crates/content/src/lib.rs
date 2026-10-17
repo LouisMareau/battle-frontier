@@ -488,6 +488,9 @@ impl Content {
                 out.push(format!("terrains/{}: walk \"{}\" (walk, water or block)", t.id, t.walk));
             }
         }
+        for s in self.settings.iter() {
+            out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
+        }
         for p in self.props.iter() {
             if p.footprint[0] == 0 || p.footprint[1] == 0 {
                 out.push(format!("props/{}: an empty footprint", p.id));

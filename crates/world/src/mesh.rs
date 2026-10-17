@@ -22,6 +22,8 @@ pub struct Vertex {
     pub uv: [f32; 2],
     /// linear
     pub color: [f32; 4],
+    /// 1: drawn with the toon look (its prop's or creature's `toon`)
+    pub toon: f32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -32,7 +34,7 @@ pub struct Mesh {
 
 impl Mesh {
     fn vertex(&mut self, pos: Vec3, normal: Vec3, color: [f32; 4]) -> u32 {
-        self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), uv: [0.5, 0.5], color });
+        self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), uv: [0.5, 0.5], color, toon: 0.0 });
         self.vertices.len() as u32 - 1
     }
 
@@ -218,6 +220,13 @@ impl Scene {
     pub fn is_empty(&self) -> bool {
         self.plain.indices.is_empty() && self.textured.values().all(|m| m.indices.is_empty())
     }
+
+    /// Drawn with the toon look, all of it.
+    pub fn make_toon(&mut self) {
+        for v in self.plain.vertices.iter_mut().chain(self.textured.values_mut().flat_map(|m| m.vertices.iter_mut())) {
+            v.toon = 1.0;
+        }
+    }
 }
 
 impl From<Mesh> for Scene {
@@ -229,12 +238,17 @@ impl From<Mesh> for Scene {
 /// Props' real models, loaded from their files, by prop id.
 pub type Models = HashMap<String, crate::gltf_in::Model>;
 
-/// What a prop looks like: its real model when it has one loaded, else its stand-in.
+/// What a prop looks like: its real model when it has one loaded, else its stand-in;
+/// toon if it is.
 pub fn prop_scene(prop: &Prop, models: &Models) -> Scene {
-    match models.get(&prop.id) {
+    let mut s: Scene = match models.get(&prop.id) {
         Some(m) => m.scene.clone(),
         None => prop_model(prop).into(),
+    };
+    if prop.toon {
+        s.make_toon();
     }
+    s
 }
 
 /// How far a placed prop may stand from its cells' centre, along x and z: as far as its
@@ -445,7 +459,7 @@ fn top_piece(m: &mut Mesh, ps: &[Vec3], uv: [f32; 2], y: f32) {
     let i = m.vertices.len() as u32;
     for p in ps {
         let rock = ((y - p.y) / CHAMFER).clamp(0.0, 1.0);
-        m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock] });
+        m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock], toon: 0.0 });
     }
     for k in 1..ps.len() as u32 - 1 {
         m.indices.extend_from_slice(&[i, i + k, i + k + 1]);
@@ -579,7 +593,7 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
                     let p = if pinned { p } else { p + out * relief(p) };
                     // darker towards the foot
                     let s = 0.72 + 0.28 * f;
-                    cliffs.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0] });
+                    cliffs.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0], toon: 0.0 });
                 }
             }
             let n = rows as u32 + 1;
@@ -669,7 +683,7 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
             let xb = (x + FAR_STEP).min(x1);
             let i = tops.vertices.len() as u32;
             for (px, pz) in [(x, z), (x, zb), (xb, zb), (xb, z)] {
-                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: [1.0, 1.0, 1.0, 0.0] });
+                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: [1.0, 1.0, 1.0, 0.0], toon: 0.0 });
             }
             tops.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
             let (mut n, mut forest, mut sum) = (0, 0, 0.0f32);

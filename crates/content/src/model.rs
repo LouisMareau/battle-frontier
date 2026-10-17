@@ -149,6 +149,9 @@ pub struct Creature {
     /// is the one-shot it gives when a battle starts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sound: Option<Sound>,
+    /// drawn with the toon look (the world settings' `toon`): ink lines round its picture
+    #[serde(skip_serializing_if = "is_default")]
+    pub toon: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -323,11 +326,109 @@ pub struct Settings {
     pub level_padding: f64,
     /// the highest level a map can use
     pub max_level: u8,
+    /// how what's toon looks (props and creatures say whether they are)
+    #[serde(skip_serializing_if = "is_default")]
+    pub toon: Toon,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9 }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default() }
+    }
+}
+
+/// The toon look (the Post-processing window): the sun's and the lamps' light in steps, the
+/// shade tinted, a rim of light round the edge and a glint where the sun catches; and ink
+/// lines round what's toon, where it stands in front of what's behind it, and along its
+/// sharp folds. And the colour steps: the whole picture's light in bands, toon or not.
+/// Colours "#rrggbb".
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Toon {
+    /// steps of light from dark to lit, 1 to 5
+    pub bands: u8,
+    /// how soft a step's edge is, 0 (hard) to 1
+    pub softness: f64,
+    /// the colour the shade turns towards, and how far (0 to 1)
+    pub shadow_color: String,
+    pub shadow: f64,
+    /// the rim of light: how bright (0: none) and how wide (0 to 1)
+    pub rim: f64,
+    pub rim_width: f64,
+    /// the glint: how bright (0: none) and how big (0 to 1)
+    pub glint: f64,
+    pub glint_size: f64,
+    /// the ink lines: on or off, their colour, how wide (pixels) and how opaque
+    pub ink: bool,
+    pub ink_color: String,
+    pub ink_width: f64,
+    pub ink_opacity: f64,
+    /// how far behind what's around it must be for a line, as a share of its distance
+    pub depth_step: f64,
+    /// a fold sharper than this many degrees gets a line (0: none)
+    pub crease: f64,
+    /// the whole picture's light in this many steps, toon or not (0: smooth, else 2 to
+    /// 16), and how soft their edges are (0 to 1)
+    pub color_steps: u8,
+    pub color_softness: f64,
+}
+
+impl Toon {
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if !(1..=5).contains(&self.bands) {
+            out.push(format!("{} bands: 1 to 5", self.bands));
+        }
+        for (what, c) in [("shadow_color", &self.shadow_color), ("ink_color", &self.ink_color)] {
+            if c.len() != 7 || !c.starts_with('#') || u32::from_str_radix(&c[1..], 16).is_err() {
+                out.push(format!("{what} \"{c}\" isn't #rrggbb"));
+            }
+        }
+        if self.color_steps == 1 || self.color_steps > 16 {
+            out.push(format!("{} colour steps: 0 (none) or 2 to 16", self.color_steps));
+        }
+        let shares = [("softness", self.softness), ("shadow", self.shadow), ("rim_width", self.rim_width), ("glint_size", self.glint_size), ("ink_opacity", self.ink_opacity), ("color_softness", self.color_softness)];
+        for (what, v) in shares {
+            if !(0.0..=1.0).contains(&v) {
+                out.push(format!("{what} {v}: 0 to 1"));
+            }
+        }
+        for (what, v) in [("rim", self.rim), ("glint", self.glint), ("depth_step", self.depth_step)] {
+            if !(0.0..=4.0).contains(&v) {
+                out.push(format!("{what} {v}: 0 to 4"));
+            }
+        }
+        if !(0.0..=12.0).contains(&self.ink_width) {
+            out.push(format!("ink_width {}: 0 to 12 pixels", self.ink_width));
+        }
+        if !(0.0..=179.0).contains(&self.crease) {
+            out.push(format!("crease {}: 0 (none) to 179 degrees", self.crease));
+        }
+        out
+    }
+}
+
+impl Default for Toon {
+    fn default() -> Toon {
+        Toon {
+            bands: 2,
+            softness: 0.12,
+            shadow_color: "#5c4d8a".into(),
+            shadow: 0.35,
+            rim: 0.35,
+            rim_width: 0.3,
+            glint: 0.3,
+            glint_size: 0.2,
+            ink: true,
+            ink_color: "#2b2633".into(),
+            ink_width: 2.5,
+            ink_opacity: 0.9,
+            depth_step: 0.04,
+            crease: 50.0,
+            color_steps: 0,
+            color_softness: 0.15,
+        }
     }
 }
 
@@ -419,6 +520,9 @@ pub struct Prop {
     /// ones its category gives it (see `Prop::folders`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub folders: Vec<String>,
+    /// drawn with the toon look (the world settings' `toon`): light in steps, ink lines
+    #[serde(skip_serializing_if = "is_default")]
+    pub toon: bool,
 }
 
 /// A light a prop gives off: a spot (a cone of light) or a point (light all around). `at`

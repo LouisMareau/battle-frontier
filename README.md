@@ -129,7 +129,9 @@ small one.
   spot: colour, intensity, range, cone, where it sits and points from the prop's origin,
   at night only or always; lamp posts and wall lamps have one), and a stand-in model made of
   simple shapes (`parts`) until a real model (glTF, `model`) comes. Trees and flora can't be
-  scaled; the rest can be scaled down.
+  scaled; the rest can be scaled down. A prop (a character is one) or a creature can be
+  `toon`: drawn with the toon look, which `settings/world.json`'s `toon` describes (the
+  editor's Post-processing window).
 - **Tree areas** are cells the player can't cross. The engine fills them with trees from
   the area's settings (which trees, spacing, size range, density, a tree in every edge
   cell, seed): the same trees every time.
@@ -254,7 +256,15 @@ paints zones (and who lives there: morning, day, night) or, in "Link treelines",
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
 every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
 the view, the wheel zooms; Morning/Day/Night preview the light, and the lamps light up by
-night (Lamps lights them whatever the time); Ctrl+Z/Ctrl+Y undo and redo. **World** opens the World view across the window: the world this map is part of as
+night (Lamps lights them whatever the time); Ctrl+Z/Ctrl+Y undo and redo.
+**Post-processing** sets the toon look, for what's ticked toon (a prop's "toon" in the asset
+browser or its panel, a creature's under the browser's Creatures): the sun's and the lamps'
+light in steps (how many, how soft their edges), the shade turning a colour, a rim of light
+round the edge and a glint; ink lines round it where it stands in front of what's behind it
+(drawn outside it: colour, width, opacity, how far behind counts) and along folds sharper
+than an angle; and colour steps for the whole picture, toon or not (the world's light in
+bands, the colours kept; the interface untouched). Changes show at once; Save (or Ctrl+S)
+writes them into the world settings record, Revert drops them, Defaults starts over. **World** opens the World view across the window: the world this map is part of as
 pieces on a grid (the map being edited lit), seams green where the levels match and crimson
 where they don't; drag a map in from the list, drag pieces into place (they snap to cells),
 double-click a piece to edit that map, "New world" starts one with this map, "Save world"
@@ -309,7 +319,7 @@ adds it to the project; a Claude session asked to "make the waiting requests" fo
 Props, buildings and maps go to Blender, and models made in Blender come into the game, as
 glTF (`.glb`). A prop with a `model` (a `.glb` under its space's `assets/models/`) is drawn
 with it, textures included; one without keeps its stand-in made of shapes. The map editor
-exports the map ("To Blender"), the selected prop (Place), every prop in one file laid out
+exports the map ("The map to Blender", in its panel), the selected prop (Place), every prop in one file laid out
 by category (the asset browser's "All props to Blender") and a building (its inspector) to
 `build/exports/` (a download in the browser); so does `export-glb`. The Blender add-on in
 `tools/blender/` finds the project on the computer, imports its props (models, or stand-ins
@@ -331,9 +341,9 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down, lumpy cliff faces, tall grass, props' stand-in models from their parts). |
-| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog (`scene.rs`, `shader.wgsl`). Draws into its own target, then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
+| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window and their files, `mapedit/stream.rs` the map on the GPU square by square, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

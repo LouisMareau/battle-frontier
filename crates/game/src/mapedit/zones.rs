@@ -464,6 +464,7 @@ impl MapEditor {
                         uv: [b[0] as f32 / w, b[1] as f32 / ht, b[2] as f32 / w, b[3] as f32 / ht],
                         color: tint,
                         casts_shadow: false,
+                        toon: c.toon,
                     });
                 }
                 Some(None) => {}

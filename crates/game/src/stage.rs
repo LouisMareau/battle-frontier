@@ -38,6 +38,8 @@ pub struct Vis {
     pub light: Option<content::Light>,
     /// a sound it makes as it stands there
     pub sound: Option<content::Sound>,
+    /// drawn with the toon look
+    pub toon: bool,
     pub texture: String,
     pub bbox: [i32; 4],
     pub lift: f32,
@@ -94,6 +96,31 @@ pub struct Stage {
     pub viewport: egui::Rect,
     rain: Vec<Vec3>,
     seed: u32,
+    /// how what's toon looks (the content's world settings)
+    pub toon: render::scene::Toon,
+}
+
+/// The world settings' toon look, for the renderer.
+pub fn toon_look(t: &content::Toon) -> render::scene::Toon {
+    let rgb = |hex: &str| Vec3::from_slice(&world::color(hex)[..3]);
+    render::scene::Toon {
+        bands: t.bands.clamp(1, 5) as u32,
+        softness: t.softness as f32,
+        shadow_color: rgb(&t.shadow_color),
+        shadow: t.shadow as f32,
+        rim: t.rim as f32,
+        rim_width: t.rim_width as f32,
+        glint: t.glint as f32,
+        glint_size: t.glint_size as f32,
+        ink: t.ink,
+        ink_color: rgb(&t.ink_color),
+        ink_width: t.ink_width as f32,
+        ink_opacity: t.ink_opacity as f32,
+        depth_step: t.depth_step as f32,
+        crease: t.crease as f32,
+        color_steps: if t.color_steps >= 2 { t.color_steps as u32 } else { 0 },
+        color_softness: t.color_softness as f32,
+    }
 }
 
 struct PeriodLight {
@@ -121,6 +148,7 @@ impl Stage {
         Stage {
             spot, line_gap, vis: BTreeMap::new(), people: vec![], effects: vec![], period, weather: None, targets: vec![],
             cam_focus: focus, cam_goal: focus, view_proj: Mat4::IDENTITY, viewport: egui::Rect::NOTHING, rain: vec![], seed: 12345,
+            toon: render::scene::Toon::default(),
         }
     }
 
@@ -158,16 +186,16 @@ impl Stage {
         Vec3::new(x, 0.0, z)
     }
 
-    #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
-    pub fn add_battler(&mut self, uid: Uid, side: Side, species: &str, front_box: [i32; 4], back_box: [i32; 4], elevation: u16, light: Option<content::Light>, sound: Option<content::Sound>, now: f64) {
+    pub fn add_battler(&mut self, uid: Uid, side: Side, sp: &rules::dex::Species, now: f64) {
         let back = side == Side::Player;
-        let lift = if back { 0.0 } else { elevation as f32 * PX * 1.6 };
+        let lift = if back { 0.0 } else { sp.elevation as f32 * PX * 1.6 };
         let phase = self.rand() * 6.0;
+        let (species, front_box, back_box) = (&sp.key, sp.front_box, sp.back_box);
         self.vis.insert(uid, Vis {
             side,
-            light,
-            sound,
+            light: sp.light.clone(),
+            sound: sp.sound.clone(),
+            toon: sp.toon,
             texture: format!("{}/{species}", if back { "back" } else { "front" }),
             bbox: if back { back_box } else { front_box },
             lift, float: lift > 0.0, phase, home: Vec3::ZERO, pos: Vec3::ZERO, placed: false, spawn: Some(now),
@@ -396,7 +424,7 @@ impl Stage {
         for person in &self.people {
             billboards.push(Billboard {
                 texture: person.texture.clone(), pos: person.pos, size: Vec2::new(1.0, 2.0), offset: Vec2::ZERO,
-                uv: [0.0, 0.0, 1.0, 1.0], color: tint4, casts_shadow: true,
+                uv: [0.0, 0.0, 1.0, 1.0], color: tint4, casts_shadow: true, toon: false,
             });
             shapes.push(Shape { kind: ShapeKind::Disc { radius: 0.45, squash: 0.6 }, center: person.pos + Vec3::Y * 0.03, color: [0.0, 0.0, 0.0, 0.3], additive: false });
         }
@@ -435,7 +463,7 @@ impl Stage {
             let offset = Vec2::new((-((x0 + x1) as f32 / 2.0 - 32.0) * PX) * scale + shake, lift - (64 - y1) as f32 * PX * scale);
             billboards.push(Billboard {
                 texture: v.texture.clone(), pos: v.pos, size, offset, uv: [0.0, 0.0, 1.0, 1.0],
-                color: [tint.x * flash, tint.y * flash, tint.z * flash, 1.0], casts_shadow: true,
+                color: [tint.x * flash, tint.y * flash, tint.z * flash, 1.0], casts_shadow: true, toon: v.toon,
             });
             let r = (((x1 - x0) as f32) * PX * 0.45).max(0.35) * scale;
             shapes.push(Shape { kind: ShapeKind::Disc { radius: r, squash: 0.6 }, center: v.pos + Vec3::Y * 0.03, color: [0.0, 0.0, 0.0, 0.3 * fade], additive: false });
@@ -495,7 +523,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![] }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

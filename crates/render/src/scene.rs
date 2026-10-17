@@ -1,6 +1,8 @@
 //! The GPU side: pipelines, textures, the map's meshes, and each frame's sprites and
 //! effects. The scene is drawn into its own colour + depth target (with the sun's shadow
-//! map first), then blitted into whatever pass the host gives (egui's, in the game).
+//! map first): what's solid first, writing its look too (toon or not, how far, which way
+//! it faces) to a second target, then what's see-through; then blitted into whatever pass
+//! the host gives (egui's, in the game), with the toon look's ink lines found in the looks.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -11,6 +13,9 @@ use crate::map::{build_meshes, MapScene, MapVertex, Spot};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// What solid things write next to their colour, for the ink lines: toon or not, how far,
+/// which way they face (see `look` in the shader).
+const LOOK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;
 /// The sun's shadow map, texels a side, unless `Quality` says otherwise.
 pub const SHADOW_SIZE: u32 = 2048;
 /// World meshes are cut into squares this many cells a side, each drawn only when the
@@ -80,6 +85,12 @@ struct Globals {
     focus: [f32; 4],
     /// x: how many lights
     light_count: [f32; 4],
+    /// the toon look (see the shader)
+    toon_a: [f32; 4],
+    toon_b: [f32; 4],
+    toon_c: [f32; 4],
+    toon_d: [f32; 4],
+    toon_e: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -107,6 +118,14 @@ pub struct SpriteVertex {
     pub pos: [f32; 3],
     pub uv: [f32; 2],
     pub color: [f32; 4],
+    /// 1: drawn with the toon look (ink lines round it)
+    pub toon: f32,
+}
+
+impl SpriteVertex {
+    fn plain(pos: [f32; 3], uv: [f32; 2], color: [f32; 4]) -> SpriteVertex {
+        SpriteVertex { pos, uv, color, toon: 0.0 }
+    }
 }
 
 /// The light of a frame, in linear colours.
@@ -141,6 +160,8 @@ pub struct Billboard {
     /// multiplies the texture; over 1 flashes it white
     pub color: [f32; 4],
     pub casts_shadow: bool,
+    /// drawn with the toon look: ink lines round it
+    pub toon: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -183,6 +204,8 @@ pub struct SkinnedVertex {
     pub color: [f32; 4],
     pub joints: [u32; 4],
     pub weights: [f32; 4],
+    /// 1: drawn with the toon look
+    pub toon: f32,
 }
 
 /// A skinned model drawn this frame: which (`set_skinned`), where, and its joints' matrices
@@ -218,6 +241,66 @@ pub struct Frame {
     pub dim: f32,
     /// shapes drawn over everything (an editor's cursors), whatever is in front of them
     pub overlays: Vec<Shape>,
+    /// how what's toon looks (vertices and billboards say what is)
+    pub toon: Toon,
+}
+
+/// The toon look, for what's flagged toon (vertices, billboards): the sun's and the lamps'
+/// light in steps, the shade tinted, a rim of light round the edge and a glint where the
+/// sun catches; and ink lines, drawn over the finished picture, round it where it stands
+/// in front of what's behind (outside it) and where its surface folds sharply.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Toon {
+    /// steps of light from dark to lit, 1 to 5
+    pub bands: u32,
+    /// how soft a step's edge is, 0 (hard) to 1
+    pub softness: f32,
+    /// the colour the shade turns towards (linear), and how far, 0 to 1
+    pub shadow_color: Vec3,
+    pub shadow: f32,
+    /// the rim of light: how bright (0: none) and how wide, 0 to 1
+    pub rim: f32,
+    pub rim_width: f32,
+    /// the glint: how bright (0: none) and how big, 0 to 1
+    pub glint: f32,
+    pub glint_size: f32,
+    pub ink: bool,
+    /// linear
+    pub ink_color: Vec3,
+    /// how wide the outline is, in pixels of the screen
+    pub ink_width: f32,
+    pub ink_opacity: f32,
+    /// how far behind what's around it must be for a line, as a share of its distance
+    pub depth_step: f32,
+    /// a fold sharper than this many degrees gets a line (0: none)
+    pub crease: f32,
+    /// the whole picture's light in this many steps (0: smooth), and how soft their edges
+    /// are (0 to 1): the world's colour steps, whatever is toon
+    pub color_steps: u32,
+    pub color_softness: f32,
+}
+
+impl Default for Toon {
+    fn default() -> Toon {
+        Toon {
+            bands: 2,
+            softness: 0.12,
+            shadow_color: Vec3::new(0.18, 0.13, 0.32),
+            shadow: 0.35,
+            rim: 0.35,
+            rim_width: 0.3,
+            glint: 0.3,
+            glint_size: 0.2,
+            ink: true,
+            ink_color: Vec3::new(0.025, 0.02, 0.035),
+            ink_width: 2.5,
+            ink_opacity: 0.9,
+            depth_step: 0.04,
+            crease: 50.0,
+            color_steps: 0,
+            color_softness: 0.15,
+        }
+    }
 }
 
 /// A world map's ground: the cells' texture and the terrains' palette (the meshes come
@@ -239,27 +322,32 @@ struct GpuMesh {
     /// its bounds, in the world
     lo: Vec3,
     hi: Vec3,
+    /// some of it is toon
+    toon: bool,
 }
 
 impl GpuMesh {
     fn new(device: &wgpu::Device, vertices: &[MapVertex], indices: &[u32]) -> Option<GpuMesh> {
         let (mut lo, mut hi) = (Vec3::splat(f32::MAX), Vec3::splat(f32::MIN));
+        let mut toon = false;
         for v in vertices {
             let p = Vec3::from(v.pos);
             lo = lo.min(p);
             hi = hi.max(p);
+            toon |= v.toon > 0.5;
         }
-        GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi)
+        GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi, toon)
     }
 
     /// From vertices of any layout.
-    fn raw(device: &wgpu::Device, vertices: &[u8], indices: &[u32], lo: Vec3, hi: Vec3) -> Option<GpuMesh> {
+    fn raw(device: &wgpu::Device, vertices: &[u8], indices: &[u32], lo: Vec3, hi: Vec3, toon: bool) -> Option<GpuMesh> {
         if indices.is_empty() {
             return None;
         }
         Some(GpuMesh {
             lo,
             hi,
+            toon,
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("world vertices"),
                 contents: vertices,
@@ -355,8 +443,10 @@ struct Mesh {
 struct Target {
     size: [u32; 2],
     color_view: wgpu::TextureView,
+    look_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
-    blit_bind: wgpu::BindGroup,
+    /// the colour and the looks, for the blit
+    post_bind: wgpu::BindGroup,
 }
 
 struct DrawCall {
@@ -380,6 +470,8 @@ pub struct SceneRenderer {
     globals: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
     texture_layout: wgpu::BindGroupLayout,
+    /// the blit's: the scene's colour, a sampler, the looks
+    post_layout: wgpu::BindGroupLayout,
     bones_layout: wgpu::BindGroupLayout,
     bones: Bones,
     /// a stand-in for the shadow map's slot in the shadow pass (which draws into it)
@@ -480,6 +572,37 @@ impl SceneRenderer {
                 },
             ],
         });
+        let post_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("post"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow"),
             entries: &[
@@ -551,6 +674,11 @@ impl SceneRenderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout)],
             immediate_size: 0,
         });
+        let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("post"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&post_layout)],
+            immediate_size: 0,
+        });
         // skinned models: their joints' matrices in a storage buffer, each model's at an
         // offset (group 3; in the shadow pass group 2 stands empty, the shadow map being
         // drawn into)
@@ -576,9 +704,9 @@ impl SceneRenderer {
             immediate_size: 0,
         });
         let bones = Self::make_bones(device, &bones_layout, 256 * 64);
-        let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4];
-        let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4];
-        let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4];
+        let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32];
+        let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
+        let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32];
         let map_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<MapVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -609,27 +737,27 @@ impl SceneRenderer {
             bias: Default::default(),
         };
         let primitive = wgpu::PrimitiveState { cull_mode: None, ..Default::default() };
+        // the targets: the solid pass's (colour and looks, both written or neither), the
+        // see-through pass's (colour), the shadow's (none), the screen's
+        let solid = |write: bool| {
+            let mask = if write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
+            vec![Some(wgpu::ColorTargetState { format: COLOR, blend: None, write_mask: mask }), Some(wgpu::ColorTargetState { format: LOOK, blend: None, write_mask: mask })]
+        };
+        let clear = |blend: Option<wgpu::BlendState>, write: bool| {
+            vec![Some(wgpu::ColorTargetState { format: COLOR, blend, write_mask: if write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() } })]
+        };
         let pipeline = |label: &str,
                         layout: &wgpu::PipelineLayout,
                         vs: &str,
                         fs: &str,
                         buffers: &[Option<wgpu::VertexBufferLayout>],
-                        target: Option<(wgpu::TextureFormat, Option<wgpu::BlendState>)>,
+                        targets: Vec<Option<wgpu::ColorTargetState>>,
                         depth_state: Option<wgpu::DepthStencilState>| {
-            let targets = target.map(|(format, blend)| [Some(wgpu::ColorTargetState { format, blend, write_mask: wgpu::ColorWrites::ALL })]);
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
                 layout: Some(layout),
                 vertex: wgpu::VertexState { module: &shader, entry_point: Some(vs), buffers, compilation_options: Default::default() },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fs),
-                    targets: match &targets {
-                        Some(t) => t,
-                        None => &[],
-                    },
-                    compilation_options: Default::default(),
-                }),
+                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some(fs), targets: &targets, compilation_options: Default::default() }),
                 primitive,
                 depth_stencil: depth_state,
                 multisample: Default::default(),
@@ -641,38 +769,26 @@ impl SceneRenderer {
             color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
             alpha: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add },
         };
-        let map_pipeline = pipeline("map", &main_layout, "vs_map", "fs_map", &map_buffers, Some((COLOR, None)), Some(depth(true)));
-        let opaque_pipeline = pipeline("opaque", &main_layout, "vs_map", "fs_map_opaque", &map_buffers, Some((COLOR, None)), Some(depth(true)));
-        let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, None, Some(shadow_depth.clone()));
-        let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, Some((COLOR, None)), Some(depth(true)));
-        let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, None, Some(shadow_depth.clone()));
-        // depth only, in the scene pass: a colour target it never writes to
-        let fade_depth_pipeline = {
-            let targets = [Some(wgpu::ColorTargetState { format: COLOR, blend: None, write_mask: wgpu::ColorWrites::empty() })];
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some("fade depth"),
-                layout: Some(&main_layout),
-                vertex: wgpu::VertexState { module: &shader, entry_point: Some("vs_map"), buffers: &map_buffers, compilation_options: Default::default() },
-                fragment: Some(wgpu::FragmentState { module: &shader, entry_point: Some("fs_map_depth"), targets: &targets, compilation_options: Default::default() }),
-                primitive,
-                depth_stencil: Some(depth(true)),
-                multisample: Default::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let fade_pipeline = pipeline("fade", &main_layout, "vs_map", "fs_map_fade", &map_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
-        let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, Some((COLOR, None)), Some(depth(true)));
-        let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, None, Some(shadow_depth));
-        let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(depth(false)));
+        let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
+        let map_pipeline = pipeline("map", &main_layout, "vs_map", "fs_map", &map_buffers, solid(true), Some(depth(true)));
+        let opaque_pipeline = pipeline("opaque", &main_layout, "vs_map", "fs_map_opaque", &map_buffers, solid(true), Some(depth(true)));
+        let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, vec![], Some(shadow_depth.clone()));
+        let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
+        let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
+        // depth only, in the see-through pass: a colour target it never writes to
+        let fade_depth_pipeline = pipeline("fade depth", &main_layout, "vs_map", "fs_map_depth", &map_buffers, clear(None, false), Some(depth(true)));
+        let fade_pipeline = pipeline("fade", &main_layout, "vs_map", "fs_map_fade", &map_buffers, clear(alpha, true), Some(depth(false)));
+        let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, solid(true), Some(depth(true)));
+        let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, vec![], Some(shadow_depth));
+        let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(alpha, true), Some(depth(false)));
         let on_top = wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() };
-        let overlay_pipeline = pipeline("overlay", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(wgpu::BlendState::ALPHA_BLENDING))), Some(on_top));
-        let add_pipeline = pipeline("additive", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, Some((COLOR, Some(additive))), Some(depth(false)));
-        let blit_pipeline = pipeline("blit", &shadow_pass_layout, "vs_blit", "fs_blit", &[], Some((output, None)), None);
-        let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, Some((COLOR, None)), Some(depth(true)));
+        let overlay_pipeline = pipeline("overlay", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(alpha, true), Some(on_top));
+        let add_pipeline = pipeline("additive", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(Some(additive), true), Some(depth(false)));
+        let blit_pipeline = pipeline("blit", &post_pipeline_layout, "vs_blit", "fs_blit", &[], vec![Some(wgpu::ColorTargetState { format: output, blend: None, write_mask: wgpu::ColorWrites::ALL })], None);
+        let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, solid(true), Some(depth(true)));
 
         let mut r = SceneRenderer {
-            globals, globals_bind, texture_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
+            globals, globals_bind, texture_layout, post_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
@@ -732,39 +848,32 @@ impl SceneRenderer {
             pass.draw(0..3, 0..1);
         }
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("warm-up"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &target.color_view,
-                    resolve_target: None,
-                    depth_slice: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &target.depth_view,
-                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
-                    stencil_ops: None,
-                }),
-                ..Default::default()
-            });
+            let mut pass = self.solid_pass(&mut encoder, &target, wgpu::Color::BLACK);
             pass.set_bind_group(0, &self.globals_bind, &[]);
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             pass.set_vertex_buffer(0, zeros.slice(..));
-            for p in [&self.map_pipeline, &self.opaque_pipeline, &self.sprite_pipeline, &self.blend_pipeline, &self.add_pipeline, &self.overlay_pipeline] {
+            for p in [&self.map_pipeline, &self.opaque_pipeline, &self.sprite_pipeline] {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_pipeline);
             pass.draw(0..3, 0..1);
-            for p in [&self.fade_depth_pipeline, &self.fade_pipeline] {
-                pass.set_pipeline(p);
-                pass.draw(0..3, 0..1);
-            }
             pass.set_bind_group(1, &ground.1, &[]);
             pass.set_pipeline(&self.ground_pipeline);
             pass.draw(0..3, 0..1);
+        }
+        {
+            let mut pass = Self::clear_pass(&mut encoder, &target);
+            pass.set_bind_group(0, &self.globals_bind, &[]);
+            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
+            pass.set_bind_group(2, &self.shadow_bind, &[]);
+            pass.set_vertex_buffer(0, zeros.slice(..));
+            for p in [&self.fade_depth_pipeline, &self.fade_pipeline, &self.blend_pipeline, &self.add_pipeline, &self.overlay_pipeline] {
+                pass.set_pipeline(p);
+                pass.draw(0..3, 0..1);
+            }
         }
         queue.submit([encoder.finish()]);
     }
@@ -798,7 +907,8 @@ impl SceneRenderer {
                     lo = lo.min(Vec3::from(v.pos));
                     hi = hi.max(Vec3::from(v.pos));
                 }
-                GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi).map(|m| (texture.clone(), m))
+                let toon = vertices.iter().any(|v| v.toon > 0.5);
+                GpuMesh::raw(device, bytemuck::cast_slice(vertices), indices, lo, hi, toon).map(|m| (texture.clone(), m))
             })
             .collect();
         self.skinned.insert(key.to_string(), meshes);
@@ -1051,6 +1161,10 @@ impl SceneRenderer {
             self.target = Some(self.make_target(device, size));
         }
         let l = &frame.light;
+        let t = &frame.toon;
+        // the ink lines cost a look at every pixel's neighbours: only when something toon
+        // is drawn
+        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.world.as_ref().map(|w| w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).chain(&w.fade).any(|(_, m)| m.toon)).unwrap_or(false);
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
@@ -1073,6 +1187,11 @@ impl SceneRenderer {
             shadow: shadow_params(&light_view_proj, self.shadow_size),
             focus: frame.focus.unwrap_or([0.0; 4]),
             light_count: [l.lights.len().min(MAX_LIGHTS) as f32, 0.0, 0.0, 0.0],
+            toon_a: [t.bands.clamp(1, 5) as f32, t.softness.clamp(0.0, 1.0), t.shadow.clamp(0.0, 1.0), t.rim.max(0.0)],
+            toon_b: [t.shadow_color.x, t.shadow_color.y, t.shadow_color.z, t.rim_width.clamp(0.0, 1.0)],
+            toon_c: [t.glint.max(0.0), t.glint_size.clamp(0.0, 1.0), (t.ink_width * scale).max(1.0), t.ink_opacity.clamp(0.0, 1.0)],
+            toon_d: [t.ink_color.x, t.ink_color.y, t.ink_color.z, t.depth_step.max(0.0)],
+            toon_e: [if t.crease > 0.0 { t.crease.clamp(1.0, 179.0).to_radians().cos() } else { 2.0 }, (t.ink && toon_seen) as u32 as f32, t.color_steps.min(32) as f32, t.color_softness.clamp(0.0, 1.0)],
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -1106,14 +1225,9 @@ impl SceneRenderer {
             let p = |x: f32, y: f32| (b.pos + right * x + Vec3::Y * y).to_array();
             let [u0, v0, u1, v1] = b.uv;
             let c = b.color;
-            let quad = [
-                SpriteVertex { pos: p(x0, y1), uv: [u0, v0], color: c },
-                SpriteVertex { pos: p(x0, y0), uv: [u0, v1], color: c },
-                SpriteVertex { pos: p(x1, y0), uv: [u1, v1], color: c },
-                SpriteVertex { pos: p(x0, y1), uv: [u0, v0], color: c },
-                SpriteVertex { pos: p(x1, y0), uv: [u1, v1], color: c },
-                SpriteVertex { pos: p(x1, y1), uv: [u1, v0], color: c },
-            ];
+            let toon = b.toon as u32 as f32;
+            let v = |pos: [f32; 3], uv: [f32; 2]| SpriteVertex { pos, uv, color: c, toon };
+            let quad = [v(p(x0, y1), [u0, v0]), v(p(x0, y0), [u0, v1]), v(p(x1, y0), [u1, v1]), v(p(x0, y1), [u0, v0]), v(p(x1, y0), [u1, v1]), v(p(x1, y1), [u1, v0])];
             vertices.extend_from_slice(&quad);
             push_draw(&mut self.sprite_draws, &b.texture, first, 6);
         }
@@ -1127,25 +1241,24 @@ impl SceneRenderer {
                 let (a0, a1) = (k as f32 / n as f32 * std::f32::consts::TAU, (k + 1) as f32 / n as f32 * std::f32::consts::TAU);
                 match s.kind {
                     ShapeKind::Disc { radius, squash } => {
-                        let mid = SpriteVertex { pos: s.center.to_array(), uv: [0.5, 0.5], color: c };
-                        vertices.push(mid);
-                        vertices.push(SpriteVertex { pos: at(radius, a0, squash), uv: [0.5, 0.5], color: c });
-                        vertices.push(SpriteVertex { pos: at(radius, a1, squash), uv: [0.5, 0.5], color: c });
+                        vertices.push(SpriteVertex::plain(s.center.to_array(), [0.5, 0.5], c));
+                        vertices.push(SpriteVertex::plain(at(radius, a0, squash), [0.5, 0.5], c));
+                        vertices.push(SpriteVertex::plain(at(radius, a1, squash), [0.5, 0.5], c));
                     }
                     ShapeKind::Ring { inner, outer } => {
-                        let v = |r: f32, a: f32| SpriteVertex { pos: at(r, a, 1.0), uv: [0.5, 0.5], color: c };
+                        let v = |r: f32, a: f32| SpriteVertex::plain(at(r, a, 1.0), [0.5, 0.5], c);
                         vertices.extend_from_slice(&[v(inner, a0), v(outer, a0), v(outer, a1), v(inner, a0), v(outer, a1), v(inner, a1)]);
                     }
                     ShapeKind::Quad { corners } => {
                         if k == 0 {
-                            let v = |p: Vec3| SpriteVertex { pos: (s.center + p).to_array(), uv: [0.5, 0.5], color: c };
+                            let v = |p: Vec3| SpriteVertex::plain((s.center + p).to_array(), [0.5, 0.5], c);
                             vertices.extend_from_slice(&[v(corners[0]), v(corners[1]), v(corners[2]), v(corners[0]), v(corners[2]), v(corners[3])]);
                         }
                     }
                     ShapeKind::Rect { width, depth } => {
                         if k == 0 {
                             let (w, d) = (width / 2.0, depth / 2.0);
-                            let v = |x: f32, z: f32| SpriteVertex { pos: (s.center + Vec3::new(x, 0.0, z)).to_array(), uv: [0.5, 0.5], color: c };
+                            let v = |x: f32, z: f32| SpriteVertex::plain((s.center + Vec3::new(x, 0.0, z)).to_array(), [0.5, 0.5], c);
                             vertices.extend_from_slice(&[v(-w, -d), v(-w, d), v(w, d), v(-w, -d), v(w, d), v(w, -d)]);
                         }
                     }
@@ -1170,7 +1283,7 @@ impl SceneRenderer {
             let first = vertices.len() as u32;
             let (r, u) = (cam_right * gl.size / 2.0, cam_up * gl.size / 2.0);
             let c = gl.color;
-            let v = |p: Vec3, uv: [f32; 2]| SpriteVertex { pos: p.to_array(), uv, color: c };
+            let v = |p: Vec3, uv: [f32; 2]| SpriteVertex::plain(p.to_array(), uv, c);
             vertices.extend_from_slice(&[
                 v(gl.pos - r + u, [0.0, 0.0]),
                 v(gl.pos - r - u, [0.0, 1.0]),
@@ -1185,7 +1298,7 @@ impl SceneRenderer {
             let first = vertices.len() as u32;
             let w = cam_right * 0.012;
             let c = [0.55, 0.65, 0.9, 0.55];
-            let v = |p: Vec3| SpriteVertex { pos: p.to_array(), uv: [0.5, 0.5], color: c };
+            let v = |p: Vec3| SpriteVertex::plain(p.to_array(), [0.5, 0.5], c);
             vertices.extend_from_slice(&[v(*top - w), v(*bottom - w), v(*bottom + w), v(*top - w), v(*bottom + w), v(*top + w)]);
             push_draw(&mut self.blend_draws, WHITE, first, 6);
         }
@@ -1287,27 +1400,10 @@ impl SceneRenderer {
             }
         }
 
-        // the scene
+        // the scene: what's solid, writing its look too
         let target = self.target.as_ref().unwrap();
         let sky = l.sky;
-        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("scene"),
-            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &target.color_view,
-                resolve_target: None,
-                depth_slice: None,
-                ops: wgpu::Operations {
-                    load: wgpu::LoadOp::Clear(wgpu::Color { r: sky.x as f64, g: sky.y as f64, b: sky.z as f64, a: 1.0 }),
-                    store: wgpu::StoreOp::Store,
-                },
-            })],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: &target.depth_view,
-                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
-                stencil_ops: None,
-            }),
-            ..Default::default()
-        });
+        let mut pass = self.solid_pass(encoder, target, wgpu::Color { r: sky.x as f64, g: sky.y as f64, b: sky.z as f64, a: 1.0 });
         pass.set_bind_group(0, &self.globals_bind, &[]);
         pass.set_bind_group(2, &self.shadow_bind, &[]);
         pass.set_pipeline(&self.map_pipeline);
@@ -1374,23 +1470,38 @@ impl SceneRenderer {
                 stats.draws += 1;
                 stats.triangles += m.count / 3;
             }
-            // what fades: its nearest surfaces' depth first, then each pixel blended once
-            if !w.fade.is_empty() {
-                for (blend, pipeline) in [(false, &self.fade_depth_pipeline), (true, &self.fade_pipeline)] {
-                    pass.set_pipeline(pipeline);
-                    for (key, m) in &w.fade {
-                        pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
-                        m.draw(&mut pass);
-                        if blend {
-                            stats.draws += 1;
-                            stats.triangles += m.count / 3;
-                        }
+        }
+        if !self.sprite_draws.is_empty() {
+            pass.set_vertex_buffer(0, sprite_buffer.slice(..));
+            pass.set_pipeline(&self.sprite_pipeline);
+            for d in &self.sprite_draws {
+                pass.set_bind_group(1, &self.textures[&d.texture].bind, &[]);
+                pass.draw(d.first..d.first + d.count, 0..1);
+                stats.draws += 1;
+                stats.triangles += d.count / 3;
+            }
+        }
+        drop(pass);
+        // then what's see-through, over it
+        let mut pass = Self::clear_pass(encoder, target);
+        pass.set_bind_group(0, &self.globals_bind, &[]);
+        pass.set_bind_group(2, &self.shadow_bind, &[]);
+        // what fades: its nearest surfaces' depth first, then each pixel blended once
+        if let Some(w) = self.world.as_ref().filter(|w| !w.fade.is_empty()) {
+            for (blend, pipeline) in [(false, &self.fade_depth_pipeline), (true, &self.fade_pipeline)] {
+                pass.set_pipeline(pipeline);
+                for (key, m) in &w.fade {
+                    pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                    m.draw(&mut pass);
+                    if blend {
+                        stats.draws += 1;
+                        stats.triangles += m.count / 3;
                     }
                 }
             }
         }
         pass.set_vertex_buffer(0, sprite_buffer.slice(..));
-        for (pipeline, draws) in [(&self.sprite_pipeline, &self.sprite_draws), (&self.blend_pipeline, &self.blend_draws), (&self.add_pipeline, &self.add_draws), (&self.overlay_pipeline, &self.overlay_draws)] {
+        for (pipeline, draws) in [(&self.blend_pipeline, &self.blend_draws), (&self.add_pipeline, &self.add_draws), (&self.overlay_pipeline, &self.overlay_draws)] {
             if draws.is_empty() {
                 continue;
             }
@@ -1405,13 +1516,45 @@ impl SceneRenderer {
         self.stats = stats;
     }
 
-    /// Draws the scene (prepared by `prepare`) into the host's pass.
+    /// Draws the scene (prepared by `prepare`) into the host's pass, with the ink lines.
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
         let Some(target) = &self.target else { return };
         pass.set_pipeline(&self.blit_pipeline);
         pass.set_bind_group(0, &self.globals_bind, &[]);
-        pass.set_bind_group(1, &target.blit_bind, &[]);
+        pass.set_bind_group(1, &target.post_bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    /// The pass for what's solid: colour (cleared to `sky`) and looks (cleared to nothing),
+    /// the depth kept for the see-through pass.
+    fn solid_pass<'e>(&self, encoder: &'e mut wgpu::CommandEncoder, target: &Target, sky: wgpu::Color) -> wgpu::RenderPass<'e> {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("scene"),
+            color_attachments: &[
+                Some(wgpu::RenderPassColorAttachment { view: &target.color_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(sky), store: wgpu::StoreOp::Store } }),
+                Some(wgpu::RenderPassColorAttachment { view: &target.look_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+            ],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Store }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        })
+    }
+
+    /// The pass for what's see-through, over the solid one's colour and depth.
+    fn clear_pass<'e>(encoder: &'e mut wgpu::CommandEncoder, target: &Target) -> wgpu::RenderPass<'e> {
+        encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("see-through"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &target.color_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &target.depth_view,
+                depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Discard }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        })
     }
 
     fn make_target(&self, device: &wgpu::Device, size: [u32; 2]) -> Target {
@@ -1426,6 +1569,16 @@ impl SceneRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
+        let looks = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("scene looks"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: LOOK,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
         let depth = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("scene depth"),
             size: extent,
@@ -1437,16 +1590,18 @@ impl SceneRenderer {
             view_formats: &[],
         });
         let color_view = color.create_view(&Default::default());
-        let blit_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("blit"),
-            layout: &self.texture_layout,
+        let look_view = looks.create_view(&Default::default());
+        let post_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("post"),
+            layout: &self.post_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color_view) },
                 // at a lower resolution, smoothed on the way up
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if self.quality.scale < 1.0 { &self.linear } else { &self.nearest }) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&look_view) },
             ],
         });
-        Target { size, color_view, depth_view: depth.create_view(&Default::default()), blit_bind }
+        Target { size, color_view, look_view, depth_view: depth.create_view(&Default::default()), post_bind }
     }
 }
 
@@ -1486,6 +1641,23 @@ fn push_draw(draws: &mut Vec<DrawCall>, texture: &str, first: u32, count: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_shader_holds_for_webgpu_and_webgl() {
+        let module = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
+            .validate(&module)
+            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
+        // every entry point as WebGL 2 gets it (the skinned ones read a storage buffer,
+        // which it hasn't got)
+        let options = naga::back::glsl::Options { version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: true }, ..Default::default() };
+        for ep in module.entry_points.iter().filter(|e| !e.name.contains("skinned")) {
+            let pipeline = naga::back::glsl::PipelineOptions { shader_stage: ep.stage, entry_point: ep.name.clone(), multiview: None };
+            let mut out = String::new();
+            let mut w = naga::back::glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, naga::proc::BoundsCheckPolicies::default()).unwrap_or_else(|e| panic!("{}: {e}", ep.name));
+            w.write().unwrap_or_else(|e| panic!("{}: {e}", ep.name));
+        }
+    }
 
     #[test]
     fn frustum_sees_what_is_in_front() {

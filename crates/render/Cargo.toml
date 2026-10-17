@@ -15,3 +15,7 @@ glam.workspace = true
 bytemuck.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+[dev-dependencies]
+# the shader checked as wgpu reads it, and as WebGL 2 gets it
+naga = { version = "30", features = ["wgsl-in", "glsl-out"] }

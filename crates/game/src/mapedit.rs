@@ -14,6 +14,7 @@ mod assets;
 mod build;
 mod events;
 mod models;
+mod post;
 mod requests;
 mod rooms;
 mod sounds;
@@ -251,12 +252,14 @@ pub struct MapEditor {
     now: f64,
     /// templates: capturing one, the list, what's dragged over the map
     tpl: templates::Templates,
+    /// the Post-processing window (the toon look)
+    post: post::Post,
     /// the game's overworld: the map walked, no editing (`play_ui`)
     play: bool,
 }
 
 fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
-    v.iter().map(|v| MapVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color }).collect()
+    v.iter().map(|v| MapVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, toon: v.toon }).collect()
 }
 
 fn hex(c: &str) -> Color32 {
@@ -430,6 +433,7 @@ impl MapEditor {
             animated_n: 0,
             now: 0.0,
             tpl: Default::default(),
+            post: Default::default(),
             play: false,
             dirty: false,
             space,
@@ -731,9 +735,14 @@ impl MapEditor {
         if let Some(note) = self.save_spawns() {
             self.status = format!("{} · {note}", self.status);
         }
-        if !self.assets.dirty.is_empty() {
+        if self.assets.changed() > 0 {
             let map = self.status.clone();
             self.save_assets();
+            self.status = format!("{map} · {}", self.status);
+        }
+        if self.post_changed() {
+            let map = self.status.clone();
+            self.save_post();
             self.status = format!("{map} · {}", self.status);
         }
         if !self.tpl.dirty.is_empty() {
@@ -1137,16 +1146,11 @@ impl MapEditor {
                     self.assets.open = !self.assets.open;
                 }
                 self.requests.toggle(ui);
+                self.post_toggle(ui);
                 let worlds = ui.selectable_label(self.worlds.open, "World").on_hover_text("Maps stitched into a world: place this map next to others");
                 mark("uiWorld", &worlds);
                 if worlds.clicked() {
                     self.worlds.open = !self.worlds.open;
-                }
-                ui.separator();
-                let export = ui.button("To Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
-                mark("uiExportMap", &export);
-                if export.clicked() {
-                    self.export_map();
                 }
             });
             ui.add_space(4.0);
@@ -1191,6 +1195,7 @@ impl MapEditor {
             egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
         });
         self.light_window(ui);
+        self.post_window(&ctx);
         if let Some(id) = self.requests.window(&ctx, &self.content) {
             self.use_prop(&id);
             self.tool = Tool::Place;
@@ -1659,6 +1664,12 @@ impl MapEditor {
         for (what, n) in rows {
             ui.label(RichText::new(format!("{n} {what}")).size(12.5));
         }
+        section(ui, "Blender");
+        let export = ui.button("The map to Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
+        mark("uiExportMap", &export);
+        if export.clicked() {
+            self.export_map();
+        }
         ui.add_space(6.0);
         hint(ui, "Select a prop or a building to see it here.");
     }
@@ -2058,6 +2069,7 @@ impl MapEditor {
             focus: self.focus_box(),
             dim: self.focus_dim(now),
             overlays,
+            toon: crate::stage::toon_look(&self.toon_settings()),
         }
     }
 }

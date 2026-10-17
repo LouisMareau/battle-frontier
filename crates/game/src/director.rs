@@ -204,7 +204,7 @@ impl Director {
             Event::Enter { uid, side, .. } => {
                 let m = b.mon(uid);
                 let sp = &b.dex.species[m.species];
-                self.stage.add_battler(uid, side, &sp.key, sp.front_box, sp.back_box, sp.elevation, sp.light.clone(), sp.sound.clone(), now);
+                self.stage.add_battler(uid, side, sp, now);
                 if let Some(c) = &sp.cry {
                     self.cries.push(c.clone());
                 }

@@ -248,6 +248,7 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
                         normal: normals.as_ref().and_then(|n| n.get(i)).copied().unwrap_or(Vec3::Y).to_array(),
                         uv: uvs.as_ref().and_then(|u| u.get(i)).copied().unwrap_or([0.5, 0.5]),
                         color: [factor[0] * c[0], factor[1] * c[1], factor[2] * c[2], factor[3] * c[3]],
+                        toon: 0.0,
                     });
                 }
                 out.indices = indices.into_iter().filter(|&i| (i as usize) < positions.len()).collect();

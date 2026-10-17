@@ -540,7 +540,7 @@ mod tests {
         let mut model = crate::gltf_in::Model::default();
         let mut quad = Mesh::default();
         for (p, uv) in [([0.0, 0.0, 0.0], [0.0, 1.0]), ([1.0, 0.0, 0.0], [1.0, 1.0]), ([1.0, 1.0, 0.0], [1.0, 0.0])] {
-            quad.vertices.push(crate::mesh::Vertex { pos: p, normal: [0.0, 0.0, 1.0], uv, color: [1.0; 4] });
+            quad.vertices.push(crate::mesh::Vertex { pos: p, normal: [0.0, 0.0, 1.0], uv, color: [1.0; 4], toon: 0.0 });
         }
         quad.indices = vec![0, 1, 2];
         model.scene.textured.insert("sign.glb#0".into(), quad);

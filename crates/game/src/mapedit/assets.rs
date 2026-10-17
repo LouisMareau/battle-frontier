@@ -1,6 +1,6 @@
 //! The asset browser: every prop of both spaces as a detailed list (name, id, GAME or
 //! TEMPORARY, category, size, model, what it does, folders), by folder ("Buildings/Inside",
-//! "Nature"...). A row dragged onto a folder puts the prop in it too (a prop can be in
+//! "Nature"...), and the creatures under Creatures (whether they're toon). A row dragged onto a folder puts the prop in it too (a prop can be in
 //! several); a folder chip's × takes it out. A row clicked is what the Place tool puts down,
 //! or, while a building is designed, what goes inside or outside it (if it's in that
 //! folder). Files dropped on the window (.glb or .gltf, from Blender or anywhere) become
@@ -13,7 +13,7 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use content::{Prop, Space, INSIDE, OUTSIDE};
+use content::{Creature, Prop, Space, INSIDE, OUTSIDE};
 use egui::{Color32, RichText, Sense};
 use world::gltf_in::load_model;
 
@@ -39,6 +39,9 @@ type Change = Box<dyn FnOnce(&mut Prop)>;
 /// Where dropped files go when no folder is shown.
 const IMPORTED: &str = "Imported";
 
+/// The folder row that shows the creatures instead of props.
+const CREATURES: &str = "#creatures";
+
 #[derive(Default)]
 pub(super) struct Assets {
     pub open: bool,
@@ -50,6 +53,8 @@ pub(super) struct Assets {
     pub new_folder: String,
     /// props changed here and not saved yet
     pub dirty: BTreeSet<String>,
+    /// creatures changed here and not saved yet
+    pub creatures_dirty: BTreeSet<String>,
     /// where dropped files go: temporary/ (placeholders, never committed), else content/
     pub to_temporary: bool,
     /// files dropped, read (in the browser, when the page has read them)
@@ -70,6 +75,13 @@ pub(super) struct Assets {
     seen: Vec<(std::path::PathBuf, std::time::SystemTime)>,
     #[cfg(not(target_arch = "wasm32"))]
     next_look: f64,
+}
+
+impl Assets {
+    /// How many records wait to be saved.
+    pub fn changed(&self) -> usize {
+        self.dirty.len() + self.creatures_dirty.len()
+    }
 }
 
 /// In the folder, or one inside it.
@@ -142,14 +154,36 @@ impl MapEditor {
         let Some(e) = self.content.props.entry(id) else { return };
         let (mut p, space) = (e.value.clone(), e.space);
         change(&mut p);
-        if &p == self.content.props.get(id).unwrap() {
+        let was = self.content.props.get(id).unwrap();
+        if &p == was {
             return;
+        }
+        if p.toon != was.toon {
+            // drawn another way: wherever it stands
+            self.need_props = true;
+            self.need_trees = true;
+            self.need_buildings = true;
+            self.extra_changed = true;
         }
         let mut c = (*self.content).clone();
         c.props.put(p, space);
         self.content = Arc::new(c);
         self.assets.dirty.insert(id.to_string());
         self.blocked = None;
+    }
+
+    /// Changes a creature where it is (its space), to save later.
+    fn change_creature(&mut self, id: &str, change: impl FnOnce(&mut Creature)) {
+        let Some(e) = self.content.creatures.entry(id) else { return };
+        let (mut cr, space) = (e.value.clone(), e.space);
+        change(&mut cr);
+        if &cr == self.content.creatures.get(id).unwrap() {
+            return;
+        }
+        let mut c = (*self.content).clone();
+        c.creatures.put(cr, space);
+        self.content = Arc::new(c);
+        self.assets.creatures_dirty.insert(id.to_string());
     }
 
     pub(super) fn add_to_folder(&mut self, id: &str, folder: &str) {
@@ -211,7 +245,7 @@ impl MapEditor {
                 ui.label(RichText::new("Drag rows onto folders · drop .glb files on a folder").color(Color32::GRAY));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let n = self.assets.dirty.len();
+                let n = self.assets.changed();
                 let save = ui.add_enabled(n > 0, egui::Button::new(format!("Save {n} changed")));
                 mark("uiSaveAssets", &save);
                 if save.clicked() {
@@ -259,6 +293,12 @@ impl MapEditor {
                         }
                         self.assets.rows.push((f.clone(), r.rect));
                     }
+                    ui.separator();
+                    let creatures = ui.selectable_label(self.assets.folder.as_deref() == Some(CREATURES), format!("Creatures ({})", content.creatures.len())).on_hover_text("Every creature: whether it's drawn toon");
+                    mark("uiFolder_Creatures", &creatures);
+                    if creatures.clicked() {
+                        self.assets.folder = Some(CREATURES.into());
+                    }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
                         ui.add(egui::TextEdit::singleline(&mut self.assets.new_folder).hint_text("New folder (a/b)").desired_width(130.0));
@@ -287,10 +327,15 @@ impl MapEditor {
         }
         crate::platform::set_hook("assets", &content.props.len().to_string());
         crate::platform::set_hook("assetsdirty", &self.assets.dirty.len().to_string());
+        crate::platform::set_hook("creaturesdirty", &self.assets.creatures_dirty.len().to_string());
         crate::platform::set_hook("folder", self.assets.folder.as_deref().unwrap_or(""));
     }
 
     fn asset_table(&mut self, ui: &mut egui::Ui) {
+        if self.assets.folder.as_deref() == Some(CREATURES) {
+            self.creature_table(ui);
+            return;
+        }
         let content = self.content.clone();
         let filter = self.assets.filter.to_lowercase();
         let folder = self.assets.folder.clone();
@@ -372,6 +417,12 @@ impl MapEditor {
                     if lit.clicked() {
                         light_edit = Some(p.id.clone());
                     }
+                    let toon = !p.toon;
+                    let r = ui.selectable_label(p.toon, "toon").on_hover_text("Drawn with the toon look: light in steps, ink lines (Post-processing sets how)");
+                    mark(&format!("uiToon_{}", p.id), &r);
+                    if r.clicked() {
+                        changes.push((p.id.clone(), Box::new(move |q: &mut Prop| q.toon = toon)));
+                    }
                 });
                 ui.horizontal(|ui| {
                     let own = !p.folders.is_empty();
@@ -398,6 +449,50 @@ impl MapEditor {
         }
         if light_edit.is_some() {
             self.assets.light_edit = light_edit;
+        }
+    }
+
+    /// The creatures, under the folders' Creatures: whether each is toon.
+    fn creature_table(&mut self, ui: &mut egui::Ui) {
+        let content = self.content.clone();
+        let filter = self.assets.filter.to_lowercase();
+        let rows: Vec<_> = content.creatures.entries().iter().filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter)).collect();
+        crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
+        if rows.is_empty() {
+            hint(ui, "No creatures here.");
+            return;
+        }
+        let mut changes: Vec<(String, bool)> = vec![];
+        egui::Grid::new("creature-grid").striped(true).num_columns(5).spacing([14.0, 5.0]).show(ui, |ui| {
+            for h in ["Name", "Id", "", "Types", "Does"] {
+                ui.label(RichText::new(h).strong().size(11.5));
+            }
+            ui.end_row();
+            for e in rows {
+                let c = &e.value;
+                let dirty = if self.assets.creatures_dirty.contains(&c.id) { " •" } else { "" };
+                ui.label(format!("{}{dirty}", c.name));
+                ui.label(RichText::new(&c.id).monospace().size(11.0).color(Color32::GRAY));
+                badge(ui, e.space);
+                ui.label(c.types.join(", "));
+                ui.horizontal(|ui| {
+                    let r = ui.selectable_label(c.toon, "toon").on_hover_text("Drawn with the toon look: ink lines round its picture (Post-processing sets how)");
+                    mark(&format!("uiToon_{}", c.id), &r);
+                    if r.clicked() {
+                        changes.push((c.id.clone(), !c.toon));
+                    }
+                    if c.light.is_some() {
+                        ui.label(RichText::new("light").color(Color32::GRAY));
+                    }
+                    if c.sound.is_some() {
+                        ui.label(RichText::new("sound").color(Color32::GRAY));
+                    }
+                });
+                ui.end_row();
+            }
+        });
+        for (id, toon) in changes {
+            self.change_creature(&id, |c| c.toon = toon);
         }
     }
 
@@ -454,6 +549,11 @@ impl MapEditor {
             let solid = ui.selectable_label(after.unstackable, "unstackable").on_hover_text("Nothing goes on it or overlaps it, and it goes on nothing");
             if solid.clicked() {
                 after.unstackable = !after.unstackable;
+            }
+            let toon = ui.selectable_label(after.toon, "toon").on_hover_text("Drawn with the toon look: light in steps, ink lines (Post-processing sets how)");
+            mark("uiPropToon", &toon);
+            if toon.clicked() {
+                after.toon = !after.toon;
             }
         });
         // its light: the window
@@ -625,12 +725,14 @@ impl MapEditor {
 
     // ------------------------------------------------------------ saving
 
-    /// Writes the props changed here: into their space on the desktop, as downloads in the
-    /// browser (with the models dropped there).
+    /// Writes the props and creatures changed here: into their space on the desktop, as
+    /// downloads in the browser (with the models dropped there).
     pub(super) fn save_assets(&mut self) {
         let ids: Vec<String> = self.assets.dirty.iter().cloned().collect();
-        let mut done = 0;
+        let creatures: Vec<String> = self.assets.creatures_dirty.iter().cloned().collect();
+        let (mut done, mut done_creatures) = (0, 0);
         let mut errors = vec![];
+        let plural = |n: usize| if n == 1 { "" } else { "s" };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
@@ -641,8 +743,18 @@ impl MapEditor {
                     Err(err) => errors.push(err),
                 }
             }
+            for id in &creatures {
+                let Some(e) = self.content.creatures.entry(id) else { continue };
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => done_creatures += 1,
+                    Err(err) => errors.push(err),
+                }
+            }
             self.assets.seen = snapshot(&root);
-            self.status = format!("Saved {done} prop{}", if done == 1 { "" } else { "s" });
+            self.status = format!("Saved {done} prop{}", plural(done));
+            if done_creatures > 0 {
+                self.status = format!("{} and {done_creatures} creature{}", self.status, plural(done_creatures));
+            }
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -653,16 +765,27 @@ impl MapEditor {
                     Err(err) => errors.push(err),
                 }
             }
+            for id in &creatures {
+                let Some(e) = self.content.creatures.entry(id) else { continue };
+                match platform::download(&format!("{id}.json"), &content::to_text(&e.value)) {
+                    Ok(()) => done_creatures += 1,
+                    Err(err) => errors.push(err),
+                }
+            }
             let models = std::mem::take(&mut self.assets.new_models);
             for (name, bytes) in &models {
                 if let Err(err) = platform::download_bytes(name, bytes, "model/gltf-binary") {
                     errors.push(err);
                 }
             }
-            self.status = format!("Downloaded {done} prop record{} (into <space>/data/props/) and {} model{} (into <space>/assets/models/)", if done == 1 { "" } else { "s" }, models.len(), if models.len() == 1 { "" } else { "s" });
+            self.status = format!("Downloaded {done} prop record{} (into <space>/data/props/) and {} model{} (into <space>/assets/models/)", plural(done), models.len(), plural(models.len()));
+            if done_creatures > 0 {
+                self.status = format!("{}, {done_creatures} creature record{} (into <space>/data/creatures/)", self.status, plural(done_creatures));
+            }
         }
         if errors.is_empty() {
             self.assets.dirty.clear();
+            self.assets.creatures_dirty.clear();
         } else {
             self.status = format!("{} · not saved: {}", self.status, errors.join("; "));
         }

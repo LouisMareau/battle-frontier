@@ -46,28 +46,8 @@ impl MapEditor {
                         for (key, img) in &m.images {
                             r.add_texture(&rs.device, &rs.queue, key, &img.rgba, img.width, img.height, true);
                         }
-                        if !m.skinned.is_empty() {
-                            // the parts that move with its rig: the renderer keeps them,
-                            // the frames say the pose
-                            let parts: Vec<(String, Vec<SkinnedVertex>, Vec<u32>)> = m
-                                .skinned
-                                .iter()
-                                .map(|s| {
-                                    let vertices = s
-                                        .mesh
-                                        .vertices
-                                        .iter()
-                                        .enumerate()
-                                        .map(|(i, v)| {
-                                            let j = s.joints.get(i).copied().unwrap_or([0; 4]);
-                                            SkinnedVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, joints: j.map(|x| x as u32), weights: s.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]) }
-                                        })
-                                        .collect();
-                                    (s.texture.clone().unwrap_or_else(|| WHITE.to_string()), vertices, s.mesh.indices.clone())
-                                })
-                                .collect();
-                            r.set_skinned(&rs.device, id, &parts);
-                        }
+                        // its moving parts (if rigged) go to the renderer below
+                        self.gpu.skinned.remove(id);
                         self.models.insert(id.clone(), m);
                         self.need_props = true;
                         self.need_trees = true;
@@ -80,6 +60,34 @@ impl MapEditor {
                     }
                 },
             }
+        }
+        // the parts of rigged models that move with their rig: the renderer keeps them, the
+        // frames say the pose; sent again when the prop is made toon or not
+        for (id, m) in self.models.iter().filter(|(_, m)| !m.skinned.is_empty()) {
+            let toon = content.props.get(id).map(|p| p.toon).unwrap_or(false);
+            if self.gpu.skinned.get(id) == Some(&toon) {
+                continue;
+            }
+            let parts: Vec<(String, Vec<SkinnedVertex>, Vec<u32>)> = m
+                .skinned
+                .iter()
+                .map(|s| {
+                    let vertices = s
+                        .mesh
+                        .vertices
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| {
+                            let j = s.joints.get(i).copied().unwrap_or([0; 4]);
+                            let weights = s.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
+                            SkinnedVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, joints: j.map(|x| x as u32), weights, toon: toon as u32 as f32 }
+                        })
+                        .collect();
+                    (s.texture.clone().unwrap_or_else(|| WHITE.to_string()), vertices, s.mesh.indices.clone())
+                })
+                .collect();
+            r.set_skinned(&rs.device, id, &parts);
+            self.gpu.skinned.insert(id.clone(), toon);
         }
         crate::platform::set_hook("models", &self.models.len().to_string());
     }

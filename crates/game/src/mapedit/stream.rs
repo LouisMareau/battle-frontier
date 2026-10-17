@@ -5,7 +5,7 @@
 //! two as the camera moves. An edit rebuilds the squares it touched and no more, since
 //! every layer keeps a digest of what each square was built from.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use content::CHUNK;
@@ -35,6 +35,8 @@ pub(super) struct GpuState {
     trees: Vec<Tree>,
     /// how many models were loaded when the digests were taken (one more changes meshes)
     models: usize,
+    /// the rigged models' moving parts on the GPU: whether they were sent toon
+    pub skinned: std::collections::HashMap<String, bool>,
 }
 
 /// The square a cell is in.
@@ -122,21 +124,39 @@ impl MapEditor {
             .collect()
     }
 
+    /// Each prop record's digest: a square whose props, trees or buildings use one that
+    /// changed (made toon, given another model...) is built again.
+    fn record_digests(&self) -> HashMap<&str, u64> {
+        self.content
+            .props
+            .iter()
+            .map(|p| {
+                let mut h = DefaultHasher::new();
+                format!("{p:?}").hash(&mut h);
+                (p.id.as_str(), h.finish())
+            })
+            .collect()
+    }
+
     fn prop_digests(&self) -> BTreeMap<(i32, i32), u64> {
+        let records = self.record_digests();
         let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
         for p in &self.map.props {
             let h = by.entry(square(p.at[0].floor() as i32, p.at[1].floor() as i32)).or_default();
             p.prop.hash(h);
+            records.get(p.prop.as_str()).hash(h);
             (p.at[0].to_bits(), p.at[1].to_bits(), p.level, p.turn.to_bits(), p.scale.to_bits(), p.offset[0].to_bits(), p.offset[1].to_bits()).hash(h);
         }
         by.into_iter().map(|(s, h)| (s, h.finish())).collect()
     }
 
     fn tree_digests(&self) -> BTreeMap<(i32, i32), u64> {
+        let records = self.record_digests();
         let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
         for t in &self.gpu.trees {
             let h = by.entry(square(t.pos[0].floor() as i32, t.pos[2].floor() as i32)).or_default();
             t.prop.hash(h);
+            records.get(t.prop.as_str()).hash(h);
             (t.pos[0].to_bits(), t.pos[1].to_bits(), t.pos[2].to_bits(), t.scale.to_bits(), t.turn.to_bits()).hash(h);
         }
         by.into_iter().map(|(s, h)| (s, h.finish())).collect()
@@ -146,6 +166,7 @@ impl MapEditor {
     /// walker's floor, left out while it's edited (the draft takes its place).
     fn building_digests(&self) -> BTreeMap<(i32, i32), u64> {
         let editing = self.draft.as_ref().and_then(|d| d.editing);
+        let records = self.record_digests();
         let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
         for (i, b) in self.map.buildings.iter().enumerate() {
             let h = by.entry(square(b.at[0], b.at[1])).or_default();
@@ -155,6 +176,12 @@ impl MapEditor {
             }
             let cut = self.building_cut(i);
             format!("{b:?} {cut:?}").hash(h);
+            // the props it's made of
+            let floors = b.floors.iter().flat_map(|f| std::iter::once(&f.tile).chain(f.openings.iter().map(|o| &o.prop)).chain(f.props.iter().map(|p| &p.prop)));
+            let rest = b.pillars.iter().map(|p| &p.prop).chain(b.anchors.iter().map(|a| &a.prop)).chain(b.outside.iter().map(|p| &p.prop));
+            for id in [&b.wall, &b.roof].into_iter().chain(floors).chain(rest) {
+                records.get(id.as_str()).hash(h);
+            }
         }
         if let Some(d) = self.draft.as_ref().filter(|d| d.step == build::Step::Design) {
             let h = by.entry(square(d.b.at[0], d.b.at[1])).or_default();
