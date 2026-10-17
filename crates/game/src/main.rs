@@ -26,12 +26,50 @@ mod presets;
 mod shot;
 mod stage;
 
+/// What ends the program (a panic: a GPU error, a bug) also goes, timed, to build/crash.log
+/// in the project: the release build has no console to say it in.
+#[cfg(not(target_arch = "wasm32"))]
+fn keep_crashes(root: &std::path::Path) {
+    let log = root.join("build").join("crash.log");
+    let said = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        said(info);
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        let line = format!("[{} UTC] the game stopped: {info}\n{}\n\n", utc(secs), std::backtrace::Backtrace::force_capture());
+        if let Some(dir) = log.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&log) {
+            use std::io::Write;
+            let _ = f.write_all(line.as_bytes());
+        }
+    }));
+}
+
+/// Seconds since 1970 as a UTC date and time: "2026-10-17 19:40:12".
+#[cfg(not(target_arch = "wasm32"))]
+fn utc(secs: u64) -> String {
+    // days to a civil date (Howard Hinnant's days_from_civil, backwards)
+    let (days, rest) = ((secs / 86_400) as i64, secs % 86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    format!("{year}-{month:02}-{day:02} {:02}:{:02}:{:02}", rest / 3600, rest / 60 % 60, rest % 60)
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 fn main() -> eframe::Result {
     let mut cli = app::Cli::default();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let arg_after = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
     let root = std::path::PathBuf::from(arg_after("--root").or_else(|| std::env::var("GAME_ROOT").ok()).unwrap_or_else(|| ".".into()));
+    keep_crashes(&root);
     // a battlefrontier: link (the browser's "Edit in Blender"): Blender opens on the prop,
     // and that's all
     if let Some(url) = arg_after("--link") {
@@ -149,4 +187,24 @@ fn main() {
             }
         }
     });
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    #[test]
+    fn a_crash_is_kept_in_build_crash_log() {
+        assert_eq!(super::utc(0), "1970-01-01 00:00:00");
+        assert_eq!(super::utc(1_792_266_012), "2026-10-17 19:40:12");
+        assert_eq!(super::utc(951_782_400), "2000-02-29 00:00:00", "a leap day");
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/tests").join(format!("crash-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        super::keep_crashes(&root);
+        let caught = std::panic::catch_unwind(|| panic!("the bones overran"));
+        // the default hook again (the other tests' panics are theirs)
+        let _ = std::panic::take_hook();
+        assert!(caught.is_err());
+        let log = std::fs::read_to_string(root.join("build/crash.log")).unwrap();
+        assert!(log.contains(" UTC] the game stopped: panicked at ") && log.contains("the bones overran"), "{log}");
+        std::fs::remove_dir_all(&root).ok();
+    }
 }

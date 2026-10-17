@@ -477,15 +477,31 @@ struct DrawCall {
 }
 
 /// The joints' matrices of this frame's skinned models, one buffer, each model's at an
-/// offset the draw binds.
+/// offset the draw binds. The binding is a window of `window` bytes from that offset (the
+/// same for every model: it's the bind group's), so the buffer runs at least a window past
+/// the last model's offset.
 struct Bones {
     buffer: wgpu::Buffer,
     bind: wgpu::BindGroup,
     cap: u64,
+    window: u64,
 }
 
 /// Matrices per skinned model are padded to this many: a dynamic offset's alignment.
 const BONES_ALIGN: usize = 4;
+/// The matrices a skinned model's binding holds, at least (a model with more joints widens it).
+const BONES_WINDOW: usize = 256;
+const MAT4_BYTES: u64 = 64;
+
+/// The bones' buffer and window a frame needs: its models' matrices packed (`packed`
+/// bytes, each model's padded to BONES_ALIGN), the widest model `most` joints; never less
+/// than what's there (`cap`, `window`), so it's made again only to grow.
+fn bones_needed(packed: u64, most: usize, cap: u64, window: u64) -> (u64, u64) {
+    let window = ((most.max(BONES_WINDOW).next_multiple_of(BONES_ALIGN)) as u64 * MAT4_BYTES).max(window);
+    // the last model starts before `packed`: its window ends before packed + window
+    let cap = (packed + window).next_power_of_two().max(cap);
+    (cap, window)
+}
 
 pub struct SceneRenderer {
     globals: wgpu::Buffer,
@@ -744,7 +760,8 @@ impl SceneRenderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout), Some(&empty_layout), Some(&bones_layout)],
             immediate_size: 0,
         });
-        let bones = Self::make_bones(device, &bones_layout, 256 * 64);
+        let (cap, window) = bones_needed(0, 0, 0, 0);
+        let bones = Self::make_bones(device, &bones_layout, cap, window);
         let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32];
         let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
         let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32];
@@ -943,7 +960,8 @@ impl SceneRenderer {
     }
 
     /// A buffer for the skinned models' joint matrices, `cap` bytes.
-    fn make_bones(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, cap: u64) -> Bones {
+    /// The bones' buffer, `cap` bytes, bound a `window` of bytes at a time.
+    fn make_bones(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, cap: u64, window: u64) -> Bones {
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bones"),
             size: cap,
@@ -955,10 +973,10 @@ impl SceneRenderer {
             layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(256 * 64) }),
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(window) }),
             }],
         });
-        Bones { buffer, bind, cap }
+        Bones { buffer, bind, cap, window }
     }
 
     /// A skinned model's parts, by texture, kept under `key` for `Frame::animated` to draw.
@@ -1419,8 +1437,10 @@ impl SceneRenderer {
             }
         }
         let bone_bytes: &[u8] = bytemuck::cast_slice(&bone_data);
-        if (bone_bytes.len() as u64) > self.bones.cap {
-            self.bones = Self::make_bones(device, &self.bones_layout, (bone_bytes.len() as u64).next_power_of_two());
+        let most = frame.animated.iter().filter(|a| self.skinned.contains_key(&a.key)).map(|a| a.joints.len()).max().unwrap_or(0);
+        let (cap, window) = bones_needed(bone_bytes.len() as u64, most, self.bones.cap, self.bones.window);
+        if (cap, window) != (self.bones.cap, self.bones.window) {
+            self.bones = Self::make_bones(device, &self.bones_layout, cap, window);
         }
         if !bone_bytes.is_empty() {
             queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
@@ -1753,6 +1773,104 @@ fn push_draw(draws: &mut Vec<DrawCall>, texture: &str, first: u32, count: u32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A future that's ready at once (wgpu's are, on the desktop) run to its end.
+    fn block_on<F: std::future::Future>(f: F) -> F::Output {
+        let mut f = std::pin::pin!(f);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        loop {
+            if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
+                return v;
+            }
+            std::thread::yield_now();
+        }
+    }
+
+    /// A device on the GPU there is, if it does all WebGPU does (the skinned models read a
+    /// storage buffer in their vertex shader); none on a machine without (CI's).
+    fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let adapter = block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        if !adapter.get_downlevel_capabilities().is_webgpu_compliant() {
+            return None;
+        }
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
+    }
+
+    /// A frame of nothing but `animated`, from a camera looking down at the origin.
+    fn frame_of(animated: Vec<Animated>) -> Frame {
+        let light = Lighting {
+            sun_dir: Vec3::new(0.3, 1.0, 0.2),
+            sun: Vec3::ONE,
+            ambient: Vec3::splat(0.3),
+            hemi_sky: Vec3::splat(0.2),
+            hemi_ground: Vec3::splat(0.1),
+            sky: Vec3::new(0.5, 0.7, 0.9),
+            fog_near: 50.0,
+            fog_far: 100.0,
+            light_view_proj: Mat4::orthographic_rh(-10.0, 10.0, -10.0, 10.0, -20.0, 20.0) * Mat4::look_at_rh(Vec3::new(3.0, 10.0, 2.0), Vec3::ZERO, Vec3::Y),
+            lights: vec![],
+        };
+        Frame {
+            view_proj: Mat4::perspective_rh(1.0, 1.0, 0.1, 100.0) * Mat4::look_at_rh(Vec3::new(0.0, 5.0, 5.0), Vec3::ZERO, Vec3::Y),
+            camera_pos: Vec3::new(0.0, 5.0, 5.0),
+            light,
+            shadows: true,
+            billboards: vec![],
+            shapes: vec![],
+            glows: vec![],
+            animated,
+            streaks: vec![],
+            time: 0.0,
+            grid: false,
+            focus: None,
+            dim: 0.0,
+            overlays: vec![],
+            toon: Toon::default(),
+        }
+    }
+
+    /// Skinned models in one frame, as many as a map has, each with its joints (the model
+    /// requests' creatures have 3, 7 and 32; a joint binding takes up to BONES_WINDOW of them):
+    /// drawn with no error from the GPU (a second one used to overrun the bones' buffer, and
+    /// wgpu's error ended the game).
+    #[test]
+    fn the_bones_buffer_leaves_a_window_past_the_last_model() {
+        let window = (BONES_WINDOW as u64) * MAT4_BYTES;
+        assert_eq!(bones_needed(0, 0, 0, 0), (window, window), "one model at offset 0");
+        // a second model at 256 bytes: its window must fit after it
+        let (cap, w) = bones_needed(512, 7, window, window);
+        assert!(w == window && cap >= 256 + window && cap.is_power_of_two(), "{cap} {w}");
+        // a model of more joints than the window: a wider one, the buffer past it
+        let (cap, w) = bones_needed(300 * 64, 300, cap, w);
+        assert!(w == 300 * 64 && cap >= 300 * 64 + w, "{cap} {w}");
+        // never smaller than what's there
+        assert_eq!(bones_needed(64, 1, 1 << 20, w), (1 << 20, w));
+    }
+
+    #[test]
+    fn many_skinned_models_draw_in_one_frame() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU here: the skinned models' draw not checked");
+            return;
+        };
+        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let vertex = |x: f32, z: f32, joint: u32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0; 4], joints: [joint, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0], toon: 0.0 };
+        let counts = [3usize, 7, 32, 2, 7, 3, 200, 32, 1];
+        for (i, &n) in counts.iter().enumerate() {
+            let x = i as f32 * 0.5 - 2.0;
+            let last = n as u32 - 1;
+            r.set_skinned(&device, &format!("m{i}"), &[(WHITE.to_string(), vec![vertex(x, 0.0, 0), vertex(x + 0.4, 0.0, last), vertex(x, 0.4, last)], vec![0, 1, 2])]);
+        }
+        for shown in [1, 2, 5, counts.len()] {
+            let animated = counts.iter().enumerate().take(shown).map(|(i, &n)| Animated { key: format!("m{i}"), model: Mat4::IDENTITY, joints: vec![Mat4::IDENTITY; n] }).collect();
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            r.prepare(&device, &queue, &mut encoder, &frame_of(animated), [64, 64]);
+            queue.submit([encoder.finish()]);
+            let error = block_on(scope.pop());
+            assert!(error.is_none(), "{shown} skinned models: {error:?}");
+        }
+    }
 
     #[test]
     fn the_shader_holds_for_webgpu_and_webgl() {

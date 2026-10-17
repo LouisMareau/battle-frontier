@@ -51,7 +51,8 @@ map editor), `--requests` (the map editor with its Requests window open), `--mut
 `--exit-after SECONDS`, `--stats` (frames per second, the worst frame
 gap and the time each frame keeps the processor busy, printed every second) and `--no-vsync`
 (draws as fast as it can, not at the screen's rate: with `--stats`, what the machine could
-do). The browser build takes the same as
+do). The release build has no console: when it stops on an error, the reason is added to
+`build/crash.log` in the project, timed. The browser build takes the same as
 `<body data-cmd="start:ID;auto:1">` (also `editor`, `maps`, `map:ID`, `back`, `scale:50-100`
 and `shadows:off|low|medium|high`) and
 writes `data-state`, `data-round`, `data-fps`, `data-maxgap`, `data-cpu`, `data-cpupeak`,
