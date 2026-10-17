@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::buildings::building;
 use crate::gltf_in::Image;
-use crate::mesh::{ground, part_mesh, placement, Mesh, Models, Scene};
+use crate::mesh::{ground, part_mesh, placement, side_color, Mesh, Models, Scene, Vertex};
 use crate::trees::trees;
 use crate::{color, hex_color, WorldMap};
 
@@ -396,14 +396,22 @@ pub fn map_glb(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     let mut glb = Glb::new();
     let images = all_images(models);
     let g = ground(map, content, level_height);
+    // the terrain shader's colours, as vertex colours: the top's down to the bevels' foot,
+    // where the rock takes over; the faces the rock's, darker at the foot
+    let terrain = |v: &Vertex| map.terrain_at(v.uv[0].floor() as i32, v.uv[1].floor() as i32).and_then(|id| content.terrains.get(id));
     let mut tops = g.tops.clone();
     for v in tops.vertices.iter_mut() {
-        let (x, z) = (v.uv[0].floor() as i32, v.uv[1].floor() as i32);
-        let t = map.terrain_at(x, z).and_then(|id| content.terrains.get(id));
-        v.color = color(t.map(|t| t.color.as_str()).unwrap_or("#6cbb4e"));
+        let t = terrain(v);
+        let (top, side, k) = (color(t.map(|t| t.color.as_str()).unwrap_or("#6cbb4e")), side_color(t), v.color[3]);
+        v.color = [0, 1, 2, 3].map(|i| if i == 3 { 1.0 } else { top[i] + (side[i] - top[i]) * k });
+    }
+    let mut cliffs = g.cliffs.clone();
+    for v in cliffs.vertices.iter_mut() {
+        let side = side_color(terrain(v));
+        v.color = [side[0] * v.color[0], side[1] * v.color[1], side[2] * v.color[2], 1.0];
     }
     let white = glb.vertex_material();
-    let ground_mesh = glb.mesh("ground", &[(&tops, white, true, false), (&g.solid, white, true, false)]);
+    let ground_mesh = glb.mesh("ground", &[(&tops, white, true, false), (&cliffs, white, true, false), (&g.grass, white, true, false)]);
     let ground_node = glb.node("Ground", ground_mesh, Mat4::IDENTITY, vec![]);
     let mut prop_meshes: HashMap<String, Option<usize>> = HashMap::new();
     let mut mesh_of = |glb: &mut Glb, id: &str| -> Option<usize> {

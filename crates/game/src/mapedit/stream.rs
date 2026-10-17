@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
 
 use content::CHUNK;
-use render::scene::{SceneRenderer, WorldGround, WHITE};
+use render::scene::{SceneRenderer, WorldGround, CLIFFS, WHITE};
 use world::buildings::{building, Cut};
 use world::mesh::{self, Scene};
 use world::trees::{trees, Tree};
@@ -169,9 +169,10 @@ impl MapEditor {
         let lh = self.level_height;
         match layer {
             "ground" => {
-                let (tops, solid) = mesh::ground_region(&self.map, &self.content, lh, reg);
+                let (tops, cliffs, grass) = mesh::ground_region(&self.map, &self.content, lh, reg);
                 r.set_chunk(&rs.device, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
-                r.set_chunk(&rs.device, "cliffs", s, &models::batches(&Scene::from(solid)));
+                r.set_chunk(&rs.device, CLIFFS, s, &[(WHITE.to_string(), gpu(&cliffs.vertices), cliffs.indices)]);
+                r.set_chunk(&rs.device, "grass", s, &models::batches(&Scene::from(grass)));
             }
             "props" => {
                 let scene = mesh::props_region(&self.map, &self.content, lh, &self.models, reg);
@@ -276,7 +277,7 @@ impl MapEditor {
         // the squares that left the camera's reach: their full layers go, a stand-in follows
         let demote: Vec<(i32, i32)> = all.iter().copied().filter(|&s| distance(s, t.x, t.z) > keep && self.built("ground", s)).collect();
         for s in demote {
-            for layer in ["cliffs", "props", "trees", "buildings"] {
+            for layer in [CLIFFS, "grass", "props", "trees", "buildings"] {
                 r.set_chunk(&rs.device, layer, s, &[]);
             }
             for layer in LAYERS {

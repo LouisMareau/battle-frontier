@@ -1,7 +1,8 @@
-//! A map's geometry, for the renderer: the cells' tops (coloured by the terrain shader from
-//! a texture of the cells, so painting only changes that texture), the cliff faces and
-//! tall grass (vertex colours), and the props and trees (their stand-in models, made from
-//! the simple shapes their records list).
+//! A map's geometry, for the renderer: the cells' tops and the cliff faces (coloured by the
+//! terrain shader from a texture of the cells, so painting only changes that texture; the
+//! tops bevelled where the ground steps down, the faces and bevels rock), the tall grass
+//! (vertex colours), and the props and trees (their stand-in models, made from the simple
+//! shapes their records list).
 
 use std::collections::{BTreeMap, HashMap};
 use std::f32::consts::TAU;
@@ -300,15 +301,26 @@ pub fn pattern_id(pattern: &str) -> u8 {
 }
 
 pub struct Ground {
-    /// cell tops, drawn by the terrain shader
+    /// cell tops, drawn by the terrain shader, bevelled where the ground steps down
     pub tops: Mesh,
-    /// cliff faces and tall grass
-    pub solid: Mesh,
+    /// cliff faces, drawn by the terrain shader too, as rock
+    pub cliffs: Mesh,
+    /// tall grass (vertex colours)
+    pub grass: Mesh,
     /// width x height texels: terrain index, level, 0, 255
     pub cells: Vec<u8>,
-    /// terrains x 3 rows: colour, second colour (sRGB), [pattern, priority + 128, water, 255]
+    /// terrains x 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water,
+    /// 255], the cliff side's colour (sRGB)
     pub palette: Vec<u8>,
     pub palette_width: u32,
+}
+
+/// A cliff side's colour when its terrain gives none.
+const SIDE: &str = "#8a6a48";
+
+/// The colour of the cliffs under a terrain (linear).
+pub fn side_color(t: Option<&content::Terrain>) -> [f32; 4] {
+    color(t.map(|t| t.side.as_str()).filter(|s| !s.is_empty()).unwrap_or(SIDE))
 }
 
 fn hex_bytes(hex: &str) -> [u8; 4] {
@@ -333,28 +345,30 @@ pub fn cells_texture(map: &WorldMap) -> Vec<u8> {
 
 pub fn palette(map: &WorldMap, content: &Content) -> (Vec<u8>, u32) {
     let n = map.terrains.len().max(1);
-    let mut rows: [Vec<u8>; 3] = [vec![], vec![], vec![]];
+    let mut rows: [Vec<u8>; 4] = [vec![], vec![], vec![], vec![]];
     for i in 0..n {
         let t = map.terrains.get(i).and_then(|id| content.terrains.get(id));
-        let (c1, c2, params) = match t {
+        let (c1, c2, params, side) = match t {
             Some(t) => (
                 hex_bytes(&t.color),
                 hex_bytes(if t.color2.is_empty() { &t.color } else { &t.color2 }),
                 [pattern_id(&t.pattern), (t.priority.clamp(-128, 127) + 128) as u8, (t.walk == "water") as u8 * 255, 255],
+                hex_bytes(if t.side.is_empty() { SIDE } else { &t.side }),
             ),
-            None => ([255, 0, 255, 255], [128, 0, 128, 255], [0, 128, 0, 255]),
+            None => ([255, 0, 255, 255], [128, 0, 128, 255], [0, 128, 0, 255], hex_bytes(SIDE)),
         };
         rows[0].extend_from_slice(&c1);
         rows[1].extend_from_slice(&c2);
         rows[2].extend_from_slice(&params);
+        rows[3].extend_from_slice(&side);
     }
     (rows.concat(), n as u32)
 }
 
 pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
-    let (tops, solid) = ground_region(map, content, level_height, whole(map));
+    let (tops, cliffs, grass) = ground_region(map, content, level_height, whole(map));
     let (palette, palette_width) = palette(map, content);
-    Ground { tops, solid, cells: cells_texture(map), palette, palette_width }
+    Ground { tops, cliffs, grass, cells: cells_texture(map), palette, palette_width }
 }
 
 /// A region holding the whole map: x0, z0 (in) to x1, z1 (out).
@@ -373,69 +387,223 @@ fn in_region(region: [i32; 4], x: i32, z: i32) -> bool {
     x >= region[0] && z >= region[1] && x < region[2] && z < region[3]
 }
 
-/// The cell tops and the cliff faces (and tall grass) of a region's cells; the faces look
-/// at the neighbours, so the whole grid is read.
-pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4]) -> (Mesh, Mesh) {
-    let mut tops = Mesh::default();
-    let mut solid = Mesh::default();
-    let white = [1.0, 1.0, 1.0, 1.0];
-    let terrain = |x: i32, z: i32| map.terrain_at(x, z).and_then(|id| content.terrains.get(id));
-    for (x, z) in region_cells(map, region) {
-        {
-            let level = map.level_at(x, z).unwrap_or(0);
-            let y = level as f32 * level_height;
-            let (fx, fz) = (x as f32, z as f32);
-            let i = tops.vertices.len() as u32;
-            for (px, pz) in [(fx, fz), (fx, fz + 1.0), (fx + 1.0, fz + 1.0), (fx + 1.0, fz)] {
-                tops.vertices.push(Vertex { pos: [px, y, pz], normal: [0.0, 1.0, 0.0], uv: [fx + 0.5, fz + 0.5], color: white });
+/// How far a cliff's top edge is bevelled, in and down, in cells.
+pub const CHAMFER: f32 = 0.22;
+
+/// Where the faces around the map go down to.
+const SKIRT: f32 = -0.6;
+
+/// What's lower around a cell: its sides (north, south, west, east) where the ground steps
+/// down or the map ends, and its corners (north-west, north-east, south-west, south-east)
+/// where only the cell across the corner is lower, which are cut off.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Drops {
+    sides: [bool; 4],
+    cuts: [bool; 4],
+}
+
+impl Drops {
+    fn of(level: &dyn Fn(i32, i32) -> Option<u8>, x: i32, z: i32) -> Drops {
+        let own = level(x, z).unwrap_or(0);
+        let low = |dx: i32, dz: i32| level(x + dx, z + dz).map(|l| l < own).unwrap_or(true);
+        let sides = [low(0, -1), low(0, 1), low(-1, 0), low(1, 0)];
+        let [n, s, w, e] = sides;
+        let cuts = [!n && !w && low(-1, -1), !n && !e && low(1, -1), !s && !w && low(-1, 1), !s && !e && low(1, 1)];
+        Drops { sides, cuts }
+    }
+
+    fn none(&self) -> bool {
+        !self.sides.iter().chain(&self.cuts).any(|&b| b)
+    }
+
+    /// How far below the cell's level its top is at a point of it (u, v from its
+    /// north-west corner, 0 to 1): CHAMFER at a side that steps down, rising to nothing
+    /// CHAMFER in; at a cut corner, across it. Where two sides step down, they meet in a
+    /// mitre.
+    fn bevel(&self, u: f32, v: f32) -> f32 {
+        let c = CHAMFER;
+        let [n, s, w, e] = self.sides;
+        let [nw, ne, sw, se] = self.cuts;
+        let (iu, iv) = (1.0 - u, 1.0 - v);
+        let mut k = 0.0f32;
+        for (on, d) in [(n, v), (s, iv), (w, u), (e, iu), (nw, u + v), (ne, iu + v), (sw, u + iv), (se, iu + iv)] {
+            if on {
+                k = k.max(c - d);
             }
-            tops.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
-            let t = terrain(x, z);
-            let side = color(t.map(|t| t.side.as_str()).filter(|s| !s.is_empty()).unwrap_or("#8a6a48"));
-            let lip = shade(color(t.map(|t| t.color.as_str()).unwrap_or("#6cbb4e")), 0.8);
-            // a face on each side whose neighbour is lower (down to it), and around the map
-            for (dx, dz, corners) in [
-                (0, 1, [(fx, fz + 1.0), (fx + 1.0, fz + 1.0)]),
-                (0, -1, [(fx + 1.0, fz), (fx, fz)]),
-                (1, 0, [(fx + 1.0, fz + 1.0), (fx + 1.0, fz)]),
-                (-1, 0, [(fx, fz), (fx, fz + 1.0)]),
-            ] {
-                let bottom = match map.level_at(x + dx, z + dz) {
-                    Some(l) if l >= level => continue,
-                    Some(l) => l as f32 * level_height,
-                    None => -0.6,
-                };
-                let [(ax, az), (bx, bz)] = corners;
-                // bands, like layers of rock, with a strip of the top's colour at the lip
-                let mut top = y;
-                let mut band = 0;
-                while top > bottom + 0.001 {
-                    let size = if band == 0 { 0.14 } else { 0.5 };
-                    let low = (top - size).max(bottom);
-                    let k = if band == 0 { 1.0 } else { 0.82 + 0.16 * hash(x * 2 + dx, z * 2 + dz, band) };
-                    let base = if band == 0 { lip } else { side };
-                    let depth = 1.0 - 0.25 * ((y - low) / (level_height * 1.5)).clamp(0.0, 1.0);
-                    solid.quad([Vec3::new(ax, top, az), Vec3::new(ax, low, az), Vec3::new(bx, low, bz), Vec3::new(bx, top, bz)], shade(base, k * depth));
-                    top = low;
-                    band += 1;
+        }
+        k.clamp(0.0, c)
+    }
+}
+
+/// A flat piece of a cell's top (a triangle or a planar quad), facing up; its vertices'
+/// alpha says how far down the bevel they are (0 on top, 1 at the bottom), for the rock.
+fn top_piece(m: &mut Mesh, ps: &[Vec3], uv: [f32; 2], y: f32) {
+    let mut n = (ps[1] - ps[0]).cross(ps[2] - ps[0]).normalize_or(Vec3::Y);
+    if n.y < 0.0 {
+        n = -n;
+    }
+    let i = m.vertices.len() as u32;
+    for p in ps {
+        let rock = ((y - p.y) / CHAMFER).clamp(0.0, 1.0);
+        m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock] });
+    }
+    for k in 1..ps.len() as u32 - 1 {
+        m.indices.extend_from_slice(&[i, i + k, i + k + 1]);
+    }
+}
+
+/// A cell's top: one quad when nothing around it is lower, else a 3 x 3 grid whose rim is
+/// bevelled. A corner piece where two bevels meet folds along the diagonal through the
+/// cell's corner (the mitre), a cut corner's along the other one.
+fn cell_top(m: &mut Mesh, fx: f32, fz: f32, y: f32, d: &Drops) {
+    let uv = [fx + 0.5, fz + 0.5];
+    if d.none() {
+        let q = [Vec3::new(fx, y, fz), Vec3::new(fx, y, fz + 1.0), Vec3::new(fx + 1.0, y, fz + 1.0), Vec3::new(fx + 1.0, y, fz)];
+        top_piece(m, &q, uv, y);
+        return;
+    }
+    let c = CHAMFER;
+    let at = [0.0, c, 1.0 - c, 1.0];
+    let p = |u: f32, v: f32| Vec3::new(fx + u, y - d.bevel(u, v), fz + v);
+    for j in 0..3 {
+        for i in 0..3 {
+            let (u0, u1, v0, v1) = (at[i], at[i + 1], at[j], at[j + 1]);
+            let q = [p(u0, v0), p(u0, v1), p(u1, v1), p(u1, v0)];
+            // a corner piece: the corner's index in Drops, the two sides meeting there,
+            // and whether the diagonal through the cell's corner is q0-q2 (else q1-q3)
+            let corner = match (i, j) {
+                (0, 0) => Some((0, 0, 2, true)),
+                (2, 0) => Some((1, 0, 3, false)),
+                (0, 2) => Some((2, 1, 2, false)),
+                (2, 2) => Some((3, 1, 3, true)),
+                _ => None,
+            };
+            let fold = corner.and_then(|(k, a, b, through_02)| {
+                if d.sides[a] && d.sides[b] {
+                    Some(through_02)
+                } else if d.cuts[k] {
+                    Some(!through_02)
+                } else {
+                    None
                 }
-            }
-            // tall grass: tufts of blades
-            if t.map(|t| t.pattern == "tall").unwrap_or(false) {
-                let (c1, c2) = (color(&t.unwrap().color), color(&t.unwrap().color2));
-                for k in 0..9 {
-                    let px = fx + 0.12 + 0.76 * hash(x, z, k * 3);
-                    let pz = fz + 0.12 + 0.76 * hash(x, z, k * 3 + 1);
-                    let tall = 0.42 + 0.22 * hash(x, z, k * 3 + 2);
-                    let c = if k % 3 == 0 { c2 } else { c1 };
-                    let mut blade = Mesh::default();
-                    shape_round(&mut blade, Vec3::new(0.2, tall, 0.2), c, 0.0, 4);
-                    solid.append(&blade, placement(Vec3::new(px, y, pz), hash(x, z, k) * 90.0, 1.0));
+            });
+            match fold {
+                Some(true) => {
+                    top_piece(m, &[q[0], q[1], q[2]], uv, y);
+                    top_piece(m, &[q[0], q[2], q[3]], uv, y);
                 }
+                Some(false) => {
+                    top_piece(m, &[q[0], q[1], q[3]], uv, y);
+                    top_piece(m, &[q[1], q[2], q[3]], uv, y);
+                }
+                None => top_piece(m, &q, uv, y),
             }
         }
     }
-    (tops, solid)
+}
+
+/// How far a cliff face bulges out at most, in cells (it dents in a little too).
+const RELIEF: f32 = 0.13;
+
+/// Smooth noise in space, 0 to 1: values on a lattice `scale` apart, eased between.
+fn noise3(p: Vec3, scale: f32, seed: i32) -> f32 {
+    let q = p / scale;
+    let i = q.floor();
+    let f = q - i;
+    let u = f * f * (Vec3::splat(3.0) - 2.0 * f);
+    let (x, y, z) = (i.x as i32, i.y as i32, i.z as i32);
+    let h = |dx: i32, dy: i32, dz: i32| hash(x + dx + seed * 7919, z + dz, y + dy);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let plane = |dy: i32| lerp(lerp(h(0, dy, 0), h(1, dy, 0), u.x), lerp(h(0, dy, 1), h(1, dy, 1), u.x), u.z);
+    lerp(plane(0), plane(1), u.y)
+}
+
+/// How far a cliff face stands out from its cell's edge at a point: lumps of rock.
+fn relief(p: Vec3) -> f32 {
+    let n = noise3(p, 0.55, 1) * 0.7 + noise3(p, 0.23, 2) * 0.3;
+    (n * 1.35 - 0.35) * RELIEF
+}
+
+/// The cell tops, the cliff faces and the tall grass of a region's cells. A side that steps
+/// down (or ends the map) is bevelled at the top and has a face from under the bevel down
+/// to the ground across, which may be bevelled too; the faces look at the neighbours, so
+/// the whole grid is read.
+pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4]) -> (Mesh, Mesh, Mesh) {
+    let mut tops = Mesh::default();
+    let mut cliffs = Mesh::default();
+    let mut grass = Mesh::default();
+    let level = |x: i32, z: i32| map.level_at(x, z);
+    let terrain = |x: i32, z: i32| map.terrain_at(x, z).and_then(|id| content.terrains.get(id));
+    // a cell's top at a point on it (world x, z); off the map, the skirt's foot
+    let surface = |x: i32, z: i32, px: f32, pz: f32| match level(x, z) {
+        Some(l) => l as f32 * level_height - Drops::of(&level, x, z).bevel(px - x as f32, pz - z as f32),
+        None => SKIRT,
+    };
+    for (x, z) in region_cells(map, region) {
+        let y = level(x, z).unwrap_or(0) as f32 * level_height;
+        let (fx, fz) = (x as f32, z as f32);
+        let d = Drops::of(&level, x, z);
+        cell_top(&mut tops, fx, fz, y, &d);
+        let uv = [fx + 0.5, fz + 0.5];
+        // a face on each side that steps down, seen from outside: from under the bevel
+        // down to the top across (sampled where the bevels over there bend), in rows half a
+        // cell high, lumpy inside; its edges stay put where it meets the bevel, the ground
+        // and other faces, except where the face goes on unchanged into the next cell's
+        let sides = [
+            (0, -1, [(fx + 1.0, fz), (fx, fz)]),
+            (0, 1, [(fx, fz + 1.0), (fx + 1.0, fz + 1.0)]),
+            (-1, 0, [(fx, fz), (fx, fz + 1.0)]),
+            (1, 0, [(fx + 1.0, fz + 1.0), (fx + 1.0, fz)]),
+        ];
+        for (k, (dx, dz, [(ax, az), (bx, bz)])) in sides.into_iter().enumerate() {
+            if !d.sides[k] {
+                continue;
+            }
+            let across = level(x + dx, z + dz);
+            let top = y - CHAMFER;
+            let foot = across.map(|l| l as f32 * level_height).unwrap_or(SKIRT);
+            let rows = ((top - foot) / 0.5).ceil().max(1.0) as usize;
+            let (ex, ez) = ((bx - ax) as i32, (bz - az) as i32);
+            let goes_on = |cx: i32, cz: i32| level(cx, cz) == level(x, z) && level(cx + dx, cz + dz) == across;
+            let free = [goes_on(x - ex, z - ez), goes_on(x + ex, z + ez)];
+            let out = Vec3::new(dx as f32, 0.0, dz as f32);
+            let cols = [0.0, CHAMFER, 0.5, 1.0 - CHAMFER, 1.0];
+            let base = cliffs.vertices.len() as u32;
+            for (ci, &t) in cols.iter().enumerate() {
+                let (px, pz) = (ax + (bx - ax) * t, az + (bz - az) * t);
+                let b = surface(x + dx, z + dz, px, pz);
+                for r in 0..=rows {
+                    let f = r as f32 / rows as f32;
+                    let p = Vec3::new(px, b + (top - b) * f, pz);
+                    let pinned = r == 0 || r == rows || (ci == 0 && !free[0]) || (ci == cols.len() - 1 && !free[1]);
+                    let p = if pinned { p } else { p + out * relief(p) };
+                    // darker towards the foot
+                    let s = 0.72 + 0.28 * f;
+                    cliffs.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0] });
+                }
+            }
+            let n = rows as u32 + 1;
+            for c in 0..cols.len() as u32 - 1 {
+                for r in 0..rows as u32 {
+                    let (a0, a1, b0, b1) = (base + c * n + r, base + c * n + r + 1, base + (c + 1) * n + r, base + (c + 1) * n + r + 1);
+                    cliffs.indices.extend_from_slice(&[a1, a0, b0, a1, b0, b1]);
+                }
+            }
+        }
+        // tall grass: tufts of blades, standing on the top (on the bevel too)
+        if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
+            let (c1, c2) = (color(&t.color), color(&t.color2));
+            for k in 0..9 {
+                let (u, v) = (0.12 + 0.76 * hash(x, z, k * 3), 0.12 + 0.76 * hash(x, z, k * 3 + 1));
+                let tall = 0.42 + 0.22 * hash(x, z, k * 3 + 2);
+                let c = if k % 3 == 0 { c2 } else { c1 };
+                let mut blade = Mesh::default();
+                shape_round(&mut blade, Vec3::new(0.2, tall, 0.2), c, 0.0, 4);
+                grass.append(&blade, placement(Vec3::new(fx + u, y - d.bevel(u, v), fz + v), hash(x, z, k) * 90.0, 1.0));
+            }
+        }
+    }
+    (tops, cliffs, grass)
 }
 
 /// The props placed on the map.
@@ -491,7 +659,6 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
     if x1 <= x0 || z1 <= z0 {
         return (tops, plain);
     }
-    let white = [1.0, 1.0, 1.0, 1.0];
     let level = |x: i32, z: i32| map.level_at(x.min(w - 1), z.min(h - 1)).unwrap_or(0) as f32 * level_height;
     let canopy = color("#2d6a38");
     let mut z = z0;
@@ -502,7 +669,7 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
             let xb = (x + FAR_STEP).min(x1);
             let i = tops.vertices.len() as u32;
             for (px, pz) in [(x, z), (x, zb), (xb, zb), (xb, z)] {
-                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: white });
+                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: [1.0, 1.0, 1.0, 0.0] });
             }
             tops.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
             let (mut n, mut forest, mut sum) = (0, 0, 0.0f32);
@@ -539,6 +706,99 @@ pub fn objects(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     let trees = tree_mesh(map, content, level_height, models);
     out.append(&trees, Mat4::IDENTITY);
     out
+}
+
+#[cfg(test)]
+mod bevel_tests {
+    use super::*;
+
+    /// A little landscape: a plateau with a notch and a hole, a step down to the south, a
+    /// lone pillar; '.' is off the map.
+    const ROWS: [&str; 7] = ["0000000.", "0111110.", "0110110.", "0111110.", "0001000.", "0000020.", "00000000"];
+
+    fn level(x: i32, z: i32) -> Option<u8> {
+        let row = ROWS.get(usize::try_from(z).ok()?)?;
+        let c = *row.as_bytes().get(usize::try_from(x).ok()?)?;
+        (c != b'.').then(|| c - b'0')
+    }
+
+    #[test]
+    fn tops_on_one_level_meet_without_steps() {
+        for z in 0..7 {
+            for x in 0..8 {
+                let Some(l) = level(x, z) else { continue };
+                let a = Drops::of(&level, x, z);
+                for (dx, dz) in [(1, 0), (0, 1)] {
+                    if level(x + dx, z + dz) != Some(l) {
+                        continue;
+                    }
+                    let b = Drops::of(&level, x + dx, z + dz);
+                    for t in [0.0, CHAMFER * 0.5, CHAMFER, 0.5, 1.0 - CHAMFER, 1.0] {
+                        // the shared edge, in each cell's own (u, v)
+                        let (ua, va, ub, vb) = if dx == 1 { (1.0, t, 0.0, t) } else { (t, 1.0, t, 0.0) };
+                        assert!((a.bevel(ua, va) - b.bevel(ub, vb)).abs() < 1e-6, "{x},{z} and the cell {dx},{dz} on at {t}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_side_that_steps_down_is_bevelled_all_along() {
+        // the plateau's north-west cell: north and west step down, a mitre at the corner
+        let d = Drops::of(&level, 1, 1);
+        assert_eq!(d.sides, [true, false, true, false]);
+        for t in [0.0, 0.3, 1.0] {
+            assert!((d.bevel(t, 0.0) - CHAMFER).abs() < 1e-6 && (d.bevel(0.0, t) - CHAMFER).abs() < 1e-6);
+        }
+        assert!(d.bevel(0.5, 0.5).abs() < 1e-6);
+        // north-west of the hole: the north side steps down, the corner towards the hole is cut
+        let d = Drops::of(&level, 2, 1);
+        assert_eq!((d.sides, d.cuts), ([true, false, false, false], [false, false, false, true]));
+        let d = Drops::of(&level, 2, 3);
+        assert_eq!(d.cuts, [false, true, false, false], "the hole is north-east of 2,3");
+        assert!((d.bevel(1.0, 0.0) - CHAMFER).abs() < 1e-6 && d.bevel(1.0 - CHAMFER, 0.0).abs() < 1e-6);
+        // off the map counts as lower
+        assert_eq!(Drops::of(&level, 6, 0).sides, [true, false, false, true]);
+    }
+
+    #[test]
+    fn faces_run_from_under_the_bevel_to_the_ground_across() {
+        let mut map = WorldMap::new("t", "t", 8, 7, "grass");
+        for z in 0..7 {
+            for x in 0..8 {
+                if let Some(i) = map.index(x, z) {
+                    map.level[i] = level(x, z).unwrap_or(0);
+                }
+            }
+        }
+        let (tops, cliffs, _) = ground_region(&map, &Content::default(), 2.0, whole(&map));
+        assert!(!tops.indices.is_empty() && !cliffs.indices.is_empty());
+        // every face vertex lies by a cell edge (no further than the lumps), all rock
+        for v in &cliffs.vertices {
+            let off = |a: f32| (a - a.round()).abs();
+            assert!(off(v.pos[0]).min(off(v.pos[2])) <= RELIEF + 1e-5, "{:?}", v.pos);
+            assert_eq!(v.color[3], 1.0);
+        }
+        // the plateau's north side runs on from cell to cell: the two faces either side of
+        // x = 3 share that column, lumps and all (each point twice, some of them lumped)
+        let near_north = |v: &&Vertex| v.pos[2] <= 1.0 + 1e-6 && v.pos[2] >= 1.0 - RELIEF - 1e-6;
+        let shared: Vec<[f32; 3]> = cliffs.vertices.iter().filter(near_north).filter(|v| v.pos[0] == 3.0).map(|v| v.pos).collect();
+        assert!(shared.len() >= 6, "{shared:?}");
+        for p in &shared {
+            assert_eq!(shared.iter().filter(|q| *q == p).count() % 2, 0, "{p:?} in only one of the faces");
+        }
+        assert!(shared.iter().any(|p| p[2] != 1.0), "no lumps: {shared:?}");
+        // at the plateau's corner (x = 1) the column stays on the edge, where the west face
+        // turns away
+        let corner: Vec<[f32; 3]> = cliffs.vertices.iter().filter(near_north).filter(|v| v.pos[0] == 1.0).map(|v| v.pos).collect();
+        assert!(!corner.is_empty() && corner.iter().all(|p| p[2] == 1.0), "{corner:?}");
+        // the tops' rock share: 0 inside, 1 at a bevel's foot
+        assert!(tops.vertices.iter().all(|v| (0.0..=1.0).contains(&v.color[3])));
+        assert!(tops.vertices.iter().any(|v| v.color[3] == 1.0) && tops.vertices.iter().any(|v| v.color[3] == 0.0));
+        // and every top faces up
+        assert!(tops.vertices.iter().all(|v| v.normal[1] > 0.5));
+    }
 }
 
 #[cfg(test)]

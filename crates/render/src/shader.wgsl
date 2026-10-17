@@ -166,12 +166,15 @@ fn fs_map_fade(i: MapOut) -> @location(0) vec4<f32> {
 }
 
 // ---------------------------------------------------------------- the world's ground
-// Cell tops: each vertex carries its cell's centre in uv. The terrain of every cell is in
-// `cells` (r: terrain, g: level); `palette` has a column per terrain: row 0 its colour,
-// row 1 its second colour, row 2 (pattern, priority + 128, water). Where terrains meet,
-// the border is drawn here: each of the four nearest cells votes for its terrain by
-// closeness, with noise, so borders come out organic and corners round, whatever was
-// painted, and the painter never picks border tiles.
+// Cell tops and cliff faces: each vertex carries its cell's centre in uv (a face, the cell
+// above it's), and in its colour's alpha how much rock it is: 0 on the tops, 1 on the
+// faces, between on the bevels along the cliffs' tops (the faces' rgb darkens their foot).
+// The terrain of every cell is in `cells` (r: terrain, g: level); `palette` has a column
+// per terrain: row 0 its colour, row 1 its second colour, row 2 (pattern, priority + 128,
+// water), row 3 its cliffs' colour. Where terrains meet, the border is drawn here: each of
+// the four nearest cells votes for its terrain by closeness, with noise, so borders come
+// out organic and corners round, whatever was painted, and the painter never picks border
+// tiles.
 
 @group(1) @binding(2) var cells: texture_2d<f32>;
 @group(1) @binding(3) var palette: texture_2d<f32>;
@@ -301,11 +304,94 @@ fn score(ts: array<i32, 4>, ws: array<f32, 4>, t: i32, p: vec2<f32>) -> f32 {
     return w + priority * 0.035 + (noise(p * 2.2 + f32(t) * 13.7) - 0.5) * 0.42 + (noise(p * 5.5 + f32(t) * 3.1) - 0.5) * 0.12;
 }
 
+// rock, in a terrain's cliff colour `c`: slabs (a little warped, much wider than tall,
+// like layers of rock) with cracks between some of them, some greyer, some warmer, in wavering layers, grainy, with
+// streaks running down; `q` runs along the face and up it. Also how the block leans (for
+// the light).
+struct Rock {
+    color: vec3<f32>,
+    tilt: vec2<f32>,
+};
+
+fn rock(c: vec3<f32>, q: vec2<f32>) -> Rock {
+    let w = q + vec2<f32>(fbm(q * 0.7), fbm(q * 0.7 + 5.2)) * 0.55;
+    let s = w * vec2<f32>(0.75, 2.3);
+    let base = floor(s);
+    var d1 = 9.0;
+    var d2 = 9.0;
+    var id = vec2<f32>(0.0, 0.0);
+    for (var j = -1; j <= 1; j = j + 1) {
+        for (var i = -1; i <= 1; i = i + 1) {
+            let k = base + vec2<f32>(f32(i), f32(j));
+            let o = k + vec2<f32>(hash2(k + 1.7), hash2(k + 8.3)) * 0.8 + 0.1;
+            let d = distance(s, o);
+            if (d < d1) {
+                d2 = d1;
+                d1 = d;
+                id = k;
+            } else if (d < d2) {
+                d2 = d;
+            }
+        }
+    }
+    let grey = vec3<f32>(dot(c, vec3<f32>(0.3, 0.55, 0.15)));
+    var col = mix(c, grey, 0.1 + 0.35 * hash2(id + 3.3)) * (0.8 + 0.32 * hash2(id + 4.7));
+    col = col * (0.9 + 0.13 * sin(q.y * 6.0 + fbm(q * vec2<f32>(0.5, 1.6)) * 5.0));
+    col = col * (0.86 + 0.22 * fbm(q * 3.7 + 11.0));
+    col = col * (0.9 + 0.14 * noise(vec2<f32>(q.x * 7.0, q.y * 0.35)));
+    let crack = (1.0 - smoothstep(0.02, 0.07, d2 - d1)) * smoothstep(0.3, 0.6, fbm(q * 1.9 + 3.0));
+    var r: Rock;
+    r.color = mix(col, c * 0.4, crack * 0.7);
+    r.tilt = (vec2<f32>(hash2(id + 2.9), hash2(id + 6.1)) - 0.5) * 0.45;
+    return r;
+}
+
 @fragment
 fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
     let p = i.world.xz;
     let own_cell = vec2<i32>(floor(i.uv));
     let own = cell_at(own_cell);
+    let rocky = i.color.a;
+    var n = normalize(i.normal);
+    // the surface's own facet (a cliff face is lumpy; its vertices keep the flat normal)
+    let facet = cross(dpdx(i.world), dpdy(i.world));
+    var col = vec3<f32>(0.0);
+    let fc = p - vec2<f32>(own_cell);
+    if (rocky < 0.999) {
+        col = ground_color(own_cell, own, p, fc);
+    }
+    if (rocky > 0.001) {
+        // along the face (across its normal, on the ground) and up it
+        let level_n = vec2<f32>(n.x, n.z);
+        let h = select(vec2<f32>(1.0, 0.0), normalize(level_n), length(level_n) > 0.01);
+        let along = vec2<f32>(-h.y, h.x);
+        let q = vec2<f32>(dot(p, along), i.world.y);
+        let r = rock(to_linear(pal(own.x, 3).rgb), q);
+        // on a bevel the rock shows through the ground raggedly, more of it further down
+        let k = select(1.0, smoothstep(0.3, 0.7, rocky + (fbm(q * 2.7) - 0.5) * 0.6), rocky < 0.999);
+        col = mix(col, r.color * i.color.rgb, k);
+        if (rocky >= 0.999 && length(facet) > 1e-12) {
+            let f = normalize(facet);
+            n = select(-f, f, dot(f, n) > 0.0);
+        }
+        // each block leans a little its own way, and catches the light so
+        let side = vec3<f32>(along.x, 0.0, along.y);
+        let up = normalize(cross(side, n));
+        n = normalize(n + (side * r.tilt.x + up * r.tilt.y) * k);
+    }
+    if (g.editor.y > 0.5 && !focused(own_cell)) {
+        col = col * 0.16;
+    }
+    if (g.editor.x > 0.5 && rocky < 0.999) {
+        let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
+        col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
+    }
+    return vec4<f32>(fog(col * sunlit(n, i.light_pos, i.world), i.world), 1.0);
+}
+
+// a cell top's colour at p: its terrain, the borders with the terrains around, and the
+// shade at the foot of a cliff
+fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
     let q = p - 0.5;
     let b = vec2<i32>(floor(q));
     let f = q - floor(q);
@@ -360,21 +446,12 @@ fn fs_ground(i: MapOut) -> @location(0) vec4<f32> {
         }
     }
     // shade at the foot of a cliff
-    let fc = p - vec2<f32>(own_cell);
     var shade = 1.0;
     if (cell_at(own_cell + vec2<i32>(0, -1)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, fc.y)); }
     if (cell_at(own_cell + vec2<i32>(0, 1)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.y)); }
     if (cell_at(own_cell + vec2<i32>(-1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, fc.x)); }
     if (cell_at(own_cell + vec2<i32>(1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.x)); }
-    col = col * shade;
-    if (g.editor.y > 0.5 && !focused(own_cell)) {
-        col = col * 0.16;
-    }
-    if (g.editor.x > 0.5) {
-        let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
-        col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
-    }
-    return vec4<f32>(fog(col * sunlit(i.normal, i.light_pos, i.world), i.world), 1.0);
+    return col * shade;
 }
 
 

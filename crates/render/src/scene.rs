@@ -226,7 +226,7 @@ pub struct WorldGround<'a> {
     /// width x height texels: terrain index, level, 0, 255
     pub cells: &'a [u8],
     pub size: [u32; 2],
-    /// terrains x 3 rows, see the shader
+    /// terrains x 4 rows, see the shader
     pub palette: &'a [u8],
     pub palette_width: u32,
     pub level_height: f32,
@@ -428,6 +428,8 @@ pub struct SceneRenderer {
 }
 
 pub const WHITE: &str = "#white";
+/// The world layer of cliff faces: drawn by the terrain shader (as rock), like the tops.
+pub const CLIFFS: &str = "cliffs";
 pub const GLOW: &str = "#glow";
 
 impl SceneRenderer {
@@ -699,7 +701,7 @@ impl SceneRenderer {
     /// which compile shaders on first use do it now and not in the middle of a battle.
     fn warm_up(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let target = self.make_target(device, [4, 4]);
-        let ground = self.data_bind(device, queue, &[0, 0, 0, 255], [1, 1], &[255; 12], 1);
+        let ground = self.data_bind(device, queue, &[0, 0, 0, 255], [1, 1], &[255; 16], 1);
         let zeros = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("warm-up"),
             contents: &[0u8; 3 * 96],
@@ -911,7 +913,7 @@ impl SceneRenderer {
     /// The cells' and the palette's textures, bound for the ground shader.
     fn data_bind(&self, device: &wgpu::Device, queue: &wgpu::Queue, cells: &[u8], size: [u32; 2], palette: &[u8], palette_width: u32) -> (wgpu::Texture, wgpu::BindGroup) {
         let cells = Self::data_texture(device, queue, "cells", cells, size);
-        let palette = Self::data_texture(device, queue, "palette", palette, [palette_width.max(1), 3]);
+        let palette = Self::data_texture(device, queue, "palette", palette, [palette_width.max(1), 4]);
         let (cv, pv) = (cells.create_view(&Default::default()), palette.create_view(&Default::default()));
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ground"),
@@ -951,8 +953,9 @@ impl SceneRenderer {
     }
 
     /// One square of one layer of the world map (after `set_world_ground`), replacing what
-    /// that square held: "tops" is the ground's cell tops (the terrain shader); any other
-    /// name ("cliffs", "props", "trees", "buildings") draws like props. No batches: the
+    /// that square held: "tops" is the ground's cell tops and CLIFFS its cliff faces (the
+    /// terrain shader); any other name ("grass", "props", "trees", "buildings") draws like
+    /// props. No batches: the
     /// square goes. Batches by texture key (`WHITE` for vertex colours alone); a texture
     /// that isn't loaded draws white.
     pub fn set_chunk(&mut self, device: &wgpu::Device, layer: &str, square: (i32, i32), batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
@@ -1318,7 +1321,7 @@ impl SceneRenderer {
         }
         if let Some(w) = &self.world {
             // what's in sight, nearest first: what's behind is then hidden before it's shaded
-            let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
+            let objects = w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(|(_, l)| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
             let mut seen: Vec<(f32, &str, &GpuMesh)> = vec![];
             for (key, m) in objects {
                 if eye.sees(m.lo, m.hi) {
@@ -1357,11 +1360,12 @@ impl SceneRenderer {
                     }
                 }
             }
-            // the ground last: what stands on it hides most of it, and its shader is the
-            // costliest
+            // the ground last, its cliffs too: what stands on it hides most of it, and its
+            // shader is the costliest
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_bind_group(1, &w.bind, &[]);
-            for m in w.tops.values().flatten() {
+            let cliffs = w.layers.get(CLIFFS).into_iter().flat_map(|l| l.values()).flatten().map(|(_, m)| m);
+            for m in w.tops.values().flatten().chain(cliffs) {
                 if !eye.sees(m.lo, m.hi) {
                     stats.culled += 1;
                     continue;
