@@ -129,17 +129,6 @@ impl Default for Timelines {
     }
 }
 
-/// How far along a clip a moment is, 0 to 1 (None outside it).
-fn along(c: &Clip, t: f64) -> Option<f32> {
-    let len = c.seconds.max(0.05);
-    (t >= c.at && t <= c.at + len).then(|| ((t - c.at) / len) as f32)
-}
-
-/// Up and back down over a clip: 0 at its ends, 1 in the middle.
-fn bump(p: f32) -> f32 {
-    (p * std::f32::consts::PI).sin().max(0.0)
-}
-
 fn track_of(kind: &str, who: &str) -> usize {
     match kind {
         "animation" if who == "target" => 1,
@@ -235,30 +224,13 @@ impl MapEditor {
     /// from south), their scale, and how much they flash; the motions move them.
     fn tl_pose(&self, who: &str, t: f64) -> (Vec3, f32, f32, f32) {
         let base = self.tl.at.unwrap_or(Vec3::ZERO);
-        let (mut feet, facing) = if who == "target" { (base + Vec3::new(0.0, 0.0, APART), 180.0) } else { (base, 0.0) };
+        let (feet, facing) = if who == "target" { (base + Vec3::new(0.0, 0.0, APART), 180.0) } else { (base, 0.0) };
         let other = if who == "target" { base } else { base + Vec3::new(0.0, 0.0, APART) };
-        let (mut scale, mut flash) = (1.0, 0.0);
-        if let Some(m) = self.tl_move() {
-            for c in m.timeline.clips.iter().filter(|c| c.kind == "motion" && c.who == who) {
-                let Some(p) = along(c, t) else { continue };
-                let value = c.value as f32;
-                match c.what.as_str() {
-                    "lunge" => {
-                        let reach = if value > 0.0 { value } else { APART - 1.0 };
-                        let towards = (other - feet).normalize_or(Vec3::Z);
-                        // a wind-back, the dash, a hold, and back
-                        let k = if p < 0.2 { -0.2 * (p / 0.2) } else if p < 0.45 { -0.2 + 1.2 * ((p - 0.2) / 0.25) } else if p < 0.7 { 1.0 } else { 1.0 - (p - 0.7) / 0.3 };
-                        feet += towards * reach * k;
-                    }
-                    "hop" => feet.y += (if value > 0.0 { value } else { 0.6 }) * bump(p),
-                    "shake" => feet.x += (if value > 0.0 { value } else { 0.15 }) * (p * 50.0).sin() * (1.0 - p),
-                    "pulse" => scale += (if value > 0.0 { value } else { 0.2 }) * bump(p),
-                    "flash" => flash = (if value > 0.0 { value } else { 1.0 }) * (1.0 - p),
-                    _ => {}
-                }
-            }
-        }
-        (feet, facing, scale, flash)
+        let pose = match self.tl_move() {
+            Some(m) => world::timeline::pose(&m.timeline.clips, who, t, other - feet, APART),
+            None => world::timeline::Pose::default(),
+        };
+        (feet + pose.offset, facing, pose.scale, pose.flash)
     }
 
     /// What someone looks like: a prop (by id) or a creature's picture.
@@ -320,16 +292,7 @@ impl MapEditor {
         if let Some(e) = self.tl.fx_edit.as_ref().filter(|e| e.clip == i) {
             return Some(e.frame.min(fx.frames.saturating_sub(1)));
         }
-        let since = t - c.at;
-        if since < 0.0 {
-            return None;
-        }
-        let total = fx.frames.max(1) as f64 / fx.fps.max(0.1);
-        let len = if c.seconds > 0.0 { c.seconds } else { total };
-        if since > len {
-            return None;
-        }
-        Some(((since * fx.fps.max(0.1)) as u64 % fx.frames.max(1) as u64) as u8)
+        world::timeline::fx_frame(c, fx, t)
     }
 
     /// The texture key of a mesh's flipbook: its source while it's edited, else what the
@@ -451,12 +414,8 @@ impl MapEditor {
         for c in m.timeline.clips.iter().filter(|c| c.kind == "input") {
             let (feet, ..) = self.tl_pose(if c.what == "block" { "user" } else { "target" }, t);
             let lead = c.seconds.max(0.1);
-            let beats: Vec<f64> = match c.what.as_str() {
-                "rhythm" => (0..c.count.max(1)).map(|k| c.at + lead * (k + 1) as f64 / c.count.max(1) as f64).collect(),
-                _ => vec![c.at + lead],
-            };
-            for beat in beats {
-                let window = (if c.value > 0.0 { c.value } else { 120.0 }) / 1000.0;
+            for beat in world::timeline::beats(c) {
+                let window = world::timeline::window(c, 120.0) / 1000.0;
                 if t < beat - lead || t > beat + window {
                     continue;
                 }
@@ -521,14 +480,9 @@ impl MapEditor {
             if !ctx.egui_wants_keyboard_input() && ctx.input(|i| i.key_pressed(egui::Key::Z)) {
                 let mut best: Option<(f64, String)> = None;
                 for c in m.timeline.clips.iter().filter(|c| c.kind == "input") {
-                    let lead = c.seconds.max(0.1);
-                    let beats: Vec<f64> = match c.what.as_str() {
-                        "rhythm" => (0..c.count.max(1)).map(|k| c.at + lead * (k + 1) as f64 / c.count.max(1) as f64).collect(),
-                        _ => vec![c.at + lead],
-                    };
-                    for beat in beats {
+                    for beat in world::timeline::beats(c) {
                         let delta = (self.tl.t - beat) * 1000.0;
-                        let window = if c.value > 0.0 { c.value } else { 120.0 };
+                        let window = world::timeline::window(c, 120.0);
                         if delta.abs() <= window * 3.0 && best.as_ref().map(|b| delta.abs() < b.0).unwrap_or(true) {
                             let word = if delta.abs() <= window * 0.4 { "Perfect" } else if delta.abs() <= window { "Good" } else { "Miss" };
                             best = Some((delta.abs(), format!("{word} ({delta:+.0} ms)")));
@@ -542,21 +496,14 @@ impl MapEditor {
             self.tl.judged = None;
         }
         // the camera
-        for c in m.timeline.clips.iter().filter(|c| c.kind == "camera") {
-            let Some(p) = along(c, self.tl.t) else { continue };
-            match c.what.as_str() {
-                "shake" => {
-                    let k = (if c.value > 0.0 { c.value as f32 } else { 0.3 }) * (1.0 - p);
-                    let (a, b) = ((p * 97.0).sin(), (p * 131.0).cos());
-                    self.tl.shaken = Vec3::new(a * k, 0.0, b * k);
-                    self.cam.target += self.tl.shaken;
-                }
-                "zoom" => {
-                    self.cam.zoom = 1.0 - (if c.value > 0.0 { c.value as f32 } else { 0.3 }).clamp(0.0, 0.9) * bump(p);
-                    self.tl.zoomed = true;
-                }
-                _ => {}
-            }
+        let (shake, zoom) = world::timeline::camera(&m.timeline.clips, self.tl.t);
+        if shake != Vec3::ZERO {
+            self.tl.shaken = shake;
+            self.cam.target += shake;
+        }
+        if zoom != 1.0 {
+            self.cam.zoom = zoom;
+            self.tl.zoomed = true;
         }
         self.extra_changed = true;
         crate::platform::set_hook("tlt", &format!("{:.2}", self.tl.t));

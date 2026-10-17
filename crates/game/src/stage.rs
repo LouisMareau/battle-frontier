@@ -2,7 +2,8 @@
 //! them, the animations and effects, the camera and the light of the time of day.
 //! Produces the renderer's `Frame` each frame and projects points for the HUD.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::Spot;
@@ -98,6 +99,23 @@ pub struct Stage {
     seed: u32,
     /// how what's toon looks (the content's world settings)
     pub toon: render::scene::Toon,
+    /// an ability's timeline playing out
+    pub playing: Option<Playing>,
+    /// the timeline's sounds that came due (asset paths, volume): taken by the app
+    pub sounds: Vec<(String, f32)>,
+    /// the content, for the fx records a timeline names
+    pub content: Option<Arc<content::Content>>,
+}
+
+/// An ability's timeline playing out on the stage, from `t0` (ms).
+pub struct Playing {
+    pub key: String,
+    pub t0: f64,
+    pub timeline: content::Timeline,
+    pub user: Uid,
+    pub targets: Vec<Uid>,
+    /// the sound clips played
+    played: BTreeSet<usize>,
 }
 
 /// The world settings' toon look, for the renderer.
@@ -149,7 +167,113 @@ impl Stage {
             spot, line_gap, vis: BTreeMap::new(), people: vec![], effects: vec![], period, weather: None, targets: vec![],
             cam_focus: focus, cam_goal: focus, view_proj: Mat4::IDENTITY, viewport: egui::Rect::NOTHING, rain: vec![], seed: 12345,
             toon: render::scene::Toon::default(),
+            playing: None,
+            sounds: vec![],
+            content: None,
         }
+    }
+
+    // ------------------------------------------------------------ a timeline playing
+
+    /// Plays an ability's timeline from now: the user's and the target's motions, the FX
+    /// round them, the sounds, the camera. What was playing stops.
+    pub fn start_timeline(&mut self, key: &str, user: Uid, targets: Vec<Uid>, timeline: content::Timeline, now: f64) {
+        self.playing = Some(Playing { key: key.to_string(), t0: now, timeline, user, targets, played: BTreeSet::new() });
+    }
+
+    /// The sounds that came due since last asked.
+    pub fn take_sounds(&mut self) -> Vec<(String, f32)> {
+        std::mem::take(&mut self.sounds)
+    }
+
+    /// Seconds into the timeline playing, if one is.
+    pub fn playing_at(&self, now: f64) -> Option<f64> {
+        self.playing.as_ref().map(|p| (now - p.t0) / 1000.0)
+    }
+
+    /// Where the timeline's motions put each battler in it at `now`.
+    fn timeline_poses(&self, now: f64) -> BTreeMap<Uid, world::timeline::Pose> {
+        let mut out = BTreeMap::new();
+        let Some(p) = &self.playing else { return out };
+        let t = (now - p.t0) / 1000.0;
+        let home = |u: Uid| self.vis.get(&u).map(|v| v.home).unwrap_or(Vec3::ZERO);
+        let user = home(p.user);
+        let target = p.targets.first().map(|&u| home(u)).unwrap_or(user + Vec3::NEG_Z * 5.0);
+        for u in std::iter::once(p.user).chain(p.targets.iter().copied()) {
+            let (who, other) = if u == p.user { ("user", target) } else { ("target", user) };
+            let towards = other - home(u);
+            out.insert(u, world::timeline::pose(&p.timeline.clips, who, t, towards, towards.length()));
+        }
+        out
+    }
+
+    /// The way a battler faces, turned so +z points at the other one (degrees, as
+    /// `placement` takes them).
+    fn facing(&self, uid: Uid) -> f32 {
+        let (Some(p), Some(v)) = (&self.playing, self.vis.get(&uid)) else { return 0.0 };
+        let other = if uid == p.user { p.targets.first().copied() } else { Some(p.user) };
+        let f = other.and_then(|o| self.vis.get(&o)).map(|o| (o.pos - v.pos).normalize_or(Vec3::NEG_Z)).unwrap_or(Vec3::NEG_Z);
+        (-f.x).atan2(f.z).to_degrees()
+    }
+
+    /// The fx clips showing at `now`: the clip, its record and space, its frame, and who
+    /// it's anchored on.
+    fn fx_showing(&self, now: f64) -> Vec<(content::Fx, content::Space, u8, Uid)> {
+        let (Some(p), Some(content)) = (&self.playing, &self.content) else { return vec![] };
+        let t = (now - p.t0) / 1000.0;
+        let mut out = vec![];
+        for c in p.timeline.clips.iter().filter(|c| c.kind == "fx") {
+            let Some(e) = content.fx.entry(&c.what) else { continue };
+            let Some(frame) = world::timeline::fx_frame(c, &e.value, t) else { continue };
+            let who = if c.who == "target" { p.targets.first().copied() } else { Some(p.user) };
+            if let Some(u) = who {
+                out.push((e.value.clone(), e.space, frame, u));
+            }
+        }
+        out
+    }
+
+    /// The flipbook a mesh draws: its texture key and the size of its frames.
+    fn flipbook(fx: &content::Fx, space: content::Space, mesh: &content::FxMesh) -> (String, u16) {
+        (space.asset(mesh.drawn()), if mesh.sheet.is_empty() { fx.size } else { fx.export_size })
+    }
+
+    /// The flipbooks the timeline playing needs (texture keys, pixel-sharp or not).
+    pub fn fx_textures(&self, now: f64) -> Vec<(String, bool)> {
+        let mut out = vec![];
+        for (fx, space, _, _) in self.fx_showing(now) {
+            for mesh in &fx.meshes {
+                out.push((Self::flipbook(&fx, space, mesh).0, mesh.pixelated));
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The FX meshes that aren't billboards, placed round whoever they're on, as the
+    /// renderer's batches (empty when none show).
+    pub fn fx_batches(&self, now: f64) -> Vec<(String, Vec<render::map::MapVertex>, Vec<u32>)> {
+        let mut scene = world::mesh::Scene::default();
+        for (fx, space, frame, uid) in self.fx_showing(now) {
+            let Some(v) = self.vis.get(&uid) else { continue };
+            let anchor = world::mesh::placement(v.pos, self.facing(uid), 1.0);
+            for mesh in fx.meshes.iter().filter(|m| m.shape != "billboard") {
+                let (key, size) = Self::flipbook(&fx, space, mesh);
+                let mut shape = world::fx::shape(&mesh.shape, Vec3::new(mesh.size[0] as f32, mesh.size[1] as f32, mesh.size[2] as f32));
+                world::fx::into_frame(&mut shape, world::fx::frame_uv(frame, fx.frames, mesh.columns, size));
+                for vx in &mut shape.vertices {
+                    vx.toon = if mesh.lit { 0.0 } else { 2.0 };
+                }
+                let turn = Mat4::from_rotation_y(-(mesh.turn[1] as f32).to_radians()) * Mat4::from_rotation_x((mesh.turn[0] as f32).to_radians()) * Mat4::from_rotation_z((mesh.turn[2] as f32).to_radians());
+                let at = Vec3::new(mesh.at[0] as f32, mesh.at[1] as f32, mesh.at[2] as f32);
+                scene.textured.entry(key).or_default().append(&shape, anchor * Mat4::from_translation(at) * turn);
+            }
+        }
+        if scene.is_empty() {
+            return vec![];
+        }
+        crate::mapedit::batches(&scene)
     }
 
     fn rand(&mut self) -> f32 {
@@ -319,6 +443,21 @@ impl Stage {
     /// Advances motions and effects; drops what has finished.
     pub fn update(&mut self, now: f64, dt: f32) {
         self.cam_focus = self.cam_focus.lerp(self.cam_goal, (dt * 3.0).min(1.0));
+        // the timeline playing: over when its time is up; its sounds as they come due
+        if let Some(p) = &mut self.playing {
+            let t = (now - p.t0) / 1000.0;
+            if t > p.timeline.seconds.max(0.05) + 0.05 {
+                self.playing = None;
+            } else {
+                for (i, c) in p.timeline.clips.iter().enumerate().filter(|(_, c)| c.kind == "sound") {
+                    if t >= c.at && !p.played.contains(&i) {
+                        self.sounds.push((c.what.clone(), if c.value > 0.0 { c.value as f32 } else { 1.0 }));
+                        p.played.insert(i);
+                    }
+                }
+            }
+        }
+        let poses = self.timeline_poses(now);
         let mut gone = vec![];
         for (&u, v) in self.vis.iter_mut() {
             if let Some((t0, faint)) = v.leaving {
@@ -365,7 +504,7 @@ impl Stage {
                     }
                 }
             };
-            v.pos = pos;
+            v.pos = pos + poses.get(&u).map(|p| p.offset).unwrap_or(Vec3::ZERO);
             if done {
                 v.motion = None;
             }
@@ -398,10 +537,15 @@ impl Stage {
     }
 
     pub fn camera(&self, now: f64, aspect: f32) -> (Mat4, Vec3) {
-        let f = self.cam_focus;
+        // the timeline playing shakes it and brings it closer
+        let (shake, zoom) = match (&self.playing, self.playing_at(now)) {
+            (Some(p), Some(t)) => world::timeline::camera(&p.timeline.clips, t),
+            _ => (Vec3::ZERO, 1.0),
+        };
+        let f = self.cam_focus + shake;
         let sway = ((now / 2400.0).sin() * 0.25) as f32;
         // a three-quarter view from behind the player's right
-        let eye = Vec3::new(f.x + 5.2 + sway, 9.6, f.z + 15.5);
+        let eye = f + Vec3::new(5.2 + sway, 9.6, 15.5) * zoom;
         let view = Mat4::look_at_rh(eye, f, Vec3::Y);
         let proj = Mat4::perspective_rh(30f32.to_radians(), aspect.max(0.1), 0.1, 200.0);
         (proj * view, eye)
@@ -421,6 +565,7 @@ impl Stage {
         let mut glows = vec![];
         let tint4 = [tint.x, tint.y, tint.z, 1.0];
         let lamps = lamps_on(self.period);
+        let poses = self.timeline_poses(now);
         for person in &self.people {
             billboards.push(Billboard {
                 texture: person.texture.clone(), pos: person.pos, size: Vec2::new(1.0, 2.0), offset: Vec2::ZERO,
@@ -458,7 +603,12 @@ impl Stage {
                 let t = ((now - v.shake_from) / 260.0) as f32;
                 if (0.0..1.0).contains(&t) { (t * std::f32::consts::PI * 6.0).sin() * 0.12 * (1.0 - t) } else { 0.0 }
             };
-            let flash = if now < v.flash_until { v.flash_power } else { 1.0 };
+            let mut flash = if now < v.flash_until { v.flash_power } else { 1.0 };
+            if let Some(p) = poses.get(&u) {
+                // the timeline's motions: grown, flashing (its moves are in v.pos already)
+                scale *= p.scale;
+                flash = flash.max(1.0 + p.flash * 3.0);
+            }
             let size = Vec2::splat(64.0 * PX * scale);
             let offset = Vec2::new((-((x0 + x1) as f32 / 2.0 - 32.0) * PX) * scale + shake, lift - (64 - y1) as f32 * PX * scale);
             billboards.push(Billboard {
@@ -487,6 +637,25 @@ impl Stage {
             if let Some(v) = self.vis.get(&u) {
                 let c = if center { color } else { [1.0, 1.0, 1.0, 0.6] };
                 shapes.push(Shape { kind: ShapeKind::Ring { inner: 0.62, outer: 0.8 }, center: v.pos + Vec3::Y * 0.05, color: c, additive: false });
+            }
+        }
+        // the timeline's FX billboards, round whoever they're on
+        for (fx, space, frame, uid) in self.fx_showing(now) {
+            let Some(v) = self.vis.get(&uid) else { continue };
+            let anchor = world::mesh::placement(v.pos, self.facing(uid), 1.0);
+            for mesh in fx.meshes.iter().filter(|m| m.shape == "billboard") {
+                let (key, size) = Self::flipbook(&fx, space, mesh);
+                let pos = anchor.transform_point3(Vec3::new(mesh.at[0] as f32, mesh.at[1] as f32, mesh.at[2] as f32));
+                billboards.push(Billboard {
+                    texture: key,
+                    pos: pos - Vec3::Y * (mesh.size[1] as f32 / 2.0),
+                    size: Vec2::new(mesh.size[0] as f32, mesh.size[1] as f32),
+                    offset: Vec2::ZERO,
+                    uv: world::fx::frame_uv(frame, fx.frames, mesh.columns, size),
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    casts_shadow: false,
+                    toon: false,
+                });
             }
         }
         for e in &self.effects {

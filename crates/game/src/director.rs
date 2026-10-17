@@ -185,6 +185,7 @@ impl Director {
             platform::set_hook("pending", &hook);
             self.pending_hook = hook;
         }
+        platform::set_hook("playing", &self.stage.playing.as_ref().map(|p| format!("{}:{:.2}", p.key, (now - p.t0) / 1000.0)).unwrap_or_default());
     }
 
     fn start_perform(&mut self, a: Uid, action: Action, now: f64) {
@@ -346,6 +347,9 @@ pub struct Perform {
     pub simulated: bool,
     targets: Vec<Uid>,
     color: [f32; 4],
+    /// when the ability's timeline lands, when it plays one (the stage runs its motions,
+    /// FX, sounds and camera; here only the timing read is kept)
+    timeline_impact: Option<f64>,
 }
 
 impl Perform {
@@ -357,8 +361,14 @@ impl Perform {
         stage.focus_on(&focus);
         let color = type_color(&battle.dex, plan.ty.unwrap_or(0), 1.0);
         let simulated = auto && plan.input != InputKind::None;
-        let mut p = Perform { plan, phase: Phase::Wait { until: now, end_burst: None, flash: None }, pre: None, simulated, targets, color };
+        let mut p = Perform { plan, phase: Phase::Wait { until: now, end_burst: None, flash: None }, pre: None, simulated, targets, color, timeline_impact: None };
         let input = if simulated { InputKind::None } else { p.plan.input };
+        // an ability with a timeline plays it instead of the engine's own animation
+        if let Some(mv) = p.plan.mv.map(|id| battle.dex.mv(id)).filter(|m| !m.timeline.clips.is_empty()) {
+            let mv = mv.clone();
+            p.start_timeline(&mv, now, stage, hud, battle, input);
+            return p;
+        }
         match p.plan.anim {
             Anim::Gather => {
                 stage.aura(actor, Some(color));
@@ -402,6 +412,61 @@ impl Perform {
             _ => p.start_anim(now, stage, hud, battle, input),
         }
         p
+    }
+
+    /// The timeline plays on the stage; its first input clip is the timing read (a foe's
+    /// ability asks the player to block at the same beat), and the ability lands at its
+    /// impact (`world::timeline::impact`).
+    fn start_timeline(&mut self, mv: &rules::dex::MoveData, now: f64, stage: &mut Stage, hud: &mut Hud, battle: &Battle, input: InputKind) {
+        let actor = self.plan.actor;
+        let tl = &mv.timeline;
+        stage.start_timeline(&mv.key, actor, self.targets.clone(), tl.clone(), now);
+        let t = &battle.config.timing;
+        let impact = now + world::timeline::impact(tl) * 1000.0;
+        self.timeline_impact = Some(impact);
+        let clip = if input == InputKind::None { None } else { tl.clips.iter().find(|c| c.kind == "input") };
+        let Some(c) = clip else {
+            self.phase = Phase::Anim { impact, read: None, cue: None, block: false, bursts: false };
+            return;
+        };
+        let kind = if input == InputKind::Block { "block" } else { c.what.as_str() };
+        let beats: Vec<f64> = world::timeline::beats(c).into_iter().map(|b| now + b * 1000.0).collect();
+        match kind {
+            "rhythm" => {
+                let window = world::timeline::window(c, t.tap);
+                hud.prompt = Some((format!("Press A on every hit (up to {})", beats.len()), hud::ACCENT));
+                for (i, &b) in beats.iter().enumerate() {
+                    if let Some(&u) = self.targets.get(i % self.targets.len().max(1)) {
+                        hud.cues.push(Cue { uid: u, beat: b, window, block: false, assist: t.assist });
+                    }
+                }
+                self.phase = Phase::Rhythm(RhythmRead::new(beats, window));
+            }
+            "charge" => {
+                let fill = if c.seconds > 0.0 { c.seconds * 1000.0 } else { t.charge_fill };
+                hud.prompt = Some(("Hold A, release when the ring fills".into(), Color32::from_rgb(181, 255, 154)));
+                self.phase = Phase::Charge(ChargeRead::new(now, fill, world::timeline::window(c, t.charge_window)));
+            }
+            _ => {
+                let beat = beats[0];
+                let block = kind == "block";
+                let window = world::timeline::window(c, match kind { "cast" => t.cast, "block" => t.block, _ => t.tap });
+                let cue = if block {
+                    let mine: Vec<Uid> = self.targets.iter().copied().filter(|&u| battle.get(u).side == Side::Player).collect();
+                    hud.prompt = Some(("Block! Press A at impact".into(), hud::BLOCK));
+                    for &u in &mine {
+                        hud.cues.push(Cue { uid: u, beat, window, block: true, assist: t.assist });
+                    }
+                    mine.first().copied()
+                } else {
+                    let cue = if c.who == "user" { actor } else { self.targets.first().copied().unwrap_or(actor) };
+                    hud.prompt = Some((if kind == "cast" { "Press A at the flash" } else { "Press A at impact" }.into(), hud::ACCENT));
+                    hud.cues.push(Cue { uid: cue, beat, window, block: false, assist: t.assist });
+                    Some(cue)
+                };
+                self.phase = Phase::Anim { impact: beat, read: Some(TapRead::new(beat, window)), cue, block, bursts: false };
+            }
+        }
     }
 
     fn start_anim(&mut self, now: f64, stage: &mut Stage, hud: &mut Hud, battle: &Battle, input: InputKind) {
@@ -470,13 +535,16 @@ impl Perform {
                 Some(Timing::default())
             }
             Phase::Charge(read) => {
-                hud.charge = read.fraction(now).map(|f| (self.plan.actor, f, battle.config.timing.charge_window / battle.config.timing.charge_fill)).or(Some((self.plan.actor, 0.0, 0.19)));
+                hud.charge = read.fraction(now).map(|f| (self.plan.actor, f, read.window / read.fill)).or(Some((self.plan.actor, 0.0, 0.19)));
                 let r = read.update(input, now)?;
                 hud.charge = None;
                 hud.feedback(self.plan.actor, r.success, r.delta, r.overheld, false, now);
                 self.pre = Some(r);
-                let input_kind = InputKind::None;
-                self.start_anim(now, stage, hud, battle, input_kind);
+                match self.timeline_impact {
+                    // the timeline goes on: the ability lands at its impact
+                    Some(impact) => self.phase = Phase::Anim { impact: impact.max(now), read: None, cue: None, block: false, bursts: false },
+                    None => self.start_anim(now, stage, hud, battle, InputKind::None),
+                }
                 None
             }
             Phase::Anim { impact, read, cue, block, bursts } => {

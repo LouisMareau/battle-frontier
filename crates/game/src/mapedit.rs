@@ -10,6 +10,7 @@
 //! character on the map to try it on foot.
 
 mod abilities;
+pub(crate) use models::batches;
 mod actors;
 mod around;
 mod assets;
@@ -276,7 +277,7 @@ pub struct MapEditor {
     play: bool,
 }
 
-fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
+pub(crate) fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
     v.iter().map(|v| MapVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, toon: v.toon }).collect()
 }
 

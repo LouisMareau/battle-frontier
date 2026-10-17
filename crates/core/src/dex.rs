@@ -53,6 +53,9 @@ pub struct MoveData {
     pub contact: bool,
     pub category: Category,
     pub description: String,
+    /// how it plays out (empty: the engine's own animation); its sound files are asset
+    /// paths from the project root
+    pub timeline: content::Timeline,
 }
 
 #[derive(Clone, Debug)]
@@ -134,7 +137,12 @@ impl Dex {
             electric: role("electric"), ice: role("ice"), ground: role("ground"), bug: role("bug"),
         };
         let mut moves = vec![];
-        for (i, m) in c.moves.iter().enumerate() {
+        for (i, e) in c.moves.entries().iter().enumerate() {
+            let m = &e.value;
+            let mut timeline = m.timeline.clone();
+            for clip in timeline.clips.iter_mut().filter(|c| c.kind == "sound") {
+                clip.what = e.space.asset(&clip.what);
+            }
             moves.push(MoveData {
                 id: i as u16,
                 key: m.id.clone(),
@@ -154,6 +162,7 @@ impl Dex {
                     _ => Category::Status,
                 },
                 description: m.description.clone(),
+                timeline,
             });
         }
         let move_by_key: HashMap<String, u16> = moves.iter().map(|m| (m.key.clone(), m.id)).collect();

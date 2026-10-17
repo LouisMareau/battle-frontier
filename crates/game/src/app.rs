@@ -149,6 +149,10 @@ pub struct GameApp {
     input: Input,
     stats: Stats,
     icons: HashMap<String, egui::TextureHandle>,
+    /// FX flipbooks that couldn't be read (not asked for again)
+    fx_failed: std::collections::HashSet<String>,
+    /// FX meshes were sent to the scene last frame (cleared when they're gone)
+    fx_meshes_shown: bool,
     error: Option<String>,
     cli: Cli,
     started_at: f64,
@@ -241,7 +245,7 @@ impl GameApp {
         audio.enabled = !cli.mute;
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
-            stats: Stats::default(), icons: HashMap::new(), error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
+            stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
         }
     }
@@ -550,6 +554,7 @@ impl GameApp {
         );
         let mut stage = Stage::new(spot, period);
         stage.toon = crate::stage::toon_look(&content.world().toon);
+        stage.content = Some(content.clone());
         stage.add_people(player_key, foe_key);
         let hud = Hud { icons: self.icons.clone(), ..Default::default() };
         Director::new(battle, stage, hud, self.options.auto, [220.0, 420.0, 700.0][self.options.text])
@@ -1011,6 +1016,39 @@ impl eframe::App for GameApp {
                 director.update(&ctx, &self.input, now, dt);
                 for c in director.take_cries() {
                     self.audio.play_once(&self.files, &c, None, 1.0, 0.0, now);
+                }
+                for (path, volume) in director.stage.take_sounds() {
+                    self.audio.play_once(&self.files, &path, None, volume, 0.0, now);
+                }
+                // a timeline's FX: its flipbooks as textures (read as they come; one that
+                // can't be read is left out), its meshes as what moves in the scene
+                if let Some(rs) = frame.wgpu_render_state() {
+                    let mut guard = rs.renderer.write();
+                    if let Some(r) = guard.callback_resources.get_mut::<SceneRenderer>() {
+                        for (key, pixelated) in director.stage.fx_textures(now) {
+                            if r.has_texture(&key) || self.fx_failed.contains(&key) {
+                                continue;
+                            }
+                            self.files.request(&key);
+                            match self.files.get(&key) {
+                                Load::Ready(b) => match decode(&b) {
+                                    Ok((rgba, w, h)) => r.add_texture(&rs.device, &rs.queue, &key, &rgba, w, h, !pixelated),
+                                    Err(_) => {
+                                        self.fx_failed.insert(key);
+                                    }
+                                },
+                                Load::Failed(_) => {
+                                    self.fx_failed.insert(key);
+                                }
+                                Load::Pending => {}
+                            }
+                        }
+                        let batches = director.stage.fx_batches(now);
+                        if !batches.is_empty() || self.fx_meshes_shown {
+                            self.fx_meshes_shown = !batches.is_empty();
+                            r.set_world_extra(&rs.device, &batches);
+                        }
+                    }
                 }
                 let wants: Vec<crate::audio::Want> = director
                     .stage

@@ -14,7 +14,7 @@ use super::{gpu, MapEditor};
 use crate::platform::Load;
 
 /// A scene as the renderer's batches: by texture, WHITE for the vertex-coloured part.
-pub(super) fn batches(scene: &Scene) -> Vec<(String, Vec<MapVertex>, Vec<u32>)> {
+pub(crate) fn batches(scene: &Scene) -> Vec<(String, Vec<MapVertex>, Vec<u32>)> {
     let mut out = vec![(WHITE.to_string(), gpu(&scene.plain.vertices), scene.plain.indices.clone())];
     for (key, mesh) in &scene.textured {
         out.push((key.clone(), gpu(&mesh.vertices), mesh.indices.clone()));
