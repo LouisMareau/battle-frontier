@@ -1,10 +1,10 @@
 """Lines and profiles for model requests (requests.md, "Lines and profiles"): the lines a run
 traces on each picture, and the front and side it draws from them, kept in the request's
 lines.json; drawn over the pictures (lines_<picture>.png: for the run, and for the user to see
-how well they sit, with how far each outline and the picture's own silhouette overlap), as a
-front and a side in cells (profiles.png), and after each render over the model (fit_front.png,
-fit_side.png, match_<picture>.png, which compare.png gets as a row more), with how far the
-outlines and the model's silhouette overlap.
+how well they sit, with how far each outline and the picture's own silhouette overlap, where
+they part tinted), as a front and a side in cells (profiles.png), and after each render over
+the model (fit_front.png, fit_side.png, match_<picture>.png, which compare.png gets as a row
+more), with how far the outlines and the model's silhouette overlap.
 
     python tools/blender/model_requests.py lines ID
 
@@ -45,6 +45,9 @@ NEAR = (28, 40)
 # the background's shadow on the ground: a darker tone of it, between these shares of its
 # lightness, each channel at most this far off that tone (a tint)
 SHADOW = (0.35, 0.99, 24)
+# where an outline and its picture part, tinted on lines_<picture>.png: the silhouette past the
+# outline (the line to move out), the outline past the silhouette (to move in), how strongly
+PAST, SHORT, TINT = (255, 40, 40), (40, 120, 255), 0.45
 
 
 class LinesError(ValueError):
@@ -335,15 +338,23 @@ def _ink(layer, items, to_px, colours, width, labels=True, font=None):
             d.text((x + width * 2, y - width * 2), item["name"], fill=colour + (255,), font=font, anchor="ls", stroke_width=max(2, width // 2), stroke_fill=HALO)
 
 
-def draw_picture(img, box, k, items, colours, grid=True, labels=True):
+def draw_picture(img, box, k, items, colours, grid=True, labels=True, under=None):
     """A box of a picture `k` times as big with lines on it (in the picture's pixels), and a
-    grid in the picture's own pixels, its numbers along the top and the left."""
+    grid in the picture's own pixels, its numbers along the top and the left. `under`: (a
+    see-through layer, the box of the picture it covers, stretched to it), laid on the picture
+    under the lines."""
     from PIL import Image, ImageDraw
     x0, y0, x1, y1 = box
     w, h = max(1, round((x1 - x0) * k)), max(1, round((y1 - y0) * k))
     margin = 36 if grid else 0
     canvas = Image.new("RGBA", (w + margin, h + margin), (40, 40, 44, 255))
     canvas.paste(img.convert("RGBA").crop(box).resize((w, h), Image.LANCZOS), (margin, margin))
+    if under is not None:
+        layer, (ux0, uy0, ux1, uy1) = under
+        over = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        over.paste(layer.resize((max(1, round((ux1 - ux0) * k)), max(1, round((uy1 - uy0) * k))), Image.BILINEAR),
+                   (round((ux0 - x0) * k), round((uy0 - y0) * k)))
+        canvas.alpha_composite(over, (margin, margin))
     ss = 2
     layer = Image.new("RGBA", (canvas.width * ss, canvas.height * ss), (0, 0, 0, 0))
     d = ImageDraw.Draw(layer)
@@ -475,9 +486,12 @@ def lines(root, rid):
         k = max(1.0, min(6.0, 1100.0 / max(box[2] - box[0], box[3] - box[1])))
         out = d / f"lines_{Path(pic).stem}.png"
         line = outline(part)
-        o, why = outline_score(img, line) if line else (None, "no outline to score (a closed line named \"outline\")")
-        drawing = draw_picture(img, box, k, part["lines"], colours)
-        _caption(drawing, _short(f"the outline on {pic}" if line else pic, o, "the silhouette", f"can't be scored: {why}" if line else why), below=True).save(out)
+        found, drawn, at, why = _masks(img, line) if line else (None, None, None, "no outline to score (a closed line named \"outline\")")
+        o = _overlaps(found, drawn) if found is not None else None
+        # where they part, tinted under the lines; the caption's squares say which is which
+        drawing = draw_picture(img, box, k, part["lines"], colours, under=(_tint(found, drawn), at) if o else None)
+        _caption(drawing, _short(f"the outline on {pic}" if line else pic, o, "the silhouette", f"can't be scored: {why}" if line else why, (PAST, SHORT)),
+                 below=True).save(out)
         cam = part.get("camera")
         seen = f"camera turn {cam.get('turn', 0):g}, tilt {cam.get('tilt', 0):g}" if cam else "no camera"
         if o:
@@ -583,35 +597,46 @@ def _overlap_text(o, thing="the model", again=None):
     return out
 
 
-def _short(label, o, thing="the model", why="no outline to measure"):
+def _short(label, o, thing="the model", why="no outline to measure", keys=None):
     """An overlap said short, for under a drawing: "front · 86% overlap · the model past it 7%
-    (top)"; with no overlap, why."""
+    (top)"; with no overlap, why. `keys`: the colours the drawing shows each going past in, for
+    a square before each (_caption)."""
     if o is None:
         return [label, why]
     share, past, where_past, short, where_short = o
+    keys = keys or (None, None)
     out = [label, f"{share:.0%} overlap"]
     if past >= 0.01:
-        out.append(f"{thing} past it {past:.0%} ({where_past})")
+        out.append((f"{thing} past it {past:.0%} ({where_past})", keys[0]))
     if short >= 0.01:
-        out.append(f"it past {thing} {short:.0%} ({where_short})")
+        out.append((f"it past {thing} {short:.0%} ({where_short})", keys[1]))
     return out
 
 
 def _caption(img, parts, below=False):
     """Words along a drawing's foot, on as many lines as they need: over it, or `below` it (the
-    drawing made taller for them). Returns the drawing."""
+    drawing made taller for them). A part given as (words, colour) has a square of that colour
+    before it: the key to what the drawing shows in it. Returns the drawing."""
     from PIL import Image, ImageDraw
     d = ImageDraw.Draw(img)
     size = max(9, min(15, img.width // 42))
-    font, step = _font(size), size + 5
-    rows, row = [], ""
+    font, step, dot = _font(size), size + 5, " · "
+    parts = [p if isinstance(p, tuple) else (p, None) for p in parts]
+    # each row's words on one baseline, a key's square as tall as a capital
+    rise, cap = (-d.textbbox((0, 0), sample, font=font, anchor="ls")[1] for sample in ("Ahl(%", "H"))
+
+    def wide(part):
+        return d.textlength(part[0], font=font) + (cap + 5 if part[1] else 0)
+
+    rows, row, used = [], [], 0.0
     for part in parts:
-        trial = f"{row} · {part}" if row else part
-        if row and d.textlength(trial, font=font) > img.width - 12:
+        more = wide(part) + (d.textlength(dot, font=font) if row else 0)
+        if row and used + more > img.width - 12:
             rows.append(row)
-            row = part
+            row, used = [part], wide(part)
         else:
-            row = trial
+            row.append(part)
+            used += more
     rows.append(row)
     band = 6 + step * len(rows)
     if below:
@@ -620,8 +645,17 @@ def _caption(img, parts, below=False):
         img, d = taller, ImageDraw.Draw(taller)
     top = img.height - band
     d.rectangle((0, top, img.width, img.height), fill=(30, 30, 34))
-    for i, text in enumerate(rows):
-        d.text((6, top + 3 + step * i), text, fill=(235, 235, 235), font=font, anchor="lt")
+    for i, row in enumerate(rows):
+        x, base = 6.0, top + 3 + step * i + rise
+        for j, (text, key) in enumerate(row):
+            if j:
+                d.text((x, base), dot, fill=(235, 235, 235), font=font, anchor="ls")
+                x += d.textlength(dot, font=font)
+            if key:
+                d.rectangle((x, base - cap, x + cap, base), fill=tuple(key))
+                x += cap + 5
+            d.text((x, base), text, fill=(235, 235, 235), font=font, anchor="ls")
+            x += d.textlength(text, font=font)
     return img
 
 
@@ -858,15 +892,38 @@ def silhouette(img, box):
     return ImageChops.invert(_from_edges(free)), s, ""
 
 
-def outline_score(img, line):
-    """How a picture's outline (a closed line in its pixels) and the picture's own silhouette
-    overlap, in the outline's box with room round it (`around`), as `overlap` says it for a
-    render: (the overlap, ""), or (None, why it can't be scored)."""
+def _masks(img, line):
+    """A picture's silhouette and its outline (a closed line in its pixels) filled, as masks
+    the same size, over the outline's box with room round it (`around`): (silhouette, outline,
+    that box, ""), or (None, None, that box, why the silhouette can't be told)."""
     from PIL import Image, ImageDraw
     box = around([line], img.size)
     found, s, why = silhouette(img, box)
     if found is None:
-        return None, why
+        return None, None, box, why
     drawn = Image.new("L", found.size, 0)
     ImageDraw.Draw(drawn).polygon([((x - box[0]) * s, (y - box[1]) * s) for x, y in shape(line)], fill=255)
-    return _overlaps(found, drawn), ""
+    return found, drawn, box, ""
+
+
+def outline_score(img, line):
+    """How a picture's outline (a closed line in its pixels) and the picture's own silhouette
+    overlap, in the outline's box with room round it (`around`), as `overlap` says it for a
+    render: (the overlap, ""), or (None, why it can't be scored)."""
+    found, drawn, _, why = _masks(img, line)
+    return (_overlaps(found, drawn), "") if found is not None else (None, why)
+
+
+def _tint(found, drawn):
+    """Where a silhouette and an outline (masks the same size) part, as a see-through layer that
+    size: the silhouette past the outline in PAST's colour, the outline past the silhouette in
+    SHORT's; slivers thinner than three of its pixels left out (where they agree but for the
+    drawing's own edge)."""
+    from PIL import Image, ImageChops, ImageFilter
+    layer = Image.new("RGBA", found.size, (0, 0, 0, 0))
+    for mask, colour in ((ImageChops.subtract(found, drawn), PAST), (ImageChops.subtract(drawn, found), SHORT)):
+        mask = mask.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
+        tint = Image.new("RGBA", found.size, colour + (0,))
+        tint.putalpha(mask.point(lambda v: round(v * TINT)))
+        layer = Image.alpha_composite(layer, tint)
+    return layer

@@ -197,9 +197,10 @@ here). Everything runs from the project folder.
    the picture's pixels, and where the picture was seen from (its `camera`). Then
    `python tools/blender/model_requests.py lines ID` draws them over the picture
    (`lines_PICTURE.png`, which the editor shows the user as it comes) and says how far each
-   outline and the picture's silhouette overlap: look, and move the lines until they sit on
-   the design, each outline on its picture's silhouette about 90% or more. Draw the design's
-   lines, not the drawing's: no shine, shade or ink.
+   outline and the picture's silhouette overlap (crimson on the drawing where the picture goes
+   past the outline, blue where the outline goes past the picture): look, and move the lines
+   until they sit on the design, each outline on its picture's silhouette about 90% or more.
+   Draw the design's lines, not the drawing's: no shine, shade or ink.
 5. **Draw the front and the side** in `lines.json` from those lines, in the model's pose (a
    T-pose when asked): a picture from the front or the side gives its view as it is; one from
    another angle is drawn again, from the front and from the side, as a model sheet would show
@@ -364,7 +365,10 @@ checks the file (saying all that's wrong at once) and draws:
   lines until each sits on the design; `zoom ID PICTURE X0 Y0 X1 Y1 --grid --lines` shows a
   part closer, the picture's pixels marked. Its caption (and `lines`' line for the picture)
   says how far the outline and the picture's own silhouette overlap and where one goes past
-  the other (as for the renders, below). The silhouette is every pixel in the outline's box,
+  the other (as for the renders, below), and the drawing shows where, tinted under the lines:
+  crimson where the silhouette goes past the outline (the line to move out), blue where the
+  outline goes past the silhouette (to move in), the caption's squares the key; where they
+  part by a pixel or two it isn't tinted. The silhouette is every pixel in the outline's box,
   with room round it, that isn't the background: the colour along most of the box's edges (as
   `colours` finds it), reached from them, and a darker tone of it right under the creature
   (its shadow on the ground); in a picture with see-through edges, every pixel that isn't

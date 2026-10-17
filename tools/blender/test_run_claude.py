@@ -199,6 +199,7 @@ for checked_first in (False, True):
     asked = " ".join(rc.prompt(mr.normal(dict(mr.load(SCRATCH, "test_eight"), check_lines=checked_first))).split())
     check(f"each outline on its picture's silhouette, about 90% or more{', before the check' if checked_first else ''}; another creature in the box said, a busy background by eye",
           "says how far each outline and the picture's silhouette overlap" in asked and "the background or the shadow under the creature" in asked
+          and "tinted on the drawing: crimson where the silhouette goes past the outline (move it out there), blue where the outline goes past the silhouette (move it in)" in asked
           and "each outline overlaps its picture's silhouette about 90% or more" in asked
           and "Another creature (or text) inside that box counts as silhouette too: keep the outline tight on the design, never stretched over it, and say so in the reply" in asked
           and "A busy background can't be scored: judge that outline by eye" in asked, asked[:400])
@@ -415,6 +416,38 @@ if Image is not None:
     drawn = Image.open(sc / "lines_flat.png").convert("RGB")
     check("  under the drawing, in a caption of its own", drawn.height > drawn.width and drawn.getpixel((2, drawn.height - 2)) == (30, 30, 34), str(drawn.size))
     check("  and the aim said", "each outline overlapping its picture's silhouette about 90% or more" in said[-1], said[-1])
+
+    # where they part, tinted on the drawing under the lines: blue where the outline goes past the
+    # silhouette, crimson where the silhouette goes past it, nothing where they agree (nor where
+    # they part by a pixel); the caption's squares the key
+    def drawn_with(line):
+        (sc / "lines.json").write_text(json.dumps({"pictures": {"flat.png": {"view": "front", "camera": {"turn": 0, "tilt": 0}, "lines": [line]}}}), encoding="utf-8")
+        rl.lines(SCRATCH, "test_score")
+        return Image.open(sc / "lines_flat.png").convert("RGB")
+
+    def over(drawing, line, xy):
+        """The drawing's pixel over a pixel of the picture (its box from 36 pixels in, enlarged)."""
+        box = rl.around([line], flat.size)
+        k = (drawing.width - 36) / (box[2] - box[0])
+        return drawing.getpixel((round(36 + (xy[0] + 0.5 - box[0]) * k), round(36 + (xy[1] + 0.5 - box[1]) * k)))
+
+    def like(got, want, by=12):
+        return all(abs(a - b) <= by for a, b in zip(got, want))
+
+    body, ground_tone = (120, 170, 220), tuple(round(c * 0.72) for c in ground)
+    wide_line = {"name": "outline", "ellipse": [225, 160, 95, 70]}
+    seen = drawn_with(wide_line)
+    beside, inside, around_it = over(seen, wide_line, (296, 167)), over(seen, wide_line, (203, 163)), over(seen, wide_line, (110, 60))
+    check("  the drawing tints where they part: blue where the outline goes past the silhouette, nothing where they agree",
+          beside[2] - beside[0] > 40 and like(inside, body) and like(around_it, ground), f"beside {beside}, inside {inside}, around {around_it}")
+    key = {c for _, c in seen.crop((0, seen.height - 30, seen.width, seen.height)).getcolors(1 << 16)}
+    check("  the caption's squares: the key", rl.PAST in key and rl.SHORT in key, f"{len(key)} colours")
+    low_line = {"name": "outline", "ellipse": [200, 185, 70, 45]}
+    top = over(drawn_with(low_line), low_line, (203, 112))
+    check("  crimson where the silhouette goes past the outline", top[0] - top[2] > 20, str(top))
+    snug_drawn = drawn_with(close)
+    under_it, tinted = over(snug_drawn, close, (205, 236)), rl._tint(*rl._masks(flat, close)[:2]).getchannel("A").getbbox()
+    check("  a close outline: no tint at all (they part by a pixel at most), nor on the shadow", tinted is None and like(under_it, ground_tone), f"{tinted} {under_it}")
 else:
     print("(no Pillow here: zoom, colours and the lines not checked)")
 
