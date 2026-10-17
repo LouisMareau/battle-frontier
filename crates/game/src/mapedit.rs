@@ -10,6 +10,7 @@
 //! character on the map to try it on foot.
 
 mod actors;
+mod around;
 mod assets;
 mod build;
 mod events;
@@ -188,8 +189,12 @@ pub struct MapEditor {
     need_props: bool,
     need_trees: bool,
     need_buildings: bool,
-    /// the world map on the GPU, square by square
+    /// the open map on the GPU, square by square
     gpu: stream::GpuState,
+    /// the maps around it in its world, drawn where they lie
+    around: around::Around,
+    /// the rigged models' moving parts on the GPU: whether they were sent toon
+    skinned_sent: std::collections::HashMap<String, bool>,
     /// a chunked map whose chunk files are on their way
     loading: Option<Loading>,
     /// the World view
@@ -394,6 +399,8 @@ impl MapEditor {
             need_trees: true,
             need_buildings: true,
             gpu: Default::default(),
+            around: Default::default(),
+            skinned_sent: Default::default(),
             loading: None,
             worlds: worlds::Worlds::default(),
             arrive: None,
@@ -560,6 +567,18 @@ impl MapEditor {
     }
 
     fn open(&mut self, id: &str) {
+        if !self.dirty && self.step_into(id).is_some() {
+            // it was around this one, on the GPU already
+            self.recentre();
+            self.finish_arrival();
+            if self.play {
+                if self.walker.is_none() {
+                    self.start_walk();
+                }
+                self.play_camera();
+            }
+            return;
+        }
         let Some(e) = self.content.maps.entry(id) else { return };
         if e.value.chunked() {
             // the cells are in chunk files: fetched, then `poll_loading` opens the map
@@ -634,6 +653,36 @@ impl MapEditor {
             }
             self.play_camera();
         }
+    }
+
+    /// After another map became the open one, from around it (`around::step_into`): what
+    /// belonged to the one before goes, but not the camera, the walker or what's on the GPU.
+    fn after_switch(&mut self) {
+        self.map.know_doors(&self.content);
+        self.load_spawns();
+        self.spawner.reset();
+        self.zone_sel = None;
+        self.extra_changed = true;
+        self.draft = None;
+        self.selected_building = None;
+        self.selected = None;
+        self.area = None;
+        self.tweak = false;
+        self.dirty = false;
+        self.undo.clear();
+        self.redo.clear();
+        self.width_edit = self.map.width as u16;
+        self.height_edit = self.map.height as u16;
+        let flags = std::mem::take(&mut self.story.flags);
+        self.story = Default::default();
+        self.story.flags = flags;
+        self.evt = Default::default();
+        self.rebuild_actors();
+        self.blocked = None;
+        self.fade = None;
+        self.everything_changed();
+        self.need_cells = true;
+        self.status = format!("{}: {}", if self.walker.is_some() { "Walking on" } else { "Editing" }, self.map.name);
     }
 
     fn everything_changed(&mut self) {
@@ -759,18 +808,6 @@ impl MapEditor {
     }
 
     // ------------------------------------------------------------ the GPU
-
-    /// The cells texture's blue channel: 255 on the cells in the focus.
-    fn mark_focus(&self, cells: &mut [u8], focus: Option<&[(i32, i32)]>) {
-        let Some(focus) = focus else { return };
-        for &(x, z) in focus {
-            if let Some(i) = self.map.index(x, z) {
-                if let Some(b) = cells.get_mut(i * 4 + 2) {
-                    *b = 255;
-                }
-            }
-        }
-    }
 
     // ------------------------------------------------------------ picking
 
@@ -1170,6 +1207,10 @@ impl MapEditor {
                     let l = self.map.level_at(x, z).unwrap_or(0);
                     ui.separator();
                     ui.label(RichText::new(format!("{x}, {z} · {t} · level {l}")).size(12.0).color(Color32::from_gray(150)));
+                } else if let Some(id) = self.plane_hit.and_then(|p| self.around_at(p)) {
+                    let name = self.around.maps.get(id).map(|n| n.map.name.clone()).unwrap_or_default();
+                    ui.separator();
+                    ui.label(RichText::new(format!("{name} ({id}) · double-click to edit it")).size(12.0).color(Color32::from_gray(150)));
                 }
                 if self.debug {
                     ui.separator();
@@ -1828,6 +1869,16 @@ impl MapEditor {
             self.ground_hit = self.ground(o, d);
         }
         self.last_ray = ray;
+        // a double-click on a map around this one: that one is edited now
+        if response.double_clicked() && self.ground_hit.is_none() {
+            if let Some(id) = self.plane_hit.and_then(|p| self.around_at(p)).map(str::to_string) {
+                if self.dirty {
+                    self.status = format!("Save {} first, then open {id}", self.map.id);
+                } else {
+                    self.step_into(&id);
+                }
+            }
+        }
         if let Some(released) = response.dnd_release_payload::<String>() {
             self.drop_on_map(&released);
         } else if let (true, Some(p)) = (dropping, carried.as_ref()) {
@@ -1860,7 +1911,9 @@ impl MapEditor {
                         self.level = self.map.level_at(x, z).unwrap_or(0);
                     }
                 }
-                if primary_pressed && response.hovered() {
+                // a stroke starts on the map (not on a map around it)
+                let on_map = (if self.set_level { plane_cell } else { self.ground_hit }).map(|c| self.map.inside(c.0, c.1)).unwrap_or(false);
+                if primary_pressed && response.hovered() && on_map {
                     self.checkpoint();
                     self.stroke = true;
                 }
@@ -1876,7 +1929,7 @@ impl MapEditor {
                 }
             }
             Tool::Trees => {
-                if primary_pressed && response.hovered() {
+                if primary_pressed && response.hovered() && self.ground_hit.is_some() {
                     self.checkpoint();
                     self.stroke = true;
                 }
@@ -2029,6 +2082,7 @@ impl MapEditor {
         let on = if self.lamps { 1.0 } else { crate::stage::lamps_on(self.period) };
         let mut glows = vec![];
         let mut all = world::lights::lights(&self.map, &self.content, lh);
+        all.extend(self.around_lights());
         if self.creatures_on {
             all.extend(self.creature_lights());
         }

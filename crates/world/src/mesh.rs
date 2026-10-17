@@ -321,10 +321,9 @@ pub struct Ground {
     pub cliffs: Mesh,
     /// tall grass (vertex colours)
     pub grass: Mesh,
-    /// width x height texels: terrain index, level, 0, 255
+    /// see `cells_texture`
     pub cells: Vec<u8>,
-    /// terrains x 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water,
-    /// 255], the cliff side's colour (sRGB)
+    /// see `palette`
     pub palette: Vec<u8>,
     pub palette_width: u32,
 }
@@ -348,20 +347,71 @@ fn hash(x: i32, z: i32, k: i32) -> f32 {
     ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
 }
 
-/// The cells' texture (what changes when terrain is painted).
-pub fn cells_texture(map: &WorldMap) -> Vec<u8> {
-    let mut cells = Vec::with_capacity(map.width * map.height * 4);
-    for i in 0..map.width * map.height {
-        cells.extend_from_slice(&[map.terrain[i].min(255) as u8, map.level[i], 0, 255]);
+/// The cells past a map's edge, from the maps next to it in the world, in the map's own
+/// coordinates: a cell's level, and its terrain (its index in the content's terrains, as
+/// the palette has them); none where no map is.
+pub trait Beyond {
+    fn level(&self, x: i32, z: i32) -> Option<u8>;
+    fn terrain(&self, x: i32, z: i32) -> Option<u8>;
+}
+
+/// No map past the edge: the map stands alone.
+pub struct Alone;
+
+impl Beyond for Alone {
+    fn level(&self, _: i32, _: i32) -> Option<u8> {
+        None
+    }
+
+    fn terrain(&self, _: i32, _: i32) -> Option<u8> {
+        None
+    }
+}
+
+/// A terrain's column in the palette: its place among the content's terrains (one past
+/// them, magenta, for a terrain the content hasn't got).
+pub fn terrain_index(content: &Content, id: &str) -> u8 {
+    content.terrains.iter().position(|t| t.id == id).unwrap_or(content.terrains.iter().count()).min(255) as u8
+}
+
+/// The cells' texture (what changes when terrain is painted): (width + 2) x (height + 2)
+/// texels, a ring of the cells around the map first (the maps' next to it, else its own
+/// edge's again): the terrain's column in the palette, the level, 0, 255.
+pub fn cells_texture(map: &WorldMap, content: &Content, beyond: &dyn Beyond) -> Vec<u8> {
+    let columns: Vec<u8> = map.terrains.iter().map(|id| terrain_index(content, id)).collect();
+    let (w, h) = (map.width as i32, map.height as i32);
+    let own = |x: i32, z: i32| {
+        let i = map.index(x.clamp(0, w - 1), z.clamp(0, h - 1)).unwrap_or(0);
+        (columns.get(map.terrain[i] as usize).copied().unwrap_or(255), map.level[i])
+    };
+    let mut cells = Vec::with_capacity(((w + 2) * (h + 2) * 4) as usize);
+    for z in -1..=h {
+        for x in -1..=w {
+            let (t, l) = match map.index(x, z) {
+                Some(_) => own(x, z),
+                None => match (beyond.terrain(x, z), beyond.level(x, z)) {
+                    (Some(t), Some(l)) => (t, l),
+                    _ => own(x, z),
+                },
+            };
+            cells.extend_from_slice(&[t, l, 0, 255]);
+        }
     }
     cells
 }
 
-pub fn palette(map: &WorldMap, content: &Content) -> (Vec<u8>, u32) {
-    let n = map.terrains.len().max(1);
+/// Where a map cell is in `cells_texture`'s texels.
+pub fn cell_texel(map: &WorldMap, x: i32, z: i32) -> Option<usize> {
+    map.index(x, z).map(|_| ((z + 1) * (map.width as i32 + 2) + x + 1) as usize)
+}
+
+/// Every terrain of the content, a column each, then one for a terrain it hasn't got
+/// (magenta), in 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water,
+/// 255], the cliff side's colour.
+pub fn palette(content: &Content) -> (Vec<u8>, u32) {
     let mut rows: [Vec<u8>; 4] = [vec![], vec![], vec![], vec![]];
-    for i in 0..n {
-        let t = map.terrains.get(i).and_then(|id| content.terrains.get(id));
+    let all: Vec<Option<&content::Terrain>> = content.terrains.iter().map(Some).chain(std::iter::once(None)).collect();
+    for t in &all {
         let (c1, c2, params, side) = match t {
             Some(t) => (
                 hex_bytes(&t.color),
@@ -376,13 +426,13 @@ pub fn palette(map: &WorldMap, content: &Content) -> (Vec<u8>, u32) {
         rows[2].extend_from_slice(&params);
         rows[3].extend_from_slice(&side);
     }
-    (rows.concat(), n as u32)
+    (rows.concat(), all.len() as u32)
 }
 
 pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
-    let (tops, cliffs, grass) = ground_region(map, content, level_height, whole(map));
-    let (palette, palette_width) = palette(map, content);
-    Ground { tops, cliffs, grass, cells: cells_texture(map), palette, palette_width }
+    let (tops, cliffs, grass) = ground_region(map, content, level_height, whole(map), &Alone);
+    let (palette, palette_width) = palette(content);
+    Ground { tops, cliffs, grass, cells: cells_texture(map, content, &Alone), palette, palette_width }
 }
 
 /// A region holding the whole map: x0, z0 (in) to x1, z1 (out).
@@ -539,14 +589,15 @@ fn relief(p: Vec3) -> f32 {
 }
 
 /// The cell tops, the cliff faces and the tall grass of a region's cells. A side that steps
-/// down (or ends the map) is bevelled at the top and has a face from under the bevel down
-/// to the ground across, which may be bevelled too; the faces look at the neighbours, so
-/// the whole grid is read.
-pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4]) -> (Mesh, Mesh, Mesh) {
+/// down (or ends the map with nothing past it) is bevelled at the top and has a face from
+/// under the bevel down to the ground across, which may be bevelled too; the faces look at
+/// the neighbours, so the whole grid is read, and past the edge `beyond` (the map next to
+/// this one: on its level, no face at all).
+pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond) -> (Mesh, Mesh, Mesh) {
     let mut tops = Mesh::default();
     let mut cliffs = Mesh::default();
     let mut grass = Mesh::default();
-    let level = |x: i32, z: i32| map.level_at(x, z);
+    let level = |x: i32, z: i32| map.level_at(x, z).or_else(|| beyond.level(x, z));
     let terrain = |x: i32, z: i32| map.terrain_at(x, z).and_then(|id| content.terrains.get(id));
     // a cell's top at a point on it (world x, z); off the map, the skirt's foot
     let surface = |x: i32, z: i32, px: f32, pz: f32| match level(x, z) {
@@ -757,6 +808,48 @@ mod bevel_tests {
         }
     }
 
+    /// A map past the east edge: level 1 along the plateau's rows, 0 elsewhere.
+    struct East;
+
+    impl Beyond for East {
+        fn level(&self, x: i32, z: i32) -> Option<u8> {
+            (x >= 8 && (0..7).contains(&z)).then_some(if (1..4).contains(&z) { 1 } else { 0 })
+        }
+
+        fn terrain(&self, x: i32, z: i32) -> Option<u8> {
+            self.level(x, z).map(|_| 2)
+        }
+    }
+
+    #[test]
+    fn a_map_next_door_on_the_same_level_leaves_no_face_at_the_seam() {
+        let mut map = WorldMap::new("t", "t", 8, 7, "grass");
+        for z in 0..7 {
+            for x in 0..8 {
+                if let Some(i) = map.index(x, z) {
+                    map.level[i] = level(x, z).unwrap_or(0);
+                }
+            }
+        }
+        let east_faces = |beyond: &dyn Beyond| {
+            let (_, cliffs, _) = ground_region(&map, &Content::default(), 2.0, whole(&map), beyond);
+            cliffs.vertices.iter().filter(|v| (v.pos[0] - 8.0).abs() < 1e-4 && v.normal[0] > 0.5).count()
+        };
+        // alone, the east edge has its skirt; with the map next door (level 0 there, as
+        // the edge's cells are), none
+        assert!(east_faces(&Alone) > 0);
+        assert_eq!(east_faces(&East), 0);
+        // and the cells texture's ring holds the next map's cells
+        let content = Content::default();
+        let cells = cells_texture(&map, &content, &East);
+        assert_eq!(cells.len(), 10 * 9 * 4);
+        let ring = |x: i32, z: i32| ((z + 1) * 10 + x + 1) as usize * 4;
+        assert_eq!(&cells[ring(8, 2)..ring(8, 2) + 2], &[2, 1]);
+        // where no map is, the edge's own cell again
+        assert_eq!(cells[ring(-1, 3) + 1], level(0, 3).unwrap());
+        assert_eq!(cell_texel(&map, 0, 0), Some(11));
+    }
+
     #[test]
     fn a_side_that_steps_down_is_bevelled_all_along() {
         // the plateau's north-west cell: north and west step down, a mitre at the corner
@@ -786,7 +879,7 @@ mod bevel_tests {
                 }
             }
         }
-        let (tops, cliffs, _) = ground_region(&map, &Content::default(), 2.0, whole(&map));
+        let (tops, cliffs, _) = ground_region(&map, &Content::default(), 2.0, whole(&map), &Alone);
         assert!(!tops.indices.is_empty() && !cliffs.indices.is_empty());
         // every face vertex lies by a cell edge (no further than the lumps), all rock
         for v in &cliffs.vertices {

@@ -34,6 +34,17 @@ struct Globals {
 };
 
 @group(0) @binding(0) var<uniform> g: Globals;
+
+// where a world map's own space sits in the scene (the globals' bind group picks one per
+// map; what isn't a world map's reads one of zeros): moved by `offset.xyz`, its north-west
+// corner on the world's grid at `grid.xy` (the ground's patterns run on across maps),
+// dimmed by `grid.z`
+struct Place {
+    offset: vec4<f32>,
+    grid: vec4<f32>,
+};
+
+@group(0) @binding(1) var<uniform> place: Place;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 @group(2) @binding(0) var shadow_map: texture_depth_2d;
@@ -140,13 +151,14 @@ fn look(world: vec3<f32>, n: vec3<f32>, toon: f32) -> vec4<u32> {
 @vertex
 fn vs_map(v: MapIn) -> MapOut {
     var o: MapOut;
-    o.clip = g.view_proj * vec4<f32>(v.pos, 1.0);
+    let pos = v.pos + place.offset.xyz;
+    o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
-    o.world = v.pos;
+    o.world = pos;
     // looked up a little off the surface, along its normal: no acne, and no margin wide
     // enough to part a shadow from its caster
-    o.light_pos = g.light_view_proj * vec4<f32>(v.pos + v.normal * g.shadow.x, 1.0);
+    o.light_pos = g.light_view_proj * vec4<f32>(pos + v.normal * g.shadow.x, 1.0);
     o.color = v.color;
     o.toon = v.toon;
     return o;
@@ -224,7 +236,7 @@ fn fs_map(i: MapOut) -> Solid {
         discard;
     }
     var o: Solid;
-    o.color = vec4<f32>(fog(focus_dim(c.rgb * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
+    o.color = vec4<f32>(fog(focus_dim(c.rgb * (1.0 - place.grid.z) * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, i.toon);
     return o;
 }
@@ -235,7 +247,7 @@ fn fs_map(i: MapOut) -> Solid {
 fn fs_map_opaque(i: MapOut) -> Solid {
     let c = textureSample(tex, samp, i.uv) * i.color;
     var o: Solid;
-    o.color = vec4<f32>(fog(focus_dim(c.rgb * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
+    o.color = vec4<f32>(fog(focus_dim(c.rgb * (1.0 - place.grid.z) * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, i.toon);
     return o;
 }
@@ -256,7 +268,7 @@ fn fs_map_fade(i: MapOut) -> @location(0) vec4<f32> {
     if (t.a < 0.5) {
         discard;
     }
-    let c = t.rgb * i.color.rgb;
+    let c = t.rgb * i.color.rgb * (1.0 - place.grid.z);
     return vec4<f32>(fog(focus_dim(c * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), i.color.a);
 }
 
@@ -295,16 +307,18 @@ fn fbm(p: vec2<f32>) -> f32 {
     return (noise(p) * 0.5 + noise(p * 2.03 + 17.1) * 0.25 + noise(p * 4.1 + 31.7) * 0.125) / 0.875;
 }
 
+// a cell of the map (its own coordinates; the texture has a ring of the cells around the
+// map first, the next maps' where there are some)
 fn cell_at(c: vec2<i32>) -> vec2<i32> {
     let size = vec2<i32>(textureDimensions(cells));
-    let t = textureLoad(cells, clamp(c, vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0);
+    let t = textureLoad(cells, clamp(c + vec2<i32>(1, 1), vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0);
     return vec2<i32>(i32(round(t.r * 255.0)), i32(round(t.g * 255.0)));
 }
 
 // is the cell in the editor's focus (the cells texture's blue channel)?
 fn focused(c: vec2<i32>) -> bool {
     let size = vec2<i32>(textureDimensions(cells));
-    return textureLoad(cells, clamp(c, vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0).b > 0.5;
+    return textureLoad(cells, clamp(c + vec2<i32>(1, 1), vec2<i32>(0, 0), size - vec2<i32>(1, 1)), 0).b > 0.5;
 }
 
 fn pal(t: i32, row: i32) -> vec4<f32> {
@@ -443,7 +457,10 @@ fn rock(c: vec3<f32>, q: vec2<f32>) -> Rock {
 
 @fragment
 fn fs_ground(i: MapOut) -> Solid {
-    let p = i.world.xz;
+    // in the map's own cells, and on the world's grid (where the patterns are drawn, so
+    // they run on from one map into the next)
+    let p = i.world.xz - place.offset.xz;
+    let pg = p + place.grid.xy;
     let own_cell = vec2<i32>(floor(i.uv));
     let own = cell_at(own_cell);
     let rocky = i.color.a;
@@ -453,14 +470,14 @@ fn fs_ground(i: MapOut) -> Solid {
     var col = vec3<f32>(0.0);
     let fc = p - vec2<f32>(own_cell);
     if (rocky < 0.999) {
-        col = ground_color(own_cell, own, p, fc);
+        col = ground_color(own_cell, own, p, pg, fc);
     }
     if (rocky > 0.001) {
         // along the face (across its normal, on the ground) and up it
         let level_n = vec2<f32>(n.x, n.z);
         let h = select(vec2<f32>(1.0, 0.0), normalize(level_n), length(level_n) > 0.01);
         let along = vec2<f32>(-h.y, h.x);
-        let q = vec2<f32>(dot(p, along), i.world.y);
+        let q = vec2<f32>(dot(pg, along), i.world.y);
         let r = rock(to_linear(pal(own.x, 3).rgb), q);
         // on a bevel the rock shows through the ground raggedly, more of it further down
         let k = select(1.0, smoothstep(0.3, 0.7, rocky + (fbm(q * 2.7) - 0.5) * 0.6), rocky < 0.999);
@@ -482,14 +499,15 @@ fn fs_ground(i: MapOut) -> Solid {
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
     }
     var o: Solid;
-    o.color = vec4<f32>(fog(col * sunlit(n, i.light_pos, i.world), i.world), 1.0);
+    o.color = vec4<f32>(fog(col * (1.0 - place.grid.z) * sunlit(n, i.light_pos, i.world), i.world), 1.0);
     o.look = look(i.world, n, 0.0);
     return o;
 }
 
-// a cell top's colour at p: its terrain, the borders with the terrains around, and the
-// shade at the foot of a cliff
-fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
+// a cell top's colour at p (in the map's cells; `pg`, the same point on the world's grid,
+// for the patterns): its terrain, the borders with the terrains around, and the shade at
+// the foot of a cliff
+fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
     let q = p - 0.5;
     let b = vec2<i32>(floor(q));
     let f = q - floor(q);
@@ -507,17 +525,17 @@ fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, fc: vec2<f32>
     var col: vec3<f32>;
     if (ts[0] == ts[1] && ts[1] == ts[2] && ts[2] == ts[3]) {
         // one terrain all around (most of the ground): no border to draw, no votes
-        col = terrain_color(ts[0], p, 10.0);
+        col = terrain_color(ts[0], pg, 10.0);
     } else {
         let ws = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
         var best = -9.0;
         var bt = own.x;
         var second = -9.0;
         var st = own.x;
-        let s0 = score(ts, ws, ts[0], p);
-        let s1 = score(ts, ws, ts[1], p);
-        let s2 = score(ts, ws, ts[2], p);
-        let s3 = score(ts, ws, ts[3], p);
+        let s0 = score(ts, ws, ts[0], pg);
+        let s1 = score(ts, ws, ts[1], pg);
+        let s2 = score(ts, ws, ts[2], pg);
+        let s3 = score(ts, ws, ts[3], pg);
         let ss = array<f32, 4>(s0, s1, s2, s3);
         for (var k = 0; k < 4; k = k + 1) {
             var t = ts[0];
@@ -537,9 +555,9 @@ fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, fc: vec2<f32>
                 st = t;
             }
         }
-        col = terrain_color(bt, p, best - second);
+        col = terrain_color(bt, pg, best - second);
         if (second > -8.0) {
-            let other = terrain_color(st, p, 0.0);
+            let other = terrain_color(st, pg, 0.0);
             col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, best - second));
         }
     }
@@ -563,10 +581,11 @@ fn fs_map_shadow(i: MapOut) {
 @vertex
 fn vs_map_shadow(v: MapIn) -> MapOut {
     var o: MapOut;
-    o.clip = g.light_view_proj * vec4<f32>(v.pos, 1.0);
+    let pos = v.pos + place.offset.xyz;
+    o.clip = g.light_view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
-    o.world = v.pos;
+    o.world = pos;
     o.light_pos = o.clip;
     o.color = v.color;
     o.toon = v.toon;

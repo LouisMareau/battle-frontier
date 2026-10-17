@@ -65,6 +65,16 @@ impl Walker {
     pub fn stepping(&self, now: f64) -> bool {
         now - self.t0 < self.dur
     }
+
+    /// Into the space of a map `by` away (walking on into it): the step it's taking goes on.
+    pub fn shift(&mut self, by: glam::Vec3) {
+        self.from -= by;
+        self.to -= by;
+        self.cell = (self.cell.0 - by.x.round() as i32, self.cell.1 - by.z.round() as i32);
+        self.inside = None;
+        self.upstairs = None;
+        self.route.clear();
+    }
 }
 
 impl MapEditor {
@@ -335,12 +345,32 @@ impl MapEditor {
                 // off the map: on into the piece next to it in the world, if there's one
                 self.walker.as_mut().unwrap().facing = facing;
                 if let Some((id, there)) = self.across(next) {
-                    if self.dirty {
-                        self.status = format!("Save {} first, then walk on into {id}", self.map.id);
-                    } else {
-                        self.arrive = Some((there, facing));
-                        self.open(&id);
-                        return;
+                    let level = self.map.level_at(cell.0, cell.1).unwrap_or(0);
+                    match self.can_cross(&id, there, level) {
+                        _ if self.dirty => self.status = format!("Save {} first, then walk on into {id}", self.map.id),
+                        // it's here already: the open map now, the step going on into it
+                        Some(true) => {
+                            if let Some(delta) = self.step_into(&id) {
+                                let to = self.cell_pos(there);
+                                let w = self.walker.as_mut().unwrap();
+                                w.from = pos - delta;
+                                w.to = to;
+                                w.t0 = now;
+                                w.dur = STEP_MS;
+                                w.cell = there;
+                                self.cam.target = w.from;
+                                self.extra_changed = true;
+                                return;
+                            }
+                        }
+                        // another level there, or something in the way
+                        Some(false) => {}
+                        // not here yet: opened (a pause)
+                        None => {
+                            self.arrive = Some((there, facing));
+                            self.open(&id);
+                            return;
+                        }
                     }
                 }
             }

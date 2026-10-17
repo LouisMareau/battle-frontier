@@ -199,6 +199,19 @@ export class Browser {
     await sleep(120);
   }
 
+  /// Two quick clicks in one place.
+  async dblclick(x, y) {
+    await this.move(x, y);
+    await sleep(60);
+    for (const count of [1, 2]) {
+      await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: count });
+      await sleep(40);
+      await this.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: count });
+      await sleep(60);
+    }
+    await sleep(120);
+  }
+
   /// A drag through the given points, the button held
   async drag(points, button = 'left') {
     const buttons = button === 'left' ? 1 : 2;

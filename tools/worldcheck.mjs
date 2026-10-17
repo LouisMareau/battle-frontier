@@ -1,8 +1,10 @@
 // The World view and walking across maps, in a headless Chrome: opens the test meadow,
 // shows the world it's in (with the field east of it, a map kept as chunk files), drags
-// that piece away and back (the seam goes and comes back), saves (downloads) the world,
-// then walks out through the gap in the meadow's east woods into the field (its chunk
-// files load on the way) and back. Screenshots go to screenshots/world-*.png.
+// that piece away and back (the seam goes and comes back), saves (downloads) the world;
+// finds the field drawn east of the meadow (held around it), walks out through the gap in
+// the meadow's east woods into it at once (nothing to load, its squares there already)
+// and back; and double-clicks the field to edit it, the view staying where it was.
+// Screenshots go to screenshots/world-*.png.
 //     node tools/worldcheck.mjs
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -80,30 +82,49 @@ try {
   check('the world downloaded', saved?.pieces?.length === 2 && saved.pieces[1].map === 'east_field' && saved.pieces[1].at.join(',') === '40,0', JSON.stringify(saved?.pieces));
   await press('uiWorld');
 
-  // 4. on foot through the gap in the east woods, into the field and back
+  // 4. the field drawn east of the meadow: held around it, some of its squares built
   await cmd('view:38,14.5,14,0,58');
+  await browser.waitFor('document.body.dataset.around === "east_field"', { what: 'the field held around the meadow' });
+  await browser.waitFor('Number((document.body.dataset.aroundsquares || "0/1").split("/")[0]) > 0', { what: 'some of its squares built' });
+  await shot('2-around');
+
+  // 5. on foot through the gap in the east woods, into the field at once, and back
   await press('uiWalk');
   await expect('walking from the gap', 'walker', '38,14');
   await browser.key('ArrowRight');
   await sleep(320);
-  await expect('to the meadow\'s edge', 'walker', '39,14');
+  await expect("to the meadow's edge", 'walker', '39,14');
   await browser.key('ArrowRight');
-  await browser.waitFor('document.body.dataset.map === "east_field" && document.body.dataset.loading === "0"', { what: 'the field, its chunk files loaded' });
-  await sleep(400);
-  await expect('across the seam', 'walker', '0,14');
+  await sleep(120);
+  await expect('across the seam, at once', 'map', 'east_field');
+  await expect('  nothing to load', 'loading', '0');
+  check('  its squares there already', !(await data('squares')).startsWith('0/'), await data('squares'));
+  await expect('  the meadow held around it now', 'around', 'test_meadow');
+  await sleep(300);
+  await expect('  where it stepped', 'walker', '0,14');
   await expect('a map kept as chunk files', 'chunked', 1);
-  await browser.waitFor('document.body.dataset.squares === "2/2"', { what: 'both of its squares built' });
-  await shot('2-across');
+  await shot('3-across');
   await browser.key('ArrowRight');
   await sleep(320);
   await expect('on along the path', 'walker', '1,14');
   await browser.key('ArrowLeft');
   await sleep(320);
   await browser.key('ArrowLeft');
-  await browser.waitFor('document.body.dataset.map === "test_meadow"', { what: 'the meadow again' });
-  await sleep(400);
+  await sleep(120);
+  await expect('back in the meadow, at once', 'map', 'test_meadow');
+  await sleep(300);
   await expect('back in the meadow', 'walker', '39,14');
   await browser.key('Escape');
+
+  // 6. a double-click on the field: it's the map edited now, the view where it was
+  await cmd('point:41.5,0,12.5');
+  await sleep(150);
+  const [fx, fy] = (await data('point')).split(',').map(Number);
+  await browser.dblclick(fx, fy);
+  await sleep(300);
+  await expect('the field edited after a double-click', 'map', 'east_field');
+  await expect('  the meadow around it', 'around', 'test_meadow');
+  await shot('4-editing-the-field');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

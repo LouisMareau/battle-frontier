@@ -21,6 +21,27 @@ pub const SHADOW_SIZE: u32 = 2048;
 /// World meshes are cut into squares this many cells a side, each drawn only when the
 /// camera (or, for the shadow, the sun) can see it.
 const CHUNK: f32 = 16.0;
+/// Bytes between two world maps' placements in their uniform buffer: a dynamic offset's
+/// alignment.
+const PLACE_STRIDE: u64 = 256;
+
+/// Where a world map's own space sits in the scene: moved by `offset` (cells; the map the
+/// camera is on sits at none), its north-west corner on the world's grid at `grid` (so the
+/// ground's patterns run on from one map into the next), dimmed by `dim` (0: not at all).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Place {
+    pub offset: Vec3,
+    pub grid: [f32; 2],
+    pub dim: f32,
+}
+
+/// A placement as the shader reads it (`Place` there).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct PlaceUniform {
+    offset: [f32; 4],
+    grid: [f32; 4],
+}
 
 /// How much the GPU draws: the scene's resolution against the screen's, and the sun's
 /// shadow map's size (0: no shadows). For machines that can't keep up at full quality.
@@ -306,8 +327,10 @@ impl Default for Toon {
 /// A world map's ground: the cells' texture and the terrains' palette (the meshes come
 /// square by square, `set_chunk`).
 pub struct WorldGround<'a> {
-    /// width x height texels: terrain index, level, 0, 255
+    /// (width + 2) x (height + 2) texels, a ring of the cells around the map first: terrain
+    /// index, level, in the editor's focus (255) or not, 255
     pub cells: &'a [u8],
+    /// the texture's size, the ring included
     pub size: [u32; 2],
     /// terrains x 4 rows, see the shader
     pub palette: &'a [u8],
@@ -408,8 +431,9 @@ impl GpuMesh {
 /// pieces one after the other.
 type Squares = BTreeMap<(i32, i32), Vec<(String, GpuMesh)>>;
 
-/// The world map on the GPU, square by square (whatever size the editor cuts it in; each
-/// square's meshes are cut again into CHUNK squares for the culling).
+/// A world map on the GPU, square by square (whatever size the editor cuts it in; each
+/// square's meshes are cut again into CHUNK squares for the culling), in its own space,
+/// placed in the scene's by `place`.
 struct WorldGpu {
     /// the cell tops (the terrain shader), by square
     tops: BTreeMap<(i32, i32), Vec<GpuMesh>>,
@@ -417,14 +441,11 @@ struct WorldGpu {
     /// by texture (WHITE for the vertex-coloured ones), a texture's pieces one after the
     /// other
     layers: BTreeMap<String, Squares>,
-    /// things that move (the walker, creatures): small, replaced often
-    extra: Vec<(String, GpuMesh)>,
-    /// things fading (a building's upper floors): drawn see-through, by their vertex alpha
-    fade: Vec<(String, GpuMesh)>,
     cells: wgpu::Texture,
     size: [u32; 2],
     bind: wgpu::BindGroup,
     level_height: f32,
+    place: Place,
 }
 
 struct Texture {
@@ -468,7 +489,13 @@ const BONES_ALIGN: usize = 4;
 
 pub struct SceneRenderer {
     globals: wgpu::Buffer,
+    globals_layout: wgpu::BindGroupLayout,
+    /// the globals and the world maps' placements (a dynamic offset picks one: 0 is the
+    /// scene's own space)
     globals_bind: wgpu::BindGroup,
+    places: wgpu::Buffer,
+    /// how many placements `places` holds
+    places_cap: u64,
     texture_layout: wgpu::BindGroupLayout,
     /// the blit's: the scene's colour, a sampler, the looks
     post_layout: wgpu::BindGroupLayout,
@@ -503,7 +530,13 @@ pub struct SceneRenderer {
     blit_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     ground_layout: wgpu::BindGroupLayout,
-    world: Option<WorldGpu>,
+    /// the world maps shown, by id: the one the camera is on and the ones around it
+    worlds: BTreeMap<String, WorldGpu>,
+    /// things that move on the world (the walker, people): small, replaced often, in the
+    /// scene's own space
+    extra: Vec<(String, GpuMesh)>,
+    /// things fading (a building's upper floors): drawn see-through, by their vertex alpha
+    fade: Vec<(String, GpuMesh)>,
     textures: HashMap<String, Texture>,
     meshes: Vec<Mesh>,
     pub map_name: Option<String>,
@@ -539,18 +572,26 @@ impl SceneRenderer {
         });
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<PlaceUniform>() as u64),
+                    },
+                    count: None,
+                },
+            ],
         });
-        let globals_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals"),
-            layout: &globals_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() }],
-        });
+        let (places, places_cap, globals_bind) = Self::make_places(device, &globals_layout, &globals, 16);
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("texture"),
             entries: &[
@@ -788,11 +829,11 @@ impl SceneRenderer {
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, solid(true), Some(depth(true)));
 
         let mut r = SceneRenderer {
-            globals, globals_bind, texture_layout, post_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
+            globals, globals_layout, globals_bind, places, places_cap, texture_layout, post_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
-            ground_pipeline, ground_layout, world: None,
+            ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![],
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
             sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
             output_srgb: output.is_srgb(),
@@ -811,6 +852,29 @@ impl SceneRenderer {
         r.add_texture(device, queue, GLOW, &glow, 64, 64, true);
         r.warm_up(device, queue);
         r
+    }
+
+    /// The world maps' placements: a buffer of `cap` of them (the first the scene's own
+    /// space), and the globals' bind group reading it.
+    fn make_places(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &wgpu::Buffer, cap: u64) -> (wgpu::Buffer, u64, wgpu::BindGroup) {
+        let places = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("places"),
+            size: cap * PLACE_STRIDE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("globals"),
+            layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &places, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<PlaceUniform>() as u64) }),
+                },
+            ],
+        });
+        (places, cap, bind)
     }
 
     /// Draws a degenerate triangle with every pipeline once, offscreen, so that browsers
@@ -835,7 +899,7 @@ impl SceneRenderer {
                 }),
                 ..Default::default()
             });
-            pass.set_bind_group(0, &self.globals_bind, &[]);
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_vertex_buffer(0, zeros.slice(..));
             for p in [&self.map_shadow_pipeline, &self.sprite_shadow_pipeline] {
@@ -849,7 +913,7 @@ impl SceneRenderer {
         }
         {
             let mut pass = self.solid_pass(&mut encoder, &target, wgpu::Color::BLACK);
-            pass.set_bind_group(0, &self.globals_bind, &[]);
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             pass.set_vertex_buffer(0, zeros.slice(..));
@@ -866,7 +930,7 @@ impl SceneRenderer {
         }
         {
             let mut pass = Self::clear_pass(&mut encoder, &target);
-            pass.set_bind_group(0, &self.globals_bind, &[]);
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(2, &self.shadow_bind, &[]);
             pass.set_vertex_buffer(0, zeros.slice(..));
@@ -1036,21 +1100,22 @@ impl SceneRenderer {
         (cells, bind)
     }
 
-    /// Shows a world map's ground: its cells' texture and palette (the one before goes; its
-    /// squares stay when the map is the same size, else they go too). Battle maps
+    /// Shows a world map's ground: its cells' texture and palette (the ones it had before
+    /// go; its squares stay when it's the same size, else they go too). Battle maps
     /// (`load_map`) and the world draw together; clear the one you don't want.
-    pub fn set_world_ground(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, g: &WorldGround) {
+    pub fn set_world_ground(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, map: &str, g: &WorldGround) {
         let (cells, bind) = self.data_bind(device, queue, g.cells, g.size, g.palette, g.palette_width);
-        let (tops, layers, extra) = match self.world.take() {
-            Some(w) if w.size == g.size => (w.tops, w.layers, w.extra),
-            _ => (BTreeMap::new(), BTreeMap::new(), vec![]),
+        let (tops, layers, place) = match self.worlds.remove(map) {
+            Some(w) if w.size == g.size => (w.tops, w.layers, w.place),
+            Some(w) => (BTreeMap::new(), BTreeMap::new(), w.place),
+            None => (BTreeMap::new(), BTreeMap::new(), Place::default()),
         };
-        self.world = Some(WorldGpu { tops, layers, extra, fade: vec![], cells, size: g.size, bind, level_height: g.level_height });
+        self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, size: g.size, bind, level_height: g.level_height, place });
     }
 
-    /// Repaints the cells only (same size): what painting terrain changes.
-    pub fn set_world_cells(&mut self, queue: &wgpu::Queue, cells: &[u8]) {
-        let Some(w) = &self.world else { return };
+    /// Repaints a world map's cells only (the same size): what painting terrain changes.
+    pub fn set_world_cells(&mut self, queue: &wgpu::Queue, map: &str, cells: &[u8]) {
+        let Some(w) = self.worlds.get(map) else { return };
         if cells.len() as u32 != w.size[0] * w.size[1] * 4 {
             return;
         }
@@ -1062,14 +1127,20 @@ impl SceneRenderer {
         );
     }
 
-    /// One square of one layer of the world map (after `set_world_ground`), replacing what
+    /// Where a world map sits in the scene (after `set_world_ground`).
+    pub fn set_world_place(&mut self, map: &str, place: Place) {
+        if let Some(w) = self.worlds.get_mut(map) {
+            w.place = place;
+        }
+    }
+
+    /// One square of one layer of a world map (after `set_world_ground`), replacing what
     /// that square held: "tops" is the ground's cell tops and CLIFFS its cliff faces (the
     /// terrain shader); any other name ("grass", "props", "trees", "buildings") draws like
-    /// props. No batches: the
-    /// square goes. Batches by texture key (`WHITE` for vertex colours alone); a texture
-    /// that isn't loaded draws white.
-    pub fn set_chunk(&mut self, device: &wgpu::Device, layer: &str, square: (i32, i32), batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
-        let Some(w) = &mut self.world else { return };
+    /// props. No batches: the square goes. Batches by texture key (`WHITE` for vertex
+    /// colours alone); a texture that isn't loaded draws white.
+    pub fn set_chunk(&mut self, device: &wgpu::Device, map: &str, layer: &str, square: (i32, i32), batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
+        let Some(w) = self.worlds.get_mut(map) else { return };
         if layer == "tops" {
             let meshes: Vec<GpuMesh> = batches.iter().flat_map(|(_, v, i)| GpuMesh::chunked(device, v, i)).collect();
             if meshes.is_empty() {
@@ -1088,32 +1159,40 @@ impl SceneRenderer {
         }
     }
 
-    /// Drops the squares `keep` doesn't want, in every layer (the ones far from the camera).
-    pub fn keep_chunks(&mut self, keep: &dyn Fn((i32, i32)) -> bool) {
-        let Some(w) = &mut self.world else { return };
+    /// Drops a world map's squares that `keep` doesn't want, in every layer.
+    pub fn keep_chunks(&mut self, map: &str, keep: &dyn Fn((i32, i32)) -> bool) {
+        let Some(w) = self.worlds.get_mut(map) else { return };
         w.tops.retain(|s, _| keep(*s));
         for squares in w.layers.values_mut() {
             squares.retain(|s, _| keep(*s));
         }
     }
 
-    /// What moves on the world map (after `set_world_ground`); empty clears it.
+    /// Forgets the world maps `keep` doesn't name.
+    pub fn keep_worlds(&mut self, keep: &dyn Fn(&str) -> bool) {
+        self.worlds.retain(|id, _| keep(id));
+    }
+
+    /// The world maps on the GPU.
+    pub fn world_ids(&self) -> Vec<String> {
+        self.worlds.keys().cloned().collect()
+    }
+
+    /// What moves on the world, in the scene's own space; empty clears it.
     pub fn set_world_extra(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
-        if let Some(w) = &mut self.world {
-            w.extra = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
-        }
+        self.extra = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
     }
 
     /// What fades this frame: drawn after everything opaque, as see-through as its
     /// vertices' alpha, each pixel once (its nearest surface).
     pub fn set_world_fade(&mut self, device: &wgpu::Device, batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
-        if let Some(w) = &mut self.world {
-            w.fade = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
-        }
+        self.fade = batches.iter().filter_map(|(k, v, i)| GpuMesh::new(device, v, i).map(|m| (k.clone(), m))).collect();
     }
 
     pub fn clear_world(&mut self) {
-        self.world = None;
+        self.worlds.clear();
+        self.extra.clear();
+        self.fade.clear();
     }
 
     /// Forgets the battle map.
@@ -1164,7 +1243,7 @@ impl SceneRenderer {
         let t = &frame.toon;
         // the ink lines cost a look at every pixel's neighbours: only when something toon
         // is drawn
-        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.world.as_ref().map(|w| w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).chain(&w.fade).any(|(_, m)| m.toon)).unwrap_or(false);
+        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).flatten().chain(&self.extra).chain(&self.fade).any(|(_, m)| m.toon);
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
@@ -1179,10 +1258,7 @@ impl SceneRenderer {
             fog_color: [l.sky.x, l.sky.y, l.sky.z, l.fog_near],
             params: [l.fog_far, shadows as u32 as f32, (!self.output_srgb) as u32 as f32, 0.0],
             camera: frame.camera_pos.extend(1.0).to_array(),
-            world: match &self.world {
-                Some(w) => [w.size[0] as f32, w.size[1] as f32, w.level_height, frame.time],
-                None => [0.0, 0.0, 2.0, frame.time],
-            },
+            world: [0.0, 0.0, self.worlds.values().next().map(|w| w.level_height).unwrap_or(2.0), frame.time],
             editor: [frame.grid as u32 as f32, if frame.focus.is_some() { frame.dim.clamp(0.0, 1.0) } else { 0.0 }, 0.0, 0.0],
             shadow: shadow_params(&light_view_proj, self.shadow_size),
             focus: frame.focus.unwrap_or([0.0; 4]),
@@ -1204,6 +1280,20 @@ impl SceneRenderer {
             },
         };
         queue.write_buffer(&self.globals, 0, bytemuck::bytes_of(&globals));
+        // the world maps' placements: the scene's own space first, then each map's
+        let need = self.worlds.len() as u64 + 1;
+        if need > self.places_cap {
+            (self.places, self.places_cap, self.globals_bind) = Self::make_places(device, &self.globals_layout, &self.globals, need.next_power_of_two());
+        }
+        let mut places = vec![0u8; (need * PLACE_STRIDE) as usize];
+        for (k, w) in self.worlds.values().enumerate() {
+            let u = PlaceUniform { offset: w.place.offset.extend(0.0).to_array(), grid: [w.place.grid[0], w.place.grid[1], w.place.dim, 0.0] };
+            let at = (k as u64 + 1) * PLACE_STRIDE;
+            places[at as usize..at as usize + std::mem::size_of::<PlaceUniform>()].copy_from_slice(bytemuck::bytes_of(&u));
+        }
+        queue.write_buffer(&self.places, 0, &places);
+        // each map's placement, by its slot's offset
+        let slot = |k: usize| ((k as u64 + 1) * PLACE_STRIDE) as u32;
 
         // this frame's sprites, shapes and glows: one vertex buffer, drawn by texture
         let mut vertices: Vec<SpriteVertex> = vec![];
@@ -1352,7 +1442,7 @@ impl SceneRenderer {
                 }),
                 ..Default::default()
             });
-            pass.set_bind_group(0, &self.globals_bind, &[]);
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_pipeline(&self.map_shadow_pipeline);
             for m in &self.meshes {
                 let Some(t) = self.textures.get(&m.sheet) else { continue };
@@ -1361,12 +1451,14 @@ impl SceneRenderer {
                 pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.draw_indexed(0..m.count, 0, 0..1);
             }
-            if let Some(w) = &self.world {
-                pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
-                let objects = w.layers.values().flat_map(|l| l.values()).flatten().chain(&w.extra).chain(&w.fade).map(|(k, m)| (k.as_str(), m));
-                let mut bound = WHITE;
-                for (key, m) in objects {
-                    if !sun.sees(m.lo, m.hi) {
+            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
+            let mut bound = WHITE;
+            let own = (0u32, Vec3::ZERO);
+            let maps = self.worlds.values().enumerate().map(|(k, w)| ((slot(k), w.place.offset), w.layers.values().flat_map(|l| l.values()).flatten().collect::<Vec<_>>()));
+            for ((at, off), objects) in maps.chain(std::iter::once((own, self.extra.iter().chain(&self.fade).collect()))) {
+                pass.set_bind_group(0, &self.globals_bind, &[at]);
+                for (key, m) in objects.into_iter().map(|(k, m)| (k.as_str(), m)) {
+                    if !sun.sees(m.lo + off, m.hi + off) {
                         stats.culled += 1;
                         continue;
                     }
@@ -1379,6 +1471,7 @@ impl SceneRenderer {
                     stats.shadow_triangles += m.count / 3;
                 }
             }
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_pipeline(&self.sprite_shadow_pipeline);
             pass.set_vertex_buffer(0, sprite_buffer.slice(..));
             for d in &self.sprite_draws {
@@ -1404,7 +1497,7 @@ impl SceneRenderer {
         let target = self.target.as_ref().unwrap();
         let sky = l.sky;
         let mut pass = self.solid_pass(encoder, target, wgpu::Color { r: sky.x as f64, g: sky.y as f64, b: sky.z as f64, a: 1.0 });
-        pass.set_bind_group(0, &self.globals_bind, &[]);
+        pass.set_bind_group(0, &self.globals_bind, &[0]);
         pass.set_bind_group(2, &self.shadow_bind, &[]);
         pass.set_pipeline(&self.map_pipeline);
         for m in &self.meshes {
@@ -1415,13 +1508,21 @@ impl SceneRenderer {
             pass.set_index_buffer(m.indices.slice(..), wgpu::IndexFormat::Uint32);
             pass.draw_indexed(0..m.count, 0, 0..1);
         }
-        if let Some(w) = &self.world {
+        if !self.worlds.is_empty() || !self.extra.is_empty() {
             // what's in sight, nearest first: what's behind is then hidden before it's shaded
-            let objects = w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(|(_, l)| l.values()).flatten().chain(&w.extra).map(|(k, m)| (k.as_str(), m));
-            let mut seen: Vec<(f32, &str, &GpuMesh)> = vec![];
-            for (key, m) in objects {
-                if eye.sees(m.lo, m.hi) {
-                    seen.push((((m.lo + m.hi) * 0.5).distance_squared(frame.camera_pos), key, m));
+            let mut seen: Vec<(f32, u32, &str, &GpuMesh)> = vec![];
+            let items = self
+                .worlds
+                .values()
+                .enumerate()
+                .flat_map(|(k, w)| {
+                    let (at, off) = (slot(k), w.place.offset);
+                    w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(|(_, l)| l.values()).flatten().map(move |(key, m)| (at, off, key.as_str(), m))
+                })
+                .chain(self.extra.iter().map(|(key, m)| (0u32, Vec3::ZERO, key.as_str(), m)));
+            for (at, off, key, m) in items {
+                if eye.sees(m.lo + off, m.hi + off) {
+                    seen.push((((m.lo + m.hi) * 0.5 + off).distance_squared(frame.camera_pos), at, key, m));
                 } else {
                     stats.culled += 1;
                 }
@@ -1429,11 +1530,16 @@ impl SceneRenderer {
             seen.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut bound: Option<&str> = None;
             let mut cutout: Option<bool> = None;
-            for (_, key, m) in seen {
+            let mut placed: Option<u32> = None;
+            for (_, at, key, m) in seen {
                 let cuts = key != WHITE;
                 if cutout != Some(cuts) {
                     pass.set_pipeline(if cuts { &self.map_pipeline } else { &self.opaque_pipeline });
                     cutout = Some(cuts);
+                }
+                if placed != Some(at) {
+                    pass.set_bind_group(0, &self.globals_bind, &[at]);
+                    placed = Some(at);
                 }
                 if bound != Some(key) {
                     pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
@@ -1443,6 +1549,7 @@ impl SceneRenderer {
                 stats.draws += 1;
                 stats.triangles += m.count / 3;
             }
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
             // the skinned models, in their poses
             if !animated.is_empty() {
                 pass.set_pipeline(&self.skinned_pipeline);
@@ -1459,17 +1566,22 @@ impl SceneRenderer {
             // the ground last, its cliffs too: what stands on it hides most of it, and its
             // shader is the costliest
             pass.set_pipeline(&self.ground_pipeline);
-            pass.set_bind_group(1, &w.bind, &[]);
-            let cliffs = w.layers.get(CLIFFS).into_iter().flat_map(|l| l.values()).flatten().map(|(_, m)| m);
-            for m in w.tops.values().flatten().chain(cliffs) {
-                if !eye.sees(m.lo, m.hi) {
-                    stats.culled += 1;
-                    continue;
+            for (k, w) in self.worlds.values().enumerate() {
+                pass.set_bind_group(0, &self.globals_bind, &[slot(k)]);
+                pass.set_bind_group(1, &w.bind, &[]);
+                let off = w.place.offset;
+                let cliffs = w.layers.get(CLIFFS).into_iter().flat_map(|l| l.values()).flatten().map(|(_, m)| m);
+                for m in w.tops.values().flatten().chain(cliffs) {
+                    if !eye.sees(m.lo + off, m.hi + off) {
+                        stats.culled += 1;
+                        continue;
+                    }
+                    m.draw(&mut pass);
+                    stats.draws += 1;
+                    stats.triangles += m.count / 3;
                 }
-                m.draw(&mut pass);
-                stats.draws += 1;
-                stats.triangles += m.count / 3;
             }
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
         }
         if !self.sprite_draws.is_empty() {
             pass.set_vertex_buffer(0, sprite_buffer.slice(..));
@@ -1484,13 +1596,13 @@ impl SceneRenderer {
         drop(pass);
         // then what's see-through, over it
         let mut pass = Self::clear_pass(encoder, target);
-        pass.set_bind_group(0, &self.globals_bind, &[]);
+        pass.set_bind_group(0, &self.globals_bind, &[0]);
         pass.set_bind_group(2, &self.shadow_bind, &[]);
         // what fades: its nearest surfaces' depth first, then each pixel blended once
-        if let Some(w) = self.world.as_ref().filter(|w| !w.fade.is_empty()) {
+        if !self.fade.is_empty() {
             for (blend, pipeline) in [(false, &self.fade_depth_pipeline), (true, &self.fade_pipeline)] {
                 pass.set_pipeline(pipeline);
-                for (key, m) in &w.fade {
+                for (key, m) in &self.fade {
                     pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
                     m.draw(&mut pass);
                     if blend {
@@ -1520,7 +1632,7 @@ impl SceneRenderer {
     pub fn paint(&self, pass: &mut wgpu::RenderPass<'_>) {
         let Some(target) = &self.target else { return };
         pass.set_pipeline(&self.blit_pipeline);
-        pass.set_bind_group(0, &self.globals_bind, &[]);
+        pass.set_bind_group(0, &self.globals_bind, &[0]);
         pass.set_bind_group(1, &target.post_bind, &[]);
         pass.draw(0..3, 0..1);
     }

@@ -47,7 +47,7 @@ impl MapEditor {
                             r.add_texture(&rs.device, &rs.queue, key, &img.rgba, img.width, img.height, true);
                         }
                         // its moving parts (if rigged) go to the renderer below
-                        self.gpu.skinned.remove(id);
+                        self.skinned_sent.remove(id);
                         self.models.insert(id.clone(), m);
                         self.need_props = true;
                         self.need_trees = true;
@@ -65,7 +65,7 @@ impl MapEditor {
         // frames say the pose; sent again when the prop is made toon or not
         for (id, m) in self.models.iter().filter(|(_, m)| !m.skinned.is_empty()) {
             let toon = content.props.get(id).map(|p| p.toon).unwrap_or(false);
-            if self.gpu.skinned.get(id) == Some(&toon) {
+            if self.skinned_sent.get(id) == Some(&toon) {
                 continue;
             }
             let parts: Vec<(String, Vec<SkinnedVertex>, Vec<u32>)> = m
@@ -87,7 +87,7 @@ impl MapEditor {
                 })
                 .collect();
             r.set_skinned(&rs.device, id, &parts);
-            self.gpu.skinned.insert(id.clone(), toon);
+            self.skinned_sent.insert(id.clone(), toon);
         }
         crate::platform::set_hook("models", &self.models.len().to_string());
     }
