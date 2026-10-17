@@ -2,5 +2,23 @@
   "id": "world",
   "character_height": 1.5,
   "level_padding": 0.5,
-  "max_level": 9
+  "max_level": 9,
+  "toon": {
+    "bands": 2,
+    "softness": 0.12,
+    "shadow_color": "#5c4d8a",
+    "shadow": 0.35,
+    "rim": 0.35,
+    "rim_width": 0.4,
+    "glint": 0.8,
+    "glint_size": 0.2,
+    "ink": true,
+    "ink_color": "#000000",
+    "ink_width": 3.1,
+    "ink_opacity": 0.78,
+    "depth_step": 0.005,
+    "crease": 60.0,
+    "color_steps": 16,
+    "color_softness": 0.0
+  }
 }
