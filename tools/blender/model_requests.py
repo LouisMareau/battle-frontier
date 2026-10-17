@@ -15,8 +15,10 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               --grid: the picture's pixels marked on it,
                                               --lines: its lines from lines.json drawn on it
     python tools/blender/model_requests.py lines ID
-                                              lines.json drawn: each picture's lines over it,
-                                              the front and the side in cells (request_lines.py)
+                                              lines.json drawn: each picture's lines over it
+                                              (how far its outline and the picture's silhouette
+                                              overlap), the front and the side in cells
+                                              (request_lines.py)
     python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
@@ -442,16 +444,11 @@ def _where(n, sx, sy, sxx, syy):
     return " ".join(w for w in (row, col) if w) or "middle"
 
 
-def colours(root, rid, picture, box=None, count=8):
-    """The main colours of a request's picture, or of a box of it (as zoom's), to take a part's
-    colour from the picture rather than guess it: the most covered first, each with its share,
-    its hex (as the kit's colours take it), its name and where it mostly is; the colour along
-    most of the box's edges said to be the likely background. See-through pixels don't count.
-    Returns the lines to say."""
+def palette(part, count=8):
+    """A box of a picture (an RGBA one) in its main colours, the most covered first: [[rgb,
+    [pixels, sum u, sum v, sum u², sum v², pixels on the box's edges]], ...] (u, v: where, 0 to
+    1 across the box), and how many pixels were seen (see-through ones don't count)."""
     Image = _pillow("colours")
-    img = _picture(root, rid, picture, Image).convert("RGBA")
-    x0, y0, x1, y1 = _box(img.size, box) if box else (0, 0, *img.size)
-    part = img.crop((x0, y0, x1, y1))
     # a sample of at most 300 x 300, nearest: the picture's own colours, not blends of them
     k = min(1.0, 300.0 / max(part.size))
     if k < 1.0:
@@ -460,10 +457,10 @@ def colours(root, rid, picture, box=None, count=8):
     data = part.tobytes()
     seen = [(i % pw, i // pw, data[j:j + 3]) for i, j in enumerate(range(0, len(data), 4)) if data[j + 3] >= 128]
     if not seen:
-        raise SystemExit(f"{picture}: nothing but see-through pixels there")
+        return [], 0
     strip = Image.frombytes("RGB", (len(seen), 1), b"".join(p for _, _, p in seen))
     q = strip.quantize(colors=max(2, min(16, int(count))), method=Image.Quantize.MEDIANCUT, kmeans=4)
-    palette = q.getpalette()
+    table = q.getpalette()
     found = {}
     for (x, y, _), i in zip(seen, q.tobytes()):
         u, v = (x + 0.5) / pw, (y + 0.5) / ph
@@ -477,7 +474,7 @@ def colours(root, rid, picture, box=None, count=8):
     # the quantizer can split one colour in two: those join again
     kept = []
     for i, f in sorted(found.items(), key=lambda kv: -kv[1][0]):
-        rgb = palette[i * 3:i * 3 + 3]
+        rgb = table[i * 3:i * 3 + 3]
         same = next((c for c in kept if sum((a - b) ** 2 for a, b in zip(c[0], rgb)) < 14 ** 2), None)
         if same is None:
             kept.append([list(rgb), f])
@@ -485,17 +482,37 @@ def colours(root, rid, picture, box=None, count=8):
             n = same[1][0] + f[0]
             same[0] = [round((a * same[1][0] + b * f[0]) / n) for a, b in zip(same[0], rgb)]
             same[1] = [a + b for a, b in zip(same[1], f)]
+    return kept, len(seen)
+
+
+def background(kept):
+    """Of a palette, the colour along most of the box's edges (the likely background), or None
+    when no colour has as much as two fifths of them."""
     edges = sum(f[5] for _, f in kept)
-    background = max(kept, key=lambda c: c[1][5]) if edges else None
-    if background is not None and background[1][5] < 0.4 * edges:
-        background = None
+    found = max(kept, key=lambda c: c[1][5]) if edges else None
+    return found[0] if found is not None and found[1][5] >= 0.4 * edges else None
+
+
+def colours(root, rid, picture, box=None, count=8):
+    """The main colours of a request's picture, or of a box of it (as zoom's), to take a part's
+    colour from the picture rather than guess it: the most covered first, each with its share,
+    its hex (as the kit's colours take it), its name and where it mostly is; the colour along
+    most of the box's edges said to be the likely background. See-through pixels don't count.
+    Returns the lines to say."""
+    Image = _pillow("colours")
+    img = _picture(root, rid, picture, Image).convert("RGBA")
+    x0, y0, x1, y1 = _box(img.size, box) if box else (0, 0, *img.size)
+    kept, seen = palette(img.crop((x0, y0, x1, y1)), count)
+    if not seen:
+        raise SystemExit(f"{picture}: nothing but see-through pixels there")
+    bg = background(kept)
     out = [f"{picture}, from ({x0}, {y0}) to ({x1}, {y1}): its main colours, the most covered first"]
     for rgb, f in kept:
-        share = f[0] / len(seen)
+        share = f[0] / seen
         if share < 0.005:
             continue
         hexa = "#%02x%02x%02x" % tuple(rgb)
-        extra = ", along most of the box's edges: the background?" if background is not None and rgb == background[0] else ""
+        extra = ", along most of the box's edges: the background?" if rgb == bg else ""
         out.append(f"  {share * 100:4.1f}%  {hexa}  {colour_name(rgb)}, {_where(*f[:5])}{extra}")
     return out + [READING]
 

@@ -70,8 +70,14 @@ LINES = """- before building, tell the design from the drawing (requests.md, "Th
   "outline"), each part's outline, its middle line and its markings, in the picture's pixels,
   and its camera (turn and tilt: where it was seen from). Then
   python tools/blender/model_requests.py lines {id}
-  draws them over the picture (lines_PICTURE.png, which the user sees too): look at each, and
-  fix lines.json until every line sits on the design. To see a part closer, its pixels marked:
+  draws them over the picture (lines_PICTURE.png, which the user sees too) and says how far
+  each outline and the picture's silhouette overlap (all in the outline's box, with room
+  round it, that isn't the background or the shadow under the creature) and where one goes
+  past the other: look at each, and move the lines until every line sits on the design and
+  each outline overlaps its picture's silhouette about 90% or more. Another creature (or
+  text) inside that box counts as silhouette too: keep the outline tight on the design, never
+  stretched over it, and say so in the reply. A busy background can't be scored: judge that
+  outline by eye. To see a part closer, its pixels marked:
   python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1 --grid --lines
   A lines.json from an earlier run may be there: check it against the pictures, keep what's
   right;

@@ -1,9 +1,10 @@
 """Lines and profiles for model requests (requests.md, "Lines and profiles"): the lines a run
 traces on each picture, and the front and side it draws from them, kept in the request's
 lines.json; drawn over the pictures (lines_<picture>.png: for the run, and for the user to see
-how well they sit), as a front and a side in cells (profiles.png), and after each render over
-the model (fit_front.png, fit_side.png, match_<picture>.png, which compare.png gets as a row
-more), with how far the outlines and the model's silhouette overlap.
+how well they sit, with how far each outline and the picture's own silhouette overlap), as a
+front and a side in cells (profiles.png), and after each render over the model (fit_front.png,
+fit_side.png, match_<picture>.png, which compare.png gets as a row more), with how far the
+outlines and the model's silhouette overlap.
 
     python tools/blender/model_requests.py lines ID
 
@@ -35,6 +36,15 @@ PENS = ("#00e5ff", "#ff3df0", "#ffe600", "#7dff3a", "#ff8a00", "#4d8bff", "#ff4d
 HALO = (20, 20, 24, 210)
 # what the editor shows, in order (lines_* and match_* once per picture)
 SHOWN = ("lines_{}", "profiles", "fit_front", "fit_side", "match_{}")
+# a picture's silhouette (outline_score) is measured at most this many pixels across
+SCORED = 600
+# how far off the background's colour a pixel may be and still be background (in the channel
+# most off): at least the first (a JPEG's noise round the lines), more when the box's edges vary
+# more (a soft gradient), at most the second
+NEAR = (28, 40)
+# the background's shadow on the ground: a darker tone of it, between these shares of its
+# lightness, each channel at most this far off that tone (a tint)
+SHADOW = (0.35, 0.99, 24)
 
 
 class LinesError(ValueError):
@@ -442,9 +452,10 @@ def shown(root, rid):
 
 
 def lines(root, rid):
-    """lines.json drawn: each traced picture's lines over it (lines_<picture>.png), the front and
-    the side in cells (profiles.png); the request lists them (the editor shows them). Returns
-    what to say: what there is, what's missing."""
+    """lines.json drawn: each traced picture's lines over it (lines_<picture>.png, with how far
+    its outline and the picture's own silhouette overlap), the front and the side in cells
+    (profiles.png); the request lists them (the editor shows them). Returns what to say: what
+    there is, each outline's overlap, what's missing."""
     mr._pillow("lines")
     from PIL import Image
     record = mr.load(root, rid)
@@ -463,11 +474,18 @@ def lines(root, rid):
         box = around(part["lines"], img.size)
         k = max(1.0, min(6.0, 1100.0 / max(box[2] - box[0], box[3] - box[1])))
         out = d / f"lines_{Path(pic).stem}.png"
-        draw_picture(img, box, k, part["lines"], colours).save(out)
+        line = outline(part)
+        o, why = outline_score(img, line) if line else (None, "no outline to score (a closed line named \"outline\")")
+        drawing = draw_picture(img, box, k, part["lines"], colours)
+        _caption(drawing, _short(f"the outline on {pic}" if line else pic, o, "the silhouette", f"can't be scored: {why}" if line else why), below=True).save(out)
         cam = part.get("camera")
         seen = f"camera turn {cam.get('turn', 0):g}, tilt {cam.get('tilt', 0):g}" if cam else "no camera"
-        said.append(f"{out.name}: {len(part['lines'])} lines on {pic} ({part.get('view', 'a view not said')}, {seen}): {', '.join(i['name'] for i in part['lines'])}")
-        if outline(part) is None:
+        if o:
+            score = "; " + _overlap_text(o, "the picture's silhouette", "the silhouette")
+        else:
+            score = f"; the outline can't be scored: {why} (judge it by eye)" if line else ""
+        said.append(f"{out.name}: {len(part['lines'])} lines on {pic} ({part.get('view', 'a view not said')}, {seen}): {', '.join(i['name'] for i in part['lines'])}{score}")
+        if line is None:
             missing.append(f"{pic} has no outline (a closed line named \"outline\"): the model can't be measured against it")
         if cam is None:
             missing.append(f"{pic} has no camera: the model won't be rendered from where it was drawn")
@@ -490,7 +508,8 @@ def lines(root, rid):
     mr.update(root, rid, lines=shown(root, rid))
     if record["status"] == "in_progress":
         mr.step(root, rid, "drawing the front and the side" if sheet is not None else "tracing the lines", 0.12 if sheet is not None else 0.08)
-    return said + [f"missing: {m}" for m in missing] + ["Look at each drawing: do the lines sit on the design? Fix lines.json and run this again."]
+    return said + [f"missing: {m}" for m in missing] + ["Look at each drawing: do the lines sit on the design, each outline overlapping its picture's silhouette "
+                                                        "about 90% or more? Fix lines.json and run this again."]
 
 
 # ---------------------------------------------------------------- the lines on the renders
@@ -522,6 +541,22 @@ def _side_word(c, box):
     return " ".join(w for w in (row, col) if w) or "all round"
 
 
+def _overlaps(found, drawn):
+    """How a silhouette and an outline, each a mask of the same size (255 inside), overlap: (both
+    over either, the silhouette's share past the outline and where, the outline's share past the
+    silhouette and where)."""
+    from PIL import ImageChops
+    either = _mask_count(ImageChops.lighter(found, drawn))
+    if not either:
+        return 0.0, 0.0, "", 0.0, ""
+    both = _mask_count(ImageChops.multiply(found, drawn))
+    past, short = ImageChops.subtract(found, drawn), ImageChops.subtract(drawn, found)
+    w, h = found.size
+    box = ImageChops.lighter(found, drawn).getbbox() or (0, 0, w, h)
+    box = (box[0] / w, box[1] / h, box[2] / w, box[3] / h)
+    return (both / either, _mask_count(past) / either, _side_word(_centroid(past), box), _mask_count(short) / either, _side_word(_centroid(short), box))
+
+
 def overlap(render, ring):
     """How a closed outline (in a render's pixels) and the model's silhouette there (all that
     isn't the render's background) overlap: (both over either, the model's share past the
@@ -532,43 +567,40 @@ def overlap(render, ring):
     model = ImageChops.difference(rgb, Image.new("RGB", rgb.size, bg)).convert("L").point(lambda v: 255 if v > 10 else 0)
     drawn = Image.new("L", rgb.size, 0)
     ImageDraw.Draw(drawn).polygon([tuple(p) for p in ring], fill=255)
-    either = _mask_count(ImageChops.lighter(model, drawn))
-    if not either:
-        return 0.0, 0.0, "", 0.0, ""
-    both = _mask_count(ImageChops.multiply(model, drawn))
-    past, short = ImageChops.subtract(model, drawn), ImageChops.subtract(drawn, model)
-    w, h = rgb.size
-    box = ImageChops.lighter(model, drawn).getbbox() or (0, 0, w, h)
-    box = (box[0] / w, box[1] / h, box[2] / w, box[3] / h)
-    return (both / either, _mask_count(past) / either, _side_word(_centroid(past), box), _mask_count(short) / either, _side_word(_centroid(short), box))
+    return _overlaps(model, drawn)
 
 
-def _overlap_text(o):
+def _overlap_text(o, thing="the model", again=None):
+    """An overlap in words: "the outline and the model overlap 86%; the model goes 7% past it
+    (top); it goes 3% past the model (left)" (`again`: what the thing is called after that)."""
     share, past, where_past, short, where_short = o
-    out = f"the outline and the model overlap {share:.0%}"
+    again = again or thing
+    out = f"the outline and {thing} overlap {share:.0%}"
     if past >= 0.01:
-        out += f"; the model goes {past:.0%} past it ({where_past})"
+        out += f"; {again} goes {past:.0%} past it ({where_past})"
     if short >= 0.01:
-        out += f"; it goes {short:.0%} past the model ({where_short})"
+        out += f"; it goes {short:.0%} past {again} ({where_short})"
     return out
 
 
-def _short(label, o):
-    """An overlap said short, for under a drawing: "front · 86% overlap · the model past it 7% (top)"."""
+def _short(label, o, thing="the model", why="no outline to measure"):
+    """An overlap said short, for under a drawing: "front · 86% overlap · the model past it 7%
+    (top)"; with no overlap, why."""
     if o is None:
-        return [label, "no outline to measure"]
+        return [label, why]
     share, past, where_past, short, where_short = o
     out = [label, f"{share:.0%} overlap"]
     if past >= 0.01:
-        out.append(f"the model past it {past:.0%} ({where_past})")
+        out.append(f"{thing} past it {past:.0%} ({where_past})")
     if short >= 0.01:
-        out.append(f"it past the model {short:.0%} ({where_short})")
+        out.append(f"it past {thing} {short:.0%} ({where_short})")
     return out
 
 
-def _caption(img, parts):
-    """Words along a drawing's foot, on as many lines as they need."""
-    from PIL import ImageDraw
+def _caption(img, parts, below=False):
+    """Words along a drawing's foot, on as many lines as they need: over it, or `below` it (the
+    drawing made taller for them). Returns the drawing."""
+    from PIL import Image, ImageDraw
     d = ImageDraw.Draw(img)
     size = max(9, min(15, img.width // 42))
     font, step = _font(size), size + 5
@@ -581,10 +613,16 @@ def _caption(img, parts):
         else:
             row = trial
     rows.append(row)
-    top = img.height - 6 - step * len(rows)
+    band = 6 + step * len(rows)
+    if below:
+        taller = Image.new(img.mode, (img.width, img.height + band))
+        taller.paste(img, (0, 0))
+        img, d = taller, ImageDraw.Draw(taller)
+    top = img.height - band
     d.rectangle((0, top, img.width, img.height), fill=(30, 30, 34))
     for i, text in enumerate(rows):
         d.text((6, top + 3 + step * i), text, fill=(235, 235, 235), font=font, anchor="lt")
+    return img
 
 
 def _add_row(sheet_path, files, gap=12):
@@ -678,3 +716,157 @@ def on_renders(root, rid, since=0.0):
             said.append("compare.png: those as its last row")
         mr.update(root, rid, lines=shown(root, rid))
     return said
+
+
+# ---------------------------------------------------------------- each outline on its picture
+
+def _rim(size):
+    """A box's edge pixels, as a mask."""
+    from PIL import Image, ImageDraw
+    rim = Image.new("L", size, 0)
+    ImageDraw.Draw(rim).rectangle((0, 0, size[0] - 1, size[1] - 1), outline=255)
+    return rim
+
+
+def _share(mask, within):
+    """How much of a mask's pixels (`within`) another one covers."""
+    from PIL import ImageChops
+    n = _mask_count(within)
+    return _mask_count(ImageChops.multiply(mask, within)) / n if n else 0.0
+
+
+def _near(rgb, colour, rim):
+    """The pixels near a colour (the channel most off it at most NEAR's first, or more when the
+    box's edges near it vary more: how far off it nearly all of them are, and some)."""
+    from PIL import Image, ImageChops
+    r, g, b = ImageChops.difference(rgb, Image.new("RGB", rgb.size, tuple(colour))).split()
+    off = ImageChops.lighter(ImageChops.lighter(r, g), b)
+    edges = off.histogram(mask=rim)[:49]
+    spread, run, most = 0, 0, 0.95 * sum(edges)
+    for v, n in enumerate(edges):
+        run += n
+        if run >= most:
+            spread = v
+            break
+    tolerance = min(NEAR[1], max(NEAR[0], spread + 12))
+    return off.point(lambda v: 255 if v <= tolerance else 0)
+
+
+def _tones(rgb, colour):
+    """The pixels that are a darker tone of a colour (its shadow on the ground): the colour
+    times a lightness between SHADOW's, each channel at most SHADOW's tint off it. None on a
+    near black colour (a shadow there doesn't show)."""
+    from PIL import ImageChops
+    lo, hi, tint = SHADOW
+    sq = float(sum(c * c for c in colour))
+    if sq < 30 ** 2:
+        return None
+    # how much of the colour a pixel is (its share along it, 255 for all of it)...
+    share = rgb.convert("L", tuple(255 * c / sq for c in colour) + (0,))
+    tones = share.point(lambda v: 255 if lo * 255 <= v <= hi * 255 else 0)
+    # ...and what's left of it once that share is taken off (another hue, or a tint), 128 for none
+    u = [c / math.sqrt(sq) for c in colour]
+    left = rgb.convert("RGB", tuple(v for i in range(3) for v in [(1.0 if i == j else 0.0) - u[i] * u[j] for j in range(3)] + [128]))
+    for band in left.split():
+        tones = ImageChops.multiply(tones, band.point(lambda v: 255 if abs(v - 128) <= tint else 0))
+    return tones
+
+
+def _foot(mask):
+    """The row nearly all of a mask's pixels are above (all but a hundredth of them)."""
+    from PIL import Image
+    rows = mask.resize((1, mask.height), Image.BOX).tobytes()
+    most, run = 0.99 * sum(rows), 0
+    for y, v in enumerate(rows):
+        run += v
+        if run >= most:
+            return y
+    return mask.height
+
+
+def _from_edges(free):
+    """What of a mask's 255s its edges reach through them (each pixel to its four neighbours), a
+    row's run at a time, as a mask."""
+    from PIL import Image
+    w, h = free.size
+    can = free.tobytes()
+    reached = bytearray(w * h)
+    seeds = [i for i in (*range(w), *range((h - 1) * w, h * w), *range(0, h * w, w), *range(w - 1, h * w, w)) if can[i]]
+    while seeds:
+        i = seeds.pop()
+        if reached[i]:
+            continue
+        row = i - i % w
+        a, b = can.rfind(b"\0", row, i), can.find(b"\0", i, row + w)
+        a, b = row if a < 0 else a + 1, row + w if b < 0 else b
+        reached[a:b] = b"\xff" * (b - a)
+        for other in (row - w, row + w):
+            if not 0 <= other < w * h:
+                continue
+            x, end = a - row + other, b - row + other
+            while x < end:
+                j = can.find(b"\xff", x, end)
+                if j < 0:
+                    break
+                if not reached[j]:
+                    seeds.append(j)
+                k = can.find(b"\0", j, other + w)
+                x = other + w if k < 0 else k
+    return Image.frombytes("L", (w, h), bytes(reached))
+
+
+BUSY = "the box's edges aren't mostly one colour (a busy background)"
+
+
+def silhouette(img, box):
+    """A picture's silhouette in a box of it: every pixel the background doesn't reach from the
+    box's edges. The background is the colour along most of the edges (as model_requests.py
+    colours finds it) and, right under the creature, a darker tone of it: its shadow on the
+    ground. A picture whose edges there are see-through: what isn't. Returns (a mask, 255 where
+    the silhouette is, at most SCORED pixels across; its scale to the picture's pixels; ""), or
+    (None, 1, why it can't be told)."""
+    from PIL import Image, ImageChops, ImageDraw
+    part = img.convert("RGBA").crop(box)
+    w, h = part.size
+    rim = _rim(part.size)
+    clear = part.getchannel("A").point(lambda v: 255 if v < 128 else 0)
+    if _share(clear, rim) >= 0.5:
+        free = clear
+    else:
+        colour = mr.background(mr.palette(part)[0])
+        if colour is None:
+            return None, 1.0, BUSY
+        rgb = part.convert("RGB")
+        near = _near(rgb, colour, rim)
+        if _share(near, rim) < 0.5:
+            return None, 1.0, BUSY
+        free = ImageChops.lighter(near, clear)
+        rest = ImageChops.invert(free)
+        tones, middle = _tones(rgb, colour), _centroid(rest)
+        if tones is not None and middle is not None:
+            # right under the creature: below its middle (of all that isn't the background), a
+            # quarter of the way down to its foot (where its shadow is)
+            top = middle[1] * h + 0.25 * (_foot(rest) - middle[1] * h)
+            under = Image.new("L", part.size, 0)
+            ImageDraw.Draw(under).rectangle((0, round(top), w, h), fill=255)
+            free = ImageChops.lighter(free, ImageChops.multiply(tones, under))
+    s = min(1.0, SCORED / max(w, h))
+    if s < 1.0:
+        # smaller, a pixel is background only where all it stands for is: no line between the
+        # creature and the background opens
+        free = free.resize((max(1, round(w * s)), max(1, round(h * s))), Image.BOX).point(lambda v: 255 if v == 255 else 0)
+    return ImageChops.invert(_from_edges(free)), s, ""
+
+
+def outline_score(img, line):
+    """How a picture's outline (a closed line in its pixels) and the picture's own silhouette
+    overlap, in the outline's box with room round it (`around`), as `overlap` says it for a
+    render: (the overlap, ""), or (None, why it can't be scored)."""
+    from PIL import Image, ImageDraw
+    box = around([line], img.size)
+    found, s, why = silhouette(img, box)
+    if found is None:
+        return None, why
+    drawn = Image.new("L", found.size, 0)
+    ImageDraw.Draw(drawn).polygon([((x - box[0]) * s, (y - box[1]) * s) for x, y in shape(line)], fill=255)
+    return _overlaps(found, drawn), ""

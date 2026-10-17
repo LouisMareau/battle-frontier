@@ -195,6 +195,13 @@ check("a T-pose creature: the T-pose of its body plan, said in the reply", "no l
 check("  a prop: no pose at all", "Pose" not in rc.settings_lines(mr.normal({"kind": "prop", "pose": "t_pose"})))
 check("accurate: every part and detail in the lines; else the outline and the main parts", "Lines: every part, marking and detail" in log
       and "Lines: the outline and the main parts" in rc.settings_lines(mr.normal({"style": "smooth"})))
+for checked_first in (False, True):
+    asked = " ".join(rc.prompt(mr.normal(dict(mr.load(SCRATCH, "test_eight"), check_lines=checked_first))).split())
+    check(f"each outline on its picture's silhouette, about 90% or more{', before the check' if checked_first else ''}; another creature in the box said, a busy background by eye",
+          "says how far each outline and the picture's silhouette overlap" in asked and "the background or the shadow under the creature" in asked
+          and "each outline overlaps its picture's silhouette about 90% or more" in asked
+          and "Another creature (or text) inside that box counts as silhouette too: keep the outline tight on the design, never stretched over it, and say so in the reply" in asked
+          and "A busy background can't be scored: judge that outline by eye" in asked, asked[:400])
 
 # 9. "Let me check the lines first": the run stops once the front and the side are drawn, the
 # request waiting for the user; "The lines look right: go on" runs again from the model, with
@@ -307,6 +314,8 @@ if Image is not None:
     rec = mr.load(SCRATCH, "test_ten")
     check("lines: each picture's lines drawn over it, the front and the side in cells, listed for the editor", (ten / "lines_front.png").is_file() and (ten / "profiles.png").is_file()
           and rec["lines"] == ["lines_front.png", "profiles.png"] and any(s.startswith("lines_front.png: 2 lines on front.png (front, camera turn 0, tilt 0)") for s in said), "\n".join(said))
+    check("  its outline on the picture's own silhouette: all of it", any(s.startswith("lines_front.png") and s.endswith("eye; the outline and the picture's silhouette overlap 100%")
+                                                                          for s in said), "\n".join(said))
     check("  what's off said: a side facing the other way than it says", any("the side's head is on its right: say \"faces\": \"right\"" in s for s in said), "\n".join(said))
     cells = rl.profiles(SCRATCH, "test_ten")
     check("  in cells as the model stands: the height asked, on the ground, centred; a mark one point", sorted(p[0] for p in cells["front"]["outline"])[:1] == [-0.5]
@@ -353,8 +362,61 @@ if Image is not None:
     check("  an old render isn't drawn on again", rl.on_renders(SCRATCH, "test_ten", since=time.time() + 60) == [])
     zoomed, said = mr.zoom(SCRATCH, "test_ten", "front.png", [140, 90, 260, 210], grid=True, lines=True)
     check("zoom with the picture's pixels marked and its lines on it", zoomed.is_file() and Image.open(zoomed).size[0] > 1000, said)
+
+    # 13. each outline on its own picture: how far it and the picture's silhouette overlap (all in
+    # the outline's box that isn't the background, nor the creature's shadow on the ground under
+    # it), and where one goes past the other; a busy background can't be scored; a picture with
+    # see-through edges goes by its alpha
+    import random
+    pictures = ("flat.png", "busy.png", "clear.png")
+    fresh("test_score", kind="creature", images=list(pictures))
+    sc = mr.folder(SCRATCH, "test_score")
+
+    def creature(pic, shadow):
+        """A round creature, inked, its shadow on the ground under it (wider than it, and lower)."""
+        ink = (lambda c: c + (255,)) if pic.mode == "RGBA" else (lambda c: c)
+        draw = ImageDraw.Draw(pic)
+        draw.ellipse((100, 214, 300, 242), fill=shadow)
+        draw.ellipse((130, 90, 270, 230), fill=ink((120, 170, 220)), outline=ink((40, 30, 35)), width=3)
+        return pic
+
+    ground = (250, 236, 200)
+    creature(Image.new("RGB", (400, 300), ground), tuple(round(c * 0.72) for c in ground)).save(sc / "flat.png")
+    rng, busy = random.Random(7), Image.new("RGB", (400, 300))
+    for y in range(0, 300, 10):
+        for x in range(0, 400, 10):
+            ImageDraw.Draw(busy).rectangle((x, y, x + 9, y + 9), fill=tuple(rng.randrange(256) for _ in range(3)))
+    creature(busy.copy(), (90, 80, 70)).save(sc / "busy.png")
+    clear = busy.convert("RGBA")
+    clear.putalpha(0)
+    creature(clear, (0, 0, 0, 90)).save(sc / "clear.png")
+    close = {"name": "outline", "ellipse": [200, 160, 70, 70]}
+    (sc / "lines.json").write_text(json.dumps({"pictures": {p: {"view": "front", "camera": {"turn": 0, "tilt": 0}, "lines": [close]} for p in pictures}}), encoding="utf-8")
+    said = rl.lines(SCRATCH, "test_score")
+    on = {p: next((s for s in said if s.startswith(f"lines_{Path(p).stem}.png")), "") for p in pictures}
+
+    def scored(text):
+        return float(text.split("silhouette overlap ")[1].split("%")[0]) if "silhouette overlap " in text else 0.0
+
+    flat = Image.open(sc / "flat.png")
+    snug, _ = rl.outline_score(flat, close)
+    # (the shadow, were it the silhouette, would go more than a tenth past the outline)
+    check("each outline on its picture: a close one on a flat background high, the shadow under the creature left out", scored(on["flat.png"]) >= 95
+          and snug is not None and snug[1] < 0.03, f"{on['flat.png']} {snug}")
+    wide, _ = rl.outline_score(flat, {"name": "outline", "ellipse": [225, 160, 95, 70]})
+    wide_said = rl._overlap_text(wide, "the picture's silhouette", "the silhouette") if wide else ""
+    check("  a loose one low, the side it goes past said", wide is not None and wide[0] < 0.9 and wide[3] >= 0.1 and wide[4] == "right"
+          and "past the silhouette (right)" in wide_said, wide_said)
+    low, _ = rl.outline_score(flat, {"name": "outline", "ellipse": [200, 185, 70, 45]})
+    check("  one short of the creature's top: the silhouette past it there", low is not None and low[0] < 0.9 and low[1] >= 0.1 and low[2] == "top", str(low))
+    check("  a busy background: it can't be scored, and why", "the outline can't be scored: the box's edges aren't mostly one colour (a busy background)" in on["busy.png"],
+          on["busy.png"])
+    check("  a picture with see-through edges: by its alpha, its see-through shadow left out", scored(on["clear.png"]) >= 95, on["clear.png"])
+    drawn = Image.open(sc / "lines_flat.png").convert("RGB")
+    check("  under the drawing, in a caption of its own", drawn.height > drawn.width and drawn.getpixel((2, drawn.height - 2)) == (30, 30, 34), str(drawn.size))
+    check("  and the aim said", "each outline overlapping its picture's silhouette about 90% or more" in said[-1], said[-1])
 else:
-    print("(no Pillow here: zoom and colours not checked)")
+    print("(no Pillow here: zoom, colours and the lines not checked)")
 
 shutil.rmtree(SCRATCH, ignore_errors=True)
 print("all good" if not failed else f"{len(failed)} failed", flush=True)

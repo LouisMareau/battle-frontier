@@ -196,8 +196,10 @@ here). Everything runs from the project folder.
    profiles"): the design's outline, each part's outline, its middle line and its markings, in
    the picture's pixels, and where the picture was seen from (its `camera`). Then
    `python tools/blender/model_requests.py lines ID` draws them over the picture
-   (`lines_PICTURE.png`, which the editor shows the user as it comes): look, and move the lines
-   until they sit on the design. Draw the design's lines, not the drawing's: no shine, shade or ink.
+   (`lines_PICTURE.png`, which the editor shows the user as it comes) and says how far each
+   outline and the picture's silhouette overlap: look, and move the lines until they sit on
+   the design, each outline on its picture's silhouette about 90% or more. Draw the design's
+   lines, not the drawing's: no shine, shade or ink.
 5. **Draw the front and the side** in `lines.json` from those lines, in the model's pose (a
    T-pose when asked): a picture from the front or the side gives its view as it is; one from
    another angle is drawn again, from the front and from the side, as a model sheet would show
@@ -360,7 +362,20 @@ checks the file (saying all that's wrong at once) and draws:
   its pixels marked along the edges. The editor shows these to the user as they come (the
   **Lines** row): they're how the user sees that the run read the pictures right. Move the
   lines until each sits on the design; `zoom ID PICTURE X0 Y0 X1 Y1 --grid --lines` shows a
-  part closer, the picture's pixels marked;
+  part closer, the picture's pixels marked. Its caption (and `lines`' line for the picture)
+  says how far the outline and the picture's own silhouette overlap and where one goes past
+  the other (as for the renders, below). The silhouette is every pixel in the outline's box,
+  with room round it, that isn't the background: the colour along most of the box's edges (as
+  `colours` finds it), reached from them, and a darker tone of it right under the creature
+  (its shadow on the ground); in a picture with see-through edges, every pixel that isn't
+  see-through. Move the lines until each outline overlaps its picture's silhouette about 90%
+  or more. Another creature, text or anything else in that box that isn't the background
+  counts as silhouette too: keep the outline tight on the design, never stretched over it,
+  and say so in the reply when it keeps the overlap down. A busy background (the box's edges
+  not mostly one colour) can't be scored, and the caption says so: judge that outline by eye.
+  Trust your eyes over the number too where the creature has no line round it and is the
+  background's own colour (or, low down, a darker tone of it): the silhouette can't tell it
+  from the background there;
 - `profiles.png`: the front and the side in cells, the request's height a dashed line, the
   ground and the middle;
 - what's missing: a picture with no lines, no outline or no camera, no front or side yet, a
