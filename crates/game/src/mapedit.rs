@@ -173,6 +173,10 @@ pub struct MapEditor {
     ground_hit: Option<(i32, i32)>,
     /// moving a prop: where it was grabbed, from its centre
     grab: Option<Vec2>,
+    /// moving a building: where it was grabbed, from its corner
+    building_grab: Option<Vec2>,
+    /// Tweak (the selected prop's panel): a drag moves it within its cells, not to others
+    tweak: bool,
     stroke: bool,
     stroke_ground: bool,
     /// the last cell a stroke painted (strokes fill the cells between two frames)
@@ -377,6 +381,8 @@ impl MapEditor {
             plane_hit: None,
             ground_hit: None,
             grab: None,
+            building_grab: None,
+            tweak: false,
             stroke: false,
             stroke_ground: false,
             last_cell: None,
@@ -1320,7 +1326,7 @@ impl MapEditor {
         match self.tool {
             Tool::Select => {
                 section(ui, "Select");
-                hint(ui, "Click a prop or a building: the inspector shows it. Q/E turn it, Delete removes it. Things stay on their cells: a prop that leaves room moves within them (drag it).");
+                hint(ui, "Click a prop or a building: the inspector shows it. Drag it to move it to other cells (where there's room), Q/E turn it, Delete removes it. A prop's Tweak (in its panel) moves it within its cells instead.");
                 self.templates_panel(ui);
             }
             Tool::Ground => self.ground_panel(ui),
@@ -1535,6 +1541,7 @@ impl MapEditor {
 
     /// The right panel: the selected building or prop, else the map itself.
     fn inspector(&mut self, ui: &mut egui::Ui) {
+        crate::platform::set_hook("tweak", if self.tweak { "1" } else { "" });
         ui.add_space(6.0);
         if self.tool == Tool::Events && self.event_inspector(ui) {
             return;
@@ -1557,26 +1564,38 @@ impl MapEditor {
         let mut delete = false;
         let mut template = false;
         let room = self.prop_room(i);
+        let mut tweak = self.tweak;
         {
             let p = &mut self.map.props[i];
             section(ui, "Placed");
             let (w, d) = prop.as_ref().map(|q| p.turned(q.footprint)).unwrap_or((1, 1));
             let (x0, z0) = ((p.at[0] - w as f64 / 2.0).round() as i32, (p.at[1] - d as f64 / 2.0).round() as i32);
-            hint(ui, &format!("On {} cell{} from {x0}, {z0}, level {}: it stays on them.", w as u16 * d as u16, if w as u16 * d as u16 == 1 { "" } else { "s" }, p.level));
+            // where it is: only a drag on the map moves it
+            ui.label(RichText::new(format!("At {:.2}, {:.2} · level {}", p.at[0] + p.offset[0], p.at[1] + p.offset[1], p.level)).monospace().size(12.0));
+            hint(ui, &format!("On {} cell{} from {x0}, {z0}: drag it on the map to move it to others.", w as u16 * d as u16, if w as u16 * d as u16 == 1 { "" } else { "s" }));
             ui.add(egui::Slider::new(&mut p.turn, 0.0..=360.0).step_by(15.0).text("turn").suffix("°"));
             let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
             ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size");
+            let r = ui
+                .add_enabled(room.is_some(), egui::Button::new(if tweak { "Tweak: on" } else { "Tweak" }).selected(tweak))
+                .on_hover_text("Move it within its cells: drag it on the map, or x and z here")
+                .on_disabled_hover_text("It fills its cells: nothing to tweak");
+            mark("uiTweak", &r);
+            if r.clicked() {
+                tweak = !tweak;
+            }
             match room {
-                Some((lo, hi)) => {
+                Some((lo, hi)) if tweak => {
                     for (k, label) in [(0, "x"), (1, "z")] {
                         if hi[k] - lo[k] > 0.02 {
                             let r = ui.add(egui::Slider::new(&mut p.offset[k], lo[k]..=hi[k]).text(label).fixed_decimals(2));
                             mark(&format!("uiOffset{}", label.to_uppercase()), &r);
                         }
                     }
-                    hint(ui, "Where it stands within its cells (or drag it on the map).");
+                    hint(ui, "Where it stands within its cells: drag it on the map, or x and z. Tweak again to stop.");
                 }
-                None => hint(ui, "It fills its cells: it can't move within them."),
+                Some(_) => hint(ui, &format!("Within its cells: {:+.2}, {:+.2}.", p.offset[0], p.offset[1])),
+                None => hint(ui, "It fills its cells."),
             }
             ui.add_space(4.0);
             ui.horizontal(|ui| {
@@ -1590,6 +1609,7 @@ impl MapEditor {
                 }
             });
         }
+        self.tweak = tweak && room.is_some();
         if self.map.props[i] != before {
             let after = self.map.props[i].clone();
             self.map.props[i] = before.clone();
@@ -1915,10 +1935,18 @@ impl MapEditor {
                         (None, Some(_)) => true,
                         _ => false,
                     };
+                    let was = (self.selected, self.selected_building);
                     self.selected = if nearer { None } else { prop.map(|(_, i)| i) };
                     self.selected_building = if nearer { house.map(|(_, i)| i) } else { None };
-                    if self.selected_building.is_some() {
-                        self.status = "A building fills its cells: it stays where it was built (Edit changes it)".into();
+                    if (self.selected, self.selected_building) != was {
+                        self.tweak = false;
+                    }
+                    self.building_grab = None;
+                    if let Some(i) = self.selected_building {
+                        let b = &self.map.buildings[i];
+                        if let Some(hit) = Self::plane(origin, dir, b.level as f32 * self.level_height) {
+                            self.building_grab = Some(Vec2::new(hit.x - b.at[0] as f32, hit.z - b.at[1] as f32));
+                        }
                     }
                     if let Some(i) = self.selected {
                         let p = &self.map.props[i];
@@ -1927,24 +1955,58 @@ impl MapEditor {
                         if let Some(hit) = Self::plane(origin, dir, y) {
                             self.grab = Some(Vec2::new(hit.x - pos[0] as f32, hit.z - pos[1] as f32));
                         }
-                        if self.prop_room(i).is_none() {
-                            self.status = "It fills its cells: it stays where it was put".into();
+                    }
+                }
+                // a building moves to other cells, where nothing else is
+                if let (Some(i), Some(grab), true) = (self.selected_building, self.building_grab, primary_down && response.dragged()) {
+                    let level = self.map.buildings[i].level;
+                    if let Some(hit) = Self::plane(origin, dir, level as f32 * self.level_height) {
+                        let at = [(hit.x - grab.x).round() as i32, (hit.z - grab.y).round() as i32];
+                        if at != self.map.buildings[i].at {
+                            let before = self.map.clone();
+                            if self.move_building(i, at) && !self.stroke {
+                                self.undo.push(before);
+                                self.redo.clear();
+                                self.dirty = true;
+                                self.stroke = true;
+                            }
                         }
                     }
                 }
-                // a prop moves within its cells, as far as it leaves room there
+                if let (Some(i), true, true) = (self.selected_building, primary_released, self.stroke) {
+                    self.settle(i);
+                }
+                // a prop moves to other cells, where there's room; tweaked, within its own
                 if let (Some(i), Some(grab), true) = (self.selected, self.grab, primary_down && response.dragged()) {
-                    let level = self.map.props[i].level;
-                    if let (Some(hit), Some((lo, hi))) = (Self::plane(origin, dir, level as f32 * self.level_height), self.prop_room(i)) {
-                        let p = &self.map.props[i];
-                        let want = [(hit.x - grab.x) as f64 - p.at[0], (hit.z - grab.y) as f64 - p.at[1]];
-                        let offset = [(want[0].clamp(lo[0], hi[0]) * 100.0).round() / 100.0, (want[1].clamp(lo[1], hi[1]) * 100.0).round() / 100.0];
-                        if offset != p.offset {
+                    let p = self.map.props[i].clone();
+                    if let Some(hit) = Self::plane(origin, dir, p.level as f32 * self.level_height) {
+                        // where its centre (on its cells) would go
+                        let want = Vec3::new(hit.x - grab.x - p.offset[0] as f32, 0.0, hit.z - grab.y - p.offset[1] as f32);
+                        let moved = if self.tweak {
+                            self.prop_room(i).map(|(lo, hi)| {
+                                let offset = [((want.x as f64 - p.at[0]).clamp(lo[0], hi[0]) * 100.0).round() / 100.0, ((want.z as f64 - p.at[1]).clamp(lo[1], hi[1]) * 100.0).round() / 100.0];
+                                Placed { offset, ..p.clone() }
+                            })
+                        } else {
+                            let at = self.snap(&p.prop, p.turn as f32, want);
+                            let q = Placed { at, ..p.clone() };
+                            let cells = rooms::cells_of(self, &q);
+                            let on_map = cells.iter().all(|&(x, z)| self.map.inside(x, z));
+                            match rooms::clash(self, &p.prop, &cells, &rooms::ground_items(self, p.level, Some(i))) {
+                                _ if at == p.at || !on_map => None,
+                                Some(other) => {
+                                    self.status = format!("No room: {other} is there, and one of them doesn't stack");
+                                    None
+                                }
+                                None => Some(q),
+                            }
+                        };
+                        if let Some(q) = moved.filter(|q| *q != p) {
                             if !self.stroke {
                                 self.checkpoint();
                                 self.stroke = true;
                             }
-                            self.map.props[i].offset = offset;
+                            self.map.props[i] = q;
                             self.need_props = true;
                         }
                     }

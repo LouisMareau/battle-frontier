@@ -274,6 +274,20 @@ impl MapEditor {
         self.need_buildings = true;
     }
 
+    /// Moves a building to other cells (its corner to `at`): only onto the map, and not onto
+    /// another building.
+    pub(super) fn move_building(&mut self, i: usize, at: [i32; 2]) -> bool {
+        let mut b = self.map.buildings[i].clone();
+        b.at = at;
+        let taken = self.taken(Some(i));
+        if b.map_cells().iter().any(|&(x, z)| !self.map.inside(x, z) || taken.contains(&(x, z))) {
+            return false;
+        }
+        self.map.buildings[i] = b;
+        self.need_buildings = true;
+        true
+    }
+
     /// Levels the ground under a building to its floor and clears tree areas from it.
     pub(super) fn settle(&mut self, i: usize) {
         let b = &self.map.buildings[i];

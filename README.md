@@ -216,8 +216,10 @@ selected (a prop, a building), or the map itself (name, size, what's on it); the
 bottom shows the cell under the pointer and the last message.
 **Ground** paints terrain and, with "set the level", raises or lowers cells to it
 (right-click picks a cell's terrain and level); **Place** puts a prop at the level (Q/E turn
-it, Shift puts it where the pointer is within its cells); **Select** moves a prop within
-its cells (drag it, or the inspector's x and z), turns, scales and deletes props,
+it, Shift puts it where the pointer is within its cells); **Select** moves a prop or a
+building to other cells (drag it, where there's room: its position in the inspector only
+shows), turns, scales and deletes props, and a prop's Tweak (in the inspector) moves it
+within its cells instead (drag it, or the inspector's x and z),
 and its inspector edits the prop's record too: name, category, cells and height, blocking,
 its light (the same window as the asset browser's), its sound and the asset-browser folder
 it's in ("Move to a folder"), with "Save prop" (or Ctrl+S) writing the record. "Edit in
@@ -240,8 +242,8 @@ inner walls for things that hang); *Outside* asks for a wall first (a court's wa
 then hangs what `Buildings/Outside` holds on it or stands it on the ground up to two cells in
 front of it. Click a placed thing to select it: Q/E turn it, Delete (or its "remove" button)
 removes it; unstackable props never overlap anything. Then "Confirm the building". A
-building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag),
-delete. **Walk** puts a stand-in character on the map: the
+building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag
+it onto free cells), delete. **Walk** puts a stand-in character on the map: the
 arrows move it cell by cell, and A speaks to what's in front (an actor, a sign: its events)
 while cells stepped on set off theirs. Walking into a building, the floors above and the
 roof fade away over half a second (a blended pass drawn after everything else, each pixel

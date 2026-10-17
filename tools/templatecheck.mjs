@@ -1,9 +1,10 @@
 // Templates, props on their cells and stairs, in the built site in a real browser: captures
 // an area of the test meadow (five props, Bo, the well's cells) as a template, drags it
 // onto the south-west meadow (Bo comes back as bo_2, his script's cells moved along), undoes
-// and redoes it; nudges the lamp post within its cell (it can't leave it) and finds the
-// well fills its cells; walks up the corner shop's stairs and back down; and finds all of
-// it in the downloaded map and template. Exits 1 when something fails.
+// and redoes it; drags the lamp post to other cells and back (undo), then, with Tweak,
+// within its cell only; drags the well (it fills its cells: no Tweak) to other cells and
+// back; walks up the corner shop's stairs and back down; and finds all of it in the
+// downloaded map and template. Exits 1 when something fails.
 //     node tools/templatecheck.mjs
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -88,23 +89,33 @@ try {
   await browser.key('y', { ctrl: true });
   await expect('and redone', 'props', props0 + 5);
 
-  // 3. a prop stays on its cell: the lamp post moves within it, not out of it
+  // 3. the lamp post dragged two cells east, and back (undo); with Tweak, a drag moves it
+  // within its cell only
   await browser.click(...(await at(14.5, 1.2, 4.5)));
   await sleep(300);
   check('the lamp post selected', (await data('selprop')).startsWith('14.50,4.50'), await data('selprop'));
-  await browser.drag([await at(14.5, 0, 4.5), await at(15.0, 0, 4.5), await at(15.5, 0, 4.5), await at(16.5, 0, 4.5)]);
+  const east = async (x) => browser.drag([await at(x, 0, 4.5), await at(x + 0.5, 0, 4.5), await at(x + 1, 0, 4.5), await at(x + 2, 0, 4.5)]);
+  await east(14.5);
+  check('  dragged to other cells', (await data('selprop')).startsWith('16.50,4.50'), await data('selprop'));
+  await browser.key('z', { ctrl: true });
+  check('  back (undone)', (await data('selprop')).startsWith('14.50,4.50'), await data('selprop'));
+  await press('uiTweak');
+  await expect('  Tweak on', 'tweak', '1');
+  await east(14.5);
   const [cell, off] = (await data('selprop')).split(';');
   const ox = Number(off.split(',')[0]);
   check('  still on its cell', cell === '14.50,4.50', cell);
   check('  moved within it, up to its edge', ox > 0.2 && ox < 0.5, off);
   await shot('3-nudged');
-  // the well fills its two-by-two cells: it stays put
+  // the well fills its two-by-two cells: no Tweak; a drag moves it to others
   await browser.click(...(await at(12.0, 1.0, 6.0)));
   await sleep(300);
   check('the well selected', (await data('selprop')).startsWith('12.00,6.00'), await data('selprop'));
-  check('  and why it won\'t move', (await data('status')).includes('fills its cells'), await data('status'));
+  await expect('  Tweak off for it', 'tweak', '');
   await browser.drag([await at(12.0, 0, 6.0), await at(13.0, 0, 6.0), await at(14.0, 0, 6.0)]);
-  check('  it stayed', (await data('selprop')) === '12.00,6.00;0.00,0.00', await data('selprop'));
+  check('  dragged to other cells', (await data('selprop')) === '14.00,6.00;0.00,0.00', await data('selprop'));
+  await browser.key('z', { ctrl: true });
+  check('  back (undone)', (await data('selprop')) === '12.00,6.00;0.00,0.00', await data('selprop'));
   await browser.key('Escape');
 
   // 4. up the corner shop's stairs and back down

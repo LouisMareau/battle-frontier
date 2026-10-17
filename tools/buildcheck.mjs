@@ -5,8 +5,8 @@
 // where nothing may stand over them), a pillar; confirms; edits it again and, Outside, picks
 // a wall, hangs a flower box on it and puts a barrel in front of it (not further away);
 // tries stairs in the cottage (refused under its gabled roof, allowed once it's flat); walks
-// in through the door (and into walls), turns and moves the building, undoes, and downloads
-// the map.
+// in through the door (and into walls), turns it, drags it to other cells, undoes both, and
+// downloads the map.
 // Screenshots go to screenshots/build-*.png.
 //     node tools/buildcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -206,16 +206,17 @@ try {
   await step('ArrowUp', '22,17', 'the north wall stops it');
   await browser.key('Escape');
 
-  // 7. turned on its cells; a drag doesn't move it (it stays where it was built); the
-  // turn undone
+  // 7. turned on its cells, dragged to others, both undone
   const cells = await data('bcells');
   await browser.key('e');
   check('turned', (await data('bcells')) !== cells, `${cells} -> ${await data('bcells')}`);
   const before = await data('bat');
   await browser.drag([await at(22.5, 1.0, 18.0), await at(23.0, 0, 18.0), await at(24.0, 0, 18.0), await at(24.5, 0, 18.0)]);
   const moved = await data('bat');
-  check('a drag leaves it where it was built', moved === before, `${before} -> ${moved}`);
-  await shot('9-stays');
+  check('a drag moves it to other cells', moved !== before, `${before} -> ${moved}`);
+  await shot('9-moved');
+  await browser.key('z', { ctrl: true });
+  await expect('the move undone', 'bat', before);
   await browser.key('z', { ctrl: true });
   await expect('the turn undone', 'bcells', cells);
 
