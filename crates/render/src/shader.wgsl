@@ -99,7 +99,7 @@ struct MapIn {
     @location(1) normal: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(3) color: vec4<f32>,
-    // 1: drawn with the toon look
+    // 1: drawn with the toon look; 2: unlit, as drawn (an FX)
     @location(4) toon: f32,
 };
 
@@ -145,7 +145,7 @@ fn look(world: vec3<f32>, n: vec3<f32>, toon: f32) -> vec4<u32> {
     let d = distance(world, g.camera.xyz);
     let depth = u32(clamp(1.0 - sqrt(d / LOOK_FAR), 0.0, 1.0) * 65535.0);
     let e = vec2<u32>(clamp((octa(normalize(n)) * 0.5 + 0.5) * 65535.0, vec2<f32>(0.0), vec2<f32>(65535.0)));
-    return vec4<u32>(select(0u, 1u, toon > 0.5), depth, e.x, e.y);
+    return vec4<u32>(select(0u, 1u, toon > 0.5 && toon < 1.5), depth, e.x, e.y);
 }
 
 @vertex
@@ -223,6 +223,9 @@ fn toon_light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3
 }
 
 fn light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>, toon: f32) -> vec3<f32> {
+    if (toon > 1.5) {
+        return vec3<f32>(1.0);
+    }
     if (toon > 0.5) {
         return toon_light(normal, light_pos, world);
     }

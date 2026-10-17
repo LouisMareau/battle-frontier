@@ -82,10 +82,11 @@ record!(Map, "maps");
 record!(Spawns, "spawns");
 record!(World, "worlds");
 record!(Template, "templates");
+record!(Fx, "fx");
 
-pub const COLLECTIONS: [&str; 18] = [
+pub const COLLECTIONS: [&str; 19] = [
     "types", "creatures", "moves", "abilities", "items", "natures", "growth_rates", "egg_groups", "regions", "encounters", "parties",
-    "settings", "terrains", "props", "maps", "spawns", "worlds", "templates",
+    "settings", "terrains", "props", "maps", "spawns", "worlds", "templates", "fx",
 ];
 
 #[derive(Clone, Debug)]
@@ -282,6 +283,8 @@ pub struct Content {
     pub spawns: Collection<Spawns>,
     pub worlds: Collection<World>,
     pub templates: Collection<Template>,
+    /// abilities' effects: hand-drawn flipbooks on simple meshes
+    pub fx: Collection<Fx>,
     /// what couldn't be read
     pub problems: Vec<String>,
 }
@@ -323,6 +326,7 @@ impl Content {
             "spawns" => go!(spawns),
             "worlds" => go!(worlds),
             "templates" => go!(templates),
+            "fx" => go!(fx),
             other => return Err(format!("{path}: no collection named \"{other}\"")),
         }
         Ok(())
@@ -363,6 +367,7 @@ impl Content {
         self.spawns.sort_by_key(|s| s.id.clone());
         self.worlds.sort_by_key(|w| w.id.clone());
         self.templates.sort_by_key(|t| t.id.clone());
+        self.fx.sort_by_key(|f| f.id.clone());
     }
 
     /// The world's measures (the "world" settings record, or the defaults).
@@ -399,6 +404,7 @@ impl Content {
         count!(spawns, "spawns");
         count!(worlds, "worlds");
         count!(templates, "templates");
+        count!(fx, "fx");
         out
     }
 
@@ -449,8 +455,32 @@ impl Content {
             }
         }
         for m in self.moves.iter() {
-            need(self.types.contains(&m.ty), format!("moves/{}: type \"{}\", no such type", m.id, m.ty));
-            need(matches!(m.category.as_str(), "physical" | "special" | "status"), format!("moves/{}: category \"{}\"", m.id, m.category));
+            let at = format!("moves/{}", m.id);
+            need(self.types.contains(&m.ty), format!("{at}: type \"{}\", no such type", m.ty));
+            need(matches!(m.category.as_str(), "physical" | "special" | "status"), format!("{at}: category \"{}\"", m.category));
+            let mut seen = vec![];
+            for l in &m.levels {
+                need((2..=5).contains(&l.level), format!("{at}: a level-up at level {}: 2 to 5", l.level));
+                need(!seen.contains(&l.level), format!("{at}: level {} twice", l.level));
+                seen.push(l.level);
+            }
+            for e in &m.evolutions {
+                need(self.moves.contains(&e.into), format!("{at}: becomes \"{}\", no such ability", e.into));
+                need(e.into != m.id, format!("{at}: becomes itself"));
+                need(e.at_level <= 5, format!("{at}: becomes {} at level {}: up to 5", e.into, e.at_level));
+                need(e.at_level > 0 || e.item.is_some(), format!("{at}: becomes {} at no level and with no item", e.into));
+                if let Some(i) = &e.item {
+                    need(self.items.contains(i), format!("{at}: evolution item \"{i}\", no such item"));
+                }
+            }
+            for p in m.timeline.problems(&|id| self.fx.contains(id)) {
+                need(false, format!("{at}: timeline: {p}"));
+            }
+        }
+        for f in self.fx.iter() {
+            for p in f.problems() {
+                need(false, format!("fx/{}: {p}", f.id));
+            }
         }
         let member = |m: &Member, at: &str, out: &mut Vec<String>| {
             if !self.creatures.contains(&m.creature) {
@@ -864,6 +894,20 @@ pub mod disk {
         for e in content.creatures.entries() {
             if let Some(s) = &e.value.sound {
                 look(e.space, format!("creatures/{}", e.value.id), "sound", &s.file);
+            }
+        }
+        for e in content.moves.entries() {
+            for c in e.value.timeline.clips.iter().filter(|c| c.kind == "sound") {
+                look(e.space, format!("moves/{}", e.value.id), "sound", &c.what);
+            }
+        }
+        for e in content.fx.entries() {
+            for (i, m) in e.value.meshes.iter().enumerate() {
+                for (what, file) in [("source", &m.source), ("sheet", &m.sheet)] {
+                    if !file.is_empty() {
+                        look(e.space, format!("fx/{} mesh {i}", e.value.id), what, file);
+                    }
+                }
             }
         }
         for e in content.maps.entries() {

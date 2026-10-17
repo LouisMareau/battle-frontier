@@ -48,7 +48,7 @@ fn main() {
                     }
                 )*};
             }
-            each!(types, creatures, moves, abilities, items, natures, growth_rates, egg_groups, regions, encounters, parties, settings, terrains, props, maps, spawns, worlds, templates);
+            each!(types, creatures, moves, abilities, items, natures, growth_rates, egg_groups, regions, encounters, parties, settings, terrains, props, maps, spawns, worlds, templates, fx);
             let mut chunks = 0;
             for e in content.maps.entries().iter().filter(|e| e.space == Space::Content && e.value.chunked()) {
                 match disk::read_chunks(&root, Space::Content, &e.value).and_then(|c| disk::save_chunks(&root, Space::Content, &e.value, &c)) {

@@ -432,6 +432,7 @@ impl MapEditor {
         let Some(r) = guard.callback_resources.get_mut::<SceneRenderer>() else { return };
         self.load_sprites(r, rs);
         self.load_models(r, rs);
+        self.load_fx(r, rs);
         self.hold_around();
         let start = crate::platform::now_ms();
         // the open map

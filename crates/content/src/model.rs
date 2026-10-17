@@ -181,6 +181,220 @@ pub struct Move {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub flags: Vec<String>,
     pub description: String,
+    /// what it gains at each move level past 1 (on top of the world's own growth)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub levels: Vec<MoveLevel>,
+    /// the stronger abilities it becomes (made separately, named here)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub evolutions: Vec<MoveEvolution>,
+    /// how it plays out: animations, FX, sounds and the player's inputs, in time
+    #[serde(skip_serializing_if = "is_default")]
+    pub timeline: Timeline,
+}
+
+/// What an ability gains at a move level: a field at 0 is unchanged from the level before
+/// (and a level not listed changes nothing of its own).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MoveLevel {
+    /// 2 to 5
+    pub level: u8,
+    #[serde(skip_serializing_if = "is_default")]
+    pub power: u16,
+    #[serde(skip_serializing_if = "is_default")]
+    pub accuracy: u16,
+    #[serde(skip_serializing_if = "is_default")]
+    pub effect_chance: u16,
+    /// hits per use (an ability that strikes several times)
+    #[serde(skip_serializing_if = "is_default")]
+    pub hits: u8,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+/// A stronger ability this one becomes, its own record: brought about by reaching a move
+/// level, by an item, or both.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MoveEvolution {
+    /// the ability it becomes
+    pub into: String,
+    /// the move level that brings it about (0: an item alone)
+    #[serde(skip_serializing_if = "is_default")]
+    pub at_level: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub note: String,
+}
+
+/// How an ability plays out, in time, from the moment it starts: the user's and the
+/// target's animations and motions, FX, sounds, the player's inputs, the camera.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Timeline {
+    /// how long it all takes, in seconds
+    pub seconds: f64,
+    pub clips: Vec<Clip>,
+}
+
+/// One thing on a timeline, at `at` seconds for `seconds` (0: an instant, or the file's own
+/// length), on `who` ("user" or "target"). `kind` says what `what` names: "animation" (one
+/// of the model's animations), "motion" (lunge, hop, shake, pulse, flash; `value`: how far
+/// or hard), "fx" (an fx record, anchored on `who`), "sound" (a file under assets/;
+/// `value`: volume), "input" (tap, cast, block, charge, rhythm; `value`: the window in ms,
+/// `count`: rhythm beats), "camera" (shake, zoom; `value`: how much).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Clip {
+    pub kind: String,
+    pub who: String,
+    pub at: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub seconds: f64,
+    pub what: String,
+    #[serde(skip_serializing_if = "is_default")]
+    pub value: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub count: u8,
+}
+
+impl Default for Clip {
+    fn default() -> Clip {
+        Clip { kind: "animation".into(), who: "user".into(), at: 0.0, seconds: 0.0, what: String::new(), value: 0.0, count: 0 }
+    }
+}
+
+pub const CLIP_KINDS: [&str; 6] = ["animation", "motion", "fx", "sound", "input", "camera"];
+pub const MOTIONS: [&str; 5] = ["lunge", "hop", "shake", "pulse", "flash"];
+pub const INPUTS: [&str; 5] = ["tap", "cast", "block", "charge", "rhythm"];
+pub const CAMERAS: [&str; 2] = ["shake", "zoom"];
+
+impl Timeline {
+    /// What's wrong with it (empty when nothing); `fx` says whether an fx record exists.
+    pub fn problems(&self, fx: &dyn Fn(&str) -> bool) -> Vec<String> {
+        let mut out = vec![];
+        if self.seconds < 0.0 || self.seconds > 60.0 {
+            out.push(format!("a timeline of {} s: 0 to 60", self.seconds));
+        }
+        for (i, c) in self.clips.iter().enumerate() {
+            let at = format!("clip {i} ({} {})", c.kind, c.what);
+            if !CLIP_KINDS.contains(&c.kind.as_str()) {
+                out.push(format!("{at}: kind \"{}\": {}", c.kind, CLIP_KINDS.join(", ")));
+            }
+            if !matches!(c.who.as_str(), "user" | "target") {
+                out.push(format!("{at}: on \"{}\": user or target", c.who));
+            }
+            if c.at < 0.0 || c.at > self.seconds.max(0.0) || c.seconds < 0.0 {
+                out.push(format!("{at}: at {} s for {} s, off the timeline", c.at, c.seconds));
+            }
+            let named = match c.kind.as_str() {
+                "motion" => MOTIONS.contains(&c.what.as_str()),
+                "input" => INPUTS.contains(&c.what.as_str()),
+                "camera" => CAMERAS.contains(&c.what.as_str()),
+                "fx" => fx(&c.what),
+                _ => !c.what.is_empty(),
+            };
+            if !named {
+                out.push(format!("{at}: no such {}", if c.kind == "fx" { "fx record" } else { "one" }));
+            }
+        }
+        out
+    }
+}
+
+/// An FX: hand-drawn frames on a few simple meshes placed round what it's anchored on
+/// (its feet: x right, y up, z forward, in cells). Each mesh plays its own flipbook, a
+/// sheet of `frames` pictures `size` pixels square, `columns` across, at `fps`; the
+/// frames as drawn are its `source` sheet, and `sheet` is what the game draws (the source
+/// until it's exported at `export_size` pixels).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Fx {
+    pub id: String,
+    pub name: String,
+    pub fps: f64,
+    pub frames: u8,
+    pub size: u16,
+    pub export_size: u16,
+    pub meshes: Vec<FxMesh>,
+}
+
+impl Default for Fx {
+    fn default() -> Fx {
+        Fx { id: String::new(), name: String::new(), fps: 12.0, frames: 8, size: 128, export_size: 64, meshes: vec![] }
+    }
+}
+
+/// One of an FX's meshes: "billboard" (upright, turning to face the camera), "quad" (flat,
+/// turned as set), "sphere", "dome" (a half sphere, open underneath) or "ring"; placed
+/// from the anchor's feet (x right, y up, z forward: a little in front of it, where it
+/// isn't hidden by its body), sized and turned (degrees about x, y, z).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FxMesh {
+    pub shape: String,
+    pub at: [f64; 3],
+    pub size: [f64; 3],
+    pub turn: [f64; 3],
+    /// its frames as drawn (a PNG under assets/, `columns` across)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub source: String,
+    /// the flipbook the game draws: an export of the source (empty: the source itself)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub sheet: String,
+    pub columns: u8,
+    /// pixel-sharp (else smoothed)
+    #[serde(skip_serializing_if = "is_default")]
+    pub pixelated: bool,
+    /// lit like the world; else full bright, as drawn (a glow, a flash)
+    #[serde(skip_serializing_if = "is_default")]
+    pub lit: bool,
+}
+
+impl Default for FxMesh {
+    fn default() -> FxMesh {
+        FxMesh { shape: "billboard".into(), at: [0.0, 0.8, 0.6], size: [1.2, 1.2, 1.2], turn: [0.0; 3], source: String::new(), sheet: String::new(), columns: 4, pixelated: false, lit: false }
+    }
+}
+
+pub const FX_SHAPES: [&str; 5] = ["billboard", "quad", "sphere", "dome", "ring"];
+
+impl FxMesh {
+    /// The flipbook the game draws.
+    pub fn drawn(&self) -> &str {
+        if self.sheet.is_empty() { &self.source } else { &self.sheet }
+    }
+}
+
+impl Fx {
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if !(self.fps > 0.0 && self.fps <= 60.0) {
+            out.push(format!("{} frames a second: over 0, up to 60", self.fps));
+        }
+        if self.frames == 0 || self.frames > 64 {
+            out.push(format!("{} frames: 1 to 64", self.frames));
+        }
+        for (what, s) in [("size", self.size), ("export_size", self.export_size)] {
+            if !matches!(s, 32 | 64 | 128 | 256 | 512) {
+                out.push(format!("{what} {s}: 32, 64, 128, 256 or 512 pixels"));
+            }
+        }
+        for (i, m) in self.meshes.iter().enumerate() {
+            if !FX_SHAPES.contains(&m.shape.as_str()) {
+                out.push(format!("mesh {i}: shape \"{}\": {}", m.shape, FX_SHAPES.join(", ")));
+            }
+            if m.columns == 0 {
+                out.push(format!("mesh {i}: no columns"));
+            }
+            if m.size.iter().any(|&s| s <= 0.0) {
+                out.push(format!("mesh {i}: a size of {:?}", m.size));
+            }
+        }
+        out
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]

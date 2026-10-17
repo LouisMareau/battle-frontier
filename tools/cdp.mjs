@@ -180,6 +180,12 @@ export class Browser {
     await this.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...this.mouse, button, buttons: button === 'left' ? 1 : 2, clickCount: 1 });
   }
 
+  /// Types text into whatever has the focus (click a field first).
+  async type(text) {
+    await this.send('Input.insertText', { text });
+    await sleep(80);
+  }
+
   /// Scrolls with the wheel over a point (`dy` pixels; positive: down the page).
   async wheel(x, y, dy) {
     this.mouse = { x, y };

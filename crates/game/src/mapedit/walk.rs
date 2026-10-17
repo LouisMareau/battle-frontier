@@ -496,6 +496,7 @@ impl MapEditor {
     /// The things that move: the walker and the actors drawn as props.
     pub(super) fn extra_mesh(&self, now: f64) -> Scene {
         let mut out = self.actor_scene(now);
+        out.append(&self.timeline_scene(now), glam::Mat4::IDENTITY);
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
         let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;

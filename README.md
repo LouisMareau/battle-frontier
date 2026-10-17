@@ -125,6 +125,9 @@ small one.
   slabs, cracks, lumps; in the terrain's side colour), every edge bevelled: the top edge
   goes down, the ground at the foot comes up into it (not water), and an outer corner
   standing on one level all round is cut off down its height.
+- **Abilities** (`moves`) hold what an ability does in battle, its level-ups, what it
+  becomes and its timeline; **FX** records hold hand-drawn flipbooks on simple meshes
+  (sheets under `assets/fx/`), made in the editor's FX editor.
 - **Props** are the asset database: footprint in cells, height, whether they block, whether
   they are `unstackable` (nothing overlaps them and they overlap nothing: stairs, beds,
   shelves, wells...), the asset browser's `folders` they're in, a `light` they give off (a
@@ -268,7 +271,28 @@ round the edge and a glint; ink lines round it where it stands in front of what'
 (drawn outside it: colour, width, opacity, how far behind counts) and along folds sharper
 than an angle; and colour steps for the whole picture, toon or not (the world's light in
 bands, the colours kept; the interface untouched). Changes show at once; Save (or Ctrl+S)
-writes them into the world settings record, Revert drops them, Defaults starts over. **World** opens the World view across the window: the world this map is part of as
+writes them into the world settings record, Revert drops them, Defaults starts over.
+**Abilities** opens the Abilities window: every ability (a move record) of both spaces, one
+picked to edit or a new one (new ones go to `temporary/` unless told otherwise): what it
+does in battle (type, category, power, accuracy, PP, priority, target, the engine's effect
+and its chance, contact, flags, the description), its level-ups (what it gains at move
+levels 2 to 5, on top of the world's own growth), what it becomes (stronger abilities made
+separately and named here, at a move level, with an item, or both), and "Edit the
+timeline". The **Timeline** panel lays the ability's clips on tracks in time (the user's and
+the target's animations, motions, FX, sounds, the player's inputs, the camera): add one at
+the playhead, drag it along its track, set what it is and for how long; Play runs it on the
+map with a stand-in user and target (any prop with a model, a rigged one playing its
+animations, or a creature's picture; "Stand here" puts them where the view looks): motions
+move them, FX frames play round them, sounds sound, input cues shrink onto their mark (Z is
+judged against the window), the camera shakes or comes closer. An fx clip's "Edit the FX"
+holds the timeline still and opens the **FX editor**: the FX's meshes (a billboard, a flat
+quad, a sphere, a dome, a ring) placed round the actor, dragged on the map or set by hand,
+each with a flipbook of hand-drawn frames; the **Drawing** window paints the frame shown
+(brushes, colours, an eraser, undo, the frame before copied), the frames before and after
+ghosted, and plays them; "Export the flipbooks" packs every mesh's frames at a smaller
+size (what the game draws; the drawn frames stay as the source). Abilities and FX save with
+Ctrl+S (the browser downloads them). Battles don't play timelines yet: the director keeps its
+own animations and timing windows for now. **World** opens the World view across the window: the world this map is part of as
 pieces on a grid (the map being edited lit), seams green where the levels match and crimson
 where they don't; drag a map in from the list, drag pieces into place (they snap to cells),
 double-click a piece to edit that map, "New world" starts one with this map, "Save world"
@@ -350,10 +374,10 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 |---|---|
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
-| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), and the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts). |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), and the FX meshes and sheets (`fx.rs`). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window and their files, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window and their files, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

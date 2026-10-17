@@ -326,6 +326,7 @@ impl MapEditor {
             });
         }
         crate::platform::set_hook("assets", &content.props.len().to_string());
+        crate::platform::set_hook("toonprops", &content.props.iter().filter(|p| p.toon).map(|p| p.id.as_str()).collect::<Vec<_>>().join(","));
         crate::platform::set_hook("assetsdirty", &self.assets.dirty.len().to_string());
         crate::platform::set_hook("creaturesdirty", &self.assets.creatures_dirty.len().to_string());
         crate::platform::set_hook("folder", self.assets.folder.as_deref().unwrap_or(""));

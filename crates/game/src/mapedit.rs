@@ -9,6 +9,7 @@
 //! Ctrl+Z / Ctrl+Y, Ctrl+S, G the grid, arrows pan, Home recentres. Walk (`walk.rs`) puts a
 //! character on the map to try it on foot.
 
+mod abilities;
 mod actors;
 mod around;
 mod assets;
@@ -21,6 +22,7 @@ mod rooms;
 mod sounds;
 mod stream;
 mod templates;
+mod timeline;
 mod walk;
 mod worlds;
 mod zones;
@@ -266,6 +268,10 @@ pub struct MapEditor {
     tpl: templates::Templates,
     /// the Post-processing window (the toon look)
     post: post::Post,
+    /// the Abilities window
+    abilities: abilities::Abilities,
+    /// the Timeline panel: an ability playing out on the map
+    tl: timeline::Timelines,
     /// the game's overworld: the map walked, no editing (`play_ui`)
     play: bool,
 }
@@ -451,6 +457,8 @@ impl MapEditor {
             now: 0.0,
             tpl: Default::default(),
             post: Default::default(),
+            abilities: Default::default(),
+            tl: Default::default(),
             play: false,
             dirty: false,
             space,
@@ -804,6 +812,16 @@ impl MapEditor {
             self.save_post();
             self.status = format!("{map} · {}", self.status);
         }
+        if !self.abilities.dirty.is_empty() {
+            let map = self.status.clone();
+            self.save_abilities();
+            self.status = format!("{map} · {}", self.status);
+        }
+        if !self.tl.fx_dirty.is_empty() {
+            let map = self.status.clone();
+            self.save_fx();
+            self.status = format!("{map} · {}", self.status);
+        }
         if !self.tpl.dirty.is_empty() {
             let map = self.status.clone();
             self.save_templates();
@@ -1033,6 +1051,7 @@ impl MapEditor {
         self.tick(now);
         self.tick_actors(now);
         self.step_story(ctx, now);
+        self.timeline_tick(ctx, now);
         if let Some(rs) = rs {
             self.sync(rs, now);
         }
@@ -1048,6 +1067,9 @@ impl MapEditor {
         for (file, volume) in shots {
             let space = self.content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
             audio.play_once(&self.files, &space.asset(&file), None, volume, 0.0, now);
+        }
+        for (path, volume) in std::mem::take(&mut self.tl.shots) {
+            audio.play_once(&self.files, &path, None, volume, 0.0, now);
         }
         crate::platform::set_hook("sounds", &audio.playing().to_string());
         crate::platform::set_hook("audio", audio.state());
@@ -1115,7 +1137,7 @@ impl MapEditor {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.spacing_mut().button_padding.x = 3.0;
                 ui.label(RichText::new("Maps").size(16.0).strong());
-                if ui.button("Back to the game").clicked() {
+                if ui.button("Menu").on_hover_text("Back to the game's menu").clicked() {
                     back = true;
                 }
                 ui.separator();
@@ -1194,6 +1216,7 @@ impl MapEditor {
                 }
                 self.requests.toggle(ui);
                 self.post_toggle(ui);
+                self.abilities_toggle(ui);
                 let worlds = ui.selectable_label(self.worlds.open, "World").on_hover_text("Maps stitched into a world: place this map next to others");
                 mark("uiWorld", &worlds);
                 if worlds.clicked() {
@@ -1237,6 +1260,9 @@ impl MapEditor {
         if self.worlds.open {
             egui::Panel::bottom("maps-world").resizable(true).default_size(320.0).min_size(160.0).show(ui, |ui| self.worlds_panel(ui));
         }
+        if self.tl.open {
+            egui::Panel::bottom("maps-timeline").resizable(true).default_size(280.0).min_size(160.0).show(ui, |ui| self.timeline_panel(ui));
+        }
         egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
             ui.add_space(6.0);
             self.toolbar(ui);
@@ -1247,6 +1273,8 @@ impl MapEditor {
         });
         self.light_window(ui);
         self.post_window(&ctx);
+        self.abilities_window(&ctx);
+        self.fx_windows(&ctx);
         if let Some(id) = self.requests.window(&ctx, &self.content) {
             self.use_prop(&id);
             self.tool = Tool::Place;
@@ -1890,7 +1918,12 @@ impl MapEditor {
         } else {
             self.tpl.ghost = None;
             if let Some((origin, dir)) = ray {
-                self.tool_input(origin, dir, response, mods, primary_pressed, primary_down, primary_released, secondary_clicked);
+                if self.tl.fx_edit.is_some() {
+                    // an FX's mesh dragged on the map
+                    self.fx_view_input(origin, dir, primary_down && response.dragged());
+                } else {
+                    self.tool_input(origin, dir, response, mods, primary_pressed, primary_down, primary_released, secondary_clicked);
+                }
             }
         }
         if primary_released {
@@ -2138,7 +2171,9 @@ impl MapEditor {
         self.creature_billboards([tint.x, tint.y, tint.z, 1.0], &mut billboards, &mut shapes);
         self.actor_billboards([tint.x, tint.y, tint.z, 1.0], now, &mut billboards, &mut shapes);
         self.events_shapes(&mut shapes, now);
-        let animated = self.animated_draws(now);
+        self.timeline_frame(now, &mut billboards, &mut shapes, &mut glows);
+        let mut animated = self.animated_draws(now);
+        animated.extend(self.timeline_animated(now));
         self.animated_n = animated.len();
         if let Some(b) = self.selected_building.and_then(|i| self.map.buildings.get(i)) {
             let y = b.level as f32 * lh + 0.05;

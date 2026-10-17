@@ -89,12 +89,25 @@ try {
   const well = await at(12.0, 0.6, 6.0);
   const crates = await at(16.0, 0.4, 8.5);
   const boxes = [[well[0], well[1], 70], [crates[0], crates[1], 60]];
+
+  // 0. the look as saved may be anything: from the defaults
+  await press('uiPost');
+  await press('uiPostDefaults');
+  await press('uiPost');
+  await sleep(300);
   const before = await ink('1-plain', boxes);
 
-  // 1. the well, the barrel and the crate made toon in the asset browser
+  // 1. the well, the barrel and the crate made toon in the asset browser (those not yet)
   await press('uiAssets');
   await sleep(300);
+  const already = (await data('toonprops')).split(',').filter(Boolean);
+  let toggled = 0;
   for (const id of ['stone_well', 'barrel', 'crate']) {
+    if (already.includes(id)) {
+      console.log(`     ${id} is toon already`);
+      continue;
+    }
+    toggled++;
     // scrolled into the list's sight
     let [x, y] = (await data(`uiToon_${id}`)).split(',').map(Number);
     for (let i = 0; i < 30 && !(y > 650 && y < 850); i++) {
@@ -106,7 +119,7 @@ try {
     await browser.click(x, y);
     await sleep(200);
   }
-  check('three props changed', (await data('assetsdirty')) === '3', await data('assetsdirty'));
+  check('the props changed', (await data('assetsdirty')) === String(toggled), `${await data('assetsdirty')} (${toggled} toggled)`);
   await press('uiAssets');
   const toon = await ink('2-toon', boxes);
   check('ink lines round them', toon > before + 150, `${before} ink pixels before, ${toon} now`);
@@ -159,13 +172,15 @@ try {
   const got = (name) => existsSync(join(downloads, name));
   const wanted = ['world.json', 'stone_well.json', 'barrel.json', 'crate.json', ...(shown.length ? [`${shown[0]}.json`] : [])];
   for (let i = 0; i < 50 && !wanted.every(got); i++) await sleep(200);
-  check('downloads', wanted.every(got), wanted.map((n) => `${n}: ${got(n) ? 'yes' : 'no'}`).join(', '));
+  check('downloads', wanted.filter((n) => !already.includes(n.replace('.json', ''))).every(got), wanted.map((n) => `${n}: ${got(n) ? 'yes' : 'no'}`).join(', '));
   if (got('world.json')) {
     const w = JSON.parse(readFileSync(join(downloads, 'world.json'), 'utf8'));
     check('  the world settings, with the look', w.id === 'world' && w.toon?.ink === true && w.toon?.ink_width > 2 && w.toon?.color_steps >= 2, JSON.stringify(w.toon));
   }
   if (got('stone_well.json')) {
     check('  the well, toon', JSON.parse(readFileSync(join(downloads, 'stone_well.json'), 'utf8')).toon === true);
+  } else {
+    check('  the well, toon', already.includes('stone_well'), 'it was toon before, and still is');
   }
   if (shown.length && got(`${shown[0]}.json`)) {
     check('  the creature, toon', JSON.parse(readFileSync(join(downloads, `${shown[0]}.json`), 'utf8')).toon === true);
