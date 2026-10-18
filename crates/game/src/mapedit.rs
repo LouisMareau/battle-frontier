@@ -239,6 +239,11 @@ pub struct MapEditor {
     walker: Option<walk::Walker>,
     /// a building's upper part fading as the walker goes in or out
     fade: Option<walk::Fade>,
+    /// the sides of a building whose walls face the camera: cut down to a stub while the
+    /// walker is inside (they'd hide the room)
+    front: world::buildings::Sides,
+    /// walls cut down, or rising back, as the camera turned: fading
+    wall_fade: Option<walk::WallFade>,
     /// which cells block on foot (until the map changes)
     blocked: Option<Vec<bool>>,
     /// the moving things' mesh must be sent again
@@ -451,6 +456,8 @@ impl MapEditor {
             probe: None,
             walker: None,
             fade: None,
+            front: Default::default(),
+            wall_fade: None,
             blocked: None,
             extra_changed: false,
             files,
@@ -758,6 +765,7 @@ impl MapEditor {
         self.rebuild_actors();
         self.blocked = None;
         self.fade = None;
+        self.wall_fade = None;
         self.everything_changed();
         self.need_cells = true;
         self.status = format!("{}: {}", if self.walker.is_some() { "Walking on" } else { "Editing" }, self.map.name);

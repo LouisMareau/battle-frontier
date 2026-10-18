@@ -16,7 +16,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use content::{Building, Content, CHUNK};
 use glam::{Mat4, Vec3};
 use render::scene::{Place, SceneRenderer, WorldGround, CLIFFS, WHITE};
-use world::buildings::{building, Cut};
+use world::buildings::{building, Cut, Sides};
 use world::mesh::{self, placement, prop_scene, Beyond, Models, Scene};
 use world::trees::{trees, Tree};
 use world::WorldMap;
@@ -87,8 +87,9 @@ pub(super) struct Feed<'a> {
     /// the camera's target and distance, in the map's own space
     pub target: Vec3,
     pub distance: f32,
-    /// how each building shows: cut above that floor (the walker's), or whole
-    pub cuts: &'a [Option<usize>],
+    /// how each building shows: cut above that floor (the walker's), its walls facing the
+    /// camera there cut down, or whole
+    pub cuts: &'a [Option<Cut>],
     /// a building being designed: the one left out (being edited), and the draft with the
     /// floor shown
     pub editing: Option<usize>,
@@ -303,12 +304,12 @@ impl Feed<'_> {
                 let mut m = Scene::default();
                 for (i, b) in self.map.buildings.iter().enumerate().filter(|(_, b)| square(b.at[0], b.at[1]) == s) {
                     if Some(i) != self.editing {
-                        let cut = self.cuts.get(i).copied().flatten().map(|top| Cut { top });
+                        let cut = self.cuts.get(i).copied().flatten();
                         m.append(&building(b, self.content, lh, cut, self.models), Mat4::IDENTITY);
                     }
                 }
                 if let Some((b, floor)) = self.draft.filter(|(b, _)| square(b.at[0], b.at[1]) == s) {
-                    m.append(&building(b, self.content, lh, Some(Cut { top: floor }), self.models), Mat4::IDENTITY);
+                    m.append(&building(b, self.content, lh, Some(Cut { top: floor, low: Sides::NONE }), self.models), Mat4::IDENTITY);
                 }
                 r.set_chunk(device, id, "buildings", s, &models::batches(&m));
             }
@@ -446,7 +447,7 @@ impl MapEditor {
             // a map other than the one before (or the first): no battle map under it
             r.clear_map();
         }
-        let cuts: Vec<Option<usize>> = (0..self.map.buildings.len()).map(|i| self.building_cut(i)).collect();
+        let cuts: Vec<Option<Cut>> = (0..self.map.buildings.len()).map(|i| self.building_cut(i)).collect();
         let origin = self.around.origin.unwrap_or([0, 0]);
         let next = self.around.next(&self.content, origin, None);
         let draft = self.draft.as_ref().filter(|d| d.step == build::Step::Design).map(|d| (&d.b, d.floor));

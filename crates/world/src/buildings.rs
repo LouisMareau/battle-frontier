@@ -4,7 +4,8 @@
 //! with holes where doors and windows are), the doors, windows and what stands inside;
 //! pillars as high as the building; a gabled roof on a rectangle, a flat one with a parapet
 //! on any other shape; decorations on the walls. A building can be cut away above a floor,
-//! for editing it.
+//! for editing it or walking in it, and there the walls facing the camera cut down to a stub
+//! (they'd hide the room behind them).
 
 use content::{segment_ends, side_turn, Anchor, Building, Content};
 use glam::{Mat4, Vec3};
@@ -17,6 +18,64 @@ use crate::{color, WorldMap};
 pub const WALL: f32 = 0.12;
 /// Doors and windows leave this much wall on each side of their span.
 const MARGIN: f32 = 0.1;
+/// How high a wall cut down stays: its foot, showing where the room ends and where its doors
+/// are.
+pub const STUB: f32 = 0.2;
+/// How far a wall's outside must face the camera (the cosine between its way out and the
+/// camera's, on the ground) to be cut down while the walker is inside, and how little for one
+/// cut down to rise back: between the two it stays as it is, so it doesn't flicker as the
+/// camera turns past.
+const FACING_CUT: f32 = 0.35;
+const FACING_BACK: f32 = 0.15;
+
+/// Some of the sides of a building's outline (north, south, west, east).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Sides(u8);
+
+impl Sides {
+    pub const NONE: Sides = Sides(0);
+    const NAMES: [&'static str; 4] = ["n", "s", "w", "e"];
+
+    /// One side: "n", "s", "w" or "e".
+    pub fn of(side: &str) -> Sides {
+        Sides::NAMES.iter().position(|n| *n == side).map_or(Sides::NONE, |i| Sides(1 << i))
+    }
+
+    pub fn has(self, side: &str) -> bool {
+        self.0 & Sides::of(side).0 != 0
+    }
+
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    pub fn or(self, other: Sides) -> Sides {
+        Sides(self.0 | other.0)
+    }
+
+    pub fn minus(self, other: Sides) -> Sides {
+        Sides(self.0 & !other.0)
+    }
+
+    /// Their letters, north first ("se"), for the checks.
+    pub fn letters(self) -> String {
+        Sides::NAMES.iter().filter(|n| self.has(n)).copied().collect()
+    }
+}
+
+/// The sides whose walls face a camera turned `yaw` degrees (0: south of what it looks at,
+/// the map editor's way) enough to hide the room behind them: those cut down while the walker
+/// is inside. `now`: the ones cut down already.
+pub fn facing(yaw: f32, now: Sides) -> Sides {
+    let (s, c) = yaw.to_radians().sin_cos();
+    let mut out = Sides::NONE;
+    for (side, dot) in [("n", -c), ("s", c), ("w", -s), ("e", s)] {
+        if dot > if now.has(side) { FACING_BACK } else { FACING_CUT } {
+            out = out.or(Sides::of(side));
+        }
+    }
+    out
+}
 
 fn shade(c: [f32; 4], k: f32) -> [f32; 4] {
     [c[0] * k, c[1] * k, c[2] * k, c[3]]
@@ -200,10 +259,13 @@ fn look_of(content: &Content, id: &str) -> Look {
 /// How high a railing round a hole in a floor is.
 const RAIL: f32 = 0.9;
 
-/// What a building looks like while it's edited: floors above `top` cut away, no roof.
+/// What a building looks like while it's edited or walked in: floors above `top` cut away, no
+/// roof; on floor `top`, the walls on `low`'s sides cut down to a stub (those facing the
+/// camera, while the walker is inside).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cut {
     pub top: usize,
+    pub low: Sides,
 }
 
 pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<Cut>, models: &Models) -> Scene {
@@ -211,40 +273,41 @@ pub fn building(b: &Building, content: &Content, level_height: f32, cut: Option<
         Some(c) => (c.top + 1).min(b.floors.len()),
         None => b.floors.len(),
     };
-    build(b, content, level_height, 0..shown, cut.is_none(), true, models)
+    build(b, content, level_height, 0..shown, cut.is_none(), true, cut.map(|c| (c.top, c.low)), models)
 }
 
-/// What a cut takes away: the floors above `top` and the roof (what fades out when the
-/// player walks in, and back when they leave).
-pub fn building_above(b: &Building, content: &Content, level_height: f32, top: usize, models: &Models) -> Scene {
-    build(b, content, level_height, (top + 1).min(b.floors.len())..b.floors.len(), true, false, models)
+/// What a cut takes away: the floors above `top`, the roof, and on floor `top` what's above
+/// the stub of the walls on `low`'s sides (what fades out when the player walks in, and back
+/// when they leave).
+pub fn building_above(b: &Building, content: &Content, level_height: f32, top: usize, low: Sides, models: &Models) -> Scene {
+    let mut out = build(b, content, level_height, (top + 1).min(b.floors.len())..b.floors.len(), true, false, None, models);
+    out.append(&walls_above_stub(b, content, level_height, top, low, models), Mat4::IDENTITY);
+    out
+}
+
+/// What's above the stub of floor `floor`'s walls on these sides, with their doors, windows
+/// and what hangs on them: what fades as they're cut down, or rise back as the camera turns.
+pub fn walls_above_stub(b: &Building, content: &Content, level_height: f32, floor: usize, sides: Sides, models: &Models) -> Scene {
+    let mut m = Mesh::default();
+    let mut textured = Scene::default();
+    if floor < b.floors.len() && !sides.is_empty() {
+        floor_walls(&mut m, &mut textured, b, content, level_height, floor, WallPart::Upper(sides), models);
+    }
+    textured.plain = m;
+    textured
 }
 
 /// A building's floors in `floors`, its roof when `with_roof`, and when `grounds` what
-/// stands outside it and its pillars (as high as the floors shown).
-fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::Range<usize>, with_roof: bool, grounds: bool, models: &Models) -> Scene {
+/// stands outside it and its pillars (as high as the floors shown); `low`: a floor whose walls
+/// on these sides are cut down to a stub.
+#[allow(clippy::too_many_arguments)]
+fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::Range<usize>, with_roof: bool, grounds: bool, low: Option<(usize, Sides)>, models: &Models) -> Scene {
     let mut m = Mesh::default();
     let lh = level_height;
     let base = b.level as f32 * lh;
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
-    // the walls' looks: the building's first, then every other style a face has
-    let mut looks = vec![(b.wall.clone(), look_of(content, &b.wall))];
-    let others = std::iter::once(&b.inner_wall).chain(b.floors.iter().flat_map(|f| f.walls.iter().chain(&f.inner)).map(|w| &w.wall));
-    for id in others.filter(|id| !id.is_empty()) {
-        if !looks.iter().any(|(l, _)| l == id) {
-            looks.push((id.clone(), look_of(content, id)));
-        }
-    }
-    let look_index = |id: &str| looks.iter().position(|(l, _)| l == id).unwrap_or(0);
+    let looks = wall_looks(b, content);
     let (main, trim) = (looks[0].1.main, looks[0].1.trim);
-    // what's made here from the wall and roof props is toon if they are
-    let toon_from = |m: &mut Mesh, from: usize, toon: bool| {
-        if toon {
-            for v in &mut m.vertices[from..] {
-                v.toon = 1.0;
-            }
-        }
-    };
     let wall_toon = looks[0].1.toon;
     let shown = floors.end;
     let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
@@ -293,39 +356,6 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     let mut pieces: Vec<(String, Option<Scene>)> = vec![];
     // the models' textured parts (the plain ones go into m)
     let mut textured = Scene::default();
-    let put = |m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4| {
-        m.append(&s.plain, t);
-        let only = Scene { plain: Mesh::default(), textured: s.textured.clone() };
-        textured.append(&only, t);
-    };
-
-    // the walls' runs: (side, line, cells along) for every straight piece of outline
-    let mut lines: Vec<(&str, i32, Vec<i32>)> = vec![];
-    for (x, z, side) in b.edges() {
-        let (line, along) = match side {
-            "n" => (z, x),
-            "s" => (z + 1, x),
-            "w" => (x, z),
-            _ => (x + 1, z),
-        };
-        match lines.iter_mut().find(|(s, l, _)| *s == side && *l == line) {
-            Some((_, _, v)) => v.push(along),
-            None => lines.push((side, line, vec![along])),
-        }
-    }
-    let mut runs: Vec<(&str, i32, i32, i32)> = vec![];
-    for (side, line, mut v) in lines {
-        v.sort();
-        let mut start = v[0];
-        for i in 1..=v.len() {
-            if i == v.len() || v[i] != v[i - 1] + 1 {
-                runs.push((side, line, start, v[i - 1]));
-                if i < v.len() {
-                    start = v[i];
-                }
-            }
-        }
-    }
 
     for f in floors {
         let floor = &b.floors[f];
@@ -386,86 +416,10 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
         rim(&mut m, &holes, y0, trim);
         plain_railing(&mut m, &plain, y0, trim);
         toon_from(&mut m, from, wall_toon);
-        // the walls, with their doors and windows
-        for &(side, l, p0, p1) in &runs {
-            let inside_row = match side {
-                "n" | "w" => l,
-                _ => l - 1,
-            };
-            let cell_at = |along: i32| match side {
-                "n" | "s" => (along, inside_row),
-                _ => (inside_row, along),
-            };
-            let reflex = |along: i32| {
-                let (x, z) = cell_at(along);
-                b.has(x, z)
-            };
-            let line = Line { side, at: if matches!(side, "n" | "s") { oz + l as f32 } else { ox + l as f32 } };
-            let origin = if matches!(side, "n" | "s") { ox } else { oz };
-            let start = p0 as f32 - if reflex(p0 - 1) { WALL } else { 0.0 };
-            let end = (p1 + 1) as f32 + if reflex(p1 + 1) { WALL } else { 0.0 };
-            // holes along this run: (from, to, bottom, top), from the floor
-            let mut holes: Vec<(f32, f32, f32, f32)> = vec![];
-            for o in &floor.openings {
-                if o.side != side {
-                    continue;
-                }
-                let segs = Building::segments(o);
-                let alongs: Vec<i32> = segs.iter().filter(|&&(x, z)| cell_at(if matches!(side, "n" | "s") { x } else { z }) == (x, z)).map(|&(x, z)| if matches!(side, "n" | "s") { x } else { z }).collect();
-                if alongs.len() != segs.len() || alongs.iter().any(|&a| a < p0 || a > p1) {
-                    continue;
-                }
-                let first = *alongs.iter().min().unwrap() as f32;
-                let Some(prop) = content.props.get(&o.prop) else { continue };
-                let (bottom, top) = (prop.sill as f32, (prop.sill + prop.height) as f32);
-                holes.push((first + MARGIN, first + o.width as f32 - MARGIN, bottom, top.min(lh - 0.05)));
-                // the door or window itself, on the outline, facing out
-                let centre = first + o.width as f32 / 2.0;
-                if let Some(model) = model(&o.prop) {
-                    let at = line.point(origin + centre, y0 + bottom, 0.0);
-                    put(&mut m, &mut textured, &model, placement(at, side_turn(side) as f32, 1.0));
-                }
-            }
-            holes.sort_by(|a, b| a.0.total_cmp(&b.0));
-            let mut cur = start;
-            // each segment's styles, outside (the floor's own for it, else the building's) and
-            // inside (its own, else the building's inside one, else as its outside), and where
-            // along the run either changes
-            let styles: Vec<(usize, usize)> = (p0..=p1)
-                .map(|k| {
-                    let (x, z) = cell_at(k);
-                    (look_index(floor.wall_at(x, z, side, &b.wall)), look_index(b.wall_inside(f, x, z, side)))
-                })
-                .collect();
-            let breaks: Vec<f32> = (p0 + 1..=p1).filter(|&k| styles[(k - p0) as usize] != styles[(k - 1 - p0) as usize]).map(|k| k as f32).collect();
-            let solid = |m: &mut Mesh, a0: f32, a1: f32, v0: f32, v1: f32| {
-                if a1 - a0 <= 0.001 || v1 - v0 <= 0.001 {
-                    return;
-                }
-                let mut cuts = vec![a0];
-                cuts.extend(breaks.iter().copied().filter(|&k| k > a0 + 0.001 && k < a1 - 0.001));
-                cuts.push(a1);
-                for w in cuts.windows(2) {
-                    let k = ((w[0] + 0.001).floor() as i32).clamp(p0, p1);
-                    let (outer, inner) = styles[(k - p0) as usize];
-                    let (outer, inner) = (&looks[outer].1, &looks[inner].1);
-                    let from = m.vertices.len();
-                    line.piece(m, origin + w[0], origin + w[1], y0 + v0, y0 + v1, outer.body, inner.body);
-                    pattern(m, line, &outer.kind, outer.main, outer.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, false);
-                    toon_from(m, from, outer.toon);
-                    let from = m.vertices.len();
-                    pattern(m, line, &inner.kind, inner.main, inner.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, true);
-                    toon_from(m, from, inner.toon);
-                }
-            };
-            for &(h0, h1, bottom, top) in &holes {
-                solid(&mut m, cur, h0, 0.0, lh);
-                solid(&mut m, h0, h1, 0.0, bottom);
-                solid(&mut m, h0, h1, top, lh);
-                cur = h1;
-            }
-            solid(&mut m, cur, end, 0.0, lh);
-        }
+        // the walls, with their doors and windows and what hangs on them; on the floor the
+        // cut asks, those on its sides cut down to a stub
+        let down = low.filter(|&(at, _)| at == f).map_or(Sides::NONE, |(_, sides)| sides);
+        floor_walls(&mut m, &mut textured, b, content, lh, f, WallPart::Whole { low: down }, models);
         // inside
         for p in &floor.props {
             let Some(prop) = content.props.get(&p.prop) else { continue };
@@ -473,11 +427,6 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
             let at = Vec3::new(ox + p.pos()[0] as f32, y0 + 0.05, oz + p.pos()[1] as f32);
             put(&mut m, &mut textured, &model, placement(at, p.turn as f32, scale));
-        }
-        // on the walls: outside facing out, inside (past the wall's thickness) facing in
-        for a in b.anchors.iter().filter(|a| a.floor as usize == f) {
-            let Some(model) = model(&a.prop) else { continue };
-            put(&mut m, &mut textured, &model, anchor_placement(b, a, lh));
         }
     }
     // what stands outside it
@@ -508,6 +457,185 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     }
     textured.plain = m;
     textured
+}
+
+/// A model put in: its plain parts into `m`, its textured ones into `textured`.
+fn put(m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4) {
+    m.append(&s.plain, t);
+    let only = Scene { plain: Mesh::default(), textured: s.textured.clone() };
+    textured.append(&only, t);
+}
+
+/// What's been made in `m` from `from` on, toon if `toon` (what's made from the wall and roof
+/// props is toon if they are).
+fn toon_from(m: &mut Mesh, from: usize, toon: bool) {
+    if toon {
+        for v in &mut m.vertices[from..] {
+            v.toon = 1.0;
+        }
+    }
+}
+
+/// The walls' looks: the building's first, then every other style a face has.
+fn wall_looks(b: &Building, content: &Content) -> Vec<(String, Look)> {
+    let mut looks = vec![(b.wall.clone(), look_of(content, &b.wall))];
+    let others = std::iter::once(&b.inner_wall).chain(b.floors.iter().flat_map(|f| f.walls.iter().chain(&f.inner)).map(|w| &w.wall));
+    for id in others.filter(|id| !id.is_empty()) {
+        if !looks.iter().any(|(l, _)| l == id) {
+            looks.push((id.clone(), look_of(content, id)));
+        }
+    }
+    looks
+}
+
+/// The walls' runs: (side, line, first and last cell along) for every straight piece of
+/// outline.
+fn wall_runs(b: &Building) -> Vec<(&'static str, i32, i32, i32)> {
+    let mut lines: Vec<(&str, i32, Vec<i32>)> = vec![];
+    for (x, z, side) in b.edges() {
+        let (line, along) = match side {
+            "n" => (z, x),
+            "s" => (z + 1, x),
+            "w" => (x, z),
+            _ => (x + 1, z),
+        };
+        match lines.iter_mut().find(|(s, l, _)| *s == side && *l == line) {
+            Some((_, _, v)) => v.push(along),
+            None => lines.push((side, line, vec![along])),
+        }
+    }
+    let mut runs: Vec<(&str, i32, i32, i32)> = vec![];
+    for (side, line, mut v) in lines {
+        v.sort();
+        let mut start = v[0];
+        for i in 1..=v.len() {
+            if i == v.len() || v[i] != v[i - 1] + 1 {
+                runs.push((side, line, start, v[i - 1]));
+                if i < v.len() {
+                    start = v[i];
+                }
+            }
+        }
+    }
+    runs
+}
+
+/// What of a floor's walls `floor_walls` makes.
+#[derive(Clone, Copy)]
+enum WallPart {
+    /// all of them, but those on `low`'s sides cut down to a stub (their doors, windows and
+    /// what hangs on them gone with the rest)
+    Whole { low: Sides },
+    /// only what's above the stub of those on these sides, with their doors, windows and what
+    /// hangs on them: what fades as they're cut down or rise back
+    Upper(Sides),
+}
+
+/// Floor `f`'s walls along the outline, with their doors and windows and what hangs on them,
+/// as much of them as `part` says.
+#[allow(clippy::too_many_arguments)]
+fn floor_walls(m: &mut Mesh, textured: &mut Scene, b: &Building, content: &Content, lh: f32, f: usize, part: WallPart, models: &Models) {
+    let floor = &b.floors[f];
+    let y0 = b.level as f32 * lh + f as f32 * lh;
+    let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
+    let looks = wall_looks(b, content);
+    let look_index = |id: &str| looks.iter().position(|(l, _)| l == id).unwrap_or(0);
+    let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
+    // a side's walls: from how high to how high (from the floor), and whether what's on them
+    // is too; none of them at all
+    let span = |side: &str| match part {
+        WallPart::Whole { low } if low.has(side) => Some((0.0, STUB, false)),
+        WallPart::Whole { .. } => Some((0.0, lh, true)),
+        WallPart::Upper(sides) if sides.has(side) => Some((STUB, lh, true)),
+        WallPart::Upper(_) => None,
+    };
+    for &(side, l, p0, p1) in &wall_runs(b) {
+        let Some((lo, hi, things)) = span(side) else { continue };
+        let inside_row = match side {
+            "n" | "w" => l,
+            _ => l - 1,
+        };
+        let cell_at = |along: i32| match side {
+            "n" | "s" => (along, inside_row),
+            _ => (inside_row, along),
+        };
+        let reflex = |along: i32| {
+            let (x, z) = cell_at(along);
+            b.has(x, z)
+        };
+        let line = Line { side, at: if matches!(side, "n" | "s") { oz + l as f32 } else { ox + l as f32 } };
+        let origin = if matches!(side, "n" | "s") { ox } else { oz };
+        let start = p0 as f32 - if reflex(p0 - 1) { WALL } else { 0.0 };
+        let end = (p1 + 1) as f32 + if reflex(p1 + 1) { WALL } else { 0.0 };
+        // holes along this run: (from, to, bottom, top), from the floor
+        let mut holes: Vec<(f32, f32, f32, f32)> = vec![];
+        for o in &floor.openings {
+            if o.side != side {
+                continue;
+            }
+            let segs = Building::segments(o);
+            let alongs: Vec<i32> = segs.iter().filter(|&&(x, z)| cell_at(if matches!(side, "n" | "s") { x } else { z }) == (x, z)).map(|&(x, z)| if matches!(side, "n" | "s") { x } else { z }).collect();
+            if alongs.len() != segs.len() || alongs.iter().any(|&a| a < p0 || a > p1) {
+                continue;
+            }
+            let first = *alongs.iter().min().unwrap() as f32;
+            let Some(prop) = content.props.get(&o.prop) else { continue };
+            let (bottom, top) = (prop.sill as f32, (prop.sill + prop.height) as f32);
+            holes.push((first + MARGIN, first + o.width as f32 - MARGIN, bottom, top.min(lh - 0.05)));
+            // the door or window itself, on the outline, facing out
+            let centre = first + o.width as f32 / 2.0;
+            if let Some(model) = model(&o.prop).filter(|_| things) {
+                let at = line.point(origin + centre, y0 + bottom, 0.0);
+                put(m, textured, &model, placement(at, side_turn(side) as f32, 1.0));
+            }
+        }
+        holes.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut cur = start;
+        // each segment's styles, outside (the floor's own for it, else the building's) and
+        // inside (its own, else the building's inside one, else as its outside), and where
+        // along the run either changes
+        let styles: Vec<(usize, usize)> = (p0..=p1)
+            .map(|k| {
+                let (x, z) = cell_at(k);
+                (look_index(floor.wall_at(x, z, side, &b.wall)), look_index(b.wall_inside(f, x, z, side)))
+            })
+            .collect();
+        let breaks: Vec<f32> = (p0 + 1..=p1).filter(|&k| styles[(k - p0) as usize] != styles[(k - 1 - p0) as usize]).map(|k| k as f32).collect();
+        let solid = |m: &mut Mesh, a0: f32, a1: f32, v0: f32, v1: f32| {
+            // no higher (or lower) than this part of the wall goes
+            let (v0, v1) = (v0.max(lo), v1.min(hi));
+            if a1 - a0 <= 0.001 || v1 - v0 <= 0.001 {
+                return;
+            }
+            let mut cuts = vec![a0];
+            cuts.extend(breaks.iter().copied().filter(|&k| k > a0 + 0.001 && k < a1 - 0.001));
+            cuts.push(a1);
+            for w in cuts.windows(2) {
+                let k = ((w[0] + 0.001).floor() as i32).clamp(p0, p1);
+                let (outer, inner) = styles[(k - p0) as usize];
+                let (outer, inner) = (&looks[outer].1, &looks[inner].1);
+                let from = m.vertices.len();
+                line.piece(m, origin + w[0], origin + w[1], y0 + v0, y0 + v1, outer.body, inner.body);
+                pattern(m, line, &outer.kind, outer.main, outer.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, false);
+                toon_from(m, from, outer.toon);
+                let from = m.vertices.len();
+                pattern(m, line, &inner.kind, inner.main, inner.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, true);
+                toon_from(m, from, inner.toon);
+            }
+        };
+        for &(h0, h1, bottom, top) in &holes {
+            solid(m, cur, h0, 0.0, lh);
+            solid(m, h0, h1, 0.0, bottom);
+            solid(m, h0, h1, top, lh);
+            cur = h1;
+        }
+        solid(m, cur, end, 0.0, lh);
+    }
+    // on the walls: outside facing out, inside (past the wall's thickness) facing in
+    for a in b.anchors.iter().filter(|a| a.floor as usize == f && span(&a.side).is_some_and(|(_, _, things)| things)) {
+        let Some(model) = model(&a.prop) else { continue };
+        put(m, textured, &model, anchor_placement(b, a, lh));
+    }
 }
 
 /// Gabled on a rectangle (unless it asks for a flat one), flat with a parapet otherwise;
@@ -598,7 +726,7 @@ pub fn anchor_placement(b: &Building, a: &Anchor, level_height: f32) -> Mat4 {
 pub fn buildings(map: &WorldMap, content: &Content, level_height: f32, editing: Option<(usize, usize)>, models: &Models) -> Scene {
     let mut out = Scene::default();
     for (i, b) in map.buildings.iter().enumerate() {
-        let cut = editing.filter(|(e, _)| *e == i).map(|(_, f)| Cut { top: f });
+        let cut = editing.filter(|(e, _)| *e == i).map(|(_, f)| Cut { top: f, low: Sides::NONE });
         out.append(&building(b, content, level_height, cut, models), Mat4::IDENTITY);
     }
     out
@@ -645,7 +773,7 @@ mod tests {
     }
 
     fn drawn(b: &Building) -> Mesh {
-        building(b, &content(), 2.0, Some(Cut { top: 1 }), &Models::new()).plain
+        building(b, &content(), 2.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain
     }
 
     /// The vertices (x, y, z) of about a colour (or of it shaded).
@@ -698,6 +826,50 @@ mod tests {
         // on the floor above too: that floor's segment
         b.floors[1].set_wall(0, 0, "n", "bricks", "plaster");
         assert!(bricks(&drawn(&b)).iter().any(|p| p[1] > 2.01));
+    }
+
+    /// The walls facing the camera: the south's at its usual turn (0), the east's too past 45
+    /// degrees; a wall cut down stays so until it faces the camera a little less, so it
+    /// doesn't flicker as the camera turns past.
+    #[test]
+    fn the_walls_facing_the_camera_are_the_ones_cut_down() {
+        let (s, e) = (Sides::of("s"), Sides::of("e"));
+        assert_eq!(facing(0.0, Sides::NONE), s);
+        assert_eq!(facing(45.0, Sides::NONE), s.or(e));
+        assert_eq!(facing(180.0, Sides::NONE), Sides::of("n"));
+        assert_eq!(facing(270.0, Sides::NONE), Sides::of("w"));
+        assert_eq!(facing(15.0, s), s, "the east's not yet");
+        let both = facing(25.0, s);
+        assert_eq!(both, s.or(e));
+        assert_eq!(facing(15.0, both), both, "cut down, it stays so a while");
+        assert_eq!(facing(5.0, both), s);
+        assert_eq!((s.or(e).letters(), s.or(e).minus(s)), ("se".to_string(), e));
+    }
+
+    /// On the floor shown last, the walls on the cut's sides go no higher than a stub, and
+    /// their doors and windows go; the others stay whole. Above the stub is what fades.
+    #[test]
+    fn the_walls_cut_down_keep_a_stub() {
+        let b = house();
+        let cut = |low: Sides| building(&b, &content(), 2.0, Some(Cut { top: 0, low }), &Models::new()).plain;
+        // the highest point of a wall's outside face, by its pattern a hair out of the outline
+        // (the south's at z 2.004, the north's at -0.004: no other wall's face is there)
+        let top = |m: &Mesh, z: f32| m.vertices.iter().filter(|v| (v.pos[2] - z).abs() < 0.002).map(|v| v.pos[1]).fold(0.0f32, f32::max);
+        let south = |m: &Mesh| top(m, 2.004);
+        let north = |m: &Mesh| top(m, -0.004);
+        let whole = cut(Sides::NONE);
+        assert!((south(&whole) - 2.0).abs() < 0.01 && (north(&whole) - 2.0).abs() < 0.01);
+        let low = cut(Sides::of("s"));
+        assert!(south(&low) > 0.1 && south(&low) <= STUB + 0.001, "the south wall a stub: {}", south(&low));
+        assert!((north(&low) - 2.0).abs() < 0.01, "the north wall whole");
+        // what fades: the south wall above its stub, and nothing else
+        let upper = walls_above_stub(&b, &content(), 2.0, 0, Sides::of("s"), &Models::new()).plain;
+        assert!(!upper.vertices.is_empty());
+        assert!(upper.vertices.iter().all(|v| v.pos[1] > STUB - 0.01 && v.pos[1] < 2.01 && v.pos[2] > 2.0 - WALL - 0.01), "only the south wall above its stub");
+        assert!(walls_above_stub(&b, &content(), 2.0, 0, Sides::NONE, &Models::new()).plain.vertices.is_empty());
+        // and what a cut takes away has it, on top of the floors above
+        let above = building_above(&b, &content(), 2.0, 0, Sides::of("s"), &Models::new()).plain;
+        assert!(above.vertices.iter().any(|v| v.pos[1] < 2.0 && v.pos[2] > 2.0 - WALL - 0.01) && above.vertices.iter().any(|v| v.pos[1] > 2.5));
     }
 
     #[test]

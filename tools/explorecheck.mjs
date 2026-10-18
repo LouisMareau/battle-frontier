@@ -1,6 +1,7 @@
 // The overworld in the built site, in a real browser: Explore walks the test meadow from
-// the menu, reads the signpost, talks to Bo and takes a choice, leaves by the HUD's Exit (Esc
-// doesn't leave), and after the page
+// the menu, reads the signpost, talks to Bo and takes a choice, goes into the cottage (the
+// outside darkening, the wall facing the camera cut down, another as the camera turns),
+// leaves by the HUD's Exit (Esc doesn't leave), and after the page
 // is loaded again stands where it left off with the flags kept; "forget" starts over.
 // Exits 1 when something fails.
 //     node tools/explorecheck.mjs
@@ -85,7 +86,9 @@ try {
   await waitFor('document.body.dataset.running === ""', 'the script ending');
   check('remembered', (await data('flags')).includes('met_bo=1'), await data('flags'));
 
-  // 2b. into the cottage: the outside darkens as the roof fades away, and back out
+  // 2b. into the cottage: the outside darkens as the roof fades away, the wall facing the
+  // camera (the south one) cut down to its foot; the camera turned east, the east one
+  // instead, fading; and back out
   await cmd('walkto:10,13');
   await sleep(300);
   await cmd('walkto:10,10');
@@ -95,12 +98,23 @@ try {
   await sleep(600);
   check('inside the cottage', (await data('inside')) === 'cottage', await data('inside'));
   check('the outside darkens, over time', early > 0 && early < 0.7 && Number(await data('dim')) >= 0.7, `${early} then ${await data('dim')}`);
+  check('  the wall facing the camera cut down: the south one', (await data('cutaway')) === 's', await data('cutaway'));
   await shot('4-inside');
+  await cmd('view:10,10,16,90,50');
+  await sleep(150);
+  check('  the camera turned east: the east one instead, fading', (await data('cutaway')) === 'e' && (await data('wallfade')) === '1', `${await data('cutaway')} ${await data('wallfade')}`);
+  await sleep(700);
+  check('    faded', (await data('wallfade')) === '', await data('wallfade'));
+  await shot('4b-turned');
+  await cmd('view:10,10,16,0,50');
+  await sleep(700);
+  check('  turned back: the south one again', (await data('cutaway')) === 's', await data('cutaway'));
   await cmd('walkto:10,13');
   await sleep(180);
   const leaving = Number(await data('dim'));
   await sleep(600);
   check('out again, the light back', (await data('inside')) === '' && leaving > 0 && Number(await data('dim')) === 0, `${leaving} then ${await data('dim')}`);
+  check('  no wall cut down out here', (await data('cutaway')) === '', await data('cutaway'));
   await cmd('walkto:22,8');
   await sleep(300);
 

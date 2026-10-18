@@ -1,7 +1,8 @@
 //! Walking the map in the editor: a stand-in character on the grid, moved cell by cell with
 //! the arrows (up is away from the camera) at a fixed pace, so 60 and 144 Hz screens play
 //! the same. What blocks on foot stops it: tree areas, water, cliffs, blocking props, the
-//! walls of buildings; doors let it in, and the building it's in is cut away above it.
+//! walls of buildings; doors let it in, and the building it's in is cut away above it, the
+//! walls facing the camera on its floor cut down to a stub (fading, as the camera turns too).
 //! Stairs take it up: from in front of a flight's bottom step, walking the way it rises,
 //! it climbs to the floor above (or onto a flat roof), and back down the same way. A script
 //! can walk it too (`route`), and holds it still while a dialog is up.
@@ -10,6 +11,7 @@ use std::collections::VecDeque;
 
 use glam::Vec3;
 use render::map::MapVertex;
+use world::buildings::{Cut, Sides};
 use world::mesh::{placement, prop_scene, Scene};
 
 use super::actors::facing_of;
@@ -31,12 +33,24 @@ pub(super) type Batches = Vec<(String, Vec<MapVertex>, Vec<u32>)>;
 /// its top (on the floor above), and the way up.
 pub(super) type Flight = ((i32, i32), (i32, i32), (i32, i32));
 
-/// A building's upper floors and roof on their way out (walking in) or back (walking out).
+/// A building's upper floors and roof on their way out (walking in) or back (walking out),
+/// and the walls facing the camera on the walker's floor (`low`'s sides) above their stubs.
 pub(super) struct Fade {
     pub building: usize,
     pub top: usize,
     pub t0: f64,
     pub entering: bool,
+    pub low: Sides,
+}
+
+/// Walls of the floor the walker's on, as the camera turned: those it faced (`from`'s sides)
+/// rising back, those it faces now (`to`'s) going down to their stubs.
+pub(super) struct WallFade {
+    pub building: usize,
+    pub floor: usize,
+    pub from: Sides,
+    pub to: Sides,
+    pub t0: f64,
 }
 
 pub(super) struct Walker {
@@ -409,22 +423,40 @@ impl MapEditor {
             Some((b, f)) => (f < self.map.buildings.get(b).map(|x| x.floors.len()).unwrap_or(0)).then_some((b, f)),
             None => self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize)),
         };
+        // the walls facing the camera: cut down while inside (they'd hide the room)
+        let front = world::buildings::facing(self.cam.yaw, self.front);
         if inside != was {
-            // the floors above and the roof fade out on the way in, back on the way out; up
-            // and down the stairs the cut just moves
+            // the floors above, the roof and the walls facing the camera fade out on the way
+            // in, back on the way out; up and down the stairs the cut just moves
             self.fade = match (was, inside) {
                 (Some((a, _)), Some((b, _))) if a == b => None,
-                (_, Some((i, f))) => Some(Fade { building: i, top: f, t0: now, entering: true }),
-                (Some((i, f)), None) => Some(Fade { building: i, top: f, t0: now, entering: false }),
+                (_, Some((i, f))) => Some(Fade { building: i, top: f, t0: now, entering: true, low: front }),
+                (Some((i, f)), None) => Some(Fade { building: i, top: f, t0: now, entering: false, low: self.front }),
                 _ => None,
             };
+            self.front = front;
+            self.wall_fade = None;
             self.walker.as_mut().unwrap().inside = inside;
             self.need_buildings = true;
+        } else if front != self.front && self.fade.is_none() {
+            // the camera turned: the walls it faces now go down, the others rise back (once
+            // the building has faded in or out)
+            if let Some((i, f)) = inside {
+                self.wall_fade = Some(WallFade { building: i, floor: f, from: self.front, to: front, t0: now });
+                self.need_buildings = true;
+            }
+            self.front = front;
         }
         if self.fade.as_ref().map(|f| now - f.t0 >= FADE_MS).unwrap_or(false) {
             self.fade = None;
             self.need_buildings = true;
         }
+        if self.wall_fade.as_ref().map(|w| now - w.t0 >= FADE_MS).unwrap_or(false) {
+            self.wall_fade = None;
+            self.need_buildings = true;
+        }
+        crate::platform::set_hook("cutaway", &inside.map(|_| self.front.letters()).unwrap_or_default());
+        crate::platform::set_hook("wallfade", if self.wall_fade.is_some() || self.fade.is_some() { "1" } else { "" });
         // the view comes a little closer inside
         let k = self.inside_amount(now);
         self.cam.zoom = 1.0 - (1.0 - INSIDE_ZOOM) * k * k * (3.0 - 2.0 * k);
@@ -441,13 +473,20 @@ impl MapEditor {
         crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
     }
 
-    /// How a building shows for the walker: cut above the floor they're on, also while
-    /// its upper part fades.
-    pub(super) fn building_cut(&self, i: usize) -> Option<usize> {
+    /// How a building shows for the walker: cut above the floor they're on, the walls facing
+    /// the camera there cut down; also while its upper part fades.
+    pub(super) fn building_cut(&self, i: usize) -> Option<Cut> {
         if let Some(f) = self.fade.as_ref().filter(|f| f.building == i) {
-            return Some(f.top);
+            return Some(Cut { top: f.top, low: f.low });
         }
-        self.walker.as_ref().and_then(|w| w.inside).filter(|(b, _)| *b == i).map(|(_, f)| f)
+        let (_, floor) = self.walker.as_ref().and_then(|w| w.inside).filter(|(b, _)| *b == i)?;
+        // while walls turn with the camera, those going and those coming back are both cut
+        // down here: the fade has the rest of them
+        let low = match &self.wall_fade {
+            Some(w) if w.building == i && w.floor == floor => w.from.or(w.to),
+            _ => self.front,
+        };
+        Some(Cut { top: floor, low })
     }
 
     /// How far inside a building the view is, 0 to 1: rising on the way in, falling on
@@ -472,15 +511,11 @@ impl MapEditor {
     }
 
     /// The moving things as the renderer's batches (the walker and the actors), and apart
-    /// from them the building part fading, as see-through as the fade says.
+    /// from them the building parts fading, as see-through as their fades say.
     pub(super) fn extra_batches(&self, now: f64) -> (Batches, Batches) {
         let moving = models::batches(&self.extra_mesh(now));
         let mut out = vec![];
-        if let Some(f) = &self.fade {
-            let Some(b) = self.map.buildings.get(f.building) else { return (moving, out) };
-            let k = ((now - f.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
-            let alpha = if f.entering { 1.0 - k } else { k };
-            let mut part = world::buildings::building_above(b, &self.content, self.level_height, f.top, &self.models);
+        let mut faded = |mut part: Scene, alpha: f32| {
             for v in part.plain.vertices.iter_mut().chain(part.textured.values_mut().flat_map(|m| m.vertices.iter_mut())) {
                 v.color[3] = alpha;
             }
@@ -490,6 +525,17 @@ impl MapEditor {
             for (key, mesh) in part.textured {
                 out.push((key, gpu(&mesh.vertices), mesh.indices));
             }
+        };
+        if let Some((f, b)) = self.fade.as_ref().and_then(|f| self.map.buildings.get(f.building).map(|b| (f, b))) {
+            let k = ((now - f.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
+            faded(world::buildings::building_above(b, &self.content, self.level_height, f.top, f.low, &self.models), if f.entering { 1.0 - k } else { k });
+        }
+        if let Some((w, b)) = self.wall_fade.as_ref().and_then(|w| self.map.buildings.get(w.building).map(|b| (w, b))) {
+            let k = ((now - w.t0) / FADE_MS).clamp(0.0, 1.0) as f32;
+            let walls = |sides: Sides| world::buildings::walls_above_stub(b, &self.content, self.level_height, w.floor, sides, &self.models);
+            // those the camera faces no more rise back; those it faces now go
+            faded(walls(w.from.minus(w.to)), k);
+            faded(walls(w.to.minus(w.from)), 1.0 - k);
         }
         (moving, out)
     }
