@@ -133,7 +133,12 @@ try {
   await browser.click(700, 450);
   await browser.key('ArrowUp');
   await sleep(2600);
+  // Esc doesn't leave (it puts the ring on the HUD's buttons); the HUD's Exit does
   await browser.key('Escape');
+  await sleep(300);
+  check("  Esc doesn't leave: the ring on Settings", (await data('state')) === 'explore' && (await data('hudring')) === 'uiHudSettings', `${await data('state')} ${await data('hudring')}`);
+  await browser.key('Escape');
+  await press('uiHudExit');
   await state('menu', 'back on the menu');
   await sleep(1300);
   check('  back on the menu: Continue can be picked now', (await data('continue')) === '1');
@@ -142,7 +147,7 @@ try {
   await state('explore', 'the story again');
   await sleep(1200);
   check('Continue: the story where it was left', (await data('map')) === 'test_meadow' && (await data('walker')) !== '19,22', await data('walker'));
-  await browser.key('Escape');
+  await press('uiHudExit');
   await state('menu', 'the menu');
   await sleep(1300);
 
@@ -157,7 +162,7 @@ try {
   await state('explore', 'the new game');
   await sleep(1200);
   check('  "Start a new game": from the start again', (await data('walker')) === '19,22', await data('walker'));
-  await browser.key('Escape');
+  await press('uiHudExit');
   await state('menu', 'the menu');
   await sleep(600);
 

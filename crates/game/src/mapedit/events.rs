@@ -292,7 +292,9 @@ impl MapEditor {
     pub(super) fn step_story(&mut self, ctx: &egui::Context, now: f64) {
         self.now = now;
         let typing = ctx.egui_wants_keyboard_input();
-        let pressed = |b: crate::input::Button| !typing && crate::input::pressed_now(ctx, b);
+        // (the HUD's, while it has the game's buttons)
+        let hud = self.hud_busy;
+        let pressed = |b: crate::input::Button| !typing && !hud && crate::input::pressed_now(ctx, b);
         let a = pressed(crate::input::Button::A);
         // the dialog's keys
         if let Some(d) = &mut self.story.dialog {

@@ -105,6 +105,8 @@ pub struct Stage {
     pub sounds: Vec<(String, f32)>,
     /// the content, for the fx records a timeline names
     pub content: Option<Arc<content::Content>>,
+    /// the old handhelds' pixels and colours (the Options')
+    pub retro: render::scene::Retro,
 }
 
 /// An ability's timeline playing out on the stage, from `t0` (ms).
@@ -228,6 +230,7 @@ impl Stage {
             playing: None,
             sounds: vec![],
             content: None,
+            retro: Default::default(),
         }
     }
 
@@ -750,7 +753,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

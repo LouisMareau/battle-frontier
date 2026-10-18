@@ -18,14 +18,17 @@ mod director;
 mod editor;
 mod hud;
 mod input;
+mod layout;
 mod mapedit;
 mod menu;
 mod pads;
 mod platform;
+mod play_hud;
 mod presets;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod shot;
 mod stage;
+mod team;
 mod title;
 
 /// What ends the program (a panic: a GPU error, a bug) also goes, timed, to build/crash.log

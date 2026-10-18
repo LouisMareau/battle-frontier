@@ -2,7 +2,9 @@
 //! effects. The scene is drawn into its own colour + depth target (with the sun's shadow
 //! map first): what's solid first, writing its look too (toon or not, how far, which way
 //! it faces) to a second target, then what's see-through; then blitted into whatever pass
-//! the host gives (egui's, in the game), with the toon look's ink lines found in the looks.
+//! the host gives (egui's, in the game), with the toon look's ink lines found in the looks,
+//! and the old handhelds' pixels and LCD colours if the game asks; a small blurred copy of
+//! the picture besides, for frosted glass over it (`frost_view`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -16,6 +18,10 @@ const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 /// What solid things write next to their colour, for the ink lines: toon or not, how far,
 /// which way they face (see `look` in the shader).
 const LOOK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;
+/// The frosted glass's blurred copy of the picture: what egui reads (its values the screen's).
+const FROST: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+/// ... a texel of it for this many pixels of the screen, each way.
+const FROST_DIV: u32 = 6;
 /// The sun's shadow map, texels a side, unless `Quality` says otherwise.
 pub const SHADOW_SIZE: u32 = 2048;
 /// World meshes are cut into squares this many cells a side, each drawn only when the
@@ -56,6 +62,60 @@ impl Default for Quality {
     fn default() -> Self {
         Quality { scale: 1.0, shadow_size: SHADOW_SIZE }
     }
+}
+
+/// The old handhelds' screens over the game's picture: their pixels (the scene drawn with
+/// about as many pixels as their screens had, each a square of the screen's, its colours in
+/// 15 bits) and their LCDs' colours (with the thin gaps between their pixels, where those are
+/// big).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Retro {
+    /// whose pixels (none: the screen's own resolution)
+    pub pixels: Option<Handheld>,
+    /// whose LCD colours (none: the colours as they are)
+    pub lcd: Option<Handheld>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Handheld {
+    /// the GBA: 240 by 160, a reflective screen that muted its colours
+    Gba,
+    /// the GBC: 160 by 144, its channels mixed by its screen
+    Gbc,
+}
+
+impl Handheld {
+    /// Its screen's pixels across and down.
+    pub fn size(self) -> [u32; 2] {
+        match self {
+            Handheld::Gba => [240, 160],
+            Handheld::Gbc => [160, 144],
+        }
+    }
+
+    /// How dark the gaps between its LCD's pixels are.
+    fn grid(self) -> f32 {
+        match self {
+            Handheld::Gba => 0.22,
+            Handheld::Gbc => 0.32,
+        }
+    }
+
+    /// Its LCD's colours, as the shader numbers them.
+    fn code(self) -> f32 {
+        match self {
+            Handheld::Gba => 1.0,
+            Handheld::Gbc => 2.0,
+        }
+    }
+}
+
+/// How many of the screen's pixels a side the old handheld's pixels are on a `screen`, for
+/// the picture to have about as many as its screen had (the GBA's 240 by 160, the GBC's 160
+/// by 144: the GBC's come out bigger): a whole number, so they're all the same size.
+pub fn retro_pixel(screen: [u32; 2], handheld: Handheld) -> u32 {
+    let [w, h] = handheld.size();
+    ((screen[0] as f32 * screen[1] as f32 / (w * h) as f32).sqrt().round() as u32).max(1)
 }
 
 /// What the last frame had drawn: draw calls and triangles, in the scene and in the shadow.
@@ -119,6 +179,11 @@ struct Globals {
     /// a second), z how high they are
     clouds_a: [f32; 4],
     clouds_b: [f32; 4],
+    /// the old handhelds' screens: x their pixel's size in the screen's pixels (0: none), y
+    /// the LCD's colours (0 none, 1 GBA, 2 GBC), z how dark its gaps, w a channel's steps (31:
+    /// 15-bit colour, 0: all); and b: xy the screen's size in pixels
+    retro_a: [f32; 4],
+    retro_b: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -274,6 +339,11 @@ pub struct Frame {
     pub overlays: Vec<Shape>,
     /// how what's toon looks (vertices and billboards say what is)
     pub toon: Toon,
+    /// the old handhelds' pixels and colours (the game's screens ask for them, never an
+    /// editor's)
+    pub retro: Retro,
+    /// a blurred copy of the picture for frosted glass over it (`frost_view`)
+    pub frost: bool,
 }
 
 /// The toon look, for what's flagged toon (vertices, billboards): the sun's and the lamps'
@@ -481,6 +551,15 @@ struct Mesh {
     count: u32,
 }
 
+/// The frosted glass: the picture small and blurred, in two textures (blurred across from the
+/// first into the second, then down back into the first, which egui reads), each bound as
+/// the next pass reads it.
+struct Frost {
+    size: [u32; 2],
+    views: [wgpu::TextureView; 2],
+    binds: [wgpu::BindGroup; 2],
+}
+
 struct Target {
     size: [u32; 2],
     color_view: wgpu::TextureView,
@@ -564,6 +643,16 @@ pub struct SceneRenderer {
     blend_pipeline: wgpu::RenderPipeline,
     add_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    /// the frosted glass: the picture small (into the first texture), blurred across, down
+    frost_pipeline: wgpu::RenderPipeline,
+    frost_x_pipeline: wgpu::RenderPipeline,
+    frost_y_pipeline: wgpu::RenderPipeline,
+    /// a texture and a sampler (the frosted glass's blurs read one)
+    frost_layout: wgpu::BindGroupLayout,
+    frost: Option<Frost>,
+    /// bumped each time the frosted glass's textures are made again (the host's handle on
+    /// them is then out of date)
+    frost_generation: u64,
     ground_pipeline: wgpu::RenderPipeline,
     ground_layout: wgpu::BindGroupLayout,
     /// the world maps shown, by id: the one the camera is on and the ones around it
@@ -756,6 +845,23 @@ impl SceneRenderer {
             bind_group_layouts: &[Some(&globals_layout), Some(&post_layout)],
             immediate_size: 0,
         });
+        let frost_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("frost"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+            ],
+        });
+        let frost_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("frost"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&frost_layout)],
+            immediate_size: 0,
+        });
         // skinned models: their joints' matrices in a storage buffer, each model's at an
         // offset (group 3; in the shadow pass group 2 stands empty, the shadow map being
         // drawn into)
@@ -863,6 +969,10 @@ impl SceneRenderer {
         let overlay_pipeline = pipeline("overlay", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(alpha, true), Some(on_top));
         let add_pipeline = pipeline("additive", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(Some(additive), true), Some(depth(false)));
         let blit_pipeline = pipeline("blit", &post_pipeline_layout, "vs_blit", "fs_blit", &[], vec![Some(wgpu::ColorTargetState { format: output, blend: None, write_mask: wgpu::ColorWrites::ALL })], None);
+        let frosted = || vec![Some(wgpu::ColorTargetState { format: FROST, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let frost_pipeline = pipeline("frost", &post_pipeline_layout, "vs_blit", "fs_frost", &[], frosted(), None);
+        let frost_x_pipeline = pipeline("frost across", &frost_pipeline_layout, "vs_blit", "fs_frost_x", &[], frosted(), None);
+        let frost_y_pipeline = pipeline("frost down", &frost_pipeline_layout, "vs_blit", "fs_frost_y", &[], frosted(), None);
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, solid(true), Some(depth(true)));
 
         let mut r = SceneRenderer {
@@ -870,6 +980,7 @@ impl SceneRenderer {
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
+            frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0,
             ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![],
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
             sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
@@ -1064,6 +1175,41 @@ impl SceneRenderer {
     /// What the last frame had drawn.
     pub fn stats(&self) -> DrawStats {
         self.stats
+    }
+
+    /// The frosted glass of the last frame that asked for it (`Frame::frost`): the picture
+    /// small and blurred (Rgba8Unorm, the screen's values, as egui takes a texture), and its
+    /// generation: a new one means the texture was made again (the host registers it again).
+    pub fn frost_view(&self) -> Option<(&wgpu::TextureView, u64)> {
+        self.frost.as_ref().map(|f| (&f.views[0], self.frost_generation))
+    }
+
+    /// The frosted glass's textures, `size` texels.
+    fn make_frost(&self, device: &wgpu::Device, size: [u32; 2]) -> Frost {
+        let view = |label: &str| {
+            device
+                .create_texture(&wgpu::TextureDescriptor {
+                    label: Some(label),
+                    size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: FROST,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                    view_formats: &[],
+                })
+                .create_view(&Default::default())
+        };
+        let views = [view("frost"), view("frost across")];
+        let bind = |v: &wgpu::TextureView| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("frost"),
+                layout: &self.frost_layout,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear) }],
+            })
+        };
+        let binds = [bind(&views[0]), bind(&views[1])];
+        Frost { size, views, binds }
     }
 
     pub fn has_texture(&self, key: &str) -> bool {
@@ -1272,10 +1418,25 @@ impl SceneRenderer {
 
     /// Uploads the frame and records the shadow and scene passes into `encoder`.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, frame: &Frame, size: [u32; 2]) {
-        let scale = self.quality.scale;
-        let size = [((size[0] as f32 * scale).round() as u32).max(1), ((size[1] as f32 * scale).round() as u32).max(1)];
+        let screen = [size[0].max(1), size[1].max(1)];
+        // the old handhelds' pixels: the scene with about as many pixels as their screens, each
+        // of its pixels a square of the screen's; else as much of the screen's resolution as
+        // the quality says
+        let pixel = frame.retro.pixels.map(|h| retro_pixel(screen, h)).filter(|&k| k > 1);
+        let (size, scale) = match pixel {
+            Some(k) => ([screen[0].div_ceil(k), screen[1].div_ceil(k)], 1.0 / k as f32),
+            None => {
+                let s = self.quality.scale;
+                ([((screen[0] as f32 * s).round() as u32).max(1), ((screen[1] as f32 * s).round() as u32).max(1)], s)
+            }
+        };
         if self.target.as_ref().map(|t| t.size != size).unwrap_or(true) {
             self.target = Some(self.make_target(device, size));
+        }
+        let frost_size = [screen[0].div_ceil(FROST_DIV), screen[1].div_ceil(FROST_DIV)];
+        if frame.frost && self.frost.as_ref().map(|f| f.size != frost_size).unwrap_or(true) {
+            self.frost = Some(self.make_frost(device, frost_size));
+            self.frost_generation += 1;
         }
         let l = &frame.light;
         let t = &frame.toon;
@@ -1311,6 +1472,16 @@ impl SceneRenderer {
             inv_view_proj: frame.view_proj.inverse().to_cols_array_2d(),
             clouds_a: [t.cloud_shadow.clamp(0.0, 1.0) * sun_strength, 1.0 / t.cloud_size.max(1.0), t.cloud_cover.clamp(0.0, 1.0), 0.1],
             clouds_b: [CLOUD_WIND.x * t.cloud_speed, CLOUD_WIND.y * t.cloud_speed, 28.0, 0.0],
+            retro_a: [
+                pixel.unwrap_or(0) as f32,
+                frame.retro.lcd.map_or(0.0, Handheld::code),
+                match (pixel, frame.retro.lcd) {
+                    (Some(_), Some(h)) => h.grid(),
+                    _ => 0.0,
+                },
+                if frame.retro.pixels.is_some() { 31.0 } else { 0.0 },
+            ],
+            retro_b: [screen[0] as f32, screen[1] as f32, 0.0, 0.0],
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -1670,6 +1841,24 @@ impl SceneRenderer {
                 stats.triangles += d.count / 3;
             }
         }
+        drop(pass);
+        // the frosted glass: the finished picture small, blurred across, then down
+        if let (true, Some(frost)) = (frame.frost, &self.frost) {
+            let draw = |encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup, into: &wgpu::TextureView| {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("frost"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: into, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &self.globals_bind, &[0]);
+                pass.set_bind_group(1, bind, &[]);
+                pass.draw(0..3, 0..1);
+            };
+            draw(encoder, &self.frost_pipeline, &target.post_bind, &frost.views[0]);
+            draw(encoder, &self.frost_x_pipeline, &frost.binds[0], &frost.views[1]);
+            draw(encoder, &self.frost_y_pipeline, &frost.binds[1], &frost.views[0]);
+        }
         self.stats = stats;
     }
 
@@ -1851,6 +2040,8 @@ mod tests {
             dim: 0.0,
             overlays: vec![],
             toon: Toon::default(),
+            retro: Retro::default(),
+            frost: false,
         }
     }
 
@@ -1895,6 +2086,69 @@ mod tests {
             let error = block_on(scope.pop());
             assert!(error.is_none(), "{shown} skinned models: {error:?}");
         }
+    }
+
+    /// The old handhelds' pixels are whole squares of the screen's, the picture about as many
+    /// of them as their screens had: on 1920 by 1080, the GBA's sevens (about 274 by 154, near
+    /// its 38400) and the GBC's nines (about 213 by 120, near its 23040); a screen too small
+    /// for them keeps its own pixels.
+    #[test]
+    fn the_handhelds_pixels_are_whole_squares() {
+        assert_eq!(retro_pixel([1920, 1080], Handheld::Gba), 7);
+        assert_eq!(retro_pixel([1920, 1080], Handheld::Gbc), 9);
+        assert_eq!(retro_pixel([1280, 720], Handheld::Gba), 5);
+        assert_eq!(retro_pixel([1280, 720], Handheld::Gbc), 6);
+        assert_eq!(retro_pixel([1400, 900], Handheld::Gba), 6);
+        assert_eq!(retro_pixel([1400, 900], Handheld::Gbc), 7);
+        assert_eq!(retro_pixel([200, 150], Handheld::Gba), 1);
+        assert_eq!(retro_pixel([0, 0], Handheld::Gba), 1);
+    }
+
+    /// A frame in the old handhelds' pixels and LCD colours, with frosted glass: drawn and
+    /// blitted with no error from the GPU, the scene that small, the glass's texture there
+    /// (its generation the same while the screen's size is).
+    #[test]
+    fn the_handhelds_screens_and_the_frost_draw() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU here: the handhelds' screens not drawn");
+            return;
+        };
+        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let out = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: 640, height: 480, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            view_formats: &[],
+        });
+        let out = out.create_view(&Default::default());
+        let mut generations = vec![];
+        for (pixels, lcd) in [(Some(Handheld::Gba), Some(Handheld::Gba)), (Some(Handheld::Gbc), Some(Handheld::Gbc)), (None, Some(Handheld::Gba)), (Some(Handheld::Gba), None)] {
+            let mut frame = frame_of(vec![]);
+            frame.retro = Retro { pixels, lcd };
+            frame.frost = true;
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            r.prepare(&device, &queue, &mut encoder, &frame, [640, 480]);
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &out, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    ..Default::default()
+                });
+                r.paint(&mut pass);
+            }
+            queue.submit([encoder.finish()]);
+            let error = block_on(scope.pop());
+            assert!(error.is_none(), "{pixels:?} {lcd:?}: {error:?}");
+            let k = pixels.map(|h| retro_pixel([640, 480], h)).unwrap_or(1);
+            assert_eq!(r.target.as_ref().map(|t| t.size), Some([640u32.div_ceil(k), 480u32.div_ceil(k)]), "{pixels:?}");
+            generations.push(r.frost_view().map(|(_, g)| g));
+        }
+        assert!(generations.iter().all(|g| *g == Some(1)), "{generations:?}");
     }
 
     #[test]

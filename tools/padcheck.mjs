@@ -3,7 +3,8 @@
 // over from the keyboard (its word at the foot of the screen, the menu's hint in its buttons,
 // no mouse pointer), a key or the mouse takes back, its d-pad, its stick and its A work the
 // menu, the Options (tabs on LB/RB, a ring round what the buttons are on, a controller button
-// given to A), the New game question, the overworld (walking, Start leaves); a second
+// given to A), the New game question, the overworld (walking; Start puts the ring on the HUD's
+// buttons, Exit leaves); a second
 // controller used takes over, the one in use gone hands over to the other, then to the
 // keyboard; nothing done while the page hasn't the focus counts; a battle played with one
 // names its buttons (the target picker, the prompts, the results). Screenshots to
@@ -181,14 +182,15 @@ try {
   await tap(B.east);
   check('  the Controls as they came; closed', (await data('options')) === '' && JSON.stringify((await kept()).pad?.A) === '["South"]', JSON.stringify((await kept()).pad?.A));
 
-  // 4. a new game with the controller: the overworld walked, Start leaves
+  // 4. a new game with the controller: the overworld walked; Start puts the ring on the HUD
+  // (Settings), right: Exit, A leaves
   await tap(B.up);
   check('  up to New game', (await data('titlesel')) === 'New game', await data('titlesel'));
   await tap(B.south);
   await state('explore', 'the new game');
   await sleep(1500);
   check('A on New game: the overworld', (await data('state')) === 'explore', await data('state'));
-  check("  its foot names the controller's buttons", (await data('walkhint')) === 'D-pad moves  ·  A speaks  ·  Menu leaves', await data('walkhint'));
+  check("  its keys name the controller's buttons", (await data('walkhint')) === 'D-pad moves  ·  A speaks  ·  Menu: the buttons', await data('walkhint'));
   const start = (await data('walker')).split(',').map(Number);
   await pads(`set(0, ${B.up}, true)`);
   await sleep(700);
@@ -204,8 +206,11 @@ try {
   check('  the stick pushed: walking east', right[0] > up[0], `${up} -> ${right}`);
   await shot('3-overworld');
   await tap(B.start);
+  check('  Start: the ring on Settings, still in the world', (await data('hudring')) === 'uiHudSettings' && (await data('state')) === 'explore', `${await data('hudring')} ${await data('state')}`);
+  await tap(B.right);
+  await tap(B.south);
   await state('menu', 'the menu again');
-  check('  Start: back on the menu', (await data('state')) === 'menu');
+  check('  right, A: Exit, back on the menu', (await data('state')) === 'menu');
   await sleep(600);
 
   // 5. the New game question, answered with the controller

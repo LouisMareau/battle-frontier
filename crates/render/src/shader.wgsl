@@ -36,6 +36,12 @@ struct Globals {
     // sky, w how soft their edges; b: xy their drift (cells a second), z their height
     clouds_a: vec4<f32>,
     clouds_b: vec4<f32>,
+    // the old handhelds' screens: a: x their pixel's size in the screen's pixels (0: the
+    // screen's own), y the LCD's colours (0: as they are, 1: the GBA's, 2: the GBC's), z how
+    // dark the gaps between the pixels, w a channel's steps (31: 15-bit colour; 0: all);
+    // b: xy the screen's size in pixels
+    retro_a: vec4<f32>,
+    retro_b: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -849,27 +855,120 @@ fn clouds_over(c: vec3<f32>, uv: vec2<f32>, size: vec2<f32>) -> vec3<f32> {
     return c * (1.0 - g.clouds_a.x * shade * lit);
 }
 
-// the scene to the screen: the clouds' shadows over it, in colour steps if asked, with the
-// toon look's ink lines over it (faded by the fog)
-@fragment
-fn fs_blit(i: BlitOut) -> @location(0) vec4<f32> {
-    var c = textureSample(tex, samp, i.uv).rgb;
+fn from_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + 0.055) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
+
+// where a pixel of the screen looks in the scene: at itself; in the old handhelds' pixels
+// (the scene drawn that small), at the middle of the big pixel it's in
+fn scene_uv(uv: vec2<f32>) -> vec2<f32> {
+    if (g.retro_a.x < 0.5) {
+        return uv;
+    }
+    let cell = floor(uv * g.retro_b.xy / g.retro_a.x);
+    return (cell + 0.5) / vec2<f32>(textureDimensions(tex));
+}
+
+// the handhelds' colours: 15 bits of them, 32 steps a channel as the screen shows it
+fn color_depth(c: vec3<f32>) -> vec3<f32> {
+    let n = g.retro_a.w;
+    return from_srgb(floor(to_srgb(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0))) * n + 0.5) / n);
+}
+
+// an LCD's colours, as the user's emulator Pipit has them (its video/color.rs): the GBA's
+// screen by the "gba-color" transform (Pokefan531 and hunterk: dimmed, the channels mixed in
+// linear light, each row summing to 1 so white stays white), the GBC's as Gambatte mixes
+// them (on the screen's values)
+fn lcd_colors(c: vec3<f32>) -> vec3<f32> {
+    if (g.retro_a.y < 1.5) {
+        let l = c * 0.94;
+        let m = vec3<f32>(dot(vec3<f32>(0.82, 0.24, -0.06), l), dot(vec3<f32>(0.125, 0.665, 0.21), l), dot(vec3<f32>(0.195, 0.075, 0.73), l));
+        return clamp(m, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let s = to_srgb(clamp(c, vec3<f32>(0.0), vec3<f32>(1.0)));
+    return from_srgb(vec3<f32>(dot(vec3<f32>(13.0, 2.0, 1.0), s) / 16.0, dot(vec3<f32>(0.0, 3.0, 1.0), s) / 4.0, dot(vec3<f32>(3.0, 2.0, 11.0), s) / 16.0));
+}
+
+// the gaps between an LCD's pixels: each big pixel's edges a little darker (where they're
+// big enough to show)
+fn lcd_grid(uv: vec2<f32>) -> f32 {
+    let k = g.retro_a.x;
+    if (k < 3.5 || g.retro_a.z <= 0.0) {
+        return 1.0;
+    }
+    let f = fract(uv * g.retro_b.xy / k);
+    let d = min(f, vec2<f32>(1.0) - f) * k;
+    return 1.0 - g.retro_a.z * (1.0 - smoothstep(0.0, 1.0, min(d.x, d.y)));
+}
+
+// the scene as the screen shows it at `screen_uv`: the clouds' shadows over it, in colour
+// steps if asked, with the toon look's ink lines over it (faded by the fog); in the old
+// handhelds' pixels and colours if asked
+fn picture(screen_uv: vec2<f32>) -> vec3<f32> {
+    let uv = scene_uv(screen_uv);
+    var c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
     if (g.clouds_a.x > 0.001) {
-        c = clouds_over(c, i.uv, vec2<f32>(textureDimensions(looks)));
+        c = clouds_over(c, uv, vec2<f32>(textureDimensions(looks)));
     }
     if (g.toon_e.z > 0.5) {
         c = color_steps(c);
     }
     if (g.toon_e.y > 0.5) {
         let size = vec2<f32>(textureDimensions(looks));
-        let e = ink(vec2<i32>(i.uv * size));
+        let e = ink(vec2<i32>(uv * size));
         if (e.x > 0.0) {
             let f = smoothstep(g.fog_color.w, g.params.x, e.y);
             c = mix(c, g.toon_d.rgb, e.x * g.toon_c.w * (1.0 - f));
         }
     }
+    if (g.retro_a.w > 0.5) {
+        c = color_depth(c);
+    }
+    if (g.retro_a.y > 0.5) {
+        c = lcd_colors(c);
+    }
+    return c;
+}
+
+// the scene to the screen, an LCD's gaps over it if asked
+@fragment
+fn fs_blit(i: BlitOut) -> @location(0) vec4<f32> {
+    let c = picture(i.uv) * lcd_grid(i.uv);
     if (g.params.z > 0.5) {
         return vec4<f32>(to_srgb(c), 1.0);
     }
     return vec4<f32>(c, 1.0);
+}
+
+// ---------------------------------------------------------------- frosted glass
+
+// a blurred copy of the picture, small, for the HUD's frosted buttons (egui draws it behind
+// them): the picture as the screen has it, then blurred across, then down. Its values are
+// the screen's (sRGB), which is what egui takes.
+@fragment
+fn fs_frost(i: BlitOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(to_srgb(clamp(picture(i.uv), vec3<f32>(0.0), vec3<f32>(1.0))), 1.0);
+}
+
+// nine texels along `step`, weighed as a bell (sigma two texels)
+fn frost_blur(uv: vec2<f32>, step: vec2<f32>) -> vec4<f32> {
+    let w = array<f32, 5>(0.2042, 0.1802, 0.1238, 0.0663, 0.0276);
+    var c = textureSampleLevel(tex, samp, uv, 0.0).rgb * w[0];
+    for (var k = 1; k < 5; k = k + 1) {
+        let o = step * f32(k);
+        c = c + (textureSampleLevel(tex, samp, uv + o, 0.0).rgb + textureSampleLevel(tex, samp, uv - o, 0.0).rgb) * w[k];
+    }
+    return vec4<f32>(c, 1.0);
+}
+
+@fragment
+fn fs_frost_x(i: BlitOut) -> @location(0) vec4<f32> {
+    return frost_blur(i.uv, vec2<f32>(1.0 / f32(textureDimensions(tex).x), 0.0));
+}
+
+@fragment
+fn fs_frost_y(i: BlitOut) -> @location(0) vec4<f32> {
+    return frost_blur(i.uv, vec2<f32>(0.0, 1.0 / f32(textureDimensions(tex).y)));
 }

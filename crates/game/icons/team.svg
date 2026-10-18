@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <!-- the Team: a paw print, its pad and four toes -->
+  <path d="M12 12.3c-2.5 0-4.9 2.5-4.9 4.6 0 1.5 1.2 2.4 2.6 2.4 1 0 1.5-.5 2.3-.5s1.3.5 2.3.5c1.4 0 2.6-.9 2.6-2.4 0-2.1-2.4-4.6-4.9-4.6Z"/>
+  <ellipse cx="5.6" cy="10.4" rx="1.6" ry="2"/>
+  <ellipse cx="9.3" cy="6.4" rx="1.7" ry="2.2"/>
+  <ellipse cx="14.7" cy="6.4" rx="1.7" ry="2.2"/>
+  <ellipse cx="18.4" cy="10.4" rx="1.6" ry="2"/>
+</svg>

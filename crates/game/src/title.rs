@@ -279,7 +279,7 @@ impl Title {
 }
 
 /// Text with a soft shadow under it, readable over the world.
-fn shadowed(p: &egui::Painter, at: Pos2, align: Align2, text: &str, font: FontId, colour: Color32) -> Rect {
+pub(crate) fn shadowed(p: &egui::Painter, at: Pos2, align: Align2, text: &str, font: FontId, colour: Color32) -> Rect {
     shadowed_alpha(p, at, align, text, font, colour, 1.0)
 }
 
@@ -487,13 +487,19 @@ fn label(keys: &Bindings, pad: Option<Family>, b: Button) -> String {
     }
 }
 
-/// The overworld's buttons, at its foot: what moves, what speaks, what leaves (Esc, or the
-/// controller's Start).
+/// The overworld's buttons, top left under the map's name: what moves, what speaks, what
+/// puts the ring on the HUD's buttons (Esc, or the controller's Start).
 pub fn walk_hint(keys: &Bindings, pad: Option<Family>) -> String {
     let moves = along(keys, pad, &[Button::Up, Button::Down, Button::Left, Button::Right]);
-    let leave = pad.map_or("Esc", |f| PadButton::Start.label(f));
+    let menu = pad.map_or("Esc", |f| PadButton::Start.label(f));
     let verb = if moves == "D-pad" { "moves" } else { "move" };
-    format!("{moves} {verb}  ·  {} speaks  ·  {leave} leaves", names(keys, pad, Button::A, 1, ""))
+    format!("{moves} {verb}  ·  {} speaks  ·  {menu}: the buttons", names(keys, pad, Button::A, 1, ""))
+}
+
+/// The HUD's buttons while the ring is on them: what moves it, what presses, what goes back.
+pub fn hud_hint(keys: &Bindings, pad: Option<Family>) -> String {
+    let one = |b: Button| names(keys, pad, b, 1, "");
+    format!("{}: choose  ·  {}: press  ·  {}: back", along(keys, pad, &[Button::Up, Button::Down, Button::Left, Button::Right]), one(Button::A), one(Button::B))
 }
 
 /// The Options' buttons, as the device listened to has them.
@@ -526,7 +532,7 @@ enum Row {
 fn tab_rows(tab: usize) -> Vec<Row> {
     let mut rows = match tab {
         0 => vec![Row::Pick, Row::Pick, Row::Toggle],
-        1 => vec![Row::Pick, Row::Pick],
+        1 => vec![Row::Pick, Row::Pick, Row::Pick, Row::Pick],
         2 => Button::ALL.iter().map(|&b| Row::Keys(b)).collect(),
         _ => vec![Row::Level, Row::Level, Row::Level],
     };
@@ -558,6 +564,8 @@ fn nudge(o: &mut Options, tab: usize, row: usize, by: i32) {
             o.graphics.scale = scales[step(i, scales.len())];
         }
         (1, 1) => o.graphics.shadows = step(o.graphics.shadows, Graphics::SHADOWS.len()),
+        (1, 2) => o.graphics.pixels = step(o.graphics.pixels, Graphics::HANDHELDS.len()),
+        (1, 3) => o.graphics.lcd = step(o.graphics.lcd, Graphics::HANDHELDS.len()),
         (3, r) => {
             let level = match r {
                 0 => &mut o.volume,
@@ -756,12 +764,17 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
                 1 => {
                     rows(ui, "graphics", &mut |ui| {
                         label(ui, "Resolution");
-                        let r = ui.horizontal(|ui| {
-                            for p in [100u8, 75, 50] {
-                                choose(ui, &mut o.graphics.scale, p, &format!("{p}%"), "uiResolution");
-                            }
+                        // the old handhelds' pixels set it themselves
+                        let own = o.graphics.pixels == 0;
+                        let r = ui.add_enabled_ui(own, |ui| {
+                            ui.horizontal(|ui| {
+                                for p in [100u8, 75, 50] {
+                                    choose(ui, &mut o.graphics.scale, p, &format!("{p}%"), "uiResolution");
+                                }
+                            })
                         });
-                        spots.push(vec![r.response.rect]);
+                        let r = if own { r.response } else { r.response.on_disabled_hover_text("The pixels set it") };
+                        spots.push(vec![r.rect]);
                         ui.end_row();
                         label(ui, "Shadows");
                         let r = ui.horizontal(|ui| {
@@ -771,9 +784,35 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
                         });
                         spots.push(vec![r.response.rect]);
                         ui.end_row();
+                        label(ui, "Pixels");
+                        let r = ui.horizontal(|ui| {
+                            for (i, name) in Graphics::HANDHELDS.iter().enumerate() {
+                                let about = match i {
+                                    0 => "The world at the screen's own resolution",
+                                    1 => "The world in big pixels, about as many as the GBA's screen had (240 by 160), in its 15-bit colours",
+                                    _ => "The world in bigger pixels, about as many as the GBC's screen had (160 by 144), in its 15-bit colours",
+                                };
+                                choose(ui, &mut o.graphics.pixels, i, name, "uiPixels").on_hover_text(about);
+                            }
+                        });
+                        spots.push(vec![r.response.rect]);
+                        ui.end_row();
+                        label(ui, "LCD screen");
+                        let r = ui.horizontal(|ui| {
+                            for (i, name) in Graphics::HANDHELDS.iter().enumerate() {
+                                let about = match i {
+                                    0 => "The colours as they are",
+                                    1 => "The colours as the GBA's screen showed them: dimmer, muted, mixed (with Pixels on, the thin gaps between its pixels too)",
+                                    _ => "The colours as the GBC's screen mixed them (with Pixels on, the gaps between its pixels too)",
+                                };
+                                choose(ui, &mut o.graphics.lcd, i, name, "uiLcd").on_hover_text(about);
+                            }
+                        });
+                        spots.push(vec![r.response.rect]);
+                        ui.end_row();
                     });
                     ui.add_space(8.0);
-                    ui.label(RichText::new("Lower these if the game stutters.").size(12.0).color(Color32::from_white_alpha(140)));
+                    ui.label(RichText::new("Lower the resolution or the shadows if the game stutters. Pixels and LCD screen are the old handhelds' looks.").size(12.0).color(Color32::from_white_alpha(140)));
                 }
                 2 => spots.extend(controls(ui, o, ui_state, pad_view)),
                 _ => rows(ui, "audio", &mut |ui| {
@@ -967,8 +1006,11 @@ mod tests {
         let d = Bindings::default();
         assert_eq!(buttons_text(&d, None), "A: Z / Space / Enter · B: X / Esc / Backspace · d-pad: arrows · L / R: Q / E");
         assert_eq!(buttons_text(&d, Some(Family::Xbox)), "A: A · B: B · d-pad: d-pad, left stick · L / R: LB / RB");
-        assert_eq!(walk_hint(&d, None), "Arrows move  ·  Z speaks  ·  Esc leaves");
-        assert_eq!(walk_hint(&d, Some(Family::PlayStation)), "D-pad moves  ·  Cross speaks  ·  Options leaves");
+        assert_eq!(walk_hint(&d, None), "Arrows move  ·  Z speaks  ·  Esc: the buttons");
+        assert_eq!(walk_hint(&d, Some(Family::PlayStation)), "D-pad moves  ·  Cross speaks  ·  Options: the buttons");
+        // the ring on the HUD's buttons
+        assert_eq!(hud_hint(&d, None), "Arrows: choose  ·  Z: press  ·  X: back");
+        assert_eq!(hud_hint(&d, Some(Family::Xbox)), "D-pad: choose  ·  A: press  ·  B: back");
     }
 
     #[test]
@@ -1035,6 +1077,16 @@ mod tests {
         go(&mut o, &mut s, Button::Down, false);
         go(&mut o, &mut s, Button::Left, false);
         assert_eq!(o.graphics.shadows, shadows.saturating_sub(1));
+        // Down, Right: the GBA's pixels; Down, Right twice: the GBC's LCD (no further)
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::Right, false);
+        assert_eq!(o.graphics.pixels, 1);
+        go(&mut o, &mut s, Button::Down, false);
+        for _ in 0..3 {
+            go(&mut o, &mut s, Button::Right, false);
+        }
+        assert_eq!((s.row, o.graphics.lcd), (3, 2));
+        assert_eq!(o.graphics.retro(), render::scene::Retro { pixels: Some(render::scene::Handheld::Gba), lcd: Some(render::scene::Handheld::Gbc) });
         // L twice: round to Audio; Left: the master volume 5 lower
         go(&mut o, &mut s, Button::L, false);
         go(&mut o, &mut s, Button::L, false);

@@ -1,5 +1,6 @@
 // The overworld in the built site, in a real browser: Explore walks the test meadow from
-// the menu, reads the signpost, talks to Bo and takes a choice, leaves, and after the page
+// the menu, reads the signpost, talks to Bo and takes a choice, leaves by the HUD's Exit (Esc
+// doesn't leave), and after the page
 // is loaded again stands where it left off with the flags kept; "forget" starts over.
 // Exits 1 when something fails.
 //     node tools/explorecheck.mjs
@@ -27,6 +28,11 @@ const cmd = (c) => browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringi
 const shot = (name) => browser.screenshot(join(shots, `explore-${name}.png`));
 const waitFor = (expr, what) => browser.waitFor(expr, { timeout: 15000, what });
 const dialogUp = () => waitFor('document.body.dataset.dialog !== ""', 'a dialog');
+// the HUD's Exit, clicked: back on the menu
+const exit = async () => {
+  const [x, y] = (await data('uiHudExit')).split(',').map(Number);
+  await browser.click(x, y);
+};
 const dialogDown = () => waitFor('document.body.dataset.dialog === ""', 'the dialog closing');
 const a = async () => {
   await browser.key('z');
@@ -98,10 +104,14 @@ try {
   await cmd('walkto:22,8');
   await sleep(300);
 
-  // 3. out with Esc, back in: the same place, the same memory
+  // 3. Esc doesn't leave; out with Exit, back in: the same place, the same memory
   await browser.key('Escape');
+  await new Promise((r) => setTimeout(r, 300));
+  check("Esc doesn't leave the world", (await data('state')) === 'explore', await data('state'));
+  await browser.key('Escape');
+  await exit();
   await browser.waitFor('document.body.dataset.state === "menu"', { what: 'the menu again' });
-  check('Esc leaves for the menu', true);
+  check('Exit leaves for the menu', true);
   await menu();
   await explore();
   check('loaded again: the saved map', (await data('map')) === 'test_meadow', await data('map'));
@@ -122,7 +132,7 @@ try {
   await waitFor('document.body.dataset.running === ""', 'the script ending');
 
   // 4. forgetting starts over
-  await browser.key('Escape');
+  await exit();
   await browser.waitFor('document.body.dataset.state === "menu"', { what: 'the menu' });
   await cmd('forget');
   await sleep(100);

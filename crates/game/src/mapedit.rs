@@ -57,6 +57,8 @@ pub struct SaveGame {
     /// the floor of the building there (0: the ground)
     pub floor: usize,
     pub flags: std::collections::BTreeMap<String, i64>,
+    /// who of the team fought in the last battles, and the main (the HUD's Team)
+    pub team: crate::team::TeamLog,
 }
 
 /// The save's name (`platform::store_text`).
@@ -284,6 +286,14 @@ pub struct MapEditor {
     tl: timeline::Timelines,
     /// the game's overworld: the map walked, no editing (`play_ui`)
     play: bool,
+    /// the game's screens: the old handhelds' pixels and colours (the Options'), the frosted
+    /// copy of the picture for the HUD's glass
+    pub retro: render::scene::Retro,
+    pub frost: bool,
+    /// the story's team: who fought in the last battles, the main
+    pub team: crate::team::TeamLog,
+    /// the HUD has the game's buttons (its ring, a window of its): no walking, no talking
+    pub hud_busy: bool,
 }
 
 pub(crate) fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
@@ -473,6 +483,10 @@ impl MapEditor {
             abilities: Default::default(),
             tl: Default::default(),
             play: false,
+            retro: Default::default(),
+            frost: false,
+            team: Default::default(),
+            hud_busy: false,
             dirty: false,
             space,
             map,
@@ -496,6 +510,7 @@ impl MapEditor {
         ed.grid = false;
         if let Some(s) = save {
             ed.story.flags = s.flags.clone();
+            ed.team = s.team.clone();
             if s.map == ed.map.id && ed.map.index(s.at[0], s.at[1]).is_some() {
                 ed.arrive = Some(((s.at[0], s.at[1]), s.facing as f32));
             }
@@ -518,6 +533,16 @@ impl MapEditor {
         self.play
     }
 
+    /// The open map's name.
+    pub fn map_name(&self) -> &str {
+        &self.map.name
+    }
+
+    /// A script or a dialog has the floor.
+    pub fn story_busy(&self) -> bool {
+        self.story.machine.is_some() || self.story.dialog.is_some()
+    }
+
     /// The overworld's view: close, over the walker's shoulder.
     fn play_camera(&mut self) {
         self.cam.distance = 16.0;
@@ -534,7 +559,7 @@ impl MapEditor {
             Some(w) => ([w.cell.0, w.cell.1], w.facing as f64),
             None => ([self.cam.target.x.floor() as i32, self.cam.target.z.floor() as i32], 0.0),
         };
-        SaveGame { map: self.map.id.clone(), at, facing, floor: self.walker_floor(), flags: self.story.flags.clone() }
+        SaveGame { map: self.map.id.clone(), at, facing, floor: self.walker_floor(), flags: self.story.flags.clone(), team: self.team.clone() }
     }
 
     fn first_terrain(content: &Content) -> String {
@@ -1116,32 +1141,23 @@ impl MapEditor {
         crate::platform::set_hook("status", &self.status);
     }
 
-    /// The game's overworld: the map walked, full window, no editing. Says whether the
-    /// player leaves (Esc, with no dialog up).
-    pub fn play_ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio, hours: f32) -> bool {
+    /// The game's overworld: the map walked, full window, no editing (the app's HUD over it:
+    /// the map's name, the keys, its buttons).
+    pub fn play_ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio, hours: f32) {
         let ctx = ui.ctx().clone();
         self.hours = hours;
         self.begin_frame(&ctx, rs, now);
-        // Esc leaves, or the controller's Start (Menu, Options, Plus)
-        let leave = !ctx.egui_wants_keyboard_input() && self.story.dialog.is_none() && self.story.machine.is_none() && (ctx.input(|i| i.key_pressed(egui::Key::Escape)) || crate::pads::start_pressed());
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
             self.play_input(ui, &response);
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
-            // the place and the keys, bottom left; what a script said, above
-            let p = ui.painter();
-            let font = egui::FontId::proportional(12.0);
-            let buttons = crate::title::walk_hint(&crate::input::bindings(), crate::title::pad_shown());
-            crate::platform::set_hook("walkhint", &buttons);
-            p.text(rect.left_bottom() + egui::vec2(12.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("{}  ·  {buttons}", self.map.name), font.clone(), Color32::from_white_alpha(170));
             if self.loading.is_some() {
-                p.text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(18.0), Color32::from_white_alpha(200));
+                ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(18.0), Color32::from_white_alpha(200));
             }
         });
         self.end_frame(&ctx, audio, now);
-        leave
     }
 
     /// A map for the main menu to stand on: played (its creatures and people about, its rigs
@@ -2303,6 +2319,8 @@ impl MapEditor {
             dim: self.focus_dim(now),
             overlays,
             toon: crate::stage::toon_look(&self.toon_settings()),
+            retro: self.retro,
+            frost: self.frost,
         }
     }
 }

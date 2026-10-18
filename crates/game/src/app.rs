@@ -8,7 +8,7 @@ use std::sync::Arc;
 use content::{Content, Space};
 use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Vec2};
 use render::map::{find_spot, MapScene};
-use render::scene::{DrawStats, Frame, Quality, SceneRenderer};
+use render::scene::{DrawStats, Frame, Handheld, Quality, Retro, SceneRenderer};
 use rules::battle::{Battle, BattleKind, BattleSetup, Outcome, Side};
 use rules::config::{Config, Period};
 use rules::dex::{Dex, Rng};
@@ -58,6 +58,9 @@ pub struct KeptOptions {
     pub resolution: u8,
     /// off, low, medium or high
     pub shadows: String,
+    /// the old handhelds' pixels and LCD colours: off, gba or gbc
+    pub pixels: String,
+    pub lcd: String,
     pub volume: u8,
     pub effects: u8,
     pub ambience: u8,
@@ -105,6 +108,8 @@ impl Options {
             rings: self.assist,
             resolution: self.graphics.scale,
             shadows: Graphics::SHADOWS[self.graphics.shadows.min(3)].0.to_lowercase(),
+            pixels: Graphics::HANDHELDS[self.graphics.pixels.min(2)].to_lowercase(),
+            lcd: Graphics::HANDHELDS[self.graphics.lcd.min(2)].to_lowercase(),
             volume: self.volume,
             effects: self.effects,
             ambience: self.ambience,
@@ -122,6 +127,8 @@ impl Options {
             self.graphics.scale = k.resolution;
         }
         self.graphics.shadows = Graphics::SHADOWS.iter().position(|(n, _)| n.eq_ignore_ascii_case(&k.shadows)).unwrap_or(self.graphics.shadows);
+        self.graphics.pixels = Graphics::handheld(&k.pixels).unwrap_or(self.graphics.pixels);
+        self.graphics.lcd = Graphics::handheld(&k.lcd).unwrap_or(self.graphics.lcd);
         self.volume = k.volume.min(100);
         self.effects = k.effects.min(100);
         self.ambience = k.ambience.min(100);
@@ -149,23 +156,43 @@ impl Options {
 }
 
 /// How much the GPU draws (for machines that can't keep up): the 3D scene's resolution
-/// against the screen's, and the shadows' sharpness.
+/// against the screen's, and the shadows' sharpness; and the old handhelds' looks.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Graphics {
     /// percent of the screen's resolution
     pub scale: u8,
     /// 0 none, 1 low, 2 medium, 3 high
     pub shadows: usize,
+    /// the old handhelds' pixels, and their LCDs' colours: 0 none, 1 the GBA's, 2 the GBC's
+    /// (`HANDHELDS`)
+    pub pixels: usize,
+    pub lcd: usize,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Graphics { scale: 100, shadows: 2 }
+        Graphics { scale: 100, shadows: 2, pixels: 0, lcd: 0 }
     }
 }
 
 impl Graphics {
     pub const SHADOWS: [(&'static str, u32); 4] = [("Off", 0), ("Low", 1024), ("Medium", 2048), ("High", 4096)];
+    pub const HANDHELDS: [&'static str; 3] = ["Off", "GBA", "GBC"];
+
+    /// A handheld by its name ("gba"), as `HANDHELDS` numbers them.
+    pub fn handheld(name: &str) -> Option<usize> {
+        Self::HANDHELDS.iter().position(|h| h.eq_ignore_ascii_case(name))
+    }
+
+    /// The handhelds' looks, for the game's screens.
+    pub fn retro(self) -> Retro {
+        let of = |i: usize| match i {
+            1 => Some(Handheld::Gba),
+            2 => Some(Handheld::Gbc),
+            _ => None,
+        };
+        Retro { pixels: of(self.pixels), lcd: of(self.lcd) }
+    }
 
     fn quality(self) -> Quality {
         Quality { scale: self.scale as f32 / 100.0, shadow_size: Self::SHADOWS[self.shadows.min(3)].1 }
@@ -305,6 +332,10 @@ pub struct GameApp {
     saved_at: (f64, Option<String>),
     /// the screen last frame (its `data-state`)
     last_state: &'static str,
+    /// the HUD over the overworld (its buttons, the Team, Settings, Exit)
+    hud: crate::play_hud::PlayHud,
+    /// the renderer's frosted copy of the picture as egui's texture, and its generation
+    frost: Option<(egui::TextureId, u64)>,
 }
 
 pub struct SceneCallback {
@@ -382,6 +413,7 @@ impl GameApp {
             stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
             title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
+            hud: Default::default(), frost: None,
         }
     }
 
@@ -562,7 +594,7 @@ impl GameApp {
     fn save_story(&mut self, s: &SaveGame, force: bool) {
         let now = platform::now_ms();
         let changed = match &self.last_save {
-            Some(last) => last.map != s.map || last.flags != s.flags || (last.at != s.at && now - self.last_save_at > 2000.0),
+            Some(last) => last.map != s.map || last.flags != s.flags || last.team != s.team || (last.at != s.at && now - self.last_save_at > 2000.0),
             None => true,
         };
         if changed || force {
@@ -743,6 +775,38 @@ impl GameApp {
         Director::new(battle, stage, hud, self.options.auto, [220.0, 420.0, 700.0][self.options.text])
     }
 
+    /// The team's pictures, for the HUD: each creature's icon asked for, made a texture once
+    /// it's in.
+    fn team_icons(&mut self, ctx: &egui::Context) {
+        let Some(dex) = self.dex.clone() else { return };
+        for s in &self.party {
+            if self.icons.contains_key(&s.species) {
+                continue;
+            }
+            let Some(path) = dex.try_sp(&s.species).and_then(|i| dex.species[i].icon.clone()) else { continue };
+            if let Load::Ready(b) = self.files.get(&path) {
+                if let Ok((rgba, w, h)) = decode(&b) {
+                    let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                    self.icons.insert(s.species.clone(), ctx.load_texture(format!("icon-{}", s.species), img, egui::TextureOptions::NEAREST));
+                }
+            }
+        }
+    }
+
+    /// The team as the HUD shows it: each creature's id, name, level and icon, in its order.
+    fn team_members(party: &[MonSpec], content: Option<&Content>, icons: &HashMap<String, egui::TextureHandle>) -> Vec<crate::play_hud::Member> {
+        party
+            .iter()
+            .zip(crate::team::ids(party))
+            .map(|(s, id)| crate::play_hud::Member {
+                id,
+                name: content.and_then(|c| c.creatures.get(&s.species)).map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone()),
+                level: s.level,
+                icon: icons.get(&s.species).map(|t| t.id()),
+            })
+            .collect()
+    }
+
     /// The party keeps what its moves learned (XP), not the levels set for the encounter.
     fn keep_xp(&mut self, battle: &Battle) {
         for (i, spec) in self.party.iter_mut().enumerate() {
@@ -807,6 +871,9 @@ impl GameApp {
                         self.options.graphics.shadows = i;
                     }
                 }
+                // the old handhelds' looks: off, gba or gbc
+                "pixels" => self.options.graphics.pixels = Graphics::handheld(arg).unwrap_or(self.options.graphics.pixels),
+                "lcd" => self.options.graphics.lcd = Graphics::handheld(arg).unwrap_or(self.options.graphics.lcd),
                 "levels" => {
                     if let Ok(lv) = arg.parse::<u8>() {
                         for s in self.party.iter_mut() {
@@ -961,8 +1028,10 @@ impl GameApp {
             }
         }
         let hours = self.hours();
+        let retro = self.options.graphics.retro();
         let world_ready = match self.menu_world.as_mut() {
             Some(w) => {
+                w.retro = retro;
                 w.backdrop(ui.ctx(), rs, now, hours);
                 w.backdrop_ready()
             }
@@ -1139,14 +1208,33 @@ impl eframe::App for GameApp {
         let dt = ((now - self.stats.last).max(0.0) / 1000.0).min(0.05) as f32;
         self.frame_stats(now, frame.info().cpu_usage.map(|s| s as f64 * 1000.0));
         if let Some(rs) = frame.wgpu_render_state() {
-            if let Some(r) = rs.renderer.write().callback_resources.get_mut::<SceneRenderer>() {
+            let mut guard = rs.renderer.write();
+            if let Some(r) = guard.callback_resources.get_mut::<SceneRenderer>() {
                 let q = self.options.graphics.quality();
                 if r.quality() != q {
                     r.set_quality(&rs.device, q);
                 }
                 self.draws = r.stats();
             }
+            // the HUD's frosted glass: the renderer's blurred copy of the picture, as a texture
+            // egui can draw (registered again when it's made again)
+            let frost = guard.callback_resources.get::<SceneRenderer>().and_then(|r| r.frost_view()).map(|(v, g)| (v.clone(), g));
+            if let Some((view, generation)) = frost {
+                if self.frost.map(|(_, g)| g) != Some(generation) {
+                    let id = match self.frost {
+                        Some((id, _)) => {
+                            guard.update_egui_texture_from_wgpu_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear, id);
+                            id
+                        }
+                        None => guard.register_native_texture(&rs.device, &view, eframe::wgpu::FilterMode::Linear),
+                    };
+                    self.frost = Some((id, generation));
+                }
+            }
         }
+        platform::set_hook("frost", if self.frost.is_some() { "1" } else { "" });
+        let g = self.options.graphics;
+        platform::set_hook("retro", &format!("{}/{}", Graphics::HANDHELDS[g.pixels.min(2)], Graphics::HANDHELDS[g.lcd.min(2)]).to_lowercase());
         let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
         // the controllers first: who's listened to this frame, then what it pressed
         self.pads.update(&ctx, now);
@@ -1193,6 +1281,11 @@ impl eframe::App for GameApp {
         }
 
         let hours = self.hours();
+        let retro = self.options.graphics.retro();
+        let mut options_changed = false;
+        if matches!(self.screen, Screen::Overworld(_)) {
+            self.team_icons(&ctx);
+        }
         match &mut self.screen {
             Screen::Boot | Screen::Loading(_) => {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28))).show(ui, |ui| {
@@ -1231,16 +1324,27 @@ impl eframe::App for GameApp {
                 }
             }
             Screen::Overworld(ed) => {
-                let leave = ed.play_ui(ui, frame.wgpu_render_state(), now, &mut self.audio, hours);
+                // the game's look, the glass the HUD's buttons are; the world waits while the
+                // HUD has the game's buttons
+                ed.retro = retro;
+                ed.frost = true;
+                ed.hud_busy = self.hud.holds();
+                ed.play_ui(ui, frame.wgpu_render_state(), now, &mut self.audio, hours);
                 let request = ed.take_request();
+                // the HUD over it: the map's name and the keys, the Team, Settings, Exit
+                crate::layout::set_frost(self.frost.map(|(id, _)| (id, ctx.content_rect())));
+                let team = Self::team_members(&self.party, self.content.as_deref(), &self.icons);
+                let map_name = ed.map_name().to_string();
+                let busy = ed.story_busy();
+                let out = self.hud.ui(&ctx, &map_name, busy, &team, &mut ed.team, &mut self.options, &self.input, &mut options_changed);
                 let save = ed.save_game();
-                if leave {
+                if out == crate::play_hud::Out::Exit {
                     self.leaving = true;
                 } else if request.is_some() {
                     self.pending = request;
                 } else {
                     let changed = match &self.last_save {
-                        Some(last) => last.map != save.map || last.flags != save.flags || (last.at != save.at && now - self.last_save_at > 2000.0),
+                        Some(last) => last.map != save.map || last.flags != save.flags || last.team != save.team || (last.at != save.at && now - self.last_save_at > 2000.0),
                         None => true,
                     };
                     if changed {
@@ -1254,6 +1358,7 @@ impl eframe::App for GameApp {
                 }
             }
             Screen::Battle(director, encounter) => {
+                director.stage.retro = retro;
                 director.update(&ctx, &self.input, now, dt);
                 for c in director.take_cries() {
                     self.audio.play_once(&self.files, &c, None, 1.0, 0.0, now);
@@ -1305,6 +1410,11 @@ impl eframe::App for GameApp {
                 platform::set_hook("menu", if director.menu_open() { "open" } else { "" });
                 if director.finished() {
                     let Screen::Battle(director, _) = std::mem::replace(&mut self.screen, Screen::Menu) else { unreachable!() };
+                    // the story's: who of the team fought (the HUD's Team counts them), before
+                    // what was caught joins it
+                    if let Some(ed) = self.parked.as_mut().filter(|ed| ed.playing()) {
+                        ed.team.record(crate::team::fought(&director.battle, &crate::team::ids(&self.party)));
+                    }
                     self.keep_xp(&director.battle);
                     let results = Results {
                         encounter,
@@ -1321,6 +1431,7 @@ impl eframe::App for GameApp {
             Screen::Results(..) => {
                 let name = if let Screen::Results(_, r) = &self.screen { self.encounter_name(r.encounter) } else { String::new() };
                 let Screen::Results(director, results) = &mut self.screen else { unreachable!() };
+                director.stage.retro = retro;
                 director.stage.update(now, dt);
                 Self::draw_scene(ui, director, now);
                 let mut choice = None;
@@ -1390,6 +1501,9 @@ impl eframe::App for GameApp {
             }
         }
 
+        if options_changed {
+            self.keep_options();
+        }
         if let Some(crate::mapedit::Request::Battle(id)) = self.pending.take() {
             self.battle_from_map(&id);
         }
@@ -1417,11 +1531,12 @@ impl eframe::App for GameApp {
                 format!("scene: {} draws, {}k triangles", d.draws, d.triangles / 1000),
                 format!("shadow: {} draws, {}k triangles", d.shadow_draws, d.shadow_triangles / 1000),
                 format!("out of sight: {} squares", d.culled),
-                format!("resolution {}% · shadows {}", g.scale, Graphics::SHADOWS[g.shadows.min(3)].0.to_lowercase()),
+                format!("resolution {}% · shadows {} · pixels {} · lcd {}", g.scale, Graphics::SHADOWS[g.shadows.min(3)].0.to_lowercase(), Graphics::HANDHELDS[g.pixels.min(2)], Graphics::HANDHELDS[g.lcd.min(2)]),
                 "F3 hides this".to_string(),
             ];
             let font = FontId::monospace(11.0);
-            let top = r.top() + 26.0;
+            // (under the HUD's buttons in the overworld)
+            let top = r.top() + if matches!(self.screen, Screen::Overworld(_)) { 92.0 } else { 26.0 };
             let box_rect = Rect::from_min_max(Pos2::new(r.right() - 270.0, top - 4.0), Pos2::new(r.right() - 6.0, top + lines.len() as f32 * 15.0 + 4.0));
             painter.rect_filled(box_rect, 4.0, Color32::from_black_alpha(190));
             for (k, l) in lines.iter().enumerate() {

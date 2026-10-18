@@ -23,7 +23,12 @@ and people about, the camera drifting slowly over it, lit at the time it is wher
 replace a saved story), **Options** and **Exit** (in the browser, a tab the page may not close
 says so), in white Roboto: an item hovered grows a little and steps right; one picked steps
 right while the others slide left and fade (every tween 0.3 s at most). The **Options** are in
-tabs: **Game** (text speed, timing windows and rings), **Graphics** (resolution, shadows),
+tabs: **Game** (text speed, timing windows and rings), **Graphics** (resolution, shadows,
+and the old handhelds' looks: **Pixels**, the world in big square pixels, about as many as
+the GBA's 240 by 160 screen had or the GBC's 160 by 144 (bigger), in 15-bit colour; **LCD
+screen**, the colours as the GBA's or the GBC's screen showed them, with the thin gaps
+between its pixels when Pixels are on: the colour transforms of the Pipit emulator, "gba-color"
+for the GBA, Gambatte's for the GBC; the editor keeps the screen's own look),
 **Controls** (what each button answers to on the device in use: the keyboard's keys, or a
 controller's buttons while one is in use; one clicked, or A on it, takes the next one
 pressed, "+" adds one; while one waits, Delete or the controller's Select takes it off, Esc
@@ -39,7 +44,8 @@ overworld, the battles), read by [gilrs](https://gitlab.com/gilrs-project/gilrs)
 system's own way on the desktop (Windows.Gaming.Input on Windows), the Gamepad API in the
 browser, where a controller shows once one of its buttons is pressed. As they come: A is the
 lower face button (A, Cross), B the right one (B, Circle), the d-pad or the left stick moves,
-LB and RB are L and R, Start (Menu, Options, Plus) leaves the overworld as Esc does. The game
+LB and RB are L and R, Start (Menu, Options, Plus) puts the ring on the overworld's buttons as
+Esc does. The game
 listens to one device at a time: a controller connected (or there at the start) takes over,
 and whichever device is used while the game's window is active takes over from the one
 before (a key, a click or the mouse moved for the keyboard; a button or the stick for a
@@ -77,6 +83,7 @@ node tools/tilecheck.mjs               # cell by cell: flooring, wall styles, a 
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
 node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, "Start new games here"
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
+node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, the main, the last battles, a controller; the old handhelds' pixels and LCD
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
 python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the user's bones
 cargo test -p engine-game -- --ignored shot   # the desktop-only windows drawn on the GPU, no window opened (build/shots/requests-bones.png; SHOT_PICTURE: the picture)
@@ -276,8 +283,21 @@ small one.
   walker stands or the view looks). The story is kept between runs, one slot: the map, where
   you stood and which way you faced, and the flags (the browser's storage;
   `build/save/story.json` on the desktop), saved as they change. Warps, seams and a script's
-  battle work there (the battle plays, then it's back to the map); Esc (a controller's
-  Start) leaves for the menu.
+  battle work there (the battle plays, then it's back to the map).
+- **The HUD** over the overworld (`play_hud.rs`): the map's name and the keys top left, and
+  its buttons in layout groups (`layout.rs`: rows anchored to a corner of the screen that
+  place their buttons themselves, one after another, so a new button is one more line in its
+  group; each button frosted glass, the world behind it blurred, a white icon on it):
+  **Team** bottom left (where the game's menus go), **Settings** (the Options) and **Exit**
+  (back to the main menu, the story kept) top right. Esc no longer leaves: it (or a
+  controller's Start) puts a ring on the buttons, the arrows or the d-pad move it from one to
+  the next (across the groups too), A presses, B goes back; the world waits meanwhile.
+  **Team** opens its list beside it: the five creatures that fought in the most of your last
+  ten battles (the more recently, the sooner), your **main** first, pinned with a click on it
+  (a click on the main unpins it), then **View all** (a window of every creature; its board
+  of cards comes next). The list closes with Team again, a click anywhere else (the other
+  buttons too) or View all. The story keeps who fought in each battle and the main
+  (`team.rs`).
 
 The editor (the main menu's Editor, or `--maps`) opens on the map it last had, else the one
 games start on. Its top bar's **Menu** goes back to the main menu, to the **Content** (every
@@ -461,9 +481,9 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
-| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance), the old handhelds' looks (`Retro`: the scene drawn small, its pixels whole squares of the screen's, in 15-bit colour; an LCD's colours and the gaps between its pixels) and a small blurred copy of the picture for frosted glass (`frost_view`, which the game hands egui) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `layout.rs` (the HUD's layout groups, frosted buttons, the ring from one to the next), `play_hud.rs` (the overworld's HUD: the Team and its list, Settings, Exit), `team.rs` (who of the team fought in the last battles, the main), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list, the old handhelds' looks), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -491,7 +511,8 @@ The aim is 120 frames per second on a 120 Hz screen, 60 at least on modest machi
 shows the details in the game (time per frame, draw calls and triangles in the scene and the
 shadow, what was left out of sight, the graphics settings). In the Options, **Graphics** sets
 the 3D scene's resolution (100, 75 or 50% of the screen's, smoothed up) and the shadows (off,
-low, medium, high: a 1024 to 4096 shadow map) for machines that can't keep up.
+low, medium, high: a 1024 to 4096 shadow map) for machines that can't keep up (the old
+handhelds' Pixels set the resolution themselves: the scene drawn that small costs less still).
 
 What keeps it fast:
 

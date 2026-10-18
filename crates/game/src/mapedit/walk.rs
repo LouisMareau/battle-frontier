@@ -280,8 +280,8 @@ impl MapEditor {
             self.blocked = Some(self.map.blocked(&self.content));
         }
         let typing = ctx.egui_wants_keyboard_input();
-        // a script has the floor: the arrows do nothing
-        let frozen = self.story.machine.is_some() || self.story.dialog.is_some();
+        // a script has the floor, or the HUD has the game's buttons: the arrows do nothing
+        let frozen = self.story.machine.is_some() || self.story.dialog.is_some() || self.hud_busy;
         // held, or tapped this frame (a tap can start and end between two frames)
         let held = |b: crate::input::Button| !typing && !frozen && crate::input::held(ctx, b);
         let (right, forward) = self.cam.ground_axes();

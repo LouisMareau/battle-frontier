@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="#ffffff" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <!-- the main: a pushpin, its head and its needle -->
+  <path d="M9 3.5h6l-1 5.5 3.2 3.2H6.8L10 9Z"/>
+  <path d="M12 12.2v8.3" fill="none"/>
+</svg>
