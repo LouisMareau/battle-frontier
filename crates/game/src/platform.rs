@@ -87,6 +87,24 @@ pub fn window_active(_ctx: &egui::Context) -> bool {
     web_sys::window().and_then(|w| w.document()).is_some_and(|d| !d.hidden() && d.has_focus().unwrap_or(true))
 }
 
+/// What each of the browser's controller slots holds now (`navigator.getGamepads()`: each
+/// controller's id, None for an empty slot); nothing on the desktop, where gilrs names the
+/// controllers itself.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn gamepad_ids() -> Vec<Option<String>> {
+    vec![]
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn gamepad_ids() -> Vec<Option<String>> {
+    use wasm_bindgen::JsCast;
+    let Some(list) = web_sys::window().and_then(|w| w.navigator().get_gamepads().ok()) else {
+        return vec![];
+    };
+    // unchecked, as gilrs reads them (the checks' stand-in controllers are plain objects)
+    list.iter().map(|g| (!g.is_null() && !g.is_undefined()).then(|| g.unchecked_into::<web_sys::Gamepad>().id())).collect()
+}
+
 /// A "HH:MM" of hours (0 to 24).
 pub fn clock_text(hours: f32) -> String {
     let minutes = (hours.rem_euclid(24.0) * 60.0).floor() as u32;

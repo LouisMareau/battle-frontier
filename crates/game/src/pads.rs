@@ -234,6 +234,48 @@ pub fn plain_name(id: &str) -> String {
     }
 }
 
+/// The maker's USB number in a browser's id for a controller: Chrome's "… (STANDARD GAMEPAD
+/// Vendor: 054c Product: 0ce6)", Firefox's "054c-0ce6-…".
+fn vendor_in(id: &str) -> Option<u16> {
+    let hex = |t: &str| if t.len() == 4 && t.chars().all(|c| c.is_ascii_hexdigit()) { u16::from_str_radix(t, 16).ok() } else { None };
+    let b = id.as_bytes();
+    if b.len() > 10 && b[4] == b'-' && b[9] == b'-' {
+        if let (Some(v), Some(_)) = (hex(&id[..4]), hex(&id[5..9])) {
+            return Some(v);
+        }
+    }
+    let at = id.find("Vendor: ")? + "Vendor: ".len();
+    hex(id.get(at..at + 4)?)
+}
+
+/// In the browser, the Gamepad API's slot each controller came from. gilrs keeps a slot's
+/// first controller (its name and maker) for any controller connected there after it, so one
+/// connected again goes by what its slot holds now. On the desktop gilrs tells controllers
+/// apart itself and nothing is kept.
+#[derive(Debug, Default)]
+struct Slots {
+    /// gilrs's number for a controller: its slot
+    of: BTreeMap<usize, usize>,
+}
+
+impl Slots {
+    /// Controller `pad` connected, which gilrs calls `named` (its maker `vendor`): the name and
+    /// maker to go by. `now`: what each of the browser's slots holds (empty on the desktop).
+    fn connected(&mut self, pad: usize, named: &str, vendor: Option<u16>, now: &[Option<String>]) -> (String, Option<u16>) {
+        if let Some(&slot) = self.of.get(&pad) {
+            // seen before: whatever is in its slot now
+            if let Some(Some(id)) = now.get(slot) {
+                return (id.clone(), vendor_in(id));
+            }
+        } else if let Some(slot) = (0..now.len()).find(|s| !self.of.values().any(|v| v == s) && now[*s].as_deref() == Some(named)) {
+            // new to gilrs, so its words are right: the first slot no other controller has
+            // that holds it
+            self.of.insert(pad, slot);
+        }
+        (named.to_string(), vendor)
+    }
+}
+
 /// Who the game listens to.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Device {
@@ -440,6 +482,8 @@ pub struct Pads {
     sticks: BTreeMap<usize, [bool; 4]>,
     /// each controller's name and kind
     names: BTreeMap<usize, (String, Family)>,
+    /// in the browser, the slot each controller came from
+    slots: Slots,
     /// a word on a controller come or gone, and when (ms)
     note: Option<(String, f64)>,
     /// a controller has just taken over: the mouse pointer is to be put out of the game's sight
@@ -463,7 +507,7 @@ impl Pads {
                 None
             }
         };
-        let mut pads = Pads { gilrs, router: Router::default(), sticks: BTreeMap::new(), names: BTreeMap::new(), note: None, hide_pointer: false };
+        let mut pads = Pads { gilrs, router: Router::default(), sticks: BTreeMap::new(), names: BTreeMap::new(), slots: Slots::default(), note: None, hide_pointer: false };
         // the controllers already there: the one found last is listened to
         let found: Vec<(usize, String, Family)> = pads.gilrs.as_ref().map_or(vec![], |g| g.gamepads().map(|(id, p)| (usize::from(id), plain_name(p.name()), Family::of(p.name(), p.vendor_id()))).collect());
         for (id, name, family) in found {
@@ -479,14 +523,17 @@ impl Pads {
         let window = crate::platform::window_active(ctx);
         let keys = crate::input::bindings();
         let mut happenings = vec![];
+        // what the browser's slots hold, read once a controller connects
+        let mut slots_now = None;
         if let Some(g) = &mut self.gilrs {
             while let Some(ev) = g.next_event() {
                 let pad = usize::from(ev.id);
                 match ev.event {
                     gilrs::EventType::Connected => {
                         let p = g.gamepad(ev.id);
-                        let name = plain_name(p.name());
-                        let family = Family::of(p.name(), p.vendor_id());
+                        let (id, vendor) = self.slots.connected(pad, p.name(), p.vendor_id(), slots_now.get_or_insert_with(crate::platform::gamepad_ids));
+                        let name = plain_name(&id);
+                        let family = Family::of(&id, vendor);
                         self.note = Some((format!("Controller connected: {name}"), now));
                         self.names.insert(pad, (name, family));
                         happenings.push(Happening::Connected(pad));
@@ -685,5 +732,39 @@ mod tests {
             assert_eq!(PadButton::from_name(b.name()), Some(b));
             assert_eq!(PadButton::from_gilrs(b.to_gilrs()), Some(b));
         }
+    }
+
+    #[test]
+    fn a_controller_in_a_slot_used_before_goes_by_its_own_name() {
+        let xbox = "Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)";
+        let dualsense = "DualSense Wireless Controller (STANDARD GAMEPAD Vendor: 054c Product: 0ce6)";
+        let slots = |ids: &[Option<&str>]| ids.iter().map(|i| i.map(str::to_string)).collect::<Vec<_>>();
+        // the desktop: gilrs's words, nothing kept
+        let mut s = Slots::default();
+        assert_eq!(s.connected(0, "Xbox Wireless Controller", Some(0x045e), &[]), ("Xbox Wireless Controller".to_string(), Some(0x045e)));
+        assert!(s.of.is_empty());
+        // the browser: an Xbox controller in slot 0, then a DualSense in slot 1 (new to gilrs:
+        // its words, and the slot each came from)
+        assert_eq!(s.connected(0, xbox, Some(0x045e), &slots(&[Some(xbox)])).0, xbox);
+        assert_eq!(s.connected(1, dualsense, Some(0x054c), &slots(&[Some(xbox), Some(dualsense)])).0, dualsense);
+        assert_eq!((s.of[&0], s.of[&1]), (0, 1));
+        // both gone, a DualSense connected in slot 0: gilrs still says Xbox, the slot DualSense
+        assert_eq!(s.connected(0, xbox, Some(0x045e), &slots(&[Some(dualsense), None])), (dualsense.to_string(), Some(0x054c)));
+        assert_eq!(Family::of(dualsense, vendor_in(dualsense)), Family::PlayStation);
+        // the same controller back in its slot: the same name; its slot empty by then: gilrs's
+        assert_eq!(s.connected(1, dualsense, Some(0x054c), &slots(&[Some(dualsense), Some(dualsense)])).0, dualsense);
+        assert_eq!(s.connected(0, xbox, Some(0x045e), &slots(&[None, None])).0, xbox);
+        // two of a kind new at once: a slot each
+        let mut s = Slots::default();
+        let both = slots(&[Some(xbox), Some(xbox)]);
+        s.connected(0, xbox, Some(0x045e), &both);
+        s.connected(1, xbox, Some(0x045e), &both);
+        assert_eq!((s.of[&0], s.of[&1]), (0, 1));
+        // the maker's number in Chrome's ids and Firefox's
+        assert_eq!(vendor_in(dualsense), Some(0x054c));
+        assert_eq!(vendor_in("045e-0b13-Xbox Wireless Controller"), Some(0x045e));
+        assert_eq!(vendor_in("057e-2009-Gamepad"), Some(0x057e));
+        assert_eq!(vendor_in("Arcade Stick (2 players)"), None);
+        assert_eq!(vendor_in("Pad (Vendor: 12)"), None);
     }
 }

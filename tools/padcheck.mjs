@@ -250,10 +250,10 @@ try {
   check('  both gone: the keyboard', (await data('device')) === 'keys' && (await data('pads')) === '0', `${await data('device')}, ${await data('pads')}`);
   await shot('5-gone');
 
-  // 8. a battle played with a controller: the target picker, the prompts and the results name
-  // what's printed on it (Cross, Circle); a key pressed, the keyboard's keys. In a slot no
-  // controller had before: gilrs keeps a slot's first name (the browser's index is its key)
-  const P = 2;
+  // 8. a DualSense in slot 0, where the Xbox controller was: its own name and buttons (gilrs
+  // keeps a slot's first controller: the game reads the slot). A battle played with it: the
+  // target picker, the prompts and the results name what's printed on it (Cross, Circle); a
+  // key pressed, the keyboard's keys
   const wild = pick('wild');
   if (!wild) throw new Error('no wild encounter in the content: the battle part needs one');
   await browser.evaluate(`(() => {
@@ -264,24 +264,27 @@ try {
     }).observe(document.body, { attributes: true, attributeFilter: ['data-prompt'] });
     return true;
   })()`);
-  await pads(`connect(${P}, ${JSON.stringify(DUALSENSE)})`);
+  await pads(`connect(0, ${JSON.stringify(DUALSENSE)})`);
   await sleep(300);
+  check('a DualSense where the Xbox controller was: its own name', (await data('padname')) === 'DualSense Wireless Controller' && (await data('padnote')) === 'Controller connected: DualSense Wireless Controller', `${await data('padname')}, ${await data('padnote')}`);
+  check('  its own buttons in the hint', (await data('keyshint')) === 'D-pad: choose  ·  Cross: select  ·  Circle: back', await data('keyshint'));
+  await shot('6-reused-slot');
   await cmd(`text:fast;time:day;start:${wild}`);
   await browser.waitFor('document.body.dataset.menu === "open"', { timeout: 60000, what: 'the battle menu' });
   await sleep(300);
   check('a battle, the controller in use', (await data('state')) === 'battle' && (await data('device')) === 'pad' && (await data('padname')).startsWith('DualSense'), `${await data('state')}, ${await data('device')}, ${await data('padname')}`);
-  await tap(B.south, P);
+  await tap(B.south);
   check('  Cross on Attack: the target picker names Cross and Circle', (await data('targethint')) === '◀ ▶ choose · Cross confirm · Circle back', await data('targethint'));
   await shot('6-target');
-  await tap(B.south, P);
+  await tap(B.south);
   await browser.waitFor('window.__prompts.length > 0', { timeout: 10000, what: 'a prompt' }).catch(() => {});
   await shot('6b-prompt');
   // Cross through the menus to the end (the AI's side at last if it takes long)
   const started = Date.now();
   while ((await data('state')) === 'battle' && Date.now() - started < 120000) {
     if ((await data('menu')) === 'open') {
-      await tap(B.south, P);
-      await tap(B.south, P);
+      await tap(B.south);
+      await tap(B.south);
     }
     await sleep(150);
   }
@@ -296,7 +299,7 @@ try {
   await sleep(200);
   check("  a key pressed: the keyboard's keys", (await data('device')) === 'keys' && (await data('results')) === 'Fight again (Z) · Back to the menu (X)', `${await data('device')}, ${await data('results')}`);
   await sleep(400);
-  await tap(B.east, P);
+  await tap(B.east);
   await state('menu', 'the menu after the battle').catch(() => {});
   check('  Circle: back to the menu', (await data('state')) === 'menu' && (await data('device')) === 'pad', `${await data('state')}, ${await data('device')}`);
 
