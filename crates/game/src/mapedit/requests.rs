@@ -2614,6 +2614,7 @@ mod tests {
     fn pictures_dropped_on_the_window_make_requests() {
         let root = scratch("window");
         let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
         let mut req = Requests::at(&root);
         req.open = true;
         frame(&ctx, &mut req, vec![]);
@@ -2735,6 +2736,7 @@ mod tests {
     fn the_lines_wait_for_the_users_check_then_go_on() {
         let root = scratch("check");
         let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
         let mut req = Requests::at(&root);
         req.open = true;
         let mut r = create(&root, "Moss toad.png").unwrap();
@@ -2843,6 +2845,7 @@ mod tests {
     fn the_bones_are_drawn_over_a_picture() {
         let root = scratch("bones");
         let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
         let mut req = Requests::at(&root);
         req.open = true;
         let mut r = create(&root, "Moss toad.png").unwrap();
@@ -2939,6 +2942,7 @@ mod tests {
     fn shot_of_the_bones_window() {
         let root = scratch("shot");
         let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
         let mut req = Requests::at(&root);
         req.open = true;
         let bytes = std::env::var("SHOT_PICTURE").ok().map(|p| std::fs::read(p).unwrap()).unwrap_or_else(|| png(682, 852, 140));
@@ -3021,6 +3025,7 @@ mod tests {
         let mut ed = crate::mapedit::MapEditor::new(Arc::new(content::Content::default()), None, crate::platform::Files::new(root.to_str().unwrap()));
         ed.requests = Requests::at(&root);
         let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
         let drop = |ed: &mut crate::mapedit::MapEditor, files: Vec<egui::DroppedFileHandle>| {
             let raw = egui::RawInput { dropped_files: files, ..Default::default() };
             let content = content::Content::default();

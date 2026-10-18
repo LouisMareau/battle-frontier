@@ -96,10 +96,16 @@ try {
   await shot('6-undo');
   await expect('unsaved', 'dirty', 1);
 
-  // night
-  await press('uiNight');
+  // the time of day: the slider (a click on it, late in the day), then night
+  const noon = await data('hours');
+  await press('uiTime');
   await sleep(300);
-  check('the lamps lit by night', Number(await data('lights')) >= 3, `${await data('lights')} lamps`);
+  const clicked = await data('hours');
+  const [hh] = clicked.split(':').map(Number);
+  check('the time slider lights the map at another hour', noon === '12:00' && clicked !== noon && hh >= 14 && hh <= 22, `${noon} to ${clicked}`);
+  await browser.evaluate('(document.body.dataset.cmd = "period:22:30", true)');
+  await sleep(400);
+  check('the lamps lit by night', (await data('hours')) === '22:30' && Number(await data('lights')) >= 3, `${await data('hours')}, ${await data('lights')} lamps`);
   await shot('7-night');
 
   // the download (the browser's save)

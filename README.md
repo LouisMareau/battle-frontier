@@ -17,13 +17,22 @@ Edge, the install button at the end of the address bar (or the menu's "Cast, sav
 share" > "Install page as app"). Installed, it opens in its own window, and once opened it
 starts without a network too.
 
-The game opens on its main menu: **Continue** (the saved story, where you left it), **New
-game** (asked first when it would replace a saved story), **Options** (time of day, text
-speed, timing windows and rings, resolution, shadows, volume: kept between runs, in the
-browser's storage or `build/save/options.json`) and **Exit** (in the browser, a tab the page
-may not close says so). The **Editor**, in the bottom-right corner, opens the tools the game
-is made with; the first time in a run it says what they are and how what you make gets into
-the game: a pull request (see `CONTRIBUTING.md`), until you tick "Don't show this again".
+The game opens on its main menu, over the world: the map new games start on, its creatures
+and people about, the camera drifting slowly over it, lit at the time it is where you are.
+**Continue** (the saved story, where you left it), **New game** (asked first when it would
+replace a saved story), **Options** and **Exit** (in the browser, a tab the page may not close
+says so), in white Roboto: an item hovered grows a little and steps right; one picked steps
+right while the others slide left and fade (every tween 0.3 s at most). The **Options** are in
+tabs: **Game** (text speed, timing windows and rings), **Graphics** (resolution, shadows),
+**Controls** (the keys each button answers to: a key clicked takes the next one pressed, "+"
+adds one, a right-click takes one off) and **Audio** (master, effects, ambience); they're kept
+between runs, in the browser's storage or `build/save/options.json`. The time of day is the
+real one, where you are, hour by hour: the sun crosses the sky, dawn and dusk colour it, the
+lamps come on at dusk. The **Editor**'s icon (a white pencil, bottom right) opens the tools
+the game is made with; the first time in a run it says what they are and how what you make
+gets into the game: a pull request (see `CONTRIBUTING.md`), until you tick "Don't show this
+again". The game's icons are SVG (`crates/game/icons/`); its text is Roboto (Light, Medium
+for headings, Bold for titles).
 
 ## Running it
 
@@ -55,7 +64,7 @@ node tools/shot.mjs "map:test_meadow"  # one screenshot of a state, from command
 ```
 
 The desktop build takes `--preset ID` (start that encounter), `--auto` (the AI plays your
-side), `--time morning|day|night`, `--levels 1-5` (every move at that level), `--maps [ID]` (the
+side), `--time HH:MM` (or morning, day, night: a fixed time of day, for tests), `--levels 1-5` (every move at that level), `--maps [ID]` (the
 map editor), `--requests` (the map editor with its Requests window open), `--mute` (no sound at all),
 `--exit-after SECONDS`, `--stats` (frames per second, the worst frame
 gap and the time each frame keeps the processor busy, printed every second) and `--no-vsync`
@@ -281,15 +290,18 @@ in the top bar turn the sounds and the rigged props' animations off and on. **Zo
 paints zones (and who lives there: morning, day, night) or, in "Link treelines", takes a
 drag from a forest's edge onto a zone. "Creatures" lets them roam the map; "Debug" shows
 every zone, tree area, link arrow and creature path. Right-drag pans, middle-drag turns
-the view, the wheel zooms; Morning/Day/Night preview the light, and the lamps light up by
-night (Lamps lights them whatever the time); Ctrl+Z/Ctrl+Y undo and redo.
+the view, the wheel zooms; the top bar's time slider (0:00 to 23:59) previews the light at
+any time of day (the game itself follows the real clock), and the lamps light up from dusk
+(Lamps lights them whatever the time); Ctrl+Z/Ctrl+Y undo and redo.
 **Post-processing** sets the toon look, for what's ticked toon (a prop's "toon" in the asset
 browser or its panel, a creature's under the browser's Creatures): the sun's and the lamps'
 light in steps (how many, how soft their edges), the shade turning a colour, a rim of light
 round the edge and a glint; ink lines round it where it stands in front of what's behind it
 (drawn outside it: colour, width, opacity, how far behind counts) and along folds sharper
-than an angle; and colour steps for the whole picture, toon or not (the world's light in
-bands, the colours kept; the interface untouched). Changes show at once; Save (or Ctrl+S)
+than an angle; colour steps for the whole picture, toon or not (the world's light in
+bands, the colours kept; the interface untouched); and the clouds' shadows drifting over
+the world (how dark, how big, how fast, how much of the sky; cast along the sun's way, faint
+by moonlight). Changes show at once; Save (or Ctrl+S)
 writes them into the world settings record, Revert drops them, Defaults starts over.
 **Abilities** opens the Abilities window: every ability (a move record) of both spaces, one
 picked to edit or a new one (new ones go to `temporary/` unless told otherwise): what it
@@ -402,8 +414,8 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
-| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
-| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera, light), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clock, files, hooks), `title.rs` (the main menu, its emblem and the Options), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
+| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
+| `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys for them; tap, hold-release and rhythm reads), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
 | `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
@@ -510,5 +522,7 @@ preview addresses.
 The code (everything outside `content/`) is under the MIT license or the Apache License
 2.0, at your choice (`LICENSE-MIT`, `LICENSE-APACHE`). The game's content (`content/`:
 records, maps, props, and pictures and sounds as they come) is under Creative Commons
-Attribution-ShareAlike 4.0 (`content/LICENSE`). Contributions are welcome as pull requests;
-see `CONTRIBUTING.md` (original work only, commits signed off).
+Attribution-ShareAlike 4.0 (`content/LICENSE`). The game's font, Roboto
+(`crates/game/fonts/`), is under the SIL Open Font License 1.1 (`crates/game/fonts/OFL.txt`).
+Contributions are welcome as pull requests; see `CONTRIBUTING.md` (original work only,
+commits signed off).

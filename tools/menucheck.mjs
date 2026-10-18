@@ -1,9 +1,10 @@
-// The game's start in the built site: the main menu (Continue only with a story saved, New
-// game where the world says games start, its question when a story would be given up, the
-// Options kept after the page is loaded again), and the Editor in the corner: its welcome
-// (once a run, never again once asked), its Menu (the main menu, the content, the test
-// battles) and its "Start new games here". Screenshots to screenshots/menu-*.png. Exits 1
-// when something fails.
+// The game's start in the built site: the main menu over the world (Continue only with a
+// story saved, an item picked stepping right while the others leave, New game where the world
+// says games start, its question when a story would be given up), the Options in tabs (kept
+// after the page is loaded again; a key given to A works on the menu), and the Editor's icon
+// in the corner (growing when hovered): its welcome (once a run, never again once asked), its
+// Menu (the main menu, the content, the test battles) and its "Start new games here".
+// Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -61,29 +62,56 @@ try {
   check('  Continue, New game, Options, Exit, one under another', items.every(([x, y], i) => x > 0 && (i === 0 || y > items[i - 1][1])), JSON.stringify(items));
   const [ex, ey] = await at('uiEditor');
   check('  the Editor in the bottom-right corner', ex > 1250 && ey > 820, `${ex},${ey}`);
+  await browser.move(ex, ey);
+  await sleep(350);
+  check('  its icon grows when hovered', Number(await data('editorgrow')) > 0.9, await data('editorgrow'));
+  await browser.move(700, 450);
   check('  no story yet: Continue can\'t be picked', (await data('continue')) === '');
   await shot('1-menu');
   await press('uiContinue');
   check('  a click on it does nothing', (await data('state')) === 'menu');
 
-  // 2. the Options: changed, kept after the page is loaded again
-  await press('uiOptions');
-  check('Options opens', (await data('options')) === 'open');
-  await press('uiTime_Night');
+  // 2. the Options, in tabs: changed, kept after the page is loaded again
+  const [ox, oy] = await at('uiOptions');
+  await browser.click(ox, oy);
+  await sleep(60);
+  check('an item picked: the menu waits for its tween', (await data('titlebusy')) === '1' && (await data('options')) === '');
+  await sleep(400);
+  check('  then the Options open, on the Game tab', (await data('options')) === 'open' && (await data('optionstab')) === 'Game');
+  check('  the time of day isn\'t an option (the real one)', (await data('uiTime_Night')) === '');
   await press('uiText_Slow');
+  await press('uiTab_Graphics');
   await press('uiShadows_Low');
   await shot('2-options');
+  // Controls: A's first key (Z) given to K
+  await press('uiTab_Controls');
+  check('  the Controls tab', (await data('optionstab')) === 'Controls');
+  await press('uiKey_A_0');
+  check('  a key clicked waits for the new one', (await data('waitingkey')) === 'A');
+  await browser.key('k');
+  await sleep(200);
+  check('  K given to A (B still open: the key was the Controls\')', (await data('waitingkey')) === '' && (await data('options')) === 'open');
+  await shot('2b-controls');
+  await press('uiTab_Audio');
+  await press('uiEffects');
   await press('uiOptionsDone');
   check('  Done closes it', (await data('options')) === '');
   const kept = JSON.parse((await data('keptoptions')) || '{}');
-  check('  the choices taken', kept.time === 'night' && kept.text === 'slow' && kept.shadows === 'low', JSON.stringify(kept));
+  check('  the choices taken', kept.text === 'slow' && kept.shadows === 'low' && kept.controls?.A?.[0] === 'K' && kept.effects < 100 && !('time' in kept), JSON.stringify(kept));
   await load();
   const again = JSON.parse((await data('keptoptions')) || '{}');
-  check('  and kept after the page is loaded again', again.time === 'night' && again.text === 'slow' && again.shadows === 'low', JSON.stringify(again));
-  await press('uiOptions');
+  check('  and kept after the page is loaded again', again.text === 'slow' && again.shadows === 'low' && again.controls?.A?.[0] === 'K', JSON.stringify(again));
+  // K picks on the menu now: down to Options, K
+  await browser.click(700, 450);
+  await browser.key('ArrowDown');
+  await browser.key('k');
+  await sleep(450);
+  check('  K picks an item now (A)', (await data('options')) === 'open', await data('options'));
+  await press('uiTab_Controls');
+  await press('uiOptionsDefaults');
   await browser.key('x');
   await sleep(300);
-  check('  B (X, Esc) closes it too', (await data('options')) === '');
+  check('  the Controls back as they came; B (X, Esc) closes it', (await data('options')) === '' && JSON.parse(await data('keptoptions')).controls?.A?.[0] === 'Z');
 
   // 3. New game: where the world says games start; the story saved as it goes
   await press('uiNewGame');

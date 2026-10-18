@@ -282,7 +282,7 @@ impl MapEditor {
         // a script has the floor: the arrows do nothing
         let frozen = self.story.machine.is_some() || self.story.dialog.is_some();
         // held, or tapped this frame (a tap can start and end between two frames)
-        let held = |k: egui::Key| !typing && !frozen && ctx.input(|i| i.key_down(k) || i.key_pressed(k));
+        let held = |b: crate::input::Button| !typing && !frozen && crate::input::held(ctx, b);
         let (right, forward) = self.cam.ground_axes();
         let snap = |v: Vec3| if v.x.abs() > v.z.abs() { (v.x.signum() as i32, 0) } else { (0, v.z.signum() as i32) };
         let w = self.walker.as_ref().unwrap();
@@ -292,13 +292,13 @@ impl MapEditor {
         let routed = w.route.front().map(|&n| (n.0 - w.cell.0, n.1 - w.cell.1));
         let dir = if let Some(d) = routed {
             if t >= 1.0 { Some(d) } else { None }
-        } else if held(egui::Key::ArrowUp) {
+        } else if held(crate::input::Button::Up) {
             Some(snap(forward))
-        } else if held(egui::Key::ArrowDown) {
+        } else if held(crate::input::Button::Down) {
             Some(snap(-forward))
-        } else if held(egui::Key::ArrowLeft) {
+        } else if held(crate::input::Button::Left) {
             Some(snap(-right))
-        } else if held(egui::Key::ArrowRight) {
+        } else if held(crate::input::Button::Right) {
             Some(snap(right))
         } else {
             None

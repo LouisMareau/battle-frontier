@@ -62,7 +62,7 @@ pub struct SaveGame {
 /// The save's name (`platform::store_text`).
 pub const SAVE_NAME: &str = "story";
 
-use crate::stage::period_lighting;
+use crate::stage::lighting_at;
 
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
 const OWN: Color32 = Color32::from_rgb(110, 210, 130);
@@ -157,7 +157,8 @@ pub struct MapEditor {
     space: Space,
     dirty: bool,
     cam: Camera,
-    period: Period,
+    /// the time of day the map is lit at, in hours (the editor's slider; the game's clock)
+    hours: f32,
     grid: bool,
     /// the lamps lit whatever the time (a preview)
     lamps: bool,
@@ -225,6 +226,8 @@ pub struct MapEditor {
     pub welcome: bool,
     /// its "Don't show this again"
     welcome_hide: bool,
+    /// behind the main menu: when its camera began drifting
+    backdrop_t0: Option<f64>,
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
@@ -304,7 +307,7 @@ fn mark(name: &str, r: &egui::Response) {
 /// A section's title in a panel.
 fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
-    ui.label(RichText::new(text.to_uppercase()).size(10.5).strong().color(Color32::from_gray(150)));
+    ui.label(RichText::new(text.to_uppercase()).font(crate::title::menu_font(10.5)).color(Color32::from_gray(160)));
     ui.add_space(2.0);
 }
 
@@ -385,7 +388,7 @@ impl MapEditor {
             level_height: world.level_height() as f32,
             max_level: world.max_level,
             cam: Camera { target: Vec3::ZERO, yaw: 0.0, pitch: 52.0, distance: 40.0, zoom: 1.0 },
-            period: Period::Day,
+            hours: 12.0,
             grid: true,
             lamps: false,
             tool: Tool::Ground,
@@ -430,6 +433,7 @@ impl MapEditor {
             requests: requests::Requests::default(),
             welcome: false,
             welcome_hide: false,
+            backdrop_t0: None,
             probe: None,
             walker: None,
             fade: None,
@@ -548,13 +552,37 @@ impl MapEditor {
         self.probe = (v.len() == 3).then(|| Vec3::new(v[0], v[1], v[2]));
     }
 
-    /// The time of day to preview (tests and screenshots): "morning", "day" or "night".
+    /// The time of day to preview (tests and screenshots): "morning", "day", "night" or
+    /// "HH:MM".
     pub fn set_period(&mut self, arg: &str) {
-        self.period = match arg {
-            "morning" => Period::Morning,
-            "night" => Period::Night,
-            _ => Period::Day,
-        };
+        self.hours = crate::platform::parse_clock(arg).unwrap_or(12.0);
+    }
+
+    /// The period of the time of day (who lives in the zones, which sounds play).
+    fn period(&self) -> Period {
+        Period::of_hour(self.hours.rem_euclid(24.0) as u32)
+    }
+
+    /// The top bar's time of day: a slider from 0:00 to 23:59, the map lit at it (the game
+    /// itself follows the real clock).
+    fn time_slider(&mut self, ui: &mut egui::Ui) {
+        ui.scope(|ui| {
+            ui.spacing_mut().slider_width = 104.0;
+            let mut h = self.hours as f64;
+            let r = ui
+                .add(
+                    egui::Slider::new(&mut h, 0.0..=(23.0 + 59.0 / 60.0))
+                        .step_by(1.0 / 60.0)
+                        .custom_formatter(|v, _| crate::platform::clock_text(v as f32))
+                        .custom_parser(|t| crate::platform::parse_clock(t).map(f64::from)),
+                )
+                .on_hover_text("The time of day to light the map at: the sun, the sky, the lamps and who's about (the game itself follows the real clock)");
+            mark("uiTime", &r);
+            if r.changed() {
+                self.hours = h as f32;
+            }
+        });
+        crate::platform::set_hook("hours", &crate::platform::clock_text(self.hours));
     }
 
     /// Points the camera (tests and screenshots): "x,z[,distance[,yaw[,pitch]]]".
@@ -1090,9 +1118,9 @@ impl MapEditor {
 
     /// The game's overworld: the map walked, full window, no editing. Says whether the
     /// player leaves (Esc, with no dialog up).
-    pub fn play_ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio, period: Period) -> bool {
+    pub fn play_ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio, hours: f32) -> bool {
         let ctx = ui.ctx().clone();
-        self.period = period;
+        self.hours = hours;
         self.begin_frame(&ctx, rs, now);
         let leave = !ctx.egui_wants_keyboard_input() && self.story.dialog.is_none() && self.story.machine.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape));
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
@@ -1111,6 +1139,40 @@ impl MapEditor {
         });
         self.end_frame(&ctx, audio, now);
         leave
+    }
+
+    /// A map for the main menu to stand on: played (its creatures and people about, its rigs
+    /// moving), with no one walking it.
+    pub fn new_backdrop(content: Arc<Content>, map: &str, files: crate::platform::Files) -> MapEditor {
+        let mut ed = MapEditor::new(content, Some(map), files);
+        ed.play = true;
+        ed.creatures_on = true;
+        ed.grid = false;
+        ed
+    }
+
+    /// The main menu's backdrop: the map, full window, under everything, lit at `hours`, the
+    /// camera drifting slowly over it (round its middle, turning). Quiet: no sound, no dialog.
+    pub fn backdrop(&mut self, ctx: &egui::Context, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, hours: f32) {
+        self.hours = hours;
+        let t = ((now - *self.backdrop_t0.get_or_insert(now)) / 1000.0) as f32;
+        let (w, h) = (self.map.width as f32, self.map.height as f32);
+        let middle = Vec3::new(w / 2.0, 0.0, h / 2.0);
+        self.cam.target = middle + Vec3::new((t * 0.021).sin() * w * 0.22, 0.0, (t * 0.017).cos() * h * 0.2);
+        self.cam.yaw = (20.0 + t * 2.0).rem_euclid(360.0);
+        self.cam.pitch = 34.0;
+        self.cam.distance = (w.max(h) * 0.55).clamp(18.0, 40.0);
+        self.cam.zoom = 1.0;
+        self.begin_frame(ctx, rs, now);
+        let rect = ctx.content_rect();
+        self.viewport = rect;
+        let frame = self.frame(now, rect);
+        ctx.layer_painter(egui::LayerId::background()).add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
+    }
+
+    /// The backdrop's map is up (its ground on the GPU): the menu can fade it in.
+    pub fn backdrop_ready(&self) -> bool {
+        self.loading.is_none() && self.gpu.ground.as_ref().is_some_and(|g| g.0 == self.map.id)
     }
 
     /// The overworld's pointer: the wheel zooms, the middle button turns the view.
@@ -1169,13 +1231,7 @@ impl MapEditor {
                     self.redo();
                 }
                 ui.separator();
-                for (p, label) in [(Period::Morning, "Morning"), (Period::Day, "Day"), (Period::Night, "Night")] {
-                    let r = ui.selectable_label(self.period == p, label).on_hover_text("The light to preview");
-                    mark(&format!("ui{label}"), &r);
-                    if r.clicked() {
-                        self.period = p;
-                    }
-                }
+                self.time_slider(ui);
                 let lamps = ui.selectable_label(self.lamps, "Lamps").on_hover_text("The lamps lit whatever the time (they light up by night on their own)");
                 mark("uiLamps", &lamps);
                 if lamps.clicked() {
@@ -2121,14 +2177,14 @@ impl MapEditor {
         let aspect = rect.width() / rect.height().max(1.0);
         self.view_proj = self.cam.view_proj(aspect);
         let radius = (self.cam.distance * 0.9).max(16.0);
-        let (mut light, tint) = period_lighting(self.period, None, self.cam.target, radius);
+        let (mut light, tint) = lighting_at(self.hours, None, self.cam.target, radius);
         let mut billboards = vec![];
         let mut shapes = vec![];
         let mut overlays = vec![];
         let lh = self.level_height;
         // the lamps: lit by night (or always, with Lamps on), the nearest to the camera
         // first; each glows where it sits
-        let on = if self.lamps { 1.0 } else { crate::stage::lamps_on(self.period) };
+        let on = if self.lamps { 1.0 } else { crate::stage::lamps_at(self.hours) };
         let mut glows = vec![];
         let mut all = world::lights::lights(&self.map, &self.content, lh);
         all.extend(self.around_lights());

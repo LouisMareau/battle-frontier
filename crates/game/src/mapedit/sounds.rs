@@ -47,7 +47,7 @@ impl MapEditor {
             out.push(Want { key: format!("actor:{}", l.id), file: e.space.asset(&s.file), pos: Some(self.actor_pos(i, now)), volume: s.volume as f32, range: s.range as f32 });
         }
         let space = self.content.maps.entry(&self.map.id).map(|e| e.space).unwrap_or(self.space);
-        let period = period_key(self.period);
+        let period = period_key(self.period());
         for (i, a) in self.map.ambience.iter().enumerate() {
             if !world::sounds::ambience_on(a, period) {
                 continue;

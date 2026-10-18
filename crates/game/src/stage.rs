@@ -9,7 +9,6 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use render::map::Spot;
 use render::scene::{Billboard, Frame, Glow, Lighting, Shape, ShapeKind, SpotLight, MAX_LIGHTS};
 use rules::battle::{Side, Uid, WeatherKind};
-use rules::config::Period;
 
 /// world units per sprite pixel
 pub const PX: f32 = 1.0 / 27.0;
@@ -88,7 +87,8 @@ pub struct Stage {
     pub vis: BTreeMap<Uid, Vis>,
     pub people: Vec<Person>,
     pub effects: Vec<Effect>,
-    pub period: Period,
+    /// the time of day it plays at (hours), for its light
+    pub hours: f32,
     pub weather: Option<WeatherKind>,
     pub targets: Vec<(Uid, bool, [f32; 4])>,
     cam_focus: Vec3,
@@ -138,10 +138,20 @@ pub fn toon_look(t: &content::Toon) -> render::scene::Toon {
         crease: t.crease as f32,
         color_steps: if t.color_steps >= 2 { t.color_steps as u32 } else { 0 },
         color_softness: t.color_softness as f32,
+        cloud_shadow: t.cloud_shadow as f32,
+        cloud_size: t.cloud_size as f32,
+        cloud_speed: t.cloud_speed as f32,
+        cloud_cover: t.cloud_cover as f32,
     }
 }
 
-struct PeriodLight {
+/// The light at one moment of the day: the sky, the sun (the moon by night) and where it
+/// shines from, the ambient light, the sky's and the ground's bounce, and the pictures' tint.
+/// Colours are sRGB.
+#[derive(Clone, Copy)]
+struct DayKey {
+    /// hours, 0 to 24
+    at: f32,
     sky: u32,
     sun: u32,
     sun_i: f32,
@@ -149,22 +159,70 @@ struct PeriodLight {
     amb_i: f32,
     tint: u32,
     sun_pos: Vec3,
+    hemi: f32,
 }
 
-fn period_light(p: Period) -> PeriodLight {
-    match p {
-        Period::Morning => PeriodLight { sky: 0xf3c6a0, sun: 0xffd2a0, sun_i: 2.2, amb: 0xd8c0b0, amb_i: 1.2, tint: 0xffe6d0, sun_pos: Vec3::new(-40.0, 25.0, 30.0) },
-        Period::Day => PeriodLight { sky: 0x9fd2ff, sun: 0xfff2dc, sun_i: 2.6, amb: 0xb8c8e0, amb_i: 1.4, tint: 0xffffff, sun_pos: Vec3::new(-30.0, 60.0, 40.0) },
-        Period::Night => PeriodLight { sky: 0x0d1630, sun: 0x8fa8ff, sun_i: 0.9, amb: 0x34406a, amb_i: 1.0, tint: 0x8c9ccc, sun_pos: Vec3::new(30.0, 50.0, -20.0) },
+const NIGHT: DayKey = DayKey { at: 0.0, sky: 0x0d1630, sun: 0x8fa8ff, sun_i: 0.9, amb: 0x34406a, amb_i: 1.0, tint: 0x8c9ccc, sun_pos: Vec3::new(30.0, 50.0, -20.0), hemi: 0.2 };
+
+/// The day, key by key: night until dawn, the sun rising in the east, crossing the sky,
+/// setting in the west, then the dusk's last light and the night again. In between, blended.
+const DAY: [DayKey; 10] = [
+    NIGHT,
+    DayKey { at: 4.5, ..NIGHT },
+    // dawn: pink, the sun low in the east
+    DayKey { at: 6.0, sky: 0xe8a890, sun: 0xffb98a, sun_i: 1.6, amb: 0xc0a8b8, amb_i: 1.0, tint: 0xffd8c8, sun_pos: Vec3::new(-50.0, 12.0, 25.0), hemi: 0.4 },
+    // morning
+    DayKey { at: 8.0, sky: 0xf3c6a0, sun: 0xffd2a0, sun_i: 2.2, amb: 0xd8c0b0, amb_i: 1.2, tint: 0xffe6d0, sun_pos: Vec3::new(-40.0, 25.0, 30.0), hemi: 0.5 },
+    // the day, the sun from the east, then from the west
+    DayKey { at: 11.0, sky: 0x9fd2ff, sun: 0xfff2dc, sun_i: 2.6, amb: 0xb8c8e0, amb_i: 1.4, tint: 0xffffff, sun_pos: Vec3::new(-20.0, 62.0, 40.0), hemi: 0.5 },
+    DayKey { at: 16.0, sky: 0x9fd2ff, sun: 0xfff2dc, sun_i: 2.6, amb: 0xb8c8e0, amb_i: 1.4, tint: 0xffffff, sun_pos: Vec3::new(25.0, 55.0, 40.0), hemi: 0.5 },
+    // dusk: orange, the sun low in the west
+    DayKey { at: 18.5, sky: 0xf0a070, sun: 0xffa060, sun_i: 1.8, amb: 0xc8a0a0, amb_i: 1.1, tint: 0xffd0b0, sun_pos: Vec3::new(45.0, 14.0, 25.0), hemi: 0.4 },
+    // the twilight's blue
+    DayKey { at: 20.0, sky: 0x3a3560, sun: 0xb0a0e0, sun_i: 1.0, amb: 0x504a78, amb_i: 1.0, tint: 0xa8a0d0, sun_pos: Vec3::new(40.0, 35.0, 0.0), hemi: 0.3 },
+    DayKey { at: 21.5, ..NIGHT },
+    DayKey { at: 24.0, ..NIGHT },
+];
+
+/// The light at `hours` (0 to 24): between the day's two keys around it, smoothly.
+struct DayLight {
+    sky: Vec3,
+    sun: Vec3,
+    sun_i: f32,
+    amb: Vec3,
+    amb_i: f32,
+    tint: Vec3,
+    sun_pos: Vec3,
+    hemi: f32,
+}
+
+fn day_light(hours: f32) -> DayLight {
+    let h = hours.rem_euclid(24.0);
+    let i = DAY.iter().rposition(|k| k.at <= h).unwrap_or(0).min(DAY.len() - 2);
+    let (a, b) = (DAY[i], DAY[i + 1]);
+    let t = ((h - a.at) / (b.at - a.at).max(1e-3)).clamp(0.0, 1.0);
+    let t = t * t * (3.0 - 2.0 * t);
+    let mix = |x: u32, y: u32| srgb_to_linear(x).lerp(srgb_to_linear(y), t);
+    DayLight {
+        sky: mix(a.sky, b.sky),
+        sun: mix(a.sun, b.sun),
+        sun_i: a.sun_i + (b.sun_i - a.sun_i) * t,
+        amb: mix(a.amb, b.amb),
+        amb_i: a.amb_i + (b.amb_i - a.amb_i) * t,
+        tint: mix(a.tint, b.tint),
+        sun_pos: a.sun_pos.lerp(b.sun_pos, t),
+        hemi: a.hemi + (b.hemi - a.hemi) * t,
     }
 }
 
+
+
 impl Stage {
-    pub fn new(spot: Spot, period: Period) -> Stage {
+    pub fn new(spot: Spot, hours: f32) -> Stage {
         let line_gap = 5.0f32.min(spot.depth as f32 - 1.0);
         let focus = Vec3::new(spot.x, 0.7, spot.z - 0.4);
         Stage {
-            spot, line_gap, vis: BTreeMap::new(), people: vec![], effects: vec![], period, weather: None, targets: vec![],
+            spot, line_gap, vis: BTreeMap::new(), people: vec![], effects: vec![], hours, weather: None, targets: vec![],
             cam_focus: focus, cam_goal: focus, view_proj: Mat4::IDENTITY, viewport: egui::Rect::NOTHING, rain: vec![], seed: 12345,
             toon: render::scene::Toon::default(),
             playing: None,
@@ -552,7 +610,7 @@ impl Stage {
     }
 
     fn lighting(&self) -> (Lighting, Vec3) {
-        period_lighting(self.period, self.weather, Vec3::new(self.spot.x, 0.0, self.spot.z), 22.0)
+        lighting_at(self.hours, self.weather, Vec3::new(self.spot.x, 0.0, self.spot.z), 22.0)
     }
 
     pub fn frame(&mut self, now: f64, viewport: egui::Rect) -> Frame {
@@ -564,7 +622,7 @@ impl Stage {
         let mut shapes = vec![];
         let mut glows = vec![];
         let tint4 = [tint.x, tint.y, tint.z, 1.0];
-        let lamps = lamps_on(self.period);
+        let lamps = lamps_at(self.hours);
         let poses = self.timeline_poses(now);
         for person in &self.people {
             billboards.push(Billboard {
@@ -730,20 +788,27 @@ pub fn spot_light(l: &content::Light, pos: Vec3, dir: Vec3, k: f32) -> SpotLight
 
 /// How lit the lamps are at a time of day: full by night, a little in the morning, off by
 /// day.
-pub fn lamps_on(period: Period) -> f32 {
-    match period {
-        Period::Night => 1.0,
-        Period::Morning => 0.35,
-        Period::Day => 0.0,
+/// How lit the lamps are at `hours`: out by day, coming on at dusk (18:30 to 20:00), on all
+/// night, going out at dawn (5:30 to 7:00).
+pub fn lamps_at(hours: f32) -> f32 {
+    let h = hours.rem_euclid(24.0);
+    let ramp = |t: f32| {
+        let t = t.clamp(0.0, 1.0);
+        t * t * (3.0 - 2.0 * t)
+    };
+    if h < 12.0 {
+        1.0 - ramp((h - 5.5) / 1.5)
+    } else {
+        ramp((h - 18.5) / 1.5)
     }
 }
 
 /// The light of a time of day and weather, with the sun's shadow covering `radius` around
 /// `target` (and fog starting past it); also the tint for pictures.
-pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec3, radius: f32) -> (Lighting, Vec3) {
-    let p = period_light(period);
+pub fn lighting_at(hours: f32, weather: Option<WeatherKind>, target: Vec3, radius: f32) -> (Lighting, Vec3) {
+    let p = day_light(hours);
     let pi = std::f32::consts::PI;
-    let mut sky = srgb_to_linear(p.sky);
+    let mut sky = p.sky;
     let (mut sun_i, mut amb_i) = (p.sun_i, p.amb_i);
     match weather {
         Some(WeatherKind::Rain) => {
@@ -754,7 +819,7 @@ pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec
         Some(WeatherKind::Sun) => sun_i *= 1.35,
         None => {}
     }
-    let hemi_i = if period == Period::Night { 0.2 } else { 0.5 };
+    let hemi_i = p.hemi;
     // in steps (so a zoom doesn't change the shadow's texels each frame)
     let radius = 2f32.powf((radius.max(1.0).log2() * 4.0).ceil() / 4.0);
     let far = (radius / 22.0).max(1.0);
@@ -764,8 +829,8 @@ pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec
     (
         Lighting {
             sun_dir: p.sun_pos.normalize(),
-            sun: srgb_to_linear(p.sun) * sun_i / pi,
-            ambient: srgb_to_linear(p.amb) * amb_i / pi,
+            sun: p.sun * sun_i / pi,
+            ambient: p.amb * amb_i / pi,
             hemi_sky: srgb_to_linear(0xcfe6ff) * hemi_i / pi,
             hemi_ground: srgb_to_linear(0x6b8a5a) * hemi_i / pi,
             sky,
@@ -774,6 +839,33 @@ pub fn period_lighting(period: Period, weather: Option<WeatherKind>, target: Vec
             light_view_proj: light_proj * light_view,
             lights: vec![],
         },
-        srgb_to_linear(p.tint),
+        p.tint,
     )
+}
+
+#[cfg(test)]
+mod day_tests {
+    use super::*;
+
+    #[test]
+    fn the_light_follows_the_day() {
+        let sun = |h: f32| day_light(h).sun_i;
+        let sky = |h: f32| day_light(h).sky.length();
+        // night, dawn, morning, noon, dusk, night again: brighter by day, the same at midnight
+        assert!(sun(12.0) > sun(8.0) && sun(8.0) > sun(6.0) && sun(6.0) > sun(2.0), "{} {} {} {}", sun(12.0), sun(8.0), sun(6.0), sun(2.0));
+        assert!(sky(13.0) > sky(23.0) * 3.0);
+        assert!((sky(0.0) - sky(24.0)).abs() < 1e-5 && (sky(23.99) - sky(0.0)).abs() < 1e-3, "midnight meets itself");
+        // no jump anywhere: a minute changes little
+        for m in 0..(24 * 60) {
+            let (a, b) = (day_light(m as f32 / 60.0), day_light((m + 1) as f32 / 60.0));
+            assert!((a.sun_i - b.sun_i).abs() < 0.05 && a.sky.distance(b.sky) < 0.05, "{m} min");
+        }
+        // the sun from the east in the morning, from the west late in the day
+        assert!(day_light(8.0).sun_pos.x < 0.0 && day_light(17.0).sun_pos.x > 0.0);
+        // the lamps: out by day, on by night, coming on at dusk
+        assert_eq!(lamps_at(13.0), 0.0);
+        assert_eq!(lamps_at(23.0), 1.0);
+        assert_eq!(lamps_at(3.0), 1.0);
+        assert!(lamps_at(19.25) > 0.2 && lamps_at(19.25) < 0.8 && lamps_at(6.25) > 0.2 && lamps_at(6.25) < 0.8);
+    }
 }

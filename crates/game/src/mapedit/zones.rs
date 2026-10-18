@@ -64,7 +64,7 @@ impl MapEditor {
     }
 
     fn pools(&self) -> Pools {
-        let period = period_key(self.period);
+        let period = period_key(self.period());
         self.map.zones.iter().map(|z| self.spawns.zones.get(&z.mark).and_then(|p| p.get(period)).cloned().unwrap_or_default()).collect()
     }
 

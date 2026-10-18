@@ -1,5 +1,5 @@
 //! The Post-processing window: the toon look (the world settings record's `toon`), how
-//! what's toon is lit and its ink lines. Changes show on the map at once and wait to be
+//! what's toon is lit and its ink lines, the colour steps and the clouds' shadows. Changes show on the map at once and wait to be
 //! saved into the record (into its file on the desktop, as a download in the browser);
 //! Ctrl+S saves them with the map. What's toon is ticked per asset: a prop in the asset
 //! browser or a placed prop's panel, a creature in the asset browser's Creatures.
@@ -52,6 +52,7 @@ impl MapEditor {
         crate::platform::set_hook("post", if self.post.open { "open" } else { "" });
         crate::platform::set_hook("toon", &format!("{} bands, ink {}, {} colour steps", t.bands, if t.ink { format!("{:.1}px", t.ink_width) } else { "off".into() }, t.color_steps));
         crate::platform::set_hook("postdirty", if self.post_changed() { "1" } else { "" });
+        crate::platform::set_hook("clouds", &format!("{:.2}", t.cloud_shadow));
         if !self.post.open {
             return;
         }
@@ -126,6 +127,24 @@ impl MapEditor {
                 ui.end_row();
                 ui.label("Step edges");
                 ui.add_enabled(t.color_steps >= 2, egui::Slider::new(&mut t.color_softness, 0.0..=1.0)).on_hover_text("0: hard, 1: soft");
+                ui.end_row();
+            });
+            section(ui, "Cloud shadows");
+            hint(ui, "Clouds' shadows drifting over the world, in the sun's direction: darker where it's lit, fainter by moonlight.");
+            egui::Grid::new("post-clouds").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                ui.label("Shadow");
+                let r = ui.add(egui::Slider::new(&mut t.cloud_shadow, 0.0..=1.0).custom_formatter(|v, _| if v < 0.005 { "off".into() } else { format!("{v:.2}") })).on_hover_text("How dark a cloud makes what's in the sun (0: no clouds)");
+                mark("uiPostClouds", &r);
+                crate::platform::set_hook("uiPostCloudsRect", &format!("{:.0},{:.0},{:.0},{:.0}", r.rect.left(), r.rect.top(), r.rect.width(), r.rect.height()));
+                ui.end_row();
+                ui.label("Size");
+                ui.add_enabled(t.cloud_shadow > 0.0, egui::Slider::new(&mut t.cloud_size, 6.0..=120.0).logarithmic(true).suffix(" cells")).on_hover_text("How wide a cloud is");
+                ui.end_row();
+                ui.label("Speed");
+                ui.add_enabled(t.cloud_shadow > 0.0, egui::Slider::new(&mut t.cloud_speed, 0.0..=6.0).suffix(" cells/s")).on_hover_text("How fast they drift with the wind");
+                ui.end_row();
+                ui.label("Cover");
+                ui.add_enabled(t.cloud_shadow > 0.0, egui::Slider::new(&mut t.cloud_cover, 0.0..=1.0)).on_hover_text("How much of the sky they cover");
                 ui.end_row();
             });
             ui.separator();

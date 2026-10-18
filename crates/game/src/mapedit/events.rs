@@ -292,15 +292,15 @@ impl MapEditor {
     pub(super) fn step_story(&mut self, ctx: &egui::Context, now: f64) {
         self.now = now;
         let typing = ctx.egui_wants_keyboard_input();
-        let pressed = |k: egui::Key| !typing && ctx.input(|i| i.key_pressed(k));
-        let a = pressed(egui::Key::Z) || pressed(egui::Key::Space) || pressed(egui::Key::Enter);
+        let pressed = |b: crate::input::Button| !typing && crate::input::pressed_now(ctx, b);
+        let a = pressed(crate::input::Button::A);
         // the dialog's keys
         if let Some(d) = &mut self.story.dialog {
             if !d.choices.is_empty() {
-                if pressed(egui::Key::ArrowUp) {
+                if pressed(crate::input::Button::Up) {
                     d.pick = d.pick.saturating_sub(1);
                 }
-                if pressed(egui::Key::ArrowDown) {
+                if pressed(crate::input::Button::Down) {
                     d.pick = (d.pick + 1).min(d.choices.len() - 1);
                 }
             }

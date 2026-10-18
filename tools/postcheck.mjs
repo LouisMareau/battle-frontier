@@ -90,9 +90,14 @@ try {
   const crates = await at(16.0, 0.4, 8.5);
   const boxes = [[well[0], well[1], 70], [crates[0], crates[1], 60]];
 
-  // 0. the look as saved may be anything: from the defaults
+  // 0. the look as saved may be anything: from the defaults, the clouds' shadows off (they
+  // drift: the pixels counted here would move with them)
   await press('uiPost');
   await press('uiPostDefaults');
+  const [cx, cy, , ch] = (await data('uiPostCloudsRect')).split(',').map(Number);
+  await browser.click(cx + 2, cy + ch / 2);
+  await sleep(250);
+  check("the clouds' shadows off for the counts", Number(await data('clouds')) === 0, await data('clouds'));
   await press('uiPost');
   await sleep(300);
   const before = await ink('1-plain', boxes);

@@ -45,7 +45,11 @@ pub struct Audio {
     /// the loops playing, by key: their file (a file changing restarts the loop)
     loops: HashMap<String, String>,
     pending: Vec<Shot>,
+    /// everything's volume (the Options' Audio), 0 to 1
     pub master: f32,
+    /// the one-shots' (cries, hits, chimes) and the loops' (wind, water, what hums)
+    pub effects: f32,
+    pub ambience: f32,
     pub enabled: bool,
     listener: Vec3,
 }
@@ -58,7 +62,7 @@ impl Default for Audio {
 
 impl Audio {
     pub fn new() -> Audio {
-        Audio { backend: Backend::new(), loops: HashMap::new(), pending: vec![], master: 1.0, enabled: true, listener: Vec3::ZERO }
+        Audio { backend: Backend::new(), loops: HashMap::new(), pending: vec![], master: 1.0, effects: 1.0, ambience: 1.0, enabled: true, listener: Vec3::ZERO }
     }
 
     /// After a click or a key: browsers play nothing before one.
@@ -89,7 +93,7 @@ impl Audio {
             return;
         }
         for w in wants {
-            let gain = level(listener, w.pos, w.volume, w.range) * self.master;
+            let gain = level(listener, w.pos, w.volume, w.range) * self.master * self.ambience;
             match self.loops.get(&w.key) {
                 Some(file) if *file == w.file => self.backend.set_gain(&w.key, gain),
                 _ => {
@@ -120,7 +124,7 @@ impl Audio {
         if !self.enabled {
             return;
         }
-        let gain = level(self.listener, pos, volume, range) * self.master;
+        let gain = level(self.listener, pos, volume, range) * self.master * self.effects;
         if gain <= 0.0 {
             return;
         }

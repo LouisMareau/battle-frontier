@@ -598,6 +598,13 @@ pub struct Toon {
     /// 16), and how soft their edges are (0 to 1)
     pub color_steps: u8,
     pub color_softness: f64,
+    /// clouds' shadows drifting over the world, toon or not (a post-process): how dark they
+    /// make what's in the sun (0: none, to 1), how wide a cloud is (cells), how fast they
+    /// drift (cells a second) and how much of the sky they cover (0 to 1)
+    pub cloud_shadow: f64,
+    pub cloud_size: f64,
+    pub cloud_speed: f64,
+    pub cloud_cover: f64,
 }
 
 impl Toon {
@@ -615,7 +622,16 @@ impl Toon {
         if self.color_steps == 1 || self.color_steps > 16 {
             out.push(format!("{} colour steps: 0 (none) or 2 to 16", self.color_steps));
         }
-        let shares = [("softness", self.softness), ("shadow", self.shadow), ("rim_width", self.rim_width), ("glint_size", self.glint_size), ("ink_opacity", self.ink_opacity), ("color_softness", self.color_softness)];
+        let shares = [
+            ("softness", self.softness),
+            ("shadow", self.shadow),
+            ("rim_width", self.rim_width),
+            ("glint_size", self.glint_size),
+            ("ink_opacity", self.ink_opacity),
+            ("color_softness", self.color_softness),
+            ("cloud_shadow", self.cloud_shadow),
+            ("cloud_cover", self.cloud_cover),
+        ];
         for (what, v) in shares {
             if !(0.0..=1.0).contains(&v) {
                 out.push(format!("{what} {v}: 0 to 1"));
@@ -631,6 +647,12 @@ impl Toon {
         }
         if !(0.0..=179.0).contains(&self.crease) {
             out.push(format!("crease {}: 0 (none) to 179 degrees", self.crease));
+        }
+        if !(4.0..=200.0).contains(&self.cloud_size) {
+            out.push(format!("cloud_size {}: 4 to 200 cells", self.cloud_size));
+        }
+        if !(0.0..=10.0).contains(&self.cloud_speed) {
+            out.push(format!("cloud_speed {}: 0 to 10 cells a second", self.cloud_speed));
         }
         out
     }
@@ -655,6 +677,10 @@ impl Default for Toon {
             crease: 50.0,
             color_steps: 0,
             color_softness: 0.15,
+            cloud_shadow: 0.45,
+            cloud_size: 26.0,
+            cloud_speed: 0.8,
+            cloud_cover: 0.45,
         }
     }
 }

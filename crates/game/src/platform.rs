@@ -18,18 +18,80 @@ pub fn now_ms() -> f64 {
     START.get_or_init(Instant::now).elapsed().as_secs_f64() * 1000.0
 }
 
-/// The local hour, for the time of day.
+/// The time of day where the player is, in hours (0 to 24, minutes and seconds as the
+/// fraction): the game's time is the real one.
 #[cfg(target_arch = "wasm32")]
-pub fn local_hour() -> u32 {
-    js_sys::Date::new_0().get_hours()
+pub fn local_hours() -> f32 {
+    let d = js_sys::Date::new_0();
+    d.get_hours() as f32 + d.get_minutes() as f32 / 60.0 + d.get_seconds() as f32 / 3600.0
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub fn local_hour() -> u32 {
-    // no time zone database on the desktop build: UTC, shifted by GAME_UTC_OFFSET if set
-    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
-    let offset: i64 = std::env::var("GAME_UTC_OFFSET").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-    (((secs / 3600 + offset) % 24 + 24) % 24) as u32
+pub fn local_hours() -> f32 {
+    // GAME_UTC_OFFSET (hours) puts it on UTC plus that, for a machine whose clock says otherwise
+    if let Some(offset) = std::env::var("GAME_UTC_OFFSET").ok().and_then(|v| v.parse::<f64>().ok()) {
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        return ((secs / 3600.0 + offset).rem_euclid(24.0)) as f32;
+    }
+    os_local_hours()
+}
+
+/// The system's local time (its time zone and daylight saving), from Windows.
+#[cfg(windows)]
+fn os_local_hours() -> f32 {
+    #[repr(C)]
+    #[derive(Default)]
+    struct SystemTime {
+        year: u16,
+        month: u16,
+        day_of_week: u16,
+        day: u16,
+        hour: u16,
+        minute: u16,
+        second: u16,
+        milliseconds: u16,
+    }
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetLocalTime(time: *mut SystemTime);
+    }
+    let mut t = SystemTime::default();
+    // SAFETY: GetLocalTime fills the struct it's given, laid out as Windows' SYSTEMTIME
+    unsafe { GetLocalTime(&mut t) };
+    t.hour as f32 + t.minute as f32 / 60.0 + t.second as f32 / 3600.0
+}
+
+/// The system's local time, from the C library (its time zone and daylight saving).
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+fn os_local_hours() -> f32 {
+    // SAFETY: localtime_r fills the tm it's given from the time it's given; both are ours
+    unsafe {
+        let now = libc::time(std::ptr::null_mut());
+        let mut tm: libc::tm = std::mem::zeroed();
+        if libc::localtime_r(&now, &mut tm).is_null() {
+            return 12.0;
+        }
+        tm.tm_hour as f32 + tm.tm_min as f32 / 60.0 + tm.tm_sec as f32 / 3600.0
+    }
+}
+
+/// A "HH:MM" of hours (0 to 24).
+pub fn clock_text(hours: f32) -> String {
+    let minutes = (hours.rem_euclid(24.0) * 60.0).floor() as u32;
+    format!("{}:{:02}", minutes / 60, minutes % 60)
+}
+
+/// Hours from "HH:MM" (or "HH", or the periods' names: morning 8:00, day 12:00, night 22:00).
+pub fn parse_clock(text: &str) -> Option<f32> {
+    match text.trim() {
+        "morning" => return Some(8.0),
+        "day" => return Some(12.0),
+        "night" => return Some(22.0),
+        _ => {}
+    }
+    let (h, m) = text.trim().split_once(':').unwrap_or((text.trim(), "0"));
+    let (h, m): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (h < 24 && m < 60).then(|| h as f32 + m as f32 / 60.0)
 }
 
 enum Slot {
@@ -319,4 +381,23 @@ pub fn take_command() -> Option<String> {
 #[cfg(not(target_arch = "wasm32"))]
 pub fn take_command() -> Option<String> {
     None
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod clock_tests {
+    use super::*;
+
+    #[test]
+    fn the_clock_reads_and_says_hours() {
+        assert_eq!(clock_text(0.0), "0:00");
+        assert_eq!(clock_text(13.5), "13:30");
+        assert_eq!(clock_text(23.0 + 59.0 / 60.0), "23:59");
+        assert_eq!(parse_clock("18:30"), Some(18.5));
+        assert_eq!(parse_clock("7"), Some(7.0));
+        assert_eq!((parse_clock("morning"), parse_clock("day"), parse_clock("night")), (Some(8.0), Some(12.0), Some(22.0)));
+        assert_eq!(parse_clock("24:00"), None);
+        assert_eq!(parse_clock("clock"), None, "anything else: the real time");
+        let now = local_hours();
+        assert!((0.0..24.0).contains(&now), "{now}");
+    }
 }

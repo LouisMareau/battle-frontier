@@ -35,7 +35,7 @@ const BUDGET_MS: f64 = 6.0;
 pub(super) struct GpuState {
     /// what the ground's texture and palette were sent for: the map, its width, height and
     /// terrains
-    ground: Option<(String, usize, usize, Vec<String>)>,
+    pub(super) ground: Option<(String, usize, usize, Vec<String>)>,
     /// the squares each layer holds on the GPU
     built: BTreeMap<&'static str, BTreeSet<(i32, i32)>>,
     /// per layer and square, a digest of what it's made from

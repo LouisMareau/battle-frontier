@@ -112,6 +112,13 @@ struct Globals {
     toon_c: [f32; 4],
     toon_d: [f32; 4],
     toon_e: [f32; 4],
+    /// the screen back to the world (the post-process finds where a pixel is)
+    inv_view_proj: [[f32; 4]; 4],
+    /// the clouds' shadows: x how dark (by the sun's strength; 0: none), y 1 / a cloud's
+    /// width, z how much of the sky, w how soft their edges; and b: xy their drift (cells
+    /// a second), z how high they are
+    clouds_a: [f32; 4],
+    clouds_b: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -119,6 +126,9 @@ struct Globals {
 
 /// How many lights a frame can hold: the nearest ones.
 pub const MAX_LIGHTS: usize = 32;
+
+/// The way the clouds drift (cells, a unit long): east, and a little south.
+const CLOUD_WIND: glam::Vec2 = glam::Vec2::new(0.928, 0.371);
 
 /// A spot light: a cone of light from `pos` along `dir`, `range` long.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -299,6 +309,12 @@ pub struct Toon {
     /// are (0 to 1): the world's colour steps, whatever is toon
     pub color_steps: u32,
     pub color_softness: f32,
+    /// clouds' shadows over the world (0: none, to 1), a cloud's width (cells), their drift
+    /// (cells a second), how much of the sky they cover (0 to 1)
+    pub cloud_shadow: f32,
+    pub cloud_size: f32,
+    pub cloud_speed: f32,
+    pub cloud_cover: f32,
 }
 
 impl Default for Toon {
@@ -320,6 +336,10 @@ impl Default for Toon {
             crease: 50.0,
             color_steps: 0,
             color_softness: 0.15,
+            cloud_shadow: 0.45,
+            cloud_size: 26.0,
+            cloud_speed: 0.8,
+            cloud_cover: 0.45,
         }
     }
 }
@@ -1265,6 +1285,8 @@ impl SceneRenderer {
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
+        // the clouds' shadows are the sun's: as strong as it is (a day's full, the moon's weak)
+        let sun_strength = (l.sun.dot(Vec3::new(0.2126, 0.7152, 0.0722)) / 0.78).clamp(0.2, 1.0);
         let globals = Globals {
             view_proj: frame.view_proj.to_cols_array_2d(),
             light_view_proj: light_view_proj.to_cols_array_2d(),
@@ -1286,6 +1308,9 @@ impl SceneRenderer {
             toon_c: [t.glint.max(0.0), t.glint_size.clamp(0.0, 1.0), (t.ink_width * scale).max(1.0), t.ink_opacity.clamp(0.0, 1.0)],
             toon_d: [t.ink_color.x, t.ink_color.y, t.ink_color.z, t.depth_step.max(0.0)],
             toon_e: [if t.crease > 0.0 { t.crease.clamp(1.0, 179.0).to_radians().cos() } else { 2.0 }, (t.ink && toon_seen) as u32 as f32, t.color_steps.min(32) as f32, t.color_softness.clamp(0.0, 1.0)],
+            inv_view_proj: frame.view_proj.inverse().to_cols_array_2d(),
+            clouds_a: [t.cloud_shadow.clamp(0.0, 1.0) * sun_strength, 1.0 / t.cloud_size.max(1.0), t.cloud_cover.clamp(0.0, 1.0), 0.1],
+            clouds_b: [CLOUD_WIND.x * t.cloud_speed, CLOUD_WIND.y * t.cloud_speed, 28.0, 0.0],
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {

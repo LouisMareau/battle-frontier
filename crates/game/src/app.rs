@@ -24,14 +24,9 @@ use crate::presets::{kind_label, kind_of, pool, spec, DEFAULT_BAG};
 use crate::stage::Stage;
 use crate::title::Choice;
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum TimeChoice {
-    Clock,
-    Fixed(Period),
-}
-
 pub struct Options {
-    pub time: TimeChoice,
+    /// the time of day, in hours, when a test fixes it (`time:` or `--time`); else the real one
+    pub time: Option<f32>,
     /// 0 easy (wide windows), 1 normal, 2 hard
     pub difficulty: usize,
     pub assist: bool,
@@ -41,8 +36,12 @@ pub struct Options {
     pub match_level: bool,
     pub auto: bool,
     pub graphics: Graphics,
-    /// the sound's volume, percent
+    /// the sound's volume (all of it), the one-shots' and the loops', percent
     pub volume: u8,
+    pub effects: u8,
+    pub ambience: u8,
+    /// the keys each button answers to
+    pub controls: crate::input::Bindings,
 }
 
 /// The options kept between runs (the Options window's; `platform::store_text`, "options"),
@@ -50,8 +49,6 @@ pub struct Options {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct KeptOptions {
-    /// clock, morning, day or night
-    pub time: String,
     /// fast, normal or slow
     pub text: String,
     /// easy, normal or hard
@@ -62,6 +59,10 @@ pub struct KeptOptions {
     /// off, low, medium or high
     pub shadows: String,
     pub volume: u8,
+    pub effects: u8,
+    pub ambience: u8,
+    /// each button's keys, by name ("A": ["Z", "Space", "Enter"])
+    pub controls: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for KeptOptions {
@@ -77,7 +78,19 @@ const TIMINGS: [&str; 3] = ["easy", "normal", "hard"];
 
 impl Default for Options {
     fn default() -> Self {
-        Options { time: TimeChoice::Clock, difficulty: 1, assist: true, text: 1, match_level: true, auto: false, graphics: Graphics::default(), volume: 100 }
+        Options {
+            time: None,
+            difficulty: 1,
+            assist: true,
+            text: 1,
+            match_level: true,
+            auto: false,
+            graphics: Graphics::default(),
+            volume: 100,
+            effects: 100,
+            ambience: 100,
+            controls: crate::input::Bindings::default(),
+        }
     }
 }
 
@@ -85,27 +98,20 @@ impl Options {
     /// What's kept of them.
     pub fn saved(&self) -> KeptOptions {
         KeptOptions {
-            time: match self.time {
-                TimeChoice::Clock => "clock".into(),
-                TimeChoice::Fixed(p) => p.name().to_lowercase(),
-            },
             text: SPEEDS[self.text.min(2)].into(),
             timing: TIMINGS[self.difficulty.min(2)].into(),
             rings: self.assist,
             resolution: self.graphics.scale,
             shadows: Graphics::SHADOWS[self.graphics.shadows.min(3)].0.to_lowercase(),
             volume: self.volume,
+            effects: self.effects,
+            ambience: self.ambience,
+            controls: self.controls.names(),
         }
     }
 
     /// Kept options put back (what can't be read keeps its value).
     pub fn apply(&mut self, k: &KeptOptions) {
-        self.time = match k.time.as_str() {
-            "morning" => TimeChoice::Fixed(Period::Morning),
-            "day" => TimeChoice::Fixed(Period::Day),
-            "night" => TimeChoice::Fixed(Period::Night),
-            _ => TimeChoice::Clock,
-        };
         self.text = SPEEDS.iter().position(|s| *s == k.text).unwrap_or(self.text);
         self.difficulty = TIMINGS.iter().position(|s| *s == k.timing).unwrap_or(self.difficulty);
         self.assist = k.rings;
@@ -114,12 +120,28 @@ impl Options {
         }
         self.graphics.shadows = Graphics::SHADOWS.iter().position(|(n, _)| n.eq_ignore_ascii_case(&k.shadows)).unwrap_or(self.graphics.shadows);
         self.volume = k.volume.min(100);
+        self.effects = k.effects.min(100);
+        self.ambience = k.ambience.min(100);
+        self.controls = crate::input::Bindings::from_names(&k.controls);
     }
 
-    /// The Options window's options as they came (the Test battles' own stay).
-    pub fn reset(&mut self) {
-        let (match_level, auto) = (self.match_level, self.auto);
-        *self = Options { match_level, auto, ..Options::default() };
+    /// One of the Options' tabs as it came: 0 Game, 1 Graphics, 2 Controls, 3 Audio.
+    pub fn reset_part(&mut self, tab: usize) {
+        let d = Options::default();
+        match tab {
+            0 => (self.text, self.difficulty, self.assist) = (d.text, d.difficulty, d.assist),
+            1 => self.graphics = d.graphics,
+            2 => self.controls = d.controls,
+            _ => (self.volume, self.effects, self.ambience) = (d.volume, d.effects, d.ambience),
+        }
+    }
+
+    /// The sound's levels and the keys, where they're used.
+    pub fn put_to_use(&self, audio: &mut crate::audio::Audio) {
+        audio.master = self.volume as f32 / 100.0;
+        audio.effects = self.effects as f32 / 100.0;
+        audio.ambience = self.ambience as f32 / 100.0;
+        crate::input::set_bindings(self.controls.clone());
     }
 }
 
@@ -172,6 +194,8 @@ pub struct Cli {
 struct Loading {
     encounter: usize,
     period: Period,
+    /// the time of day it starts at, for its light
+    hours: f32,
     /// the map's folder from the root (e.g. temporary/assets/maps/Route101)
     map_dir: String,
     scene: Option<MapScene>,
@@ -259,8 +283,11 @@ pub struct GameApp {
     last_save_at: f64,
     /// the main menu
     title: crate::title::Title,
-    /// the Test battles' own Options window
+    /// the Test battles' own Options window, and its tab
     battles_options: bool,
+    battles_options_ui: crate::title::OptionsUi,
+    /// the world behind the main menu
+    menu_world: Option<Box<MapEditor>>,
     /// a battle from the Test battles goes back to them
     battles_back: bool,
     /// the map the editor had open (it opens on it again)
@@ -334,24 +361,22 @@ impl GameApp {
         if let Some(kept) = platform::stored_text(OPTIONS_NAME).and_then(|t| serde_json::from_str::<KeptOptions>(&t).ok()) {
             options.apply(&kept);
         }
-        match cli.time.as_deref() {
-            Some("morning") => options.time = TimeChoice::Fixed(Period::Morning),
-            Some("day") => options.time = TimeChoice::Fixed(Period::Day),
-            Some("night") => options.time = TimeChoice::Fixed(Period::Night),
-            _ => {}
-        }
+        options.time = cli.time.as_deref().and_then(platform::parse_clock);
         if cli.preset.is_some() {
             options.text = 0;
         }
         options.auto = cli.auto;
         let mut audio = crate::audio::Audio::new();
         audio.enabled = !cli.mute;
-        audio.master = options.volume as f32 / 100.0;
+        options.put_to_use(&mut audio);
+        crate::title::install_fonts(&cc.egui_ctx);
+        // the icons are SVG
+        egui_extras::install_image_loaders(&cc.egui_ctx);
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
-            title: Default::default(), battles_options: false, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
+            title: Default::default(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
         }
     }
 
@@ -403,11 +428,13 @@ impl GameApp {
         self.content = Some(Arc::new(content));
     }
 
+    /// The time of day, in hours: the real one (or a test's).
+    fn hours(&self) -> f32 {
+        self.options.time.unwrap_or_else(platform::local_hours)
+    }
+
     fn period(&self) -> Period {
-        match self.options.time {
-            TimeChoice::Clock => Period::of_hour(platform::local_hour()),
-            TimeChoice::Fixed(p) => p,
-        }
+        Period::of_hour(self.hours() as u32)
     }
 
     fn config(&self) -> Config {
@@ -571,7 +598,7 @@ impl GameApp {
             return;
         };
         let map_dir = region.space.asset(&format!("maps/{}", region.value.map));
-        let period = self.period();
+        let (period, hours) = (self.period(), self.hours());
         let mut keys: Vec<String> = self.party.iter().map(|s| s.species.clone()).collect();
         keys.extend(e.party.iter().map(|m| m.creature.clone()));
         for pool in e.pools.values() {
@@ -598,7 +625,7 @@ impl GameApp {
             self.files.request(path);
         }
         self.files.request(&format!("{map_dir}/scene.json"));
-        self.screen = Screen::Loading(Loading { encounter, period, map_dir, scene: None, textures, player_key, foe_key });
+        self.screen = Screen::Loading(Loading { encounter, period, hours, map_dir, scene: None, textures, player_key, foe_key });
     }
 
     /// Everything a battle needs is in: textures up, map built, battle made.
@@ -662,14 +689,14 @@ impl GameApp {
             renderer.load_map(&rs.device, scene, spot);
         }
         drop(guard);
-        let (encounter, period) = (load.encounter, load.period);
+        let (encounter, period, hours) = (load.encounter, load.period, load.hours);
         let (player_key, foe_key) = (load.player_key.clone(), load.foe_key.clone());
-        let director = self.make_battle(encounter, period, spot, player_key, foe_key);
+        let director = self.make_battle(encounter, period, hours, spot, player_key, foe_key);
         self.screen = Screen::Battle(Box::new(director), encounter);
         Ok(true)
     }
 
-    fn make_battle(&self, encounter: usize, period: Period, spot: render::map::Spot, player_key: Option<String>, foe_key: Option<String>) -> Director {
+    fn make_battle(&self, encounter: usize, period: Period, hours: f32, spot: render::map::Spot, player_key: Option<String>, foe_key: Option<String>) -> Director {
         let dex = self.dex.clone().unwrap();
         let content = self.content.clone().unwrap();
         let e = &content.encounters.entries()[encounter].value;
@@ -703,7 +730,7 @@ impl GameApp {
                 foe_name: e.name.clone(), foe_party, pool: wild_pool,
             },
         );
-        let mut stage = Stage::new(spot, period);
+        let mut stage = Stage::new(spot, hours);
         stage.toon = crate::stage::toon_look(&content.world().toon);
         stage.content = Some(content.clone());
         stage.add_people(player_key, foe_key);
@@ -766,14 +793,8 @@ impl GameApp {
                         d.auto = self.options.auto;
                     }
                 }
-                "time" => {
-                    self.options.time = match arg {
-                        "morning" => TimeChoice::Fixed(Period::Morning),
-                        "day" => TimeChoice::Fixed(Period::Day),
-                        "night" => TimeChoice::Fixed(Period::Night),
-                        _ => TimeChoice::Clock,
-                    }
-                }
+                // a test's time of day ("day", "night", "18:30"); anything else: the real one
+                "time" => self.options.time = platform::parse_clock(arg),
                 "text" => self.options.text = match arg { "fast" => 0, "slow" => 2, _ => 1 },
                 "scale" => self.options.graphics.scale = arg.parse::<u8>().unwrap_or(100).clamp(25, 100),
                 "shadows" => {
@@ -924,8 +945,24 @@ impl GameApp {
         }
     }
 
-    /// The main menu: Continue, New game, Options, Exit, and the Editor in the corner.
-    fn menu_screen(&mut self, ui: &mut egui::Ui, now: f64) {
+    /// The main menu: Continue, New game, Options, Exit, and the Editor in the corner, over
+    /// the world (the map new games start on, its camera drifting, lit at the real time).
+    fn menu_screen(&mut self, ui: &mut egui::Ui, now: f64, rs: Option<&eframe::egui_wgpu::RenderState>) {
+        if self.menu_world.is_none() {
+            if let Some(c) = self.content.clone() {
+                let start = c.world().start.map;
+                let map = if c.maps.contains(&start) { Some(start) } else { c.maps.iter().next().map(|m| m.id.clone()) };
+                self.menu_world = map.map(|m| Box::new(MapEditor::new_backdrop(c, &m, self.files.clone())));
+            }
+        }
+        let hours = self.hours();
+        let world_ready = match self.menu_world.as_mut() {
+            Some(w) => {
+                w.backdrop(ui.ctx(), rs, now, hours);
+                w.backdrop_ready()
+            }
+            None => false,
+        };
         // the saved story's place, looked at once a second (a file on the desktop)
         if now - self.saved_at.0 > 1000.0 {
             let place = platform::stored_text(SAVE_NAME).and_then(|t| serde_json::from_str::<SaveGame>(&t).ok()).map(|s| {
@@ -937,7 +974,11 @@ impl GameApp {
         platform::set_hook("continue", if saved.is_some() { "1" } else { "" });
         platform::set_hook("keptoptions", &serde_json::to_string(&self.options.saved()).unwrap_or_default());
         let mut changed = false;
-        let choice = self.title.ui(ui, &self.input, now, saved.as_deref(), &mut self.options, &mut changed);
+        let choice = self.title.ui(ui, &self.input, now, world_ready, saved.as_deref(), &mut self.options, &mut changed);
+        if choice.is_some() {
+            // off the menu: its world goes (the next screen has its own)
+            self.menu_world = None;
+        }
         if changed {
             self.keep_options();
         }
@@ -956,9 +997,9 @@ impl GameApp {
         }
     }
 
-    /// The options written down, as the Options window left them.
+    /// The options written down (and put to use), as the Options left them.
     fn keep_options(&mut self) {
-        self.audio.master = self.options.volume as f32 / 100.0;
+        self.options.put_to_use(&mut self.audio);
         if let Ok(text) = serde_json::to_string_pretty(&self.options.saved()) {
             if let Err(e) = platform::store_text(OPTIONS_NAME, &text) {
                 log::warn!("the options weren't kept: {e}");
@@ -1035,7 +1076,7 @@ impl GameApp {
         });
         let ctx = ui.ctx().clone();
         if self.battles_options {
-            if crate::title::options_window(&ctx, &mut self.options, &mut self.battles_options, &self.input) {
+            if crate::title::options_window(&ctx, &mut self.options, &mut self.battles_options, &mut self.battles_options_ui, &self.input) {
                 self.keep_options();
             }
             return;
@@ -1134,7 +1175,7 @@ impl eframe::App for GameApp {
             }
         }
 
-        let period = self.period();
+        let hours = self.hours();
         match &mut self.screen {
             Screen::Boot | Screen::Loading(_) => {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28))).show(ui, |ui| {
@@ -1143,7 +1184,7 @@ impl eframe::App for GameApp {
             }
             Screen::Menu => {
                 self.audio.stop_all();
-                self.menu_screen(ui, now)
+                self.menu_screen(ui, now, frame.wgpu_render_state())
             }
             Screen::Battles => {
                 self.audio.stop_all();
@@ -1173,7 +1214,7 @@ impl eframe::App for GameApp {
                 }
             }
             Screen::Overworld(ed) => {
-                let leave = ed.play_ui(ui, frame.wgpu_render_state(), now, &mut self.audio, period);
+                let leave = ed.play_ui(ui, frame.wgpu_render_state(), now, &mut self.audio, hours);
                 let request = ed.take_request();
                 let save = ed.save_game();
                 if leave {

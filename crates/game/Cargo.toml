@@ -16,6 +16,8 @@ engine-render = { path = "../render" }
 engine-world = { path = "../world" }
 eframe.workspace = true
 egui.workspace = true
+# the game's icons are SVG (crates/game/icons/), drawn at any size
+egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 image.workspace = true
 glam.workspace = true
 log = "0.4"
@@ -34,3 +36,7 @@ web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode",
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }
 # the Requests window's pictures: PNG, JPG and WebP
 image = { workspace = true, features = ["jpeg", "webp"] }
+
+# the local time of day (Windows has its own call)
+[target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]
+libc = "0.2"

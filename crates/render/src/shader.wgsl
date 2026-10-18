@@ -30,6 +30,12 @@ struct Globals {
     toon_c: vec4<f32>,
     toon_d: vec4<f32>,
     toon_e: vec4<f32>,
+    // the screen back to the world, for the post-process
+    inv_view_proj: mat4x4<f32>,
+    // the clouds' shadows: a: x how dark (0: none), y 1 / a cloud's width, z how much of the
+    // sky, w how soft their edges; b: xy their drift (cells a second), z their height
+    clouds_a: vec4<f32>,
+    clouds_b: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -815,11 +821,42 @@ fn color_steps(c: vec3<f32>) -> vec3<f32> {
     return min(c * (pow(q, 2.2) / l), vec3<f32>(1.0));
 }
 
-// the scene to the screen: in colour steps if asked, with the toon look's ink lines over
-// it (faded by the fog)
+// how much a cloud shades a point of the world: the clouds drift with the wind at their
+// height, and a point is under one where the way to the sun meets it
+fn cloud_shade(p: vec3<f32>) -> f32 {
+    let sun = normalize(g.sun_dir.xyz);
+    let up = max(g.clouds_b.z - p.y, 0.0) / max(sun.y, 0.2);
+    let q = (p.xz + sun.xz * up - g.clouds_b.xy * g.world.w) * g.clouds_a.y;
+    // the noise spread out (clear clouds, clear sky between), a broader one making some
+    // places cloudier than others
+    let n = clamp((fbm(q) - 0.5) * 2.4 + 0.5 + (noise(q * 0.31 + 5.3) - 0.5) * 0.35, 0.0, 1.0);
+    let edge = 1.0 - g.clouds_a.z;
+    return smoothstep(edge - g.clouds_a.w, edge + g.clouds_a.w, n);
+}
+
+// the clouds' shadows on what a pixel shows: where it is in the world (from its distance,
+// the look's), darker where a cloud is over it, the more so where it's in the light (what's
+// already in shade or dark keeps its colour)
+fn clouds_over(c: vec3<f32>, uv: vec2<f32>, size: vec2<f32>) -> vec3<f32> {
+    let me = look_at(vec2<i32>(uv * size));
+    if (me.dist >= LOOK_FAR * 0.99) {
+        return c; // the sky
+    }
+    let far = g.inv_view_proj * vec4<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, 1.0, 1.0);
+    let ray = normalize(far.xyz / far.w - g.camera.xyz);
+    let shade = cloud_shade(g.camera.xyz + ray * me.dist);
+    let lit = smoothstep(0.02, 0.18, dot(c, vec3<f32>(0.2126, 0.7152, 0.0722)));
+    return c * (1.0 - g.clouds_a.x * shade * lit);
+}
+
+// the scene to the screen: the clouds' shadows over it, in colour steps if asked, with the
+// toon look's ink lines over it (faded by the fog)
 @fragment
 fn fs_blit(i: BlitOut) -> @location(0) vec4<f32> {
     var c = textureSample(tex, samp, i.uv).rgb;
+    if (g.clouds_a.x > 0.001) {
+        c = clouds_over(c, i.uv, vec2<f32>(textureDimensions(looks)));
+    }
     if (g.toon_e.z > 0.5) {
         c = color_steps(c);
     }
