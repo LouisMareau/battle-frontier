@@ -1,11 +1,13 @@
 //! The Build tool: a building is drawn as a footprint of cells (any shape, one piece), then
 //! designed floor by floor, then confirmed into the map, where it blocks and its doors let
 //! the player through. Designing has three modes: Structure (flooring, doors and windows
-//! along the outside walls, pillars, the walls' and the roof's styles), Inside (what stands
-//! on the floor being designed and hangs on its inner walls) and Outside (a wall first, then
-//! what hangs on it and stands in front of it): see `rooms.rs`. While it's designed the rest
-//! of the map is darkened and nothing lands outside it. Buildings already on the map are
-//! moved, turned, edited and deleted from the Select tool.
+//! along the outside walls, pillars, the walls' and the roof's styles, and cell by cell: a
+//! flooring for each cell of the floor, a hole down to the floor below on the floors above
+//! the ground, a style for each segment of wall), Inside (what stands on the floor being
+//! designed and hangs on its inner walls) and Outside (a wall first, then what hangs on it
+//! and stands in front of it): see `rooms.rs`. While it's designed the rest of the map is
+//! darkened and nothing lands outside it. Buildings already on the map are moved, turned,
+//! edited and deleted from the Select tool.
 
 use content::{segment_ends, Building, Floor, Opening, Pillar, INSIDE, OUTSIDE};
 use egui::RichText;
@@ -20,20 +22,27 @@ pub(super) enum Step {
     Design,
 }
 
-/// What a click does while designing: the first two are the Structure mode.
+/// What a click does while designing: the first four are the Structure mode.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum Clicks {
     Openings,
     Pillars,
+    /// a cell of the floor takes the flooring picked (or opens: a hole)
+    Tiles,
+    /// a segment of the floor's walls takes the style picked
+    Walls,
     Inside,
     Outside,
 }
 
 impl Clicks {
     fn structure(self) -> bool {
-        matches!(self, Clicks::Openings | Clicks::Pillars)
+        matches!(self, Clicks::Openings | Clicks::Pillars | Clicks::Tiles | Clicks::Walls)
     }
 }
+
+/// The flooring brush that opens a cell: a hole down to the floor below.
+const HOLE: &str = "#hole";
 
 /// Something placed in the building being designed: on the floor being designed, hung on
 /// one of its walls (inside or out: `Building::anchors`), or standing outside it.
@@ -72,6 +81,16 @@ pub(super) struct Draft {
     /// what's selected (Q/E turn it, Delete removes it)
     pub sel: Option<Sel>,
     pub problems: Vec<String>,
+    /// Flooring: what a click lays on a cell (a floor prop; "": the floor's own; `HOLE`)
+    pub tile_brush: String,
+    /// Walls: the style a click gives a segment (a wall prop; "": the building's)
+    pub wall_brush: String,
+    /// Walls: given on every floor at once, not just the one being designed
+    pub every_floor: bool,
+    /// Flooring: the cell under the pointer (from `at`)
+    pub hover_cell: Option<(i32, i32)>,
+    /// a stroke of flooring or walls going on (the button held down)
+    pub painting: bool,
 }
 
 fn first_of(ed: &MapEditor, category: &str) -> Option<String> {
@@ -113,6 +132,15 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
         for p in f.props.iter_mut() {
             p.at = [p.at[0] + dx as f64, p.at[1] + dz as f64];
         }
+        for t in f.tiles.iter_mut() {
+            t.cell = [t.cell[0] + dx, t.cell[1] + dz];
+        }
+        for h in f.holes.iter_mut() {
+            *h = [h[0] + dx, h[1] + dz];
+        }
+        for w in f.walls.iter_mut() {
+            w.cell = [w.cell[0] + dx, w.cell[1] + dz];
+        }
     }
     for p in b.pillars.iter_mut() {
         p.corner = [p.corner[0] + dx, p.corner[1] + dz];
@@ -129,6 +157,10 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
         f.openings.retain(|o| copy.fits(o));
         f.props.retain(|p| copy.has(p.at[0].floor() as i32, p.at[1].floor() as i32));
         dropped += before - f.openings.len() - f.props.len();
+        // a cell's flooring, a hole, a wall's style: gone with their cell or wall
+        f.tiles.retain(|t| copy.has(t.cell[0], t.cell[1]));
+        f.holes.retain(|h| copy.has(h[0], h[1]));
+        f.walls.retain(|w| copy.is_edge(w.cell[0], w.cell[1], &w.side));
     }
     let corners = copy.corners();
     let before = b.pillars.len() + b.anchors.len() + b.outside.len();
@@ -166,7 +198,15 @@ impl MapEditor {
             }
         };
         let cells = b.map_cells();
+        // the brushes: another flooring and another style than the building's to start with
+        let tile_brush = choices(self, "floor").into_iter().map(|c| c.0).find(|id| b.floors.first().map(|f| &f.tile) != Some(id)).unwrap_or_default();
+        let wall_brush = choices(self, "wall").into_iter().map(|c| c.0).find(|id| *id != b.wall).unwrap_or_default();
         self.draft = Some(Draft {
+            tile_brush,
+            wall_brush,
+            every_floor: false,
+            hover_cell: None,
+            painting: false,
             step: if editing.is_some() { Step::Design } else { Step::Footprint },
             editing,
             cells,
@@ -451,10 +491,86 @@ impl MapEditor {
                             }
                         }
                     }
+                    Clicks::Tiles => {
+                        let d = self.draft.as_mut().unwrap();
+                        let rel = ((p.x - d.b.at[0] as f32).floor() as i32, (p.z - d.b.at[1] as f32).floor() as i32);
+                        d.hover_cell = d.b.has(rel.0, rel.1).then_some(rel);
+                        if pressed && over_view {
+                            d.painting = true;
+                        }
+                        if let (true, true, Some((x, z))) = (d.painting, down, d.hover_cell) {
+                            match self.lay(x, z) {
+                                Ok(true) => self.need_buildings = true,
+                                Ok(false) => {}
+                                Err(why) => self.status = why,
+                            }
+                        }
+                        if released {
+                            if let Some(d) = &mut self.draft {
+                                d.painting = false;
+                            }
+                        }
+                    }
+                    Clicks::Walls => {
+                        let d = self.draft.as_mut().unwrap();
+                        d.hover_edge = Self::nearest_edge(&d.b, p);
+                        if pressed && over_view {
+                            d.painting = true;
+                        }
+                        if let (true, true, Some((x, z, side))) = (d.painting, down, d.hover_edge) {
+                            let wall = d.b.wall.clone();
+                            let floors: Vec<usize> = if d.every_floor { (0..d.b.floors.len()).collect() } else { vec![d.floor] };
+                            let mut changed = false;
+                            for f in floors {
+                                let before = d.b.floors[f].wall_at(x, z, side, &wall).to_string();
+                                d.b.floors[f].set_wall(x, z, side, &d.wall_brush, &wall);
+                                changed |= d.b.floors[f].wall_at(x, z, side, &wall) != before;
+                            }
+                            if changed {
+                                self.need_buildings = true;
+                            }
+                        }
+                        if released {
+                            if let Some(d) = &mut self.draft {
+                                d.painting = false;
+                            }
+                        }
+                    }
                     Clicks::Inside | Clicks::Outside => {}
                 }
             }
         }
+    }
+
+    /// The flooring brush laid on a cell (from `at`) of the floor being designed: Ok(true)
+    /// when it changed. A hole only above the ground floor and where nothing stands; the
+    /// stairs' way up stays open.
+    fn lay(&mut self, x: i32, z: i32) -> Result<bool, String> {
+        let content = self.content.clone();
+        let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
+        let standing: Vec<String> = {
+            let Some(d) = &self.draft else { return Ok(false) };
+            d.b.floors[d.floor].props.iter().filter(|p| super::rooms::cells_of(self, p).contains(&(x, z))).map(|p| content.props.get(&p.prop).map(|q| q.name.clone()).unwrap_or_else(|| p.prop.clone())).collect()
+        };
+        let Some(d) = &mut self.draft else { return Ok(false) };
+        let f = d.floor;
+        if d.b.stairwells(f, &stairs).contains(&(x, z)) {
+            return Ok(false);
+        }
+        let floor = &mut d.b.floors[f];
+        let before = (floor.tile_at(x, z).to_string(), floor.is_hole(x, z));
+        if d.tile_brush == HOLE {
+            if f == 0 {
+                return Err("The ground floor has nothing under it: holes go in the floors above".into());
+            }
+            if let Some(name) = standing.first() {
+                return Err(format!("{name} stands there: move it first (Inside)"));
+            }
+            floor.set_hole(x, z, true);
+        } else {
+            floor.set_tile(x, z, &d.tile_brush);
+        }
+        Ok(before != (floor.tile_at(x, z).to_string(), floor.is_hole(x, z)))
     }
 
     /// The Build tool's marks: on the ground while the footprint is drawn; over everything
@@ -515,6 +631,21 @@ impl MapEditor {
                             let hover = d.hover_point == Some(c);
                             let color = if hover { [1.0, 1.0, 1.0, 0.8] } else if on { [0.3, 0.85, 0.4, 0.6] } else { [1.0, 1.0, 1.0, 0.25] };
                             overlays.push(rect(ox + c[0] as f32, y + 0.01, oz + c[1] as f32, 0.3, 0.3, color));
+                        }
+                    }
+                    Clicks::Tiles => {
+                        // the floor's holes, and the cell under the pointer
+                        for h in d.b.floors[d.floor].holes.iter().filter(|_| d.floor > 0) {
+                            overlays.push(rect(ox + h[0] as f32 + 0.5, y - 0.02, oz + h[1] as f32 + 0.5, 0.9, 0.9, [0.1, 0.12, 0.3, 0.35]));
+                        }
+                        if let Some((x, z)) = d.hover_cell {
+                            let c = if d.tile_brush == HOLE { [1.0, 0.55, 0.3, 0.5] } else { [1.0, 1.0, 1.0, 0.45] };
+                            overlays.push(rect(ox + x as f32 + 0.5, y, oz + z as f32 + 0.5, 0.96, 0.96, c));
+                        }
+                    }
+                    Clicks::Walls => {
+                        if let Some((x, z, side)) = d.hover_edge {
+                            edge(x, z, side, [1.0, 1.0, 1.0, 0.6], overlays);
                         }
                     }
                     Clicks::Inside | Clicks::Outside => self.rooms_overlays(overlays),
@@ -650,7 +781,7 @@ impl MapEditor {
         match clicks {
             Clicks::Inside => self.inside_panel(ui),
             Clicks::Outside => self.outside_panel(ui),
-            Clicks::Openings | Clicks::Pillars => changed |= self.structure_panel(ui),
+            Clicks::Openings | Clicks::Pillars | Clicks::Tiles | Clicks::Walls => changed |= self.structure_panel(ui),
         }
         if changed {
             self.need_buildings = true;
@@ -701,10 +832,28 @@ impl MapEditor {
             hint(ui, "A flat roof (the outline isn't a rectangle): stairs can come up to it.");
         }
         section(ui, "Clicking places");
-        ui.horizontal(|ui| {
+        ui.horizontal_wrapped(|ui| {
             super::mark("uiOpenings", &ui.radio_value(&mut d.clicks, Clicks::Openings, "Doors & windows"));
             super::mark("uiPillars", &ui.radio_value(&mut d.clicks, Clicks::Pillars, "Pillars"));
+            super::mark("uiTiles", &ui.radio_value(&mut d.clicks, Clicks::Tiles, "Flooring").on_hover_text("Each cell of this floor its flooring; above the ground floor, holes"));
+            super::mark("uiWallStyles", &ui.radio_value(&mut d.clicks, Clicks::Walls, "Walls").on_hover_text("Each segment of this floor's walls its style"));
         });
+        // a brush: its swatch and name, picked by a click
+        let brush = |ui: &mut egui::Ui, current: &mut String, id: &str, name: &str, color: Option<&str>, mark: &str| {
+            let r = ui
+                .horizontal(|ui| {
+                    if let Some(c) = color {
+                        super::swatch(ui, c);
+                    }
+                    ui.selectable_label(current == id, name)
+                })
+                .inner;
+            super::mark(mark, &r);
+            if r.clicked() {
+                *current = id.to_string();
+            }
+            r
+        };
         match d.clicks {
             Clicks::Openings => {
                 ui.horizontal(|ui| {
@@ -771,8 +920,61 @@ impl MapEditor {
                     d.pillar_prop = Some(current);
                 }
             }
+            Clicks::Tiles => {
+                hint(ui, "Click or drag over this floor's cells: each takes the flooring picked.");
+                if d.floor == 0 && d.tile_brush == HOLE {
+                    d.tile_brush.clear();
+                }
+                // one a line (the panel is narrow): every flooring, the floor's own, a hole
+                for (id, name, color) in &tiles {
+                    brush(ui, &mut d.tile_brush, id, name, Some(color.as_str()), &format!("uiTileBrush_{id}"));
+                }
+                let own = d.b.floors[d.floor].tile.clone();
+                let (own_name, own_color) = tiles.iter().find(|t| t.0 == own).map(|t| (t.1.clone(), t.2.clone())).unwrap_or((own, "#888888".into()));
+                brush(ui, &mut d.tile_brush, "", &format!("As the floor ({own_name})"), Some(own_color.as_str()), "uiTileOwn").on_hover_text("Back to this floor's own flooring (Style: Floor)");
+                if d.floor > 0 {
+                    brush(ui, &mut d.tile_brush, HOLE, "Empty: a hole", Some("#1c2130"), "uiTileHole").on_hover_text("No floor there: open down to the floor below, a railing along its edge (an inner balcony)");
+                } else {
+                    hint(ui, "Holes go in the floors above: there's nothing under the ground floor.");
+                }
+                let fl = &d.b.floors[d.floor];
+                let (n, h) = (fl.tiles.len(), fl.holes.len());
+                ui.label(format!("{n} cell{} of another flooring, {h} hole{}", if n == 1 { "" } else { "s" }, if h == 1 { "" } else { "s" }));
+                let all = ui.add_enabled(n + h > 0, egui::Button::new("All as the floor").small()).on_hover_text("Every cell of this floor back to its own flooring, its holes closed");
+                if all.clicked() {
+                    let fl = &mut d.b.floors[d.floor];
+                    fl.tiles.clear();
+                    fl.holes.clear();
+                    changed = true;
+                }
+            }
+            Clicks::Walls => {
+                hint(ui, "Click or drag along this floor's walls: each segment takes the style picked.");
+                for (id, name, color) in &walls {
+                    brush(ui, &mut d.wall_brush, id, name, Some(color.as_str()), &format!("uiWallBrush_{id}"));
+                }
+                let own = d.b.wall.clone();
+                let (own_name, own_color) = walls.iter().find(|w| w.0 == own).map(|w| (w.1.clone(), w.2.clone())).unwrap_or((own, "#888888".into()));
+                brush(ui, &mut d.wall_brush, "", &format!("As the building ({own_name})"), Some(own_color.as_str()), "uiWallOwn").on_hover_text("Back to the building's own walls (Style: Walls)");
+                let every = ui.checkbox(&mut d.every_floor, "On every floor").on_hover_text("A segment takes the style all the way up, not just on this floor");
+                super::mark("uiWallEveryFloor", &every);
+                let n = d.b.floors[d.floor].walls.len();
+                ui.label(format!("{n} segment{} of another style on this floor", if n == 1 { "" } else { "s" }));
+                if ui.add_enabled(n > 0, egui::Button::new("All as the building").small()).clicked() {
+                    d.b.floors[d.floor].walls.clear();
+                    changed = true;
+                }
+            }
             Clicks::Inside | Clicks::Outside => {}
         }
+        // for the checks: this floor's own cells and walls, the brushes, the cell pointed at
+        let fl = &d.b.floors[d.floor];
+        crate::platform::set_hook("buildtiles", &fl.tiles.len().to_string());
+        crate::platform::set_hook("buildholes", &fl.holes.len().to_string());
+        crate::platform::set_hook("buildwalls", &fl.walls.len().to_string());
+        crate::platform::set_hook("tilebrush", &d.tile_brush);
+        crate::platform::set_hook("wallbrush", &d.wall_brush);
+        crate::platform::set_hook("hovercell", &d.hover_cell.map(|(x, z)| format!("{x},{z}")).unwrap_or_default());
         changed
     }
 

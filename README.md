@@ -73,6 +73,7 @@ node tools/frames.mjs [encounter]      # frame times of one encounter, second by
 node tools/perf.mjs [tile=4] [size=3840x2160]   # how fast it draws, uncapped: menu, map views, editing, walking, a battle
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
+node tools/tilecheck.mjs               # cell by cell: flooring, wall styles, a hole upstairs (walked up to)
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
 node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, "Start new games here"
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
@@ -185,8 +186,11 @@ small one.
   the area's settings (which trees, spacing, size range, density, a tree in every edge
   cell, seed): the same trees every time.
 - **Buildings** have a footprint of cells (any shape, in one piece), floors one level each
-  (each with its flooring, never empty), walls along the outline in a style (plaster,
-  planks, bricks, stone, logs), doors and windows in them (an opening is as wide, in cells,
+  (each with its flooring, never empty; any cell may have a flooring of its own, and above
+  the ground floor a cell may be a hole, open down to the floor below with a railing along
+  its edge: an inner balcony), walls along the outline in a style (plaster, planks, bricks,
+  stone, logs; any segment of a floor's walls may have a style of its own: `tiles`,
+  `holes`, `walls` on a floor), doors and windows in them (an opening is as wide, in cells,
   as its asset: a 2-cell span only offers 2-cell doors), what stands inside each floor,
   pillars on points of the outline, a roof (gabled on a rectangle unless `flat_roof` asks
   for a flat one; flat with a parapet on any other shape), things hung on its walls
@@ -292,7 +296,12 @@ the project the desktop game was started in;
 footprint, then designs it floor by floor: the floors above are cut away and the rest of the
 map is darkened, and nothing lands outside the building. *Structure* is flooring, walls and
 roof (a flat roof for a rectangle, if you want one), doors and windows (drag along an outside
-wall, then pick an asset that wide) and pillars;
+wall, then pick an asset that wide), pillars, and cell by cell: *Flooring* (click or drag
+over the floor's cells: each takes the flooring picked, or its floor's own again; above the
+ground floor, "Empty: a hole" opens a cell down to the floor below, a railing along its
+edge, never where something stands; the walker can't step into one, nothing is placed over
+one) and *Walls* (click or drag along the floor's walls: each segment takes the style
+picked, on this floor or on every floor at once);
 *Inside* places what the `Buildings/Inside` folder holds on the floor being designed (on its
 inner walls for things that hang); *Outside* asks for a wall first (a court's walls count),
 then hangs what `Buildings/Outside` holds on it or stands it on the ground up to two cells in
@@ -439,7 +448,7 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

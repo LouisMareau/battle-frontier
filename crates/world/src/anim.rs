@@ -164,7 +164,8 @@ mod tests {
         assert!((tip - Vec3::new(-1.0, 1.0, 0.0)).length() < 1e-4, "{tip:?}");
         // half way there at half a second; back at rest when it loops round
         let half = skin_point(Vec3::new(0.0, 2.0, 0.0), [1, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], &pose(&arm(), Some(&bend), 0.5));
-        assert!((half.x + 0.7071).abs() < 1e-3 && (half.y - 1.7071).abs() < 1e-3, "{half:?}");
+        let r = std::f32::consts::FRAC_1_SQRT_2;
+        assert!((half.x + r).abs() < 1e-3 && (half.y - (1.0 + r)).abs() < 1e-3, "{half:?}");
         let again = skin_point(Vec3::new(0.0, 2.0, 0.0), [1, 0, 0, 0], [1.0, 0.0, 0.0, 0.0], &pose(&arm(), Some(&bend), 4.0));
         assert!((again - Vec3::new(0.0, 2.0, 0.0)).length() < 1e-4, "{again:?}");
         // the root is unmoved

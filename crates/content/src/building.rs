@@ -1,7 +1,10 @@
 //! Buildings on maps: a footprint of cells (one connected piece, any shape), floors one
 //! level each, walls along the footprint's edge with doors and windows in them, pillars on
-//! the corners, a roof, and decorations anchored on the outside walls. Everything is
-//! relative to the building's `at`, so moving it changes one line.
+//! the corners, a roof, and decorations anchored on the outside walls. Each floor has its
+//! flooring, and may lay another on any cell, leave a cell open down to the floor below (a
+//! hole: an inner balcony's edge; not on the ground floor) and give any of its wall segments
+//! another style than the building's. Everything is relative to the building's `at`, so
+//! moving it changes one line.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,13 +51,86 @@ pub struct Building {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Floor {
-    /// laid on every cell (a "floor" prop)
+    /// laid on every cell (a "floor" prop) but those in `tiles` and `holes`
     pub tile: String,
+    /// cells laid with another flooring
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tiles: Vec<CellTile>,
+    /// cells left open, down to the floor below (never on the ground floor)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub holes: Vec<[i32; 2]>,
+    /// wall segments of this floor in another style than the building's
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub walls: Vec<WallStyle>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub openings: Vec<Opening>,
     /// what stands inside: `at` from the building's `at`, `level` unused
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<Placed>,
+}
+
+/// Another flooring than its floor's, on one cell.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct CellTile {
+    pub cell: [i32; 2],
+    /// a "floor" prop
+    pub tile: String,
+}
+
+/// Another style than the building's for one wall segment of a floor: the wall on `side` of
+/// `cell`.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WallStyle {
+    pub cell: [i32; 2],
+    /// "n", "e", "s" or "w"
+    pub side: String,
+    /// a "wall" prop
+    pub wall: String,
+}
+
+impl Floor {
+    /// The flooring on a cell (a hole has none to walk on, but keeps what it would be).
+    pub fn tile_at(&self, x: i32, z: i32) -> &str {
+        self.tiles.iter().find(|t| t.cell == [x, z]).map_or(self.tile.as_str(), |t| t.tile.as_str())
+    }
+
+    /// `tile` laid on a cell (the floor's own, or "": back to it); a hole there is closed.
+    pub fn set_tile(&mut self, x: i32, z: i32, tile: &str) {
+        self.holes.retain(|h| *h != [x, z]);
+        self.tiles.retain(|t| t.cell != [x, z]);
+        if !tile.is_empty() && tile != self.tile {
+            self.tiles.push(CellTile { cell: [x, z], tile: tile.into() });
+        }
+    }
+
+    /// Is this cell left open down to the floor below?
+    pub fn is_hole(&self, x: i32, z: i32) -> bool {
+        self.holes.contains(&[x, z])
+    }
+
+    /// A cell opened (its flooring goes) or closed again (the floor's own flooring).
+    pub fn set_hole(&mut self, x: i32, z: i32, open: bool) {
+        self.tiles.retain(|t| t.cell != [x, z]);
+        self.holes.retain(|h| *h != [x, z]);
+        if open {
+            self.holes.push([x, z]);
+        }
+    }
+
+    /// The style of the wall on `side` of a cell, `wall` (the building's) unless it has its own.
+    pub fn wall_at<'a>(&'a self, x: i32, z: i32, side: &str, wall: &'a str) -> &'a str {
+        self.walls.iter().find(|w| w.cell == [x, z] && w.side == side).map_or(wall, |w| w.wall.as_str())
+    }
+
+    /// A wall segment given a style (`wall`, the building's, or "": back to it).
+    pub fn set_wall(&mut self, x: i32, z: i32, side: &str, style: &str, wall: &str) {
+        self.walls.retain(|w| !(w.cell == [x, z] && w.side == side));
+        if !style.is_empty() && style != wall {
+            self.walls.push(WallStyle { cell: [x, z], side: side.into(), wall: style.into() });
+        }
+    }
 }
 
 /// A door or a window: in the wall on `side` of `cell`, and of the next cells along that
@@ -168,6 +244,20 @@ impl Building {
     pub fn stairwells(&self, floor: usize, stairs: &dyn Fn(&str) -> Option<[u8; 2]>) -> Vec<(i32, i32)> {
         let Some(below) = floor.checked_sub(1).and_then(|f| self.floors.get(f)) else { return vec![] };
         below.props.iter().filter_map(|p| stairs(&p.prop).map(|fp| footprint_cells(p.at, p.turn, fp, 1.0))).flatten().collect()
+    }
+
+    /// The cells of `floor` open down to the floor below: under the stairs' way up
+    /// (`stairwells`) and its holes. From `at`.
+    pub fn open_cells(&self, floor: usize, stairs: &dyn Fn(&str) -> Option<[u8; 2]>) -> Vec<(i32, i32)> {
+        let mut out = self.stairwells(floor, stairs);
+        if let Some(f) = self.floors.get(floor).filter(|_| floor > 0) {
+            for h in &f.holes {
+                if !out.contains(&(h[0], h[1])) {
+                    out.push((h[0], h[1]));
+                }
+            }
+        }
+        out
     }
 
     /// Is this cell (from `at`) inside?
@@ -289,6 +379,19 @@ impl Building {
                 p.at = [x, z];
                 p.turn = (p.turn + 90.0).rem_euclid(360.0);
             }
+            for t in floor.tiles.iter_mut() {
+                let (x, z) = cell(t.cell[0], t.cell[1]);
+                t.cell = [x, z];
+            }
+            for h in floor.holes.iter_mut() {
+                let (x, z) = cell(h[0], h[1]);
+                *h = [x, z];
+            }
+            for w in floor.walls.iter_mut() {
+                let (x, z) = cell(w.cell[0], w.cell[1]);
+                w.cell = [x, z];
+                w.side = turned_side(&w.side).into();
+            }
         }
         for p in b.pillars.iter_mut() {
             let (x, z) = (h - p.corner[1], p.corner[0]);
@@ -336,6 +439,26 @@ impl Building {
         };
         for (f, floor) in self.floors.iter().enumerate() {
             want(&floor.tile, &["floor"], &format!("floor {} tile", f + 1), &mut out);
+            for t in &floor.tiles {
+                want(&t.tile, &["floor"], &format!("floor {} tile at {:?}", f + 1, t.cell), &mut out);
+                if !self.has(t.cell[0], t.cell[1]) {
+                    out.push(format!("{at}: floor {}: a tile at {:?}, not on its cells", f + 1, t.cell));
+                }
+            }
+            if f == 0 && !floor.holes.is_empty() {
+                out.push(format!("{at}: the ground floor has holes: there's nothing below it"));
+            }
+            for h in &floor.holes {
+                if !self.has(h[0], h[1]) {
+                    out.push(format!("{at}: floor {}: a hole at {:?}, not on its cells", f + 1, h));
+                }
+            }
+            for w in &floor.walls {
+                want(&w.wall, &["wall"], &format!("floor {} wall at {:?} {}", f + 1, w.cell, w.side), &mut out);
+                if !self.is_edge(w.cell[0], w.cell[1], &w.side) {
+                    out.push(format!("{at}: floor {}: a wall style at {:?} {}, not on one of its walls", f + 1, w.cell, w.side));
+                }
+            }
             let mut used: Vec<(i32, i32, String)> = vec![];
             for o in &floor.openings {
                 want(&o.prop, &["door", "window"], &format!("floor {} opening", f + 1), &mut out);
@@ -354,14 +477,18 @@ impl Building {
                     used.push((x, z, o.side.clone()));
                 }
             }
-            // nothing over the stairs from below, and stairs with somewhere to go
+            // nothing over the stairs from below or over a hole, and stairs with somewhere to go
             let holes = self.stairwells(f, &stairs);
             for p in &floor.props {
                 match prop(&p.prop) {
                     None => out.push(format!("{at}: floor {}: \"{}\", no such prop", f + 1, p.prop)),
                     Some((_, fp)) => {
-                        if footprint_cells(p.at, p.turn, fp, 1.0).iter().any(|c| holes.contains(c)) {
+                        let cells = footprint_cells(p.at, p.turn, fp, 1.0);
+                        if cells.iter().any(|c| holes.contains(c)) {
                             out.push(format!("{at}: floor {}: \"{}\" stands over the stairs from below", f + 1, p.prop));
+                        }
+                        if f > 0 && cells.iter().any(|&(x, z)| floor.is_hole(x, z)) {
+                            out.push(format!("{at}: floor {}: \"{}\" stands over a hole", f + 1, p.prop));
                         }
                     }
                 }
@@ -408,7 +535,7 @@ mod tests {
         Building {
             id: "b".into(),
             cells: vec!["#.".into(), "##".into()],
-            floors: vec![Floor { tile: "wood".into(), openings: vec![Opening { prop: "door".into(), cell: [0, 1], side: "s".into(), width: 2 }], props: vec![] }],
+            floors: vec![Floor { tile: "wood".into(), openings: vec![Opening { prop: "door".into(), cell: [0, 1], side: "s".into(), width: 2 }], ..Default::default() }],
             ..Default::default()
         }
     }
@@ -462,11 +589,65 @@ mod tests {
 
     #[test]
     fn four_quarter_turns_come_back() {
-        let b = l_shape();
+        let mut b = l_shape();
+        b.floors[0].set_tile(1, 1, "stone");
+        b.floors[0].set_wall(1, 1, "e", "bricks", "plaster");
+        b.floors.push(Floor { tile: "wood".into(), ..Default::default() });
+        b.floors[1].set_hole(0, 0, true);
         let t = b.turned();
         assert_eq!(t.cells, vec!["##".to_string(), "#.".to_string()]);
         assert!(t.fits(&t.floors[0].openings[0]), "{:?}", t.floors[0].openings[0]);
         assert_eq!(t.floors[0].openings[0].side, "w");
+        // the tile, the wall's style and the hole turn with it, onto its cells and walls
+        assert_eq!(t.floors[0].tiles[0].cell, [0, 1]);
+        assert_eq!((t.floors[0].walls[0].cell, t.floors[0].walls[0].side.as_str()), ([0, 1], "s"));
+        assert!(t.is_edge(0, 1, "s"));
+        assert!(t.floors[1].is_hole(1, 0));
         assert_eq!(t.turned().turned().turned(), b);
+    }
+
+    #[test]
+    fn cells_and_walls_of_their_own() {
+        let prop = |id: &str| match id {
+            "wood" | "stone" => Some(("floor".to_string(), [1, 1])),
+            "plaster" | "bricks" => Some(("wall".to_string(), [1, 1])),
+            "table" => Some(("furniture".to_string(), [1, 1])),
+            _ => None,
+        };
+        let mut b = Building { id: "b".into(), cells: vec!["##".into(), "##".into()], wall: "plaster".into(), roof: "plaster".into(), floors: vec![Floor { tile: "wood".into(), ..Default::default() }; 2], ..Default::default() };
+        let mine = |b: &Building| b.problems(&prop).into_iter().filter(|p| !p.contains("roof")).collect::<Vec<_>>();
+        // a cell of its own flooring; laying the floor's own on it takes it back
+        b.floors[0].set_tile(1, 0, "stone");
+        assert_eq!((b.floors[0].tile_at(1, 0), b.floors[0].tile_at(0, 0)), ("stone", "wood"));
+        b.floors[0].set_tile(1, 0, "wood");
+        assert!(b.floors[0].tiles.is_empty());
+        // a wall segment of its own style, the others the building's
+        b.floors[1].set_wall(0, 0, "n", "bricks", &b.wall.clone());
+        assert_eq!(b.floors[1].wall_at(0, 0, "n", &b.wall), "bricks");
+        assert_eq!(b.floors[1].wall_at(1, 0, "n", &b.wall), "plaster");
+        assert_eq!(b.floors[0].wall_at(0, 0, "n", &b.wall), "plaster", "another floor's wall");
+        assert!(mine(&b).is_empty(), "{:?}", mine(&b));
+        // a hole upstairs: open, its flooring gone; a tile laid closes it again
+        b.floors[1].set_tile(1, 1, "stone");
+        b.floors[1].set_hole(1, 1, true);
+        assert!(b.floors[1].is_hole(1, 1) && b.floors[1].tiles.is_empty());
+        let none = |_: &str| -> Option<[u8; 2]> { None };
+        assert_eq!(b.open_cells(1, &none), vec![(1, 1)]);
+        assert!(b.open_cells(0, &none).is_empty());
+        // nothing stands over it; none on the ground floor; none off the building
+        b.floors[1].props.push(Placed { prop: "table".into(), at: [1.5, 1.5], scale: 1.0, ..Default::default() });
+        assert!(mine(&b).iter().any(|p| p.contains("over a hole")), "{:?}", mine(&b));
+        b.floors[1].props.clear();
+        b.floors[0].holes.push([0, 0]);
+        b.floors[1].holes.push([5, 5]);
+        b.floors[1].walls.push(WallStyle { cell: [0, 0], side: "s".into(), wall: "bricks".into() });
+        b.floors[1].tiles.push(CellTile { cell: [0, 1], tile: "table".into() });
+        let wrong = mine(&b);
+        assert!(wrong.iter().any(|p| p.contains("ground floor has holes")), "{wrong:?}");
+        assert!(wrong.iter().any(|p| p.contains("a hole at [5, 5]")), "{wrong:?}");
+        assert!(wrong.iter().any(|p| p.contains("not on one of its walls")), "{wrong:?}");
+        assert!(wrong.iter().any(|p| p.contains("is a furniture")), "{wrong:?}");
+        b.floors[1].set_tile(1, 1, "");
+        assert!(!b.floors[1].is_hole(1, 1), "laying the floor's own closes it");
     }
 }

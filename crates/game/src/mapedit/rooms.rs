@@ -345,6 +345,9 @@ impl MapEditor {
         if cells.iter().any(|c| b.stairwells(floor, &stairs).contains(c)) {
             return Err("That's open: the stairs from below come up there".into());
         }
+        if floor > 0 && cells.iter().any(|&(x, z)| b.floors[floor].is_hole(x, z)) {
+            return Err("That's open: a hole down to the floor below".into());
+        }
         let others: Vec<Placed> = b.floors[floor].props.iter().enumerate().filter(|(i, _)| Some(*i) != except).map(|(_, p)| p.clone()).collect();
         if let Some(other) = clash(self, &placed.prop, &cells, &others) {
             return Err(format!("No room: {other} is there, and one of them doesn't stack"));
@@ -382,9 +385,9 @@ impl MapEditor {
         };
         match d.clicks {
             Clicks::Inside => {
-                // open to the floor below: the stairs come up there
+                // open to the floor below: the stairs come up there, or a hole
                 let stairs = |id: &str| self.stairs_footprint(id);
-                for (x, z) in b.stairwells(d.floor, &stairs) {
+                for (x, z) in b.open_cells(d.floor, &stairs) {
                     out.push(rect((b.at[0] + x) as f32 + 0.5, floor_y - 0.02, (b.at[1] + z) as f32 + 0.5, 0.9, 0.9, [0.05, 0.05, 0.1, 0.55]));
                 }
                 if let Some((cells, ok)) = self.hover_cells() {

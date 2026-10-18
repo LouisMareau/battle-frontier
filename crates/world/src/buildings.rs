@@ -1,5 +1,6 @@
-//! Buildings' geometry: on each floor, the floor's tiles on every cell, walls along the
-//! outline (patterned on the outside, with holes where doors and windows are), the doors,
+//! Buildings' geometry: on each floor, each cell's flooring (open where stairs come up and
+//! over its holes, a railing round those), walls along the outline (each segment in its
+//! style, patterned on the outside, with holes where doors and windows are), the doors,
 //! windows and what stands inside; pillars as high as the building; a gabled roof on a
 //! rectangle, a flat one with a parapet on any other shape; decorations on the walls.
 //! A building can be cut away above a floor, for editing it.
@@ -164,6 +165,28 @@ fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4],
     }
 }
 
+/// A wall prop's look: its colours, its pattern, toon or not.
+struct Look {
+    main: [f32; 4],
+    trim: [f32; 4],
+    kind: String,
+    /// the wall's own colour (its inside face and edges): the main one for plaster
+    body: [f32; 4],
+    toon: bool,
+}
+
+fn look_of(content: &Content, id: &str) -> Look {
+    let wall = content.props.get(id);
+    let main = color(wall.map(|w| w.color(0)).unwrap_or("#efe6d2"));
+    let trim = color(wall.map(|w| w.color(1)).unwrap_or("#b89f7e"));
+    let kind = wall.map(|w| w.pattern.clone()).unwrap_or_else(|| "plaster".into());
+    let body = if matches!(kind.as_str(), "plaster" | "") { main } else { trim };
+    Look { main, trim, kind, body, toon: wall.map(|w| w.toon).unwrap_or(false) }
+}
+
+/// How high a railing round a hole in a floor is.
+const RAIL: f32 = 0.9;
+
 /// What a building looks like while it's edited: floors above `top` cut away, no roof.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cut {
@@ -191,11 +214,15 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     let lh = level_height;
     let base = b.level as f32 * lh;
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
-    let wall = content.props.get(&b.wall);
-    let main = color(wall.map(|w| w.color(0)).unwrap_or("#efe6d2"));
-    let trim = color(wall.map(|w| w.color(1)).unwrap_or("#b89f7e"));
-    let kind = wall.map(|w| w.pattern.as_str()).unwrap_or("plaster");
-    let body = if matches!(kind, "plaster" | "") { main } else { trim };
+    // the walls' looks: the building's first, then every other style a segment has
+    let mut looks = vec![(b.wall.clone(), look_of(content, &b.wall))];
+    for w in b.floors.iter().flat_map(|f| &f.walls) {
+        if !looks.iter().any(|(id, _)| *id == w.wall) {
+            looks.push((w.wall.clone(), look_of(content, &w.wall)));
+        }
+    }
+    let look_index = |id: &str| looks.iter().position(|(l, _)| l == id).unwrap_or(0);
+    let (main, trim) = (looks[0].1.main, looks[0].1.trim);
     // what's made here from the wall and roof props is toon if they are
     let toon_from = |m: &mut Mesh, from: usize, toon: bool| {
         if toon {
@@ -204,7 +231,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             }
         }
     };
-    let wall_toon = wall.map(|w| w.toon).unwrap_or(false);
+    let wall_toon = looks[0].1.toon;
     let shown = floors.end;
     let model = |id: &str| content.props.get(id).map(|p| prop_scene(p, models));
     let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
@@ -223,6 +250,36 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                     _ => (Vec3::new(cx, y, cz), Vec3::new(cx + 1.0, y + 0.12, cz + 0.04)),
                 };
                 aabb(m, lo, hi, color);
+            }
+        }
+    };
+    // a railing along a hole's edges, where the floor goes on (not where another hole or the
+    // stairs' opening is, nor along the outside wall): a rail on top, one low, balusters
+    let railing = |m: &mut Mesh, open: &[(i32, i32)], also_open: &[(i32, i32)], y: f32, color: [f32; 4]| {
+        for &(x, z) in open {
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (x + dx, z + dz);
+                if open.contains(&n) || also_open.contains(&n) || !b.has(n.0, n.1) {
+                    continue;
+                }
+                let (cx, cz) = (ox + x as f32, oz + z as f32);
+                let (a, c) = match (dx, dz) {
+                    (1, 0) => (Vec3::new(cx + 1.0, y, cz), Vec3::new(cx + 1.0, y, cz + 1.0)),
+                    (-1, 0) => (Vec3::new(cx, y, cz), Vec3::new(cx, y, cz + 1.0)),
+                    (0, 1) => (Vec3::new(cx, y, cz + 1.0), Vec3::new(cx + 1.0, y, cz + 1.0)),
+                    _ => (Vec3::new(cx, y, cz), Vec3::new(cx + 1.0, y, cz)),
+                };
+                // thick across the edge only; along it the rails end a hair inside the edge's
+                // ends (inside the outside wall there, never through it nor flush with its face)
+                let t = if dx != 0 { Vec3::new(0.035, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, 0.035) };
+                let inset = (c - a).normalize() * 0.01;
+                let (a, c) = (a + inset, c - inset);
+                aabb(m, a.min(c) - t + Vec3::Y * (RAIL - 0.07), a.max(c) + t + Vec3::Y * RAIL, color);
+                aabb(m, a.min(c) - t + Vec3::Y * 0.1, a.max(c) + t + Vec3::Y * 0.15, color);
+                for k in 0..4 {
+                    let p = a + (c - a) * (0.125 + 0.25 * k as f32);
+                    aabb(m, p - Vec3::new(0.022, 0.0, 0.022), p + Vec3::new(0.022, RAIL - 0.07, 0.022), color);
+                }
             }
         }
     };
@@ -265,16 +322,28 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     for f in floors {
         let floor = &b.floors[f];
         let y0 = base + f as f32 * lh;
-        // the floor, open where stairs come up from below
+        // the floor, each cell its flooring; open where stairs come up from below, and over
+        // its holes (never the ground floor's), a railing round those
         let holes = b.stairwells(f, &stairs);
-        if let Some(tile) = model(&floor.tile) {
-            for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c)) {
+        let open: Vec<(i32, i32)> = if f > 0 { floor.holes.iter().map(|h| (h[0], h[1])).filter(|c| !holes.contains(c)).collect() } else { vec![] };
+        let mut tiles: Vec<(&str, Option<Scene>)> = vec![];
+        for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c) && !open.contains(c)) {
+            let id = floor.tile_at(x, z);
+            let k = match tiles.iter().position(|(t, _)| *t == id) {
+                Some(k) => k,
+                None => {
+                    tiles.push((id, model(id)));
+                    tiles.len() - 1
+                }
+            };
+            if let Some(tile) = &tiles[k].1 {
                 let at = Vec3::new(ox + x as f32 + 0.5, y0 + if f == 0 { 0.02 } else { 0.0 }, oz + z as f32 + 0.5);
-                put(&mut m, &mut textured, &tile, Mat4::from_translation(at));
+                put(&mut m, &mut textured, tile, Mat4::from_translation(at));
             }
         }
         let from = m.vertices.len();
         rim(&mut m, &holes, y0, trim);
+        railing(&mut m, &open, &holes, y0, trim);
         toon_from(&mut m, from, wall_toon);
         // the walls, with their doors and windows
         for &(side, l, p0, p1) in &runs {
@@ -318,12 +387,29 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             }
             holes.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut cur = start;
+            // each segment's style (the floor's own for it, else the building's), and where
+            // along the run it changes
+            let styles: Vec<usize> = (p0..=p1)
+                .map(|k| {
+                    let (x, z) = cell_at(k);
+                    look_index(floor.wall_at(x, z, side, &b.wall))
+                })
+                .collect();
+            let breaks: Vec<f32> = (p0 + 1..=p1).filter(|&k| styles[(k - p0) as usize] != styles[(k - 1 - p0) as usize]).map(|k| k as f32).collect();
             let solid = |m: &mut Mesh, a0: f32, a1: f32, v0: f32, v1: f32| {
-                if a1 - a0 > 0.001 && v1 - v0 > 0.001 {
+                if a1 - a0 <= 0.001 || v1 - v0 <= 0.001 {
+                    return;
+                }
+                let mut cuts = vec![a0];
+                cuts.extend(breaks.iter().copied().filter(|&k| k > a0 + 0.001 && k < a1 - 0.001));
+                cuts.push(a1);
+                for w in cuts.windows(2) {
+                    let k = ((w[0] + 0.001).floor() as i32).clamp(p0, p1);
+                    let look = &looks[styles[(k - p0) as usize]].1;
                     let from = m.vertices.len();
-                    line.piece(m, origin + a0, origin + a1, y0 + v0, y0 + v1, body);
-                    pattern(m, line, kind, main, trim, origin + a0, origin + a1, v0, v1, y0, lh);
-                    toon_from(m, from, wall_toon);
+                    line.piece(m, origin + w[0], origin + w[1], y0 + v0, y0 + v1, look.body);
+                    pattern(m, line, &look.kind, look.main, look.trim, origin + w[0], origin + w[1], v0, v1, y0, lh);
+                    toon_from(m, from, look.toon);
                 }
             };
             for &(h0, h1, bottom, top) in &holes {
@@ -480,4 +566,91 @@ pub fn segment_point(b: &Building, cell: [i32; 2], side: &str, floor: usize, hei
     let mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, y, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
     let out = Line { side, at: 0.0 }.out();
     (mid, out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::Models;
+    use content::{Floor, Part, Prop, Space};
+
+    fn content() -> Content {
+        let mut c = Content::default();
+        let prop = |id: &str, category: &str, pattern: &str, colors: [&str; 2], size: [f64; 3]| Prop {
+            id: id.into(),
+            name: id.into(),
+            category: category.into(),
+            footprint: [1, 1],
+            height: size[1],
+            pattern: pattern.into(),
+            parts: colors.iter().map(|&color| Part { shape: "box".into(), size, color: color.into(), ..Default::default() }).collect(),
+            ..Default::default()
+        };
+        c.props.put(prop("wood", "floor", "", ["#c08a55", "#c08a55"], [1.0, 0.05, 1.0]), Space::Content);
+        c.props.put(prop("stone", "floor", "", ["#5a7a9a", "#5a7a9a"], [1.0, 0.05, 1.0]), Space::Content);
+        c.props.put(prop("plaster", "wall", "plaster", ["#efe6d2", "#b89f7e"], [1.0, 2.0, 0.12]), Space::Content);
+        c.props.put(prop("bricks", "wall", "bricks", ["#b5523b", "#d8cbb8"], [1.0, 2.0, 0.12]), Space::Content);
+        c
+    }
+
+    /// Three cells by two, two floors, plaster and wood; drawn whole but for the roof.
+    fn house() -> Building {
+        Building { id: "h".into(), cells: vec!["###".into(), "###".into()], wall: "plaster".into(), floors: vec![Floor { tile: "wood".into(), ..Default::default() }; 2], ..Default::default() }
+    }
+
+    fn drawn(b: &Building) -> Mesh {
+        building(b, &content(), 2.0, Some(Cut { top: 1 }), &Models::new()).plain
+    }
+
+    /// The vertices (x, y, z) of about a colour (or of it shaded).
+    fn of(m: &Mesh, hex: &str) -> Vec<[f32; 3]> {
+        let c = crate::color(hex);
+        let near = |v: &[f32; 4]| [1.0, 0.7].iter().any(|k| (0..3).all(|i| (v[i] - c[i] * k).abs() < 0.01));
+        m.vertices.iter().filter(|v| near(&v.color)).map(|v| v.pos).collect()
+    }
+
+    #[test]
+    fn each_cell_its_flooring_and_a_hole_with_a_railing() {
+        let mut b = house();
+        // another flooring on one cell of the ground floor: there, and only there
+        assert!(of(&drawn(&b), "#5a7a9a").is_empty());
+        b.floors[0].set_tile(2, 1, "stone");
+        let stone = of(&drawn(&b), "#5a7a9a");
+        assert!(!stone.is_empty());
+        assert!(stone.iter().all(|p| p[0] >= 1.99 && p[0] <= 3.01 && p[2] >= 0.99 && p[2] <= 2.01 && p[1] < 0.2), "{stone:?}");
+        // a hole in the floor above: its cell untiled, a railing along its inner edges
+        let tiles_up = |m: &Mesh| of(m, "#c08a55").iter().filter(|p| p[1] > 1.9 && p[1] < 2.2).count();
+        // the top rail: at its height, round the hole's cell (1, 1)
+        let rail_top = |m: &Mesh, y: f32| m.vertices.iter().filter(|v| (v.pos[1] - (y + RAIL)).abs() < 0.01 && (0.95..2.05).contains(&v.pos[0]) && (0.95..2.05).contains(&v.pos[2])).count();
+        // balusters along an edge: (x, z) within 0.03 of a point along it, between the rails
+        let baluster = |m: &Mesh, x: f32, z: f32| m.vertices.iter().any(|v| (v.pos[0] - x).abs() < 0.03 && (v.pos[2] - z).abs() < 0.03 && v.pos[1] > 2.5 && v.pos[1] < 2.0 + RAIL);
+        let before = drawn(&b);
+        assert!(tiles_up(&before) > 0 && rail_top(&before, 2.0) == 0);
+        b.floors[1].set_hole(1, 1, true);
+        let after = drawn(&b);
+        assert_eq!(tiles_up(&after) * 6, tiles_up(&before) * 5, "five of its six cells floored");
+        assert!(rail_top(&after, 2.0) > 0, "a railing round it");
+        assert!(baluster(&after, 1.0, 1.125) && baluster(&after, 2.0, 1.875) && baluster(&after, 1.375, 1.0), "on its west, east and north edges");
+        // none along the outside wall (its south side), none on the ground floor below
+        assert!(!baluster(&after, 1.375, 2.0), "the wall is there");
+        assert_eq!(rail_top(&after, 0.0), 0);
+    }
+
+    #[test]
+    fn a_wall_segment_in_its_own_style() {
+        let mut b = house();
+        let bricks = |m: &Mesh| of(m, "#d8cbb8");
+        assert!(bricks(&drawn(&b)).is_empty());
+        // the north wall's first segment on the ground floor: bricks there, plaster beside
+        b.floors[0].set_wall(0, 0, "n", "bricks", "plaster");
+        let m = drawn(&b);
+        let brick = bricks(&m);
+        assert!(!brick.is_empty());
+        assert!(brick.iter().all(|p| p[0] <= 1.001 && p[2] <= 0.13 && p[1] <= 2.001), "only that segment, on that floor: {brick:?}");
+        let plaster = of(&m, "#efe6d2");
+        assert!(plaster.iter().any(|p| p[0] > 1.5 && p[2] < 0.13 && p[1] < 2.0), "plaster on the rest of that wall");
+        // on the floor above too: that floor's segment
+        b.floors[1].set_wall(0, 0, "n", "bricks", "plaster");
+        assert!(bricks(&drawn(&b)).iter().any(|p| p[1] > 2.01));
+    }
 }

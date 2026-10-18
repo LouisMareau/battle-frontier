@@ -132,7 +132,8 @@ impl MapEditor {
     }
 
     /// Whether the walker can stand on a cell of a building's floor above the ground (or
-    /// its flat roof): on the building, off the stairwells, clear of what blocks there.
+    /// its flat roof): on the building, off the stairwells and the floor's holes, clear of
+    /// what blocks there.
     fn floor_free(&self, bi: usize, f: usize, c: (i32, i32)) -> bool {
         let Some(b) = self.map.buildings.get(bi) else { return false };
         let rel = (c.0 - b.at[0], c.1 - b.at[1]);
@@ -140,7 +141,7 @@ impl MapEditor {
             return false;
         }
         let stairs = |id: &str| self.content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
-        if b.stairwells(f, &stairs).contains(&rel) {
+        if b.open_cells(f, &stairs).contains(&rel) {
             return false;
         }
         !self.stairs_or_blocking(bi, f, rel)

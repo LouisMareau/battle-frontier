@@ -428,7 +428,7 @@ mod tests {
             id: "house".into(),
             at: [2, 2],
             cells: vec!["###".into(), "###".into()],
-            floors: vec![Floor { tile: "wood".into(), openings: vec![Opening { prop: "door".into(), cell: [1, 1], side: "s".into(), width: 1 }], props: vec![] }],
+            floors: vec![Floor { tile: "wood".into(), openings: vec![Opening { prop: "door".into(), cell: [1, 1], side: "s".into(), width: 1 }], ..Default::default() }],
             ..Default::default()
         });
         let blocked = vec![false; 64];
