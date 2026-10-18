@@ -10,17 +10,22 @@ preview_three_quarter.png, and preview_idle.png for a creature) with compare.png
 pictures above the renders, to compare. The second also adds it to the project (the add-on's
 write_prop: temporary/, or content/ when the design is the user's) and marks the request done.
 
-A model is built from shapes (spheres, ellipsoids, capsules, boxes, cylinders, rings, shapes
-turned on a lathe, flat slabs, metaballs), each with a colour region; `fuse` makes them one
-clean mesh (voxel remesh, cuts carved, decimated) whose faces take the material of the region
-nearest them. Then `eyes`, `fit` (its height in cells, standing on the origin), for a creature
-`rig` (automatic weights) and `idle`, then `previews`, `compare` and `finish`. One Blender
-unit is one cell; the model faces the front view (-Y).
-
-Any shape, or the fused body, can be reshaped too: `editing` (a bmesh by hand: extrude, inset,
-bevel, move faces, edges and vertices), `modifier` (any of Blender's modifiers, applied),
-`sculpt` (grab, inflate, smooth, flatten, pinch, crease brushes), `tube` (curved parts), `fur`.
-And any of Blender's Python besides: the kit is a start, not a limit.
+A model is built in parts, as a modeller and a rigger would make it: a creature's body, its
+head with the upper jaw, the lower jaw, the tongue, the teeth, the eyes (and lids), each ear,
+horn, limb, wing and the tail; a prop's pieces (a chest's box and its lid). Each `part` is its
+own mesh, blocked in from a few shapes (spheres, ellipsoids, capsules, boxes, cylinders,
+rings, shapes turned on a lathe, flat slabs, metaballs, each with a colour region), made one
+clean surface (remeshed, or joined as they are when they're crisp) and then refined on its
+own: `editing` (a bmesh by hand: extrude, inset, bevel, move faces, edges and vertices),
+`modifier` (any of Blender's modifiers, applied), `sculpt` (grab, inflate, smooth, flatten,
+pinch, crease brushes), more shapes as parts of their own, `tube` (curved parts), `fur`. Each
+part says which bones move it: the jaw and the tongue have bones of their own, so the mouth
+closes and the tongue moves by itself. Then `fit` (its height in cells, standing on the
+origin), for a creature `rig` (each part skinned to its own bones) with `idle` and other
+actions (`action`: a roar, a bite), then `previews`, `compare` and `finish`. One Blender unit
+is one cell; the model faces the front view (-Y). (`fuse` makes several shapes one mesh: what
+`part` uses; a one-piece prop can be one fused body.) And any of Blender's Python besides: the
+kit is a start, not a limit.
 
 With the request's lines.json (request_lines.py: the lines traced on its pictures, the front
 and the side drawn from them), `job.profiles()` gives the front and the side in cells to build
@@ -649,6 +654,74 @@ def fuse(parts, name, colours=None, smooth=True, voxel=None, faces=None, cuts=()
     return body
 
 
+# ---------------------------------------------------------------- a model in parts
+
+def _joined(shapes, name, colours, smooth):
+    """Shapes joined as they are into one mesh named `name`, each face the material of its
+    shape's region (crisp: nothing remeshed); the shapes go."""
+    colours = colours or {}
+    regions, out = [], bmesh.new()
+    for o in shapes:
+        region = o.get("bf_region", "")
+        if region not in regions:
+            regions.append(region)
+        b = _world_bmesh(o)
+        for f in b.faces:
+            f.material_index = regions.index(region)
+            f.smooth = smooth
+        me = bpy.data.meshes.new("join")
+        b.to_mesh(me)
+        out.from_mesh(me)
+        bpy.data.meshes.remove(me)
+        b.free()
+    body = _link(name, out, "")
+    # a fresh mesh has no materials: appended in the regions' order, the faces' indices hold
+    for region in regions:
+        body.data.materials.append(material(f"{name} {region}", colours.get(region, "#9a9a9a")))
+    if smooth:
+        body.data.use_auto_smooth = True
+        body.data.auto_smooth_angle = math.radians(50)
+    for o in shapes:
+        me = o.data
+        bpy.data.objects.remove(o, do_unlink=True)
+        if me.users == 0:
+            bpy.data.meshes.remove(me)
+    return body
+
+
+def part(name, shapes, colours=None, bone=None, bones=None, smooth=True, remesh=True, voxel=None, faces=None, cuts=(), paint=()):
+    """One part of the model, its own mesh named `name` (a creature's "body", "head", "jaw",
+    "tongue", "teeth", "ear.L", "leg.R", "tail"; a prop's "lid"), from a few `shapes` (any of
+    the kit's, or any meshes): made one clean surface as `fuse` makes it (remeshed, `cuts`
+    carved, coloured by region and `paint`, about `faces` triangles: 1500 smooth, 300
+    low-poly) or, with `remesh=False`, joined as they are (crisp: teeth, claws, plates, a lid,
+    an eye), each face the material of its shape's region. Refine it after like any mesh:
+    `editing` and `extrude`, `modifier`, `sculpt`.
+
+    How it moves, for `rig`: `bone`, the one bone it follows whole (a jaw, the teeth on it, a
+    tongue's tip, an eye, a lid, a horn); `bones`, the bones (or chains) that bend it, the
+    only ones its automatic weights may use (a leg: its own chain and the bone it hangs from,
+    so its root goes with the body; the tongue: its chain); neither: every bone, by bone heat.
+    Returns it."""
+    if remesh:
+        o = fuse(shapes, name, colours, smooth=smooth, voxel=voxel, faces=faces or (1500 if smooth else 300), cuts=cuts, paint=paint)
+    else:
+        for c in list(cuts) + list(paint):
+            bpy.data.objects.remove(c, do_unlink=True)
+        o = _joined(shapes, name, colours, smooth)
+    o["bf_part"] = name
+    if bone:
+        o["bf_bone"] = bone
+    if bones:
+        o["bf_bones"] = ",".join(bones)
+    return o
+
+
+def parts():
+    """The model's parts made so far (every mesh `part` made), in the order they were made."""
+    return [o for o in bpy.data.objects if o.type == "MESH" and "bf_part" in o]
+
+
 def pieces(body):
     """How many separate pieces a mesh is in (one, for a model: more means a part doesn't
     touch the rest)."""
@@ -668,11 +741,13 @@ def pieces(body):
     return len({find(i) for i in range(len(me.vertices))})
 
 
-def eyes(body, centres, radius, colour="#17181c", glint="#ffffff", look=(0, -1, 0.2), sink=0.4, segments=16):
-    """Glossy eyes set into `body`: a dark ball at each centre and a small white glint on it,
-    with materials of their own; their vertices are the group "eyes", which `rig` gives the
-    head. Each eye is seated on the body's surface nearest its centre, `sink` of its radius
-    into it (a centre can be rough: where on the face it goes)."""
+def eyes(body, centres, radius, colour="#17181c", glint="#ffffff", look=(0, -1, 0.2), sink=0.4, segments=16, separate=False):
+    """Glossy eyes set into `body` (the head's part): a dark ball at each centre and a small
+    white glint on it, with materials of their own; their vertices are the group "eyes", which
+    `rig` gives the head. Each eye is seated on the body's surface nearest its centre, `sink` of
+    its radius into it (a centre can be rough: where on the face it goes). `separate`: each eye
+    a part of its own instead ("eye.L" on the model's left, +x; "eye.R"), following the bone of
+    its name when the rig has one (an eye that looks about), else the head; returns them."""
     me = body.data
     surface = bmesh.new()
     surface.from_mesh(me)
@@ -683,6 +758,19 @@ def eyes(body, centres, radius, colour="#17181c", glint="#ffffff", look=(0, -1, 
     for c in map(Vector, centres):
         at, normal = tree.find_nearest(c)[:2]
         seated.append(c if at is None else at - normal * radius * sink)
+    if separate:
+        made = []
+        look_n = Vector(look).normalized()
+        side_v = look_n.cross(Vector((0, 0, 1))).normalized() if abs(look_n.z) < 0.99 else Vector((1, 0, 0))
+        up_v = side_v.cross(look_n).normalized()
+        for c in seated:
+            eye_name = "eye.L" if c.x >= 0 else "eye.R"
+            ball = sphere(c, radius, "eye", segments=segments)
+            shine = sphere(c + (look_n * 0.8 + up_v * 0.35 + side_v * 0.25).normalized() * radius * 0.86, radius * 0.27, "glint", segments=8)
+            o = part(eye_name, [ball, shine], {"eye": dict(GLOSSY, color=colour), "glint": dict(GLOSSY, color=glint, glow=0.4)}, bone=eye_name, remesh=False)
+            o["bf_fallback"] = "head"
+            made.append(o)
+        return made
     centres = [body.matrix_world.inverted() @ c for c in seated]
     me.materials.append(material(f"{body.name} eye", dict(GLOSSY, color=colour)))
     me.materials.append(material(f"{body.name} eye glint", dict(GLOSSY, color=glint, glow=0.4)))
@@ -822,13 +910,34 @@ def _seg_dist(p, a, b):
     return (p - (a + ab * t)).length
 
 
+def _bind_rigid(arm, mesh, bone):
+    """A part that follows one bone whole: every vertex its, fully."""
+    mesh.parent = arm
+    mesh.matrix_parent_inverse = arm.matrix_world.inverted()
+    mod = mesh.modifiers.new("rig", "ARMATURE")
+    mod.object = arm
+    for g in list(mesh.vertex_groups):
+        if g.name != "eyes":
+            mesh.vertex_groups.remove(g)
+    mesh.vertex_groups.new(name=bone).add(range(len(mesh.data.vertices)), 1.0, "REPLACE")
+
+
 def rig(body, chains, parents=None, name="rig"):
     """An armature from `chains`: {"spine": [hips, chest], "head": [neck, top], "leg.L":
-    [hip, knee, foot], "tail": [...]...}, each a run of connected bones through its points
-    (in the model as it stands, after `fit`; `job.chains()` gives them from the user's bones). The first chain is the root; each other one hangs
-    from the bone nearest its first point, or from the chain (or bone) `parents` names for it.
-    The body is skinned with automatic weights (bone heat); a vertex it misses goes to its
-    nearest bone, the eyes to the head. Returns the armature."""
+    [hip, knee, foot], "jaw": [hinge, chin], "tongue": [root, middle, tip], "tail": [...]...},
+    each a run of connected bones through its points (in the model as it stands, after `fit`;
+    `job.chains()` gives them from the user's bones: add the jaw's, the tongue's, the eyes'
+    and the lids' to them). The first chain is the root; each other one hangs from the bone
+    nearest its first point, or from the chain (or bone) `parents` names for it ("jaw":
+    "head", "tongue": "jaw").
+
+    `body`: the model's parts (a list; one mesh for a model of one piece), each skinned as
+    its `part` asks: a `bone` (whole to that bone: a jaw, a tongue's tip, teeth, an eye; when
+    the rig has no such bone, the part's fallback, else the bone nearest it), `bones` (bone
+    heat among those bones and chains only), or every bone by bone heat. A vertex bone heat
+    misses goes to its nearest allowed bone; eyes set into a part go to the head. Returns the
+    armature."""
+    meshes = [o for o in (body if isinstance(body, (list, tuple)) else [body]) if o.type == "MESH"]
     arm = bpy.data.objects.new(name, bpy.data.armatures.new(name))
     bpy.context.collection.objects.link(arm)
     layer = bpy.context.view_layer
@@ -837,7 +946,7 @@ def rig(body, chains, parents=None, name="rig"):
     arm.select_set(True)
     layer.objects.active = arm
     bpy.ops.object.mode_set(mode="EDIT")
-    bones, ends = {}, {}
+    bones, ends, of_chain = {}, {}, {}
     for chain, points in chains.items():
         points = [Vector(p) for p in points]
         base, side = _side(chain)
@@ -851,35 +960,65 @@ def rig(body, chains, parents=None, name="rig"):
                 b.parent = arm.data.edit_bones[prev]
                 b.use_connect = k > 0
             bones[bname] = (points[k], points[k + 1])
+            of_chain.setdefault(chain, []).append(bname)
             prev = bname
         ends[chain] = prev
     bpy.ops.object.mode_set(mode="OBJECT")
-    for o in layer.objects:
-        o.select_set(False)
-    body.select_set(True)
-    arm.select_set(True)
-    layer.objects.active = arm
-    bpy.ops.object.parent_set(type="ARMATURE_AUTO")
     head = ends.get("head") or ends.get("neck")
-    eye_group = body.vertex_groups.get("eyes")
-    if head is None and eye_group is not None:
-        pts = [v.co for v in body.data.vertices if any(g.group == eye_group.index for g in v.groups)]
-        if pts:
-            mid = sum(pts, Vector()) / len(pts)
-            head = min(bones, key=lambda b: _seg_dist(mid, *bones[b]))
-    groups = {g.index: g.name for g in body.vertex_groups}
-    missed, eyes_moved = 0, 0
-    for v in body.data.vertices:
-        weighted = [groups[g.group] for g in v.groups if groups.get(g.group) in bones and g.weight > 1e-4]
-        if eye_group is not None and head and any(g.group == eye_group.index for g in v.groups):
-            for g in weighted:
-                body.vertex_groups[g].remove([v.index])
-            body.vertex_groups[head].add([v.index], 1.0, "REPLACE")
-            eyes_moved += 1
-        elif not weighted:
-            body.vertex_groups[min(bones, key=lambda b: _seg_dist(v.co, *bones[b]))].add([v.index], 1.0, "REPLACE")
-            missed += 1
-    print(f"{name}: {len(bones)} bones ({', '.join(bones)}); {missed} vertices bone heat missed, given their nearest bone; {eyes_moved} eye vertices on {head}", flush=True)
+
+    def nearest(p, among):
+        return min(among, key=lambda b: _seg_dist(p, *bones[b]))
+
+    said = []
+    for body in meshes:
+        centre = sum((body.matrix_world @ v.co for v in body.data.vertices), Vector()) / max(1, len(body.data.vertices))
+        rigid = body.get("bf_bone")
+        if rigid:
+            if rigid not in bones:
+                rigid = rigid if rigid in of_chain else body.get("bf_fallback", "")
+                rigid = of_chain[rigid][-1] if rigid in of_chain else rigid if rigid in bones else nearest(centre, bones)
+            _bind_rigid(arm, body, rigid)
+            said.append(f"{body.name} on {rigid}")
+            continue
+        # bone heat, among the bones it may use (others set not to deform meanwhile)
+        allowed = []
+        for want in [w for w in body.get("bf_bones", "").split(",") if w]:
+            allowed += of_chain.get(want, [want] if want in bones else [])
+        allowed = [b for b in dict.fromkeys(allowed) if b in bones] or list(bones)
+        for b in arm.data.bones:
+            b.use_deform = b.name in allowed
+        for o in layer.objects:
+            o.select_set(False)
+        body.select_set(True)
+        arm.select_set(True)
+        layer.objects.active = arm
+        bpy.ops.object.parent_set(type="ARMATURE_AUTO")
+        for b in arm.data.bones:
+            b.use_deform = True
+        eye_group = body.vertex_groups.get("eyes")
+        eyes_head = head
+        if eyes_head is None and eye_group is not None:
+            pts = [v.co for v in body.data.vertices if any(g.group == eye_group.index for g in v.groups)]
+            if pts:
+                eyes_head = nearest(sum(pts, Vector()) / len(pts), bones)
+        groups = {g.index: g.name for g in body.vertex_groups}
+        missed, eyes_moved = 0, 0
+        for v in body.data.vertices:
+            weighted = [groups[g.group] for g in v.groups if groups.get(g.group) in bones and g.weight > 1e-4]
+            if eye_group is not None and eyes_head and any(g.group == eye_group.index for g in v.groups):
+                for g in weighted:
+                    body.vertex_groups[g].remove([v.index])
+                group = body.vertex_groups.get(eyes_head) or body.vertex_groups.new(name=eyes_head)
+                group.add([v.index], 1.0, "REPLACE")
+                eyes_moved += 1
+            elif not weighted:
+                bone = nearest(body.matrix_world @ v.co, allowed)
+                group = body.vertex_groups.get(bone) or body.vertex_groups.new(name=bone)
+                group.add([v.index], 1.0, "REPLACE")
+                missed += 1
+        said.append(f"{body.name} by bone heat over {', '.join(allowed) if len(allowed) < len(bones) else 'every bone'}"
+                    + (f" ({missed} vertices it missed given their nearest bone)" if missed else "") + (f" ({eyes_moved} eye vertices on {eyes_head})" if eyes_moved else ""))
+    print(f"{name}: {len(bones)} bones ({', '.join(bones)}); " + "; ".join(said), flush=True)
     return arm
 
 
@@ -893,13 +1032,18 @@ IDLE = (
     (("ear", "antenna", "feeler", "leaf", "crest"), lambda i: ((6.0, 0, 3.0), (0.2 + 0.1 * i, 0, 0.45 + 0.1 * i))),
     (("arm", "hand", "fin", "flipper"), lambda i: ((4.0, 0, 0), (0.3 + 0.05 * i, 0, 0))),
     (("wing",), lambda i: ((0, 6.0, 4.0), (0, 0.25, 0.25))),
+    (("jaw",), lambda i: ((1.5, 0, 0), (0.3, 0, 0))),
+    (("eye",), lambda i: ((0, 0, 6.0), (0, 0, 0.6))),
 )
 
 
-def idle(arm, seconds=2.0, fps=24, amount=1.0):
+def idle(arm, seconds=2.0, fps=24, amount=1.0, blink=None):
     """A looping "idle" action from the bones' names: the body breathes, the neck and head nod
     and look about, tails, ears and antennae sway with a lag down their chain, arms and fins
-    swing a little, wings stir; legs and feet stay planted. `amount` scales it all."""
+    swing a little, wings stir, the jaw barely moves, the eyes glance about; legs and feet stay
+    planted. `amount` scales it all. `blink`: degrees (about X, Y, Z) that close the lids (bones
+    named "lid..."), once a loop, quickly. Kept as an NLA track too (the file has every action
+    so)."""
     scene = bpy.context.scene
     scene.render.fps = fps
     frames = max(2, round(seconds * fps))
@@ -924,9 +1068,77 @@ def idle(arm, seconds=2.0, fps=24, amount=1.0):
             pb.rotation_euler = tuple(math.radians(a * amount) * math.sin(math.tau * (t + p)) for a, p in zip(amp, phase))
             pb.keyframe_insert("rotation_euler", frame=k + 1)
         moving.append(pb.name)
+    if blink:
+        for pb in arm.pose.bones:
+            if not pb.name.lower().startswith("lid"):
+                continue
+            pb.rotation_mode = "XYZ"
+            for t, f in ((0.0, 0.0), (0.6, 0.0), (0.64, 1.0), (0.7, 0.0), (1.0, 0.0)):
+                pb.rotation_euler = tuple(math.radians(a) * f for a in blink)
+                pb.keyframe_insert("rotation_euler", frame=round(t * frames) + 1)
+            moving.append(pb.name)
     bpy.ops.object.mode_set(mode="OBJECT")
+    _stash(arm, action)
     print(f"idle: {seconds} s, moving {', '.join(moving) or 'nothing (no bone has a name it knows)'}", flush=True)
     return action
+
+
+def _stash(arm, action):
+    """An action kept on the rig as an NLA track of its name (the glTF file gets every action
+    so), the idle staying the one that plays."""
+    data = arm.animation_data or arm.animation_data_create()
+    if not any(s.action == action for t in data.nla_tracks for s in t.strips):
+        track = data.nla_tracks.new()
+        track.name = action.name
+        track.strips.new(action.name, 1, action)
+        track.mute = True
+
+
+def action(arm, name, poses, seconds=1.0, fps=24, loop=False):
+    """Another action the game can play, besides the idle: a "roar" (the mouth opening wide
+    and closing again), a "bite", a "blink", a "lick". `poses`: {bone or chain: [(when, (x, y,
+    z)), ...]}, `when` a fraction of `seconds` (0 to 1), the turn in degrees about the bone's
+    X, Y and Z (a chain's bones each take it: a tongue curling); between keys it eases. A bone
+    not named stays at rest. `loop`: the first pose again at the end. The idle stays the one
+    that plays; this one is kept as an NLA track (in the file, by its name). Returns it.
+
+        kit.action(arm, "roar", {"jaw": [(0, (0, 0, 0)), (0.25, (35, 0, 0)), (0.8, (35, 0, 0)), (1, (0, 0, 0))],
+                                 "head": [(0, (0, 0, 0)), (0.25, (-12, 0, 0)), (1, (0, 0, 0))]}, seconds=1.4)
+    """
+    scene = bpy.context.scene
+    scene.render.fps = fps
+    frames = max(2, round(seconds * fps))
+    data = arm.animation_data or arm.animation_data_create()
+    playing = data.action
+    made = bpy.data.actions.new(name)
+    data.action = made
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="POSE")
+    chain_bones = {}
+    for pb in arm.pose.bones:
+        base, side = _side(pb.name)
+        words = base.split(".")
+        chain = (".".join(words[:-1]) if words[-1].isdigit() else base) + side
+        chain_bones.setdefault(chain, []).append(pb.name)
+    moved = []
+    for who, keys in poses.items():
+        names = [who] if who in arm.pose.bones else chain_bones.get(who, [])
+        if not names:
+            print(f"{name}: no bone or chain {who!r} (there are {', '.join(arm.pose.bones.keys())})", flush=True)
+            continue
+        keys = sorted(keys) + ([(1.0, sorted(keys)[0][1])] if loop else [])
+        for bname in names:
+            pb = arm.pose.bones[bname]
+            pb.rotation_mode = "XYZ"
+            for when, turn in keys:
+                pb.rotation_euler = tuple(math.radians(a) for a in turn)
+                pb.keyframe_insert("rotation_euler", frame=round(when * frames) + 1)
+            moved.append(bname)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    _stash(arm, made)
+    data.action = playing
+    print(f"{name}: {seconds} s, moving {', '.join(moved) or 'nothing'}", flush=True)
+    return made
 
 
 # ---------------------------------------------------------------- renders, to compare
@@ -1051,26 +1263,42 @@ def previews(job, objects, size=640):
         _render(scene, job.dir / name)
         views[name] = _mapping(cam, size, centre, direction, points)
     (job.dir / "views.json").write_text(json.dumps(views, indent=1), encoding="utf-8")
+    acted = []
     if arms and arms[0].animation_data and arms[0].animation_data.action:
+        # each action in four moments (preview_idle.png, preview_roar.png...): the idle playing,
+        # then every other one kept on the rig, the idle back after
+        data = arms[0].animation_data
+        playing = data.action
+        actions = [playing] + [s.action for t in data.nla_tracks for s in t.strips if s.action and s.action != playing]
         arms[0].data.pose_position = "POSE"
         _view(scene, cam, lo - Vector((0.1, 0.1, 0.0)) * job.height, hi + Vector((0.1, 0.1, 0.1)) * job.height, (0.62, -0.78, 0.38), False)
         scene.render.resolution_x = scene.render.resolution_y = size // 2
-        moments = []
-        for k in range(4):
-            scene.frame_set(scene.frame_start + round(k / 4 * (scene.frame_end - scene.frame_start)))
-            path = job.dir / f"idle_{k}.png"
-            _render(scene, path)
-            moments.append(path)
+        mutes = [(t, t.mute) for t in data.nla_tracks]
+        for t, _ in mutes:
+            t.mute = True
+        for act in dict.fromkeys(actions):
+            data.action = act
+            first, last = act.frame_range
+            moments = []
+            for k in range(4):
+                scene.frame_set(round(first + k / 4 * (last - first)) if act == playing else round(first + k / 3 * (last - first)))
+                path = job.dir / f"{act.name}_{k}.png"
+                _render(scene, path)
+                moments.append(path)
+            _sheet(job.dir / f"preview_{act.name}.png", [moments], size // 2)
+            for p in moments:
+                p.unlink()
+            acted.append(f"preview_{act.name}.png")
+        data.action = playing
+        for t, m in mutes:
+            t.mute = m
         scene.frame_set(scene.frame_start)
-        _sheet(job.dir / "preview_idle.png", [moments], size // 2)
-        for p in moments:
-            p.unlink()
         scene.render.resolution_x = scene.render.resolution_y = size
     for a in arms:
         a.data.pose_position = "POSE"
     bpy.data.objects.remove(cam, do_unlink=True)
     seen = [n for n in views if n.startswith("seen_")]
-    print(f"rendered {', '.join(files + seen)}" + (" and preview_idle.png" if arms else "") + f" in {job.dir}", flush=True)
+    print(f"rendered {', '.join(files + seen + acted)} in {job.dir}", flush=True)
     return files
 
 

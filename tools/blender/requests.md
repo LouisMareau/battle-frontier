@@ -5,9 +5,10 @@ on it. Each request is a folder `private/requests/<id>/`: its `request.json` and
 Its **Start** button has Claude Code follow this recipe for that request by itself
 (`run_claude.py`, below), the window's console showing everything it does; and when the user
 says **"make the waiting requests"** to a Claude session, the session follows it for each
-waiting one. Either way the request is modelled in Blender, from shapes, as a clean stylized
-base (one mesh, a material per colour region, a rig for creatures), and added to the project
-as a prop.
+waiting one. Either way the request is modelled in Blender in parts, as a modeller makes a
+model for a rigger (each part its own mesh, blocked in from shapes and refined, a material per
+colour region; for a creature a rig every part follows, its jaw and tongue on bones of their
+own), and added to the project as a prop.
 
 Rules that hold all the way:
 
@@ -235,17 +236,26 @@ here). Everything runs from the project folder.
    what they say is off (`lines` again), and go on from step 6.
 6. **Write `private/requests/ID/model.py`** with the kit (below), on the profiles:
    `job.profiles()` has each line in cells, as the model will stand, so each shape's size and
-   place come from them (and `fit` gives it the request's height). Creatures: a metaball `blob`
-   for each soft mass (body, head), `capsule`s for limbs and tails, `slab`s for ears, fins,
-   crests and wings, `paint` volumes for markings (a belly, spots, a mask), `eyes`. Props:
-   `lathe` for anything round, `box` and `cylinder` for hard shapes, `cuts` for openings,
-   `paint` for patterns, `light` for a lamp. Big readable shapes: it's a base to refine, seen
-   from the game's camera, not a sculpt. Keep to the request's `shapes` (each shape, or a
-   blob's element, counts as one; with `unlimited`, write the list of parts as a comment at
-   the top of `model.py` first). A creature in `t_pose` is built in the T-pose of its body
-   plan (above: limbs straight out, or its body straight) whatever the pictures' pose; `as_is`
-   follows the pictures' pose. Say in the reply which it got. The shapes are a start, not a
-   limit: reshape whatever they can't follow (below, "Reshaping").
+   place come from them (and `fit` gives it the request's height). Build it **in parts**
+   (below, "Parts"), never as one lump fused and sculpted: list the parts first, as a comment
+   at the top of `model.py` (what each is made of, which bones move it); then for each part,
+   block its general shape in from a few shapes (`kit.part(name, [shapes], colours, bone=` or
+   `bones=)`), and refine that part on its own: more shapes, `editing` and `extrude` (pull a
+   snout out, inset a nostril, bevel a horn), `modifier` (subdivision to round it, bevel for
+   crisp edges, solidify for a thin flap, simple deform to bend it), `sculpt` (a brow, a
+   cheek, a knuckle). Creatures: a metaball `blob` or a few ellipsoids for each soft mass,
+   `capsule`s and `tube`s for limbs and tails, `slab`s for ears, fins, crests and wings,
+   `paint` volumes for markings (a belly, spots, a mask) on the part they're on, `eyes`.
+   Props: each piece a part: `lathe` for anything round, `box` and `cylinder` for hard shapes,
+   `cuts` for openings, `paint` for patterns, `light` for a lamp; a lid or a door that opens on
+   a bone of its own. Big readable shapes: it's a base to refine, seen from the game's camera.
+   Keep to the request's `shapes` (each shape, or a blob's element, counts as one; with
+   `unlimited`, write the list of parts as a comment at the top of `model.py` first). A
+   creature in `t_pose` is built in the T-pose of its body plan (above: limbs straight out, or
+   its body straight) whatever the pictures' pose; `as_is` follows the pictures' pose; either
+   way its mouth is closed (an open one is the "roar" action). Say in the reply which it got.
+   The shapes are a start, not a limit: reshape whatever they can't follow (below,
+   "Reshaping").
 7. **Render it**: `python tools/blender/run_request.py ID`. It writes `preview_front.png`, `preview_side.png`,
    `preview_three_quarter.png` (Workbench, the material colours) and `compare.png` (the
    pictures on top, the renders under them, the same height, and a row of the lines laid on
@@ -259,14 +269,20 @@ here). Everything runs from the project folder.
    Stop when the renders read as the pictures' design at a glance; don't chase a sketch's
    wobbles. The renders are lit evenly on purpose: compare shapes and colours, not light (a
    picture's shine, shade or rim light is no difference to fix).
-9. **Creatures: rig it** in `model.py` after `fit`: `rig(body, chains)` from the model's own
-   landmarks (in cells, the model on the origin facing -Y): `spine` (hips to chest), `neck`
-   and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`, `ear.L`...;
-   with the user's bones, `rig(body, job.chains())`: their chains, carried into the front and
-   the side, in cells (below, "The user's bones").
-   Then `idle(arm)`. Render again: `preview_idle.png` shows four moments of the idle (look
-   for vertices torn by the wrong bone), and the rig's line says how many vertices the
-   automatic weights missed (many: a bone is outside the mesh).
+9. **Creatures: rig it** in `model.py` after `fit`: `rig(kit.parts(), chains)` from the
+   model's own landmarks (in cells, the model on the origin facing -Y): `spine` (hips to
+   chest), `neck` and `head`, a chain per limb named with its side (`leg.L`, `arm.R`), `tail`,
+   `ear.L`...; with the user's bones, `job.chains()`: their chains, carried into the front and
+   the side, in cells (below, "The user's bones"). Add the chains the parts need besides: `jaw`
+   (the hinge to the chin), `tongue` (its root, middle and tip), and `eye.L`, `eye.R`, `lid.L`,
+   `lid.R` when they move, each hanging from the bone it's on (`parents={"jaw": "head",
+   "tongue": "jaw"}`). Each part is skinned as it asked (below, "Parts").
+   Then `idle(arm)` (`blink=` with lids) and the actions the design calls for, the mouth
+   opening and closing first (`action(arm, "roar", ...)`). Render again: `preview_idle.png`
+   and `preview_roar.png` (each action's) show four moments (look for vertices torn by the
+   wrong bone, the jaw turning the right way, the lips meeting at rest), and the rig's line
+   says how each part was skinned and how many vertices the automatic weights missed (many:
+   a bone is outside the part).
 10. **Finish it**: `python tools/blender/run_request.py ID --finish`. The model is added with
    the add-on's `write_prop` (to `temporary/`, or `content/` when `mine`), as the prop
    named by the request's id (numbered when another prop has it); the engine's own reading
@@ -478,29 +494,86 @@ stands in the middle). In `model.py`, `job.chains()` makes them the rig's chains
 the model stands (each joint's x from the front, its y from the side, its height from both),
 the body's chain first: `kit.rig(body, job.chains())`.
 
+## Parts
+
+A model is made of parts, as a modeller makes it for a rigger: each part its own mesh, its own
+shapes, refined on its own, and moved by the bones it should be (`kit.part`: `bone=` the one
+bone it follows whole, `bones=` the bones and chains that bend it, the only ones its automatic
+weights may use). A creature's:
+
+- **the body**: torso and neck (a `blob`, or a few ellipsoids remeshed together), bent by the
+  spine and the neck (`bones=["spine", "neck"]`);
+- **the head** with the upper jaw: skull, snout, the upper lip, the palate inside, following
+  the head whole (`bone="head"`); the upper teeth a crisp part on the head too (`remesh=False`);
+- **the lower jaw**: the lower lip, the floor of the mouth and its teeth (a part, or two on the
+  same bone), on a `jaw` bone from the hinge (under the ear, at the back of the mouth) to the
+  chin, hanging from the head. **The mouth is built closed**: the lips meet, the teeth inside,
+  so opening it is the jaw turning, and closing it again looks right. A picture of an open
+  mouth (a scream, a bite) becomes the `roar` action, not the rest pose. The mouth's inside
+  (gums, palate, its floor) has its colour, so it reads when the jaw opens;
+- **the tongue**: its own part, lying in the lower jaw, on a `tongue` chain of two or three
+  bones hanging from the jaw (`bones=["tongue"]`), so it moves by itself: curls, licks, lolls;
+- **the eyes**: `kit.eyes(head, centres, radius, separate=True)` makes them parts (`eye.L` on
+  the model's left, `eye.R`), on the head, or on `eye.L` and `eye.R` bones that look about;
+  **lids**, when the design has them, parts on `lid.L` and `lid.R` bones, so it blinks
+  (`idle(arm, blink=(degrees about X, Y, Z))`);
+- **ears, horns, crests, antennae**: a part each, on their own chains (`ear.L`) or the head;
+- **limbs**: a part each, with its hand or foot, toes and claws (crisp parts on the last bone),
+  bent by its own chain and the bone it hangs from (`bones=["leg.L", "spine"]`), so its root
+  goes with the body;
+- **the tail, wings, fins, flaps**: a part each, on their chains.
+
+Parts meet by overlapping: a limb's root sinks into the body, the neck into the head, as on any
+game model; the weights move them together. Shapes that only touch make a lumpy part: give them
+real overlap, or remesh the part (the default). The budget is the whole model's: about 6000
+triangles smooth (the head and the body most of it), 800 low-poly, 20000 or more accurate; a
+part takes `faces=` (1500 by default, 300 low-poly).
+
+A prop's parts are its pieces (a lantern's plinth, post, chamber and roof; a chest's box, lid
+and lock), crisp ones as they are (`remesh=False`), each refined on its own; one that moves (a
+lid, a door, a wheel) on a bone of its own, rigged like a creature's jaw.
+
+The rig and the actions, in `model.py` after `fit`:
+
+```python
+chains = job.chains()                       # the user's bones (or the model's own landmarks)
+chains["jaw"] = [hinge, chin]               # in cells, the model as it stands
+chains["tongue"] = [root, middle, tip]
+arm = kit.rig(kit.parts(), chains, parents={"jaw": "head", "tongue": "jaw"})
+kit.idle(arm)
+kit.action(arm, "roar", {"jaw": [(0, (0, 0, 0)), (0.25, (32, 0, 0)), (0.8, (32, 0, 0)), (1, (0, 0, 0))],
+                         "head": [(0, (0, 0, 0)), (0.25, (-10, 0, 0)), (1, (0, 0, 0))]}, seconds=1.4)
+```
+
+`preview_roar.png` shows the roar in four moments: the mouth closed, opening, open, closed; if
+the jaw goes up into the head, its angle wants the other sign. Every action is in the file by
+its name, for the game to play (the idle loops; a timeline plays the others).
+
 ## Reshaping: any tool
 
-The kit's shapes and `fuse` make a clean base fast; whatever they can't follow, reshape with
-the tool that does it best, for any style (the more so for accurate):
+The kit's shapes and `part` make each part's clean base fast; whatever they can't follow,
+reshape with the tool that does it best, for any style (the more so for accurate):
 
 - **by hand**: `with kit.editing(obj) as bm:` gives the mesh as a bmesh: extrude faces
   (`kit.extrude(bm, faces, move)`: bmesh's own extrude leaves the old faces inside the mesh),
   inset, bevel, subdivide, bridge, delete, move faces, edges and vertices (`bmesh.ops.translate`,
-  `rotate`, `scale`), on a shape before fusing or on the fused body;
+  `rotate`, `scale`), on a shape before it's a part or on the part;
 - **modifiers**: `kit.modifier(obj, "SUBSURF", levels=2)`: any of Blender's modifiers, applied
   for good: bevel, solidify, simple deform (bend, twist, taper), displace, cast, smooth,
   mirror, array, lattice, shrinkwrap, weld...;
-- **sculpting**: `kit.sculpt(body, brush, at, radius, strength, direction)`: the grab,
+- **sculpting**: `kit.sculpt(part, brush, at, radius, strength, direction)`: the grab,
   inflate, smooth, flatten, pinch and crease brushes, scripted, with a smooth falloff, limited
-  to a colour region if asked: best on the fused body, where the mesh is dense;
+  to a colour region if asked: best on a remeshed part, where the mesh is dense; it refines a
+  part's shape, it doesn't make one;
 - **curves**: `kit.tube(points, radius, region, radius_end)` for horns, tails, tentacles,
   antennae and handles that bend;
 - anything else in Blender's Python (`bpy`, `bmesh`, `mathutils`, numpy).
 
-Mind the order: shapes, then `fuse` (it remeshes them into one mesh, softening edges at its
-voxel size: a finer `voxel` keeps them crisper), then sculpting and edits on the body, then
-`eyes`, `fit`, `fur` (and `fit` again), then the rig. Sculpt and edit before the rig, never
-after: its weights are made for the mesh as it is then.
+Mind the order: for each part its shapes, then `part` (it remeshes them into one surface,
+softening edges at its voxel size: a finer `voxel` keeps them crisper; `remesh=False` keeps
+the shapes as they are), then its refining (edits, modifiers, sculpting), then the eyes,
+`fit` (every part together), `fur` (and `fit` again), then the rig and the actions. Refine
+before the rig, never after: its weights are made for the parts as they are then.
 
 ## Accurate
 
@@ -509,18 +582,18 @@ request's `details` say what matters most. Measure the proportions off the pictu
 in heads, widths against heights), model every part, marking and colour they show, and use the
 most fitting tool for each part rather than the quickest:
 
-- **fur and hair**: `kit.fur(body, region, ...)`, strands grown on a colour region as
+- **fur and hair**: `kit.fur(part, region, ...)`, strands grown on a colour region as
   Blender's hair grows them, made mesh (glTF and the game have no particle hair): thousands
   of strands for a coat (`count`), their `length`, `thickness` and `droop`; then `fit` again
   so it stands its height with its fur on, then the rig. Short dense fur reads better than
   long sparse fur, and each strand is 6 faces: mind the budget;
-- **details**: more shapes, `cuts` for openings and grooves, `slab`s for thin flat parts
-  (claws, fins, leaves, feathers), a finer remesh (`voxel=size/180`) and a bigger budget
-  (`faces=20000` or more) in `fuse`;
+- **details**: more parts and shapes, `cuts` for openings and grooves, `slab`s for thin flat
+  parts (claws, fins, leaves, feathers), a finer remesh (`voxel=size/180`) and a bigger budget
+  for each `part` (20000 triangles or more in all);
 - **patterns**: `paint` volumes for each marking, one per patch, shaped to the pictures;
 - anything else Blender does that ends as meshes with materials (the game draws triangles,
   base colours and base colour textures): a texture painted from the pictures, displacement,
-  subdivision applied before fusing.
+  subdivision applied on a part.
 
 It may take a long time, and that's fine; the editor's bar runs on a longer estimate, and the
 run keeps going while Claude writes a long script.
@@ -556,12 +629,14 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `blob([("ball", at, r), ("ellipsoid", at, r, (sx, sy, sz)), ("capsule", at, r, length)], region)` | metaballs melted together (a negative radius carves; the surface sits inside the radius, about 0.6 to 0.8 of it) |
 | `mirrored(part, "x")` | a copy on the other side |
 
-| Making it one model | |
+| Making it, part by part | |
 |---|---|
-| `fuse(parts, name, colours, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | joined and voxel-remeshed into one clean watertight mesh, `cuts` carved out, each face given the material of the nearest part's region (then of the `paint` volume it's in), decimated to about `faces` triangles (smooth 6000, low-poly 800) sparing the borders between regions, smooth (weighted normals) or flat shaded |
+| `part(name, shapes, colours, bone=, bones=, remesh=True, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | one part of the model, its own mesh named `name`: its shapes remeshed into one clean surface as `fuse` does (about `faces` triangles: 1500 smooth, 300 low-poly), or with `remesh=False` joined as they are (crisp: teeth, claws, plates, a lid), each face its shape's region; `bone`: the bone it follows whole; `bones`: the bones and chains that bend it (the only ones its weights may use); neither: every bone, by bone heat |
+| `parts()` | every part made so far, for `fit`, `rig`, `previews` and `finish` |
+| `fuse(shapes, name, colours, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | what `part` remeshes with: joined and voxel-remeshed into one clean watertight mesh, `cuts` carved out, each face given the material of the nearest shape's region (then of the `paint` volume it's in), decimated to about `faces` triangles (smooth 6000, low-poly 800) sparing the borders between regions, smooth (weighted normals) or flat shaded |
 | `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}`: the region's lit tone, its shine as roughness (above, "The design, not the drawing") |
-| `eyes(body, [centres], radius, colour=, look=)` | glossy eyes with a glint, seated on the body's surface (group "eyes", which the rig gives the head) |
-| `fur(body, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
+| `eyes(head, [centres], radius, colour=, look=, separate=True)` | glossy eyes with a glint, seated on the head's surface: parts of their own (`eye.L`, `eye.R`, on the bones of their names, else the head); without `separate`, set into the part (group "eyes", which the rig gives the head) |
+| `fur(part, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
 | `tube(points, radius, region, radius_end=)` | a curved part through the points, round, tapering |
 | `with editing(obj) as bm:` | the mesh as a bmesh to edit by hand (extrude, inset, bevel, move...), written back after |
 | `extrude(bm, faces, move)` | in an editing block: faces pulled out with their sides, the old ones gone |
@@ -569,8 +644,9 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `sculpt(obj, brush, at, radius, strength=, direction=, region=, times=)` | grab, inflate, smooth, flatten, pinch or crease, with a smooth falloff |
 | `fit([objects], height)` | scaled to `height` cells, standing on the origin |
 | `light(at, color, intensity, reach, kind="point")` | a lamp's light, which becomes the prop's (lit at night) |
-| `rig(body, {chain: [points]}, parents=)` | an armature, the body skinned with automatic weights; a chain hangs from the bone nearest its first point |
-| `idle(arm, seconds=2.0, amount=1.0)` | a looping "idle" action from the bones' names: spine breathes, neck and head nod and look, tail/ear/antenna sway, arms and fins swing, wings stir, legs stay |
+| `rig(parts, {chain: [points]}, parents=)` | an armature, each part skinned as it asked (whole to its `bone`, bone heat among its `bones`, else among every bone); a chain hangs from the bone nearest its first point, or the chain or bone `parents` names |
+| `idle(arm, seconds=2.0, amount=1.0, blink=)` | a looping "idle" action from the bones' names: spine breathes, neck and head nod and look, tail/ear/antenna sway, arms and fins swing, wings stir, the jaw barely moves, the eyes glance, the lids blink (`blink`: the degrees that close them), legs stay |
+| `action(arm, name, {bone or chain: [(when, (x, y, z)), ...]}, seconds=, loop=)` | another action by its name ("roar", "bite", "lick"): turns in degrees at fractions of its length, eased between; in the file for the game to play, `preview_NAME.png` shows it |
 | `job.profiles()` | the front and the side from `lines.json`, in cells as the model stands (above, "Lines and profiles") |
 | `job.chains()` | the user's bones carried into the front and the side (`bone CHAIN` lines) as the rig's chains, in cells, the body's first (above, "The user's bones") |
 | `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
@@ -580,8 +656,9 @@ The steps set the editor's bar by themselves: reading the pictures (5%), buildin
 rendering (50%), comparing (60%), adding it (95%), done. The bar shows those, or the time
 gone against the estimate when that's further along, and never fills before it's done.
 
-What the engine does with it: draws the triangles and the materials' base colours, lights
-the prop's light, and plays a rigged prop's "idle" in a loop. Roughness, glossy eyes and
+What the engine does with it: draws the triangles and the materials' base colours, every part
+skinned to the one rig, lights the prop's light, plays a rigged prop's "idle" in a loop, and
+its other actions when a timeline asks for them by name. Roughness, glossy eyes and
 glow stay in the file for Blender and for later: in the game a glowing window is its bright
 base colour, lit like the stone around it.
 
@@ -598,6 +675,8 @@ What the sketch says: round all the way up, so each part is a `lathe` of the fro
 outline (measured at 520 pixels to the cell): a darker two-step plinth, a slim post with a
 ring, a dish, the light chamber with four windows (one each way, from the top view), a
 domed roof with a lifted rim and moss on top, a small ball on the very top, a warm light.
+Each piece is a part: the plinth, the post and the dish crisp as they are, the chamber
+remeshed to carve its windows, the roof remeshed with its ball to paint the moss on.
 
 ```python
 """Round stone lantern: the worked example of tools/blender/requests.md."""
@@ -612,15 +691,11 @@ job = kit.start(__file__)
 
 # the outline, (radius, height) in cells, as the sketch's front view has it
 ROOF = [(0.0, 0.80), (0.22, 0.80), (0.42, 0.835), (0.465, 0.875), (0.43, 0.888), (0.31, 0.95), (0.19, 1.02), (0.08, 1.065), (0.03, 1.08), (0.0, 1.085)]
-parts = [
-    kit.lathe([(0.0, 0.0), (0.40, 0.0), (0.40, 0.06), (0.37, 0.09), (0.29, 0.09), (0.27, 0.14), (0.0, 0.14)], "base"),
-    kit.lathe([(0.0, 0.13), (0.11, 0.13), (0.11, 0.29), (0.135, 0.31), (0.11, 0.33), (0.11, 0.48), (0.0, 0.48)], "stone"),
-    kit.lathe([(0.0, 0.47), (0.12, 0.47), (0.17, 0.49), (0.28, 0.52), (0.28, 0.56), (0.0, 0.56)], "stone"),
-    kit.lathe([(0.0, 0.555), (0.19, 0.555), (0.19, 0.805), (0.0, 0.805)], "stone"),
-    kit.lathe(ROOF, "stone"),
-    kit.cylinder((0, 0, 1.06), 0.03, 0.05, "stone"),
-    kit.sphere((0, 0, 1.13), 0.05, "stone"),
-]
+colours = {"base": "#7b776d", "stone": "#b0ab9f", "light": {"color": "#ffd27a", "glow": 2.0, "rough": 0.5}, "moss": "#6f924a"}
+smooth = job.smooth
+kit.part("plinth", [kit.lathe([(0.0, 0.0), (0.40, 0.0), (0.40, 0.06), (0.37, 0.09), (0.29, 0.09), (0.27, 0.14), (0.0, 0.14)], "base")], colours, smooth=smooth, remesh=False)
+kit.part("post", [kit.lathe([(0.0, 0.13), (0.11, 0.13), (0.11, 0.29), (0.135, 0.31), (0.11, 0.33), (0.11, 0.48), (0.0, 0.48)], "stone")], colours, smooth=smooth, remesh=False)
+kit.part("dish", [kit.lathe([(0.0, 0.47), (0.12, 0.47), (0.17, 0.49), (0.28, 0.52), (0.28, 0.56), (0.0, 0.56)], "stone")], colours, smooth=smooth, remesh=False)
 # four windows, one each way, cut into the chamber: their insides glow
 windows = [kit.box((0.19 * math.sin(math.radians(a)), -0.19 * math.cos(math.radians(a)), 0.68), (0.12, 0.12, 0.14), "light", rotation=(0, 0, a)) for a in (0, 90, 180, 270)]
 
@@ -640,14 +715,14 @@ for angle, r, size in ((205, 0.28, 0.09), (35, 0.22, 0.11), (120, 0.33, 0.07), (
     a = math.radians(angle)
     moss.append(kit.ellipsoid((r * math.cos(a), r * math.sin(a), roof_height(r)), (size, size * 0.8, 0.05), "moss", rotation=(0, 0, angle)))
 
-colours = {"base": "#7b776d", "stone": "#b0ab9f", "light": {"color": "#ffd27a", "glow": 2.0, "rough": 0.5}, "moss": "#6f924a"}
-body = kit.fuse(parts, job.id, colours, smooth=job.smooth, cuts=windows, paint=moss)
+kit.part("chamber", [kit.lathe([(0.0, 0.555), (0.19, 0.555), (0.19, 0.805), (0.0, 0.805)], "stone")], colours, smooth=smooth, cuts=windows)
+kit.part("roof", [kit.lathe(ROOF, "stone"), kit.cylinder((0, 0, 1.06), 0.03, 0.05, "stone"), kit.sphere((0, 0, 1.13), 0.05, "stone")], colours, smooth=smooth, paint=moss)
 glow = kit.light((0, 0, 0.68), "#ffc46b", intensity=0.9, reach=5.0)
-kit.fit([body, glow], job.height)
+kit.fit(kit.parts() + [glow], job.height)
 
-files = kit.previews(job, [body])
+files = kit.previews(job, kit.parts())
 kit.compare(job, files)
-kit.finish(job, [body, glow], files, reply="Made from the front, the 45-degree and the top views...")
+kit.finish(job, kit.parts() + [glow], files, reply="Made from the front, the 45-degree and the top views...")
 ```
 
 The tries (each one 2 to 3 seconds of Blender):
@@ -674,4 +749,7 @@ The add-on's test (`tools/blender/test_addon.py`, see `README.md`) makes a small
 and a pot through the kit in its scratch project: one mesh, its regions and glossy eyes, the
 height asked, a rig whose every vertex is weighted with the eyes on the head, the idle, the
 renders, the prop in `temporary/` (and a design of the user's in `content/`), the request
-done, and the engine reading the rig and the idle.
+done, and the engine reading the rig and the idle. Then a lizard in parts: each its own mesh,
+crisp ones keeping their shapes' regions, the jaw and the teeth and the eyes on one bone each,
+the tongue on its own chain, the legs and the tail on theirs, the jaw opening without the head
+moving, the idle and a roar in the file, every part on one skin, and the engine reading them.

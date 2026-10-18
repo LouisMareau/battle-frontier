@@ -115,11 +115,21 @@ LINES = """- before building, tell the design from the drawing (requests.md, "Th
 """
 MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit.py, built on the
   profiles: job.profiles() has each of their lines in cells, as the model will stand, so
-  each shape's size and place come from them. The kit is a start,
-  not a limit: reshape whatever needs it with the tool that does it best for the style:
-  kit.editing (bmesh by hand: extrude, inset, bevel, move faces, edges and vertices),
-  kit.modifier (any of Blender's modifiers), kit.sculpt (grab, inflate, smooth, flatten,
-  pinch, crease), kit.tube for curved parts, or any of Blender's Python;
+  each shape's size and place come from them. Build it in parts, as a modeller makes a model
+  for a rigger, never one lump fused and sculpted (requests.md, "Parts"): list the parts first
+  at the top of model.py (what each is made of, which bones move it); block each part in from
+  a few shapes with kit.part (its own mesh; bone= the bone it follows whole, bones= the bones
+  that bend it). The kit is a start, not a limit: refine each part with the tool that does it
+  best for the style: more shapes, kit.editing (bmesh by hand: extrude, inset, bevel, move
+  faces, edges and vertices; kit.extrude pulls faces out), kit.modifier (any of Blender's
+  modifiers: subdivision, bevel, solidify, simple deform...), kit.sculpt (grab, inflate,
+  smooth, flatten, pinch, crease), kit.tube for curved parts, or any of Blender's Python.
+  A creature: the body, the head with the upper jaw, the
+  lower jaw, the tongue, the teeth, the eyes, each ear, horn, limb, wing, fin and the tail a
+  part each. The mouth is built closed, the lips meeting: the lower jaw on a jaw bone, the
+  tongue on a chain of its own hanging from it, so the mouth opens and closes and the tongue
+  moves by itself; a mouth open in the pictures becomes the "roar" action, not the rest pose.
+  A prop: each piece a part (a lid or a door that moves on a bone of its own);
 - render it: python tools/blender/run_request.py {id} (it lays the lines on the model too)
 - compare private/requests/{id}/compare.png and the previews with the pictures (the shapes,
   proportions and colours, not the light: the previews are lit evenly, on purpose); its last
@@ -127,7 +137,10 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   about 85% or more), and where one goes past the other (a model posed otherwise than a
   picture can't match it where the poses differ: judge those parts by the front and the
   side). Change model.py and render again until it matches (usually three to six tries);
-- a creature: rig it{rig} and give it its idle (requests.md, step 9);
+- a creature: rig it{rig}: every part on the bones that move it, the jaw's and the tongue's
+  chains added (and the eyes' and the lids' when they move); give it its idle and its roar
+  (kit.idle, kit.action), render again and look at preview_idle.png and preview_roar.png:
+  nothing torn, the jaw turning the right way, the lips meeting at rest (requests.md, step 9);
 - add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """
@@ -204,13 +217,13 @@ def allowed(rid):
 
 
 STYLES = {
-    "smooth": "Style: smooth: rounded shapes, smooth shaded (fuse with smooth=True, about 6000 triangles).",
-    "low_poly": "Style: low-poly: few faces, flat shaded (fuse with smooth=False, about 800 triangles).",
+    "smooth": "Style: smooth: rounded shapes, smooth shaded (parts with smooth=True, about 6000 triangles in all).",
+    "low_poly": "Style: low-poly: few faces, flat shaded (parts with smooth=False, about 800 triangles in all).",
     "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour "
                  "of the design (none of the drawing's light, shade or lines), the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
                  "and hair, kit.sculpt and kit.editing for what the shapes can't do, kit.tube for curved parts, painted colours for patterns, more shapes, "
-                 "cuts and slabs for the details, a finer voxel and a bigger budget "
-                 "(faces=20000 or more). It may take a long time: that's fine."),
+                 "cuts and slabs for the details, a finer voxel and a bigger budget for each part "
+                 "(20000 triangles or more in all). It may take a long time: that's fine."),
 }
 LINES = {
     "smooth": "Lines: the outline and the main parts, over the pictures and in the front and the side.",
@@ -272,8 +285,8 @@ def prompt(record, go_on=False, note=""):
     drawn = rl.user_bones(record)
     bones = BONES.format(id=rid, drawn=bones_drawn(drawn)) if drawn else ""
     # the rig on the bones carried into the front and the side
-    rig = (" on the user's bones (kit.rig(body, job.chains()): the front's and the side's \"bone\" lines as chains in cells, "
-           "the body's first)") if drawn else ""
+    rig = (" on the user's bones (kit.rig(kit.parts(), chains) with chains = job.chains(): the front's and the side's \"bone\" "
+           "lines as chains in cells, the body's first)") if drawn else ""
     template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN}[part_of(record, go_on)]
     return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig)

@@ -277,14 +277,17 @@ check("a creature with bones: the run reads the pictures by them", "the user has
       and "python tools/blender/model_requests.py bones test_bones" in asked and "work out which part of the creature in the picture each line is on" in asked
       and "take it over your own" in asked and '{"is": "its front left leg", "chain": "leg.L"}' in asked
       and 'carry them over as lines named "bone CHAIN"' in asked, asked[:600])
-check("  and rigs it on them; the log says the bones are there", "rig it on the user's bones (kit.rig(body, job.chains())" in asked
+check("  and rigs it on them; the log says the bones are there", "rig it on the user's bones (kit.rig(kit.parts(), chains) with chains = job.chains()" in asked
       and "The user has drawn the creature's bones over front.png (2 lines): Claude reads the pictures by them" in log, log[-800:])
 checked_first = " ".join(rc.prompt(dict(rec, check_lines=True)).split())
 going_on = " ".join(rc.prompt(dict(rec, check_lines=True), go_on=True).split())
 check("  the lines' run reads them too; the run after the check rigs on them, the lines kept", "python tools/blender/model_requests.py bones test_bones" in checked_first
-      and "model_requests.py bones" not in going_on and "kit.rig(body, job.chains())" in going_on)
+      and "model_requests.py bones" not in going_on and "kit.rig(kit.parts(), chains) with chains = job.chains()" in going_on)
 plain = rc.prompt(mr.normal(dict(rec, bones={})))
-check("  none drawn: no word of them", "Bones window" not in plain and "job.chains()" not in plain and "- a creature: rig it and give it its idle" in plain)
+check("  none drawn: no word of them", "Bones window" not in plain and "job.chains()" not in plain and "- a creature: rig it: every part on the bones that move it" in plain)
+check("built in parts: the jaw closed on its bone, the tongue on its own, the roar an action", all(w in " ".join(plain.split()) for w in (
+    "Build it in parts", "never one lump fused and sculpted", "block each part in from a few shapes with kit.part", "The mouth is built closed",
+    "the tongue on a chain of its own", "becomes the \"roar\" action", "preview_roar.png")), plain[:300])
 listed = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "list"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8").stdout
 check("  model_requests.py list says how many lines the user has drawn", any("test_bones" in line and "2 bone lines drawn by the user" in line for line in listed.splitlines()), listed)
 import request_lines as rl  # noqa: E402

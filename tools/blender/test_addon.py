@@ -469,6 +469,87 @@ check("a design of the user's goes to content/", (scratch / "content" / "data" /
 check("  low-poly: flat shaded, few faces", not any(p.use_smooth for p in pot.data.polygons) and len(pot.data.polygons) <= 800, f"{len(pot.data.polygons)} faces")
 clear()
 
+# 5d. a creature in parts, as a modeller makes it for a rigger (requests.md, "Parts"): each part
+# its own mesh, the jaw on its bone (the mouth closes), the tongue on its own chain, the eyes,
+# legs and tail; the idle and a roar in the file, every part on one skin
+mr.new(scratch, "Test lizard", [scratch / "critter.png"], kind="creature", height=0.8, notes="a lizard in parts")
+job = kit.start(scratch / "private" / "requests" / "test_lizard" / "model.py")
+job.finishing = True
+C = {"skin": "#5f8f4a", "belly": "#d9cf9a", "mouth": "#9c3d52", "tongue": "#e0707a", "tooth": "#f2efe6"}
+kit.part("body", [kit.ellipsoid((0, 0.05, 0.42), (0.17, 0.3, 0.15), "skin"), kit.capsule((0, -0.2, 0.47), (0, -0.4, 0.58), 0.1, "skin")], C,
+         bones=["spine", "neck"], paint=[kit.ellipsoid((0, 0.0, 0.3), (0.12, 0.26, 0.07), "belly")])
+head = kit.part("head", [kit.ellipsoid((0, -0.5, 0.66), (0.11, 0.13, 0.1), "skin"), kit.capsule((0, -0.56, 0.645), (0, -0.74, 0.63), 0.06, "skin", radius_b=0.04)], C, bone="head")
+jaw = kit.part("jaw", [kit.capsule((0, -0.52, 0.585), (0, -0.73, 0.585), 0.042, "skin", radius_b=0.03),
+                       kit.ellipsoid((0, -0.62, 0.61), (0.035, 0.09, 0.012), "mouth")], C, bone="jaw", remesh=False)
+tongue = kit.part("tongue", [kit.capsule((0, -0.55, 0.605), (0, -0.7, 0.605), 0.017, "tongue", radius_b=0.011)], C, bones=["tongue"], remesh=False)
+teeth = kit.part("teeth", [kit.cylinder((x, -0.71, 0.615), 0.008, 0.022, "tooth", top=0, rotation=(180, 0, 0)) for x in (-0.025, 0.025)], C, bone="head", remesh=False)
+for sx, side in ((1, "L"), (-1, "R")):
+    for y, kind in ((-0.15, "front"), (0.22, "hind")):
+        kit.part(f"{kind} leg.{side}", [kit.capsule((sx * 0.13, y, 0.36), (sx * 0.16, y, 0.03), 0.045, "skin", radius_b=0.035),
+                                        kit.ellipsoid((sx * 0.16, y - 0.04, 0.02), (0.05, 0.07, 0.02), "skin")], C, bones=[f"{kind} leg.{side}", "spine"])
+tail = kit.part("tail", [kit.tube([(0, 0.3, 0.42), (0, 0.5, 0.38), (0, 0.7, 0.3), (0, 0.85, 0.24)], 0.07, "skin", radius_end=0.012)], C, bones=["tail", "spine"])
+lizard_eyes = kit.eyes(head, [(0.07, -0.58, 0.7), (-0.07, -0.58, 0.7)], 0.025, colour="#1d1a22", separate=True)
+made = kit.parts()
+check("a creature in parts, each its own mesh", sorted(o.name for o in made) == sorted(["body", "head", "jaw", "tongue", "teeth", "front leg.L", "hind leg.L", "front leg.R", "hind leg.R", "tail", "eye.L", "eye.R"])
+      and len([o for o in bpy.data.objects if o.type == "MESH"]) == len(made), f"{sorted(o.name for o in made)}")
+check("  crisp parts keep each shape's region", [m.name for m in jaw.data.materials] == ["jaw skin", "jaw mouth"] and {q.material_index for q in jaw.data.polygons} == {0, 1})
+kit.fit(made, job.height)
+lizard = kit.rig(made, {
+    "spine": [(0, 0.3, 0.42), (0, 0.0, 0.43), (0, -0.25, 0.48)], "neck": [(0, -0.25, 0.48), (0, -0.42, 0.6)], "head": [(0, -0.42, 0.6), (0, -0.55, 0.72)],
+    "jaw": [(0, -0.5, 0.6), (0, -0.72, 0.585)], "tongue": [(0, -0.54, 0.605), (0, -0.62, 0.605), (0, -0.7, 0.605)],
+    **{f"{kind} leg.{side}": [(sx * 0.13, y, 0.38), (sx * 0.15, y, 0.2), (sx * 0.16, y, 0.03)] for sx, side in ((1, "L"), (-1, "R")) for y, kind in ((-0.15, "front"), (0.22, "hind"))},
+    "tail": [(0, 0.3, 0.42), (0, 0.5, 0.38), (0, 0.7, 0.3), (0, 0.85, 0.24)]}, parents={"jaw": "head", "tongue": "jaw", "tail": "spine.1"})
+lizard_bones = {b.name for b in lizard.data.bones}
+
+
+def weighted_by(o):
+    names = {g.index: g.name for g in o.vertex_groups}
+    return {names[g.group] for v in o.data.vertices for g in v.groups if g.weight > 1e-4 and names[g.group] in lizard_bones}
+
+
+front_leg = next(o for o in made if o.name == "front leg.L")
+check("  the jaw, the teeth, the eyes each on one bone, whole", weighted_by(jaw) == {"jaw"} and weighted_by(teeth) == {"head"} and all(weighted_by(e) == {"head"} for e in lizard_eyes)
+      and all(abs(g.weight - 1) < 1e-6 for v in jaw.data.vertices for g in v.groups), f"{weighted_by(jaw)} {weighted_by(teeth)}")
+check("  the tongue on its own chain; a leg on its own and the spine; the tail on its own and the spine; every vertex weighted",
+      weighted_by(tongue) == {"tongue.1", "tongue.2"} and "front leg.1.L" in weighted_by(front_leg) and weighted_by(front_leg) <= {"front leg.1.L", "front leg.2.L", "spine.1", "spine.2"}
+      and weighted_by(tail) <= {"tail.1", "tail.2", "tail.3", "spine.1", "spine.2"} and all(all(any(g.weight > 1e-4 for g in v.groups) for v in o.data.vertices) for o in made),
+      f"{weighted_by(tongue)} {weighted_by(front_leg)} {weighted_by(tail)}")
+
+
+def posed(o):
+    e = o.evaluated_get(bpy.context.evaluated_depsgraph_get())
+    m = e.to_mesh()
+    out = [e.matrix_world @ v.co for v in m.vertices]
+    e.to_mesh_clear()
+    return out
+
+
+rest = (posed(jaw), posed(head))
+lizard.pose.bones["jaw"].rotation_mode = "XYZ"
+lizard.pose.bones["jaw"].rotation_euler = (0.5, 0, 0)
+bpy.context.view_layer.update()
+opened = (posed(jaw), posed(head))
+lizard.pose.bones["jaw"].rotation_euler = (0, 0, 0)
+bpy.context.view_layer.update()
+check("  the jaw bone opens the mouth: the jaw moves, the head stays", max((a - b).length for a, b in zip(rest[0], opened[0])) > 0.02
+      and max((a - b).length for a, b in zip(rest[1], opened[1])) < 1e-6)
+kit.idle(lizard)
+kit.action(lizard, "roar", {"jaw": [(0, (0, 0, 0)), (0.3, (30, 0, 0)), (0.8, (30, 0, 0)), (1, (0, 0, 0))], "tongue": [(0, (0, 0, 0)), (0.5, (-15, 0, 0)), (1, (0, 0, 0))]}, seconds=1.2)
+files = kit.previews(job, made + [lizard], size=200)
+lizard_dir = scratch / "private" / "requests" / "test_lizard"
+check("  the idle plays, the roar kept on the rig; each previewed", lizard.animation_data.action.name == "idle" and sorted(t.name for t in lizard.animation_data.nla_tracks) == ["idle", "roar"]
+      and (lizard_dir / "preview_idle.png").is_file() and (lizard_dir / "preview_roar.png").is_file())
+kit.finish(job, made + [lizard], files, reply="test")
+lizard_glb = scratch / "temporary" / "assets" / "models" / "test_lizard.glb"
+lizard_doc = glb_doc(lizard_glb) if lizard_glb.is_file() else {}
+on_skin = [n for n in lizard_doc.get("nodes", []) if "skin" in n and "mesh" in n]
+check("  in the file: one skin for every part, the idle and the roar", len(lizard_doc.get("skins", [])) == 1 and len(on_skin) == len(made)
+      and sorted(a.get("name") for a in lizard_doc.get("animations", [])) == ["idle", "roar"], f"{len(on_skin)} skinned nodes, {[a.get('name') for a in lizard_doc.get('animations', [])]}")
+run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(lizard_glb)], cwd=str(project), capture_output=True, text=True)
+check("  the engine reads every part on the rig, and both actions", f"a rig of {len(lizard_bones)} joints" in run.stdout and "idle (2.0 s)" in run.stdout and "roar (1.2 s)" in run.stdout,
+      (run.stdout.strip() or run.stderr.strip())[-300:])
+clear()
+
 # 6. a whole map, exported by the project itself
 os.environ["BATTLE_FRONTIER_ROOT"] = str(project)
 clear()
