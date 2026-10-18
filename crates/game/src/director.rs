@@ -12,10 +12,11 @@ use rules::dex::Rng;
 use rules::moves::InputKind;
 
 use crate::hud::{self, Cue, Hud};
-use crate::input::{Beat, ChargeRead, Input, RhythmRead, TapRead};
+use crate::input::{Beat, Button, ChargeRead, Input, RhythmRead, TapRead};
 use crate::menu::Menu;
 use crate::platform;
 use crate::stage::{type_color, Stage};
+use crate::title::button_label;
 
 enum Step {
     NeedActor,
@@ -185,6 +186,7 @@ impl Director {
             platform::set_hook("pending", &hook);
             self.pending_hook = hook;
         }
+        platform::set_hook("prompt", self.hud.prompt.as_ref().map_or("", |(text, _)| text.as_str()));
         platform::set_hook("playing", &self.stage.playing.as_ref().map(|p| format!("{}:{:.2}", p.key, (now - p.t0) / 1000.0)).unwrap_or_default());
     }
 
@@ -396,7 +398,7 @@ impl Perform {
                 let beats: Vec<f64> = (0..p.plan.beats).map(|i| now + 650.0 + i as f64 * gap).collect();
                 let dest = p.targets.first().and_then(|t| stage.vis.get(t)).map(|v| v.home).unwrap_or(Vec3::ZERO);
                 stage.stay_near(actor, dest, beats.last().copied().unwrap_or(now) + 200.0, now);
-                hud.prompt = Some((format!("Press A on every hit (up to {})", p.plan.beats), hud::ACCENT));
+                hud.prompt = Some((format!("Press {} on every hit (up to {})", button_label(Button::A), p.plan.beats), hud::ACCENT));
                 let assist = battle.config.timing.assist;
                 for (i, &b) in beats.iter().enumerate() {
                     if let Some(&t) = p.targets.get(i % p.targets.len().max(1)) {
@@ -406,7 +408,7 @@ impl Perform {
                 p.phase = Phase::Rhythm(RhythmRead::new(beats, battle.config.timing.tap));
             }
             _ if input == InputKind::Charge => {
-                hud.prompt = Some(("Hold A, release when the ring fills".into(), Color32::from_rgb(181, 255, 154)));
+                hud.prompt = Some((format!("Hold {}, release when the ring fills", button_label(Button::A)), Color32::from_rgb(181, 255, 154)));
                 p.phase = Phase::Charge(ChargeRead::new(now, battle.config.timing.charge_fill, battle.config.timing.charge_window));
             }
             _ => p.start_anim(now, stage, hud, battle, input),
@@ -434,7 +436,7 @@ impl Perform {
         match kind {
             "rhythm" => {
                 let window = world::timeline::window(c, t.tap);
-                hud.prompt = Some((format!("Press A on every hit (up to {})", beats.len()), hud::ACCENT));
+                hud.prompt = Some((format!("Press {} on every hit (up to {})", button_label(Button::A), beats.len()), hud::ACCENT));
                 for (i, &b) in beats.iter().enumerate() {
                     if let Some(&u) = self.targets.get(i % self.targets.len().max(1)) {
                         hud.cues.push(Cue { uid: u, beat: b, window, block: false, assist: t.assist });
@@ -444,7 +446,7 @@ impl Perform {
             }
             "charge" => {
                 let fill = if c.seconds > 0.0 { c.seconds * 1000.0 } else { t.charge_fill };
-                hud.prompt = Some(("Hold A, release when the ring fills".into(), Color32::from_rgb(181, 255, 154)));
+                hud.prompt = Some((format!("Hold {}, release when the ring fills", button_label(Button::A)), Color32::from_rgb(181, 255, 154)));
                 self.phase = Phase::Charge(ChargeRead::new(now, fill, world::timeline::window(c, t.charge_window)));
             }
             _ => {
@@ -453,14 +455,15 @@ impl Perform {
                 let window = world::timeline::window(c, match kind { "cast" => t.cast, "block" => t.block, _ => t.tap });
                 let cue = if block {
                     let mine: Vec<Uid> = self.targets.iter().copied().filter(|&u| battle.get(u).side == Side::Player).collect();
-                    hud.prompt = Some(("Block! Press A at impact".into(), hud::BLOCK));
+                    hud.prompt = Some((format!("Block! Press {} at impact", button_label(Button::A)), hud::BLOCK));
                     for &u in &mine {
                         hud.cues.push(Cue { uid: u, beat, window, block: true, assist: t.assist });
                     }
                     mine.first().copied()
                 } else {
                     let cue = if c.who == "user" { actor } else { self.targets.first().copied().unwrap_or(actor) };
-                    hud.prompt = Some((if kind == "cast" { "Press A at the flash" } else { "Press A at impact" }.into(), hud::ACCENT));
+                    let a = button_label(Button::A);
+                    hud.prompt = Some((if kind == "cast" { format!("Press {a} at the flash") } else { format!("Press {a} at impact") }, hud::ACCENT));
                     hud.cues.push(Cue { uid: cue, beat, window, block: false, assist: t.assist });
                     Some(cue)
                 };
@@ -502,13 +505,14 @@ impl Perform {
             InputKind::Tap | InputKind::Cast => {
                 let window = if input == InputKind::Tap { t.tap } else { t.cast };
                 let cue = if input == InputKind::Cast && self.plan.anim == Anim::SelfAnim { actor } else { self.targets.first().copied().unwrap_or(actor) };
-                hud.prompt = Some((if input == InputKind::Tap { "Press A at impact" } else { "Press A at the flash" }.into(), hud::ACCENT));
+                let a = button_label(Button::A);
+                hud.prompt = Some((if input == InputKind::Tap { format!("Press {a} at impact") } else { format!("Press {a} at the flash") }, hud::ACCENT));
                 hud.cues.push(Cue { uid: cue, beat: impact, window, block: false, assist: t.assist });
                 (Some(TapRead::new(impact, window)), Some(cue), false)
             }
             InputKind::Block => {
                 let mine: Vec<Uid> = self.targets.iter().copied().filter(|&u| battle.get(u).side == Side::Player).collect();
-                hud.prompt = Some(("Block! Press A at impact".into(), hud::BLOCK));
+                hud.prompt = Some((format!("Block! Press {} at impact", button_label(Button::A)), hud::BLOCK));
                 for &u in &mine {
                     hud.cues.push(Cue { uid: u, beat: impact, window: t.block, block: true, assist: t.assist });
                 }

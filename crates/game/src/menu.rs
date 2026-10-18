@@ -8,7 +8,9 @@ use rules::moves::{describe_levels, input_text, level_from_xp, modes, timed_text
 
 use crate::hud::{self, Hud, ACCENT, MUTED, PANEL, PANEL_2, TEXT};
 use crate::input::{Button, Input};
+use crate::platform;
 use crate::stage::Stage;
+use crate::title::button_label;
 
 #[derive(Clone, Copy, PartialEq)]
 enum Purpose {
@@ -203,7 +205,7 @@ impl Menu {
                         let ty = battle.types(actor)[0];
                         let eff = battle.dex.effectiveness(ty, battle.types(center));
                         let what = if eff == 0.0 { " · no effect" } else if eff > 1.0 { " · super effective" } else if eff < 1.0 { " · not very effective" } else { "" };
-                        (vec![center], format!("{} basic attack{what} · {}", battle.dex.types[ty as usize], input_text(rules::moves::InputKind::Tap)))
+                        (vec![center], format!("{} basic attack{what} · {}", battle.dex.types[ty as usize], input_text(rules::moves::InputKind::Tap, &button_label(Button::A))))
                     }
                     Purpose::Item(_) => {
                         let m = battle.mon(center);
@@ -241,7 +243,9 @@ impl Menu {
                                 }
                             }
                             ui.label(egui::RichText::new(&describe).color(MUTED).size(12.0));
-                            ui.label(egui::RichText::new("◀ ▶ choose · A confirm · B back").color(MUTED).size(12.0));
+                            let buttons = format!("◀ ▶ choose · {} confirm · {} back", button_label(Button::A), button_label(Button::B));
+                            platform::set_hook("targethint", &buttons);
+                            ui.label(egui::RichText::new(buttons).color(MUTED).size(12.0));
                         });
                     });
                 if let Some(k) = clicked_mode {
@@ -510,7 +514,7 @@ impl Menu {
             let ac = if mv.accuracy > 0 { mv.accuracy.to_string() } else { "—".into() };
             p.text(Pos2::new(x, rect.top() + 2.0), Align2::LEFT_TOP, format!("Power {pw} · Acc {ac} · {cost} MP"), FontId::proportional(11.0), MUTED);
             if let Some(prof) = prof {
-                ui.label(egui::RichText::new(format!("{} · {}", input_text(prof.input), timed_text(prof))).color(Color32::from_rgb(181, 224, 255)).size(12.0));
+                ui.label(egui::RichText::new(format!("{} · {}", input_text(prof.input, &button_label(Button::A)), timed_text(prof))).color(Color32::from_rgb(181, 224, 255)).size(12.0));
             }
             for (i, line) in describe_levels(prof, &battle.config).iter().enumerate() {
                 let lv = i as u8 + 1;

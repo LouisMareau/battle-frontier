@@ -5,13 +5,15 @@
 // menu, the Options (tabs on LB/RB, a ring round what the buttons are on, a controller button
 // given to A), the New game question, the overworld (walking, Start leaves); a second
 // controller used takes over, the one in use gone hands over to the other, then to the
-// keyboard; nothing done while the page hasn't the focus counts. Screenshots to
+// keyboard; nothing done while the page hasn't the focus counts; a battle played with one
+// names its buttons (the target picker, the prompts, the results). Screenshots to
 // screenshots/pad-*.png. Exits 1 when something fails.
 //     node tools/padcheck.mjs
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
+import { pick } from './encounters.mjs';
 import { serve } from './serve.mjs';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
@@ -57,6 +59,7 @@ const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(k
 const shot = (name) => browser.screenshot(join(shots, `pad-${name}.png`));
 const state = (s, what) => browser.waitFor(`document.body.dataset.state === ${JSON.stringify(s)}`, { timeout: 30000, what });
 const pads = (js) => browser.evaluate(`(window.__pads.${js}, true)`);
+const cmd = (c) => browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringify(c)}, true)`);
 // a button tapped on a stand-in: held a few frames, let go
 const tap = async (button, index = 0, hold = 120) => {
   await pads(`set(${index}, ${button}, true)`);
@@ -246,6 +249,56 @@ try {
   await sleep(300);
   check('  both gone: the keyboard', (await data('device')) === 'keys' && (await data('pads')) === '0', `${await data('device')}, ${await data('pads')}`);
   await shot('5-gone');
+
+  // 8. a battle played with a controller: the target picker, the prompts and the results name
+  // what's printed on it (Cross, Circle); a key pressed, the keyboard's keys. In a slot no
+  // controller had before: gilrs keeps a slot's first name (the browser's index is its key)
+  const P = 2;
+  const wild = pick('wild');
+  if (!wild) throw new Error('no wild encounter in the content: the battle part needs one');
+  await browser.evaluate(`(() => {
+    window.__prompts = [];
+    new MutationObserver(() => {
+      const p = document.body.dataset.prompt || '';
+      if (p && !window.__prompts.includes(p)) window.__prompts.push(p);
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-prompt'] });
+    return true;
+  })()`);
+  await pads(`connect(${P}, ${JSON.stringify(DUALSENSE)})`);
+  await sleep(300);
+  await cmd(`text:fast;time:day;start:${wild}`);
+  await browser.waitFor('document.body.dataset.menu === "open"', { timeout: 60000, what: 'the battle menu' });
+  await sleep(300);
+  check('a battle, the controller in use', (await data('state')) === 'battle' && (await data('device')) === 'pad' && (await data('padname')).startsWith('DualSense'), `${await data('state')}, ${await data('device')}, ${await data('padname')}`);
+  await tap(B.south, P);
+  check('  Cross on Attack: the target picker names Cross and Circle', (await data('targethint')) === '◀ ▶ choose · Cross confirm · Circle back', await data('targethint'));
+  await shot('6-target');
+  await tap(B.south, P);
+  await browser.waitFor('window.__prompts.length > 0', { timeout: 10000, what: 'a prompt' }).catch(() => {});
+  await shot('6b-prompt');
+  // Cross through the menus to the end (the AI's side at last if it takes long)
+  const started = Date.now();
+  while ((await data('state')) === 'battle' && Date.now() - started < 120000) {
+    if ((await data('menu')) === 'open') {
+      await tap(B.south, P);
+      await tap(B.south, P);
+    }
+    await sleep(150);
+  }
+  if ((await data('state')) === 'battle') await cmd('auto:1');
+  await state('results', 'the end of the battle').catch(() => {});
+  await cmd('auto:0');
+  const prompts = await browser.evaluate('window.__prompts');
+  check('  the prompts name Cross', prompts.includes('Press Cross at impact') && prompts.every((p) => /\bCross\b/.test(p) && !/\bA\b/.test(p)), JSON.stringify(prompts));
+  check("  the results' buttons: Cross, Circle", (await data('results')) === 'Fight again (Cross) · Back to the menu (Circle)', `${await data('state')}, ${await data('results')}`);
+  await shot('7-results');
+  await browser.key('g');
+  await sleep(200);
+  check("  a key pressed: the keyboard's keys", (await data('device')) === 'keys' && (await data('results')) === 'Fight again (Z) · Back to the menu (X)', `${await data('device')}, ${await data('results')}`);
+  await sleep(400);
+  await tap(B.east, P);
+  await state('menu', 'the menu after the battle').catch(() => {});
+  check('  Circle: back to the menu', (await data('state')) === 'menu' && (await data('device')) === 'pad', `${await data('state')}, ${await data('device')}`);
 
   if (browser.errors.length) {
     failed++;

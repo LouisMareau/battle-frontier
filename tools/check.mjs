@@ -1,6 +1,7 @@
 // Plays the built game (build/dist) in a headless Chrome and reports frame times:
 // a gym battle driven with the keyboard (menus, targeting, a send the leader matches),
-// with an in-page "perfect player" hitting the timing windows, then AI battles on each
+// with an in-page "perfect player" hitting the timing windows (its prompts and its results'
+// buttons must name the keyboard's keys: exit code 1 if not), then AI battles on each
 // region's map. Screenshots go to screenshots/.
 //
 //     trunk build --release && node tools/check.mjs [seconds=60] [gpu=1] [w=1400 h=900]
@@ -87,6 +88,15 @@ try {
     return true;
   })()`);
   await browser.click(width / 2, height / 2); // focus the canvas
+  // every prompt the battles show (data-prompt): they name the keyboard's keys
+  await js(`(() => {
+    window.__prompts = [];
+    new MutationObserver(() => {
+      const p = document.body.dataset.prompt || '';
+      if (p && !window.__prompts.includes(p)) window.__prompts.push(p);
+    }).observe(document.body, { attributes: true, attributeFilter: ['data-prompt'] });
+    return true;
+  })()`);
 
   const gym = pick('gym');
   if (!gym) throw new Error('no gym encounter in the content: the battle checks need one');
@@ -137,6 +147,13 @@ try {
   console.log('  battle ended:', end, await data('outcome'));
   await browser.wait(800);
   await shot('06-results');
+  // played with the keyboard: Z for A, X for B, never the game's own names
+  const prompts = await js('window.__prompts');
+  const named = prompts.length > 0 && prompts.every((p) => /\bZ\b/.test(p) && !/\bA\b/.test(p));
+  console.log(`  ${named ? 'ok  ' : 'FAIL'} the prompts name the keys:`, JSON.stringify(prompts));
+  const results = await data('results');
+  console.log(`  ${results === 'Fight again (Z) · Back to the menu (X)' ? 'ok  ' : 'FAIL'} the results' buttons:`, results);
+  if (!named || results !== 'Fight again (Z) · Back to the menu (X)') process.exitCode = 1;
   await cmd('back');
   await browser.wait(300);
 

@@ -560,14 +560,16 @@ pub fn timed_text(p: &Profile) -> &'static str {
     }
 }
 
-pub fn input_text(i: InputKind) -> &'static str {
+/// What the player does for a move's timing; `a` is what they press for A on their device
+/// ("Z", "Cross"): "Press Z at impact".
+pub fn input_text(i: InputKind, a: &str) -> String {
     match i {
-        InputKind::Tap => "Press A at impact",
-        InputKind::Charge => "Hold A, release when the ring fills",
-        InputKind::Rhythm => "Press A on every hit",
-        InputKind::Cast => "Press A at the flash",
-        InputKind::Block => "Press A at impact to block",
-        InputKind::None => "",
+        InputKind::Tap => format!("Press {a} at impact"),
+        InputKind::Charge => format!("Hold {a}, release when the ring fills"),
+        InputKind::Rhythm => format!("Press {a} on every hit"),
+        InputKind::Cast => format!("Press {a} at the flash"),
+        InputKind::Block => format!("Press {a} at impact to block"),
+        InputKind::None => String::new(),
     }
 }
 

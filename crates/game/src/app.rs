@@ -1024,7 +1024,7 @@ impl GameApp {
             ui.horizontal(|ui| {
                 ui.heading(RichText::new("Test battles").strong());
                 ui.add_space(12.0);
-                let b = ui.button("Back to the editor").on_hover_text("B");
+                let b = ui.button("Back to the editor").on_hover_text(crate::title::button_label(Button::B));
                 platform::set_hook("uiBackToEditor", &format!("{:.0},{:.0}", b.rect.center().x, b.rect.center().y));
                 if b.clicked() {
                     back = true;
@@ -1077,7 +1077,8 @@ impl GameApp {
                 }
                 ui.add_space(12.0);
                 let buttons = crate::title::buttons_text(&crate::input::bindings(), crate::title::pad_shown());
-                ui.label(RichText::new(format!("{buttons}. Contact moves: press A at impact. Beams: hold A, release when the ring fills. Multi-hit: press A on every hit. Foe attacks: press A at impact to block.")).color(MUTED).size(12.0));
+                let a = crate::title::button_label(Button::A);
+                ui.label(RichText::new(format!("{buttons}. Contact moves: press {a} at impact. Beams: hold {a}, release when the ring fills. Multi-hit: press {a} on every hit. Foe attacks: press {a} at impact to block.")).color(MUTED).size(12.0));
             });
         });
         let ctx = ui.ctx().clone();
@@ -1345,16 +1346,20 @@ impl eframe::App for GameApp {
                             ui.label(RichText::new(format!("Caught: {}", results.caught.join(", "))).color(TEXT));
                         }
                         ui.add_space(8.0);
+                        // the buttons that answer, as the device in use has them
+                        let again = format!("Fight again ({})", crate::title::button_label(Button::A));
+                        let back_to = match &self.parked {
+                            Some(ed) if ed.playing() => "Back to the map",
+                            Some(_) => "Back to the editor",
+                            None if self.battles_back => "Back to the battles",
+                            None => "Back to the menu",
+                        };
+                        let back_to = format!("{back_to} ({})", crate::title::button_label(Button::B));
+                        platform::set_hook("results", &format!("{again} · {back_to}"));
                         ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new(RichText::new("Fight again (A)").color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
+                            if ui.add(egui::Button::new(RichText::new(again).color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
                                 choice = Some(true);
                             }
-                            let back_to = match &self.parked {
-                                Some(ed) if ed.playing() => "Back to the map (B)",
-                                Some(_) => "Back to the editor (B)",
-                                None if self.battles_back => "Back to the battles (B)",
-                                None => "Back to the menu (B)",
-                            };
                             if ui.button(back_to).clicked() {
                                 choice = Some(false);
                             }

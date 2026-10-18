@@ -469,6 +469,24 @@ pub fn pair(keys: &Bindings, pad: Option<Family>, a: Button, b: Button) -> Strin
     format!("{} / {}", names(keys, pad, a, 1, ""), names(keys, pad, b, 1, ""))
 }
 
+/// What the player presses for one of the game's buttons on the device in use: its first key
+/// ("Z", "Esc") or, with a controller in hand, its first button as printed on that controller
+/// ("A", "Cross"). The prompts name it: "Press Z at impact".
+pub fn button_label(b: Button) -> String {
+    label(&crate::input::bindings(), pad_shown(), b)
+}
+
+/// `b`'s first key, or its first controller button as a controller of `pad`'s kind has it
+/// printed; the game's own name for it when nothing is on it.
+fn label(keys: &Bindings, pad: Option<Family>, b: Button) -> String {
+    let first = names(keys, pad, b, 1, "");
+    if first.is_empty() {
+        b.name().to_string()
+    } else {
+        first
+    }
+}
+
 /// The overworld's buttons, at its foot: what moves, what speaks, what leaves (Esc, or the
 /// controller's Start).
 pub fn walk_hint(keys: &Bindings, pad: Option<Family>) -> String {
@@ -908,8 +926,8 @@ fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_vi
         (true, Some((_, None)), _) => format!("Press the button to add  ·  {start}: none"),
         (false, _, Some((_, Some(_)))) => "Press the new key  ·  Delete: take it off  ·  Esc: keep it".to_string(),
         (false, _, Some((_, None))) => "Press the key to add  ·  Esc: none".to_string(),
-        (true, ..) => "A on a button, then the new one. The left stick moves like the d-pad.".to_string(),
-        (false, ..) => "Click a key (or A on it), then the new one. A click on the game's view counts as A.".to_string(),
+        (true, ..) => format!("{} on a button, then the new one. The left stick moves like the d-pad.", label(&keys, Some(family), Button::A)),
+        (false, ..) => format!("Click a key (or {} on it), then the new one. A click on the game's view counts as A.", label(&keys, None, Button::A)),
     };
     ui.label(RichText::new(note).size(12.0).color(Color32::from_white_alpha(150)));
     spots
@@ -951,6 +969,44 @@ mod tests {
         assert_eq!(buttons_text(&d, Some(Family::Xbox)), "A: A · B: B · d-pad: d-pad, left stick · L / R: LB / RB");
         assert_eq!(walk_hint(&d, None), "Arrows move  ·  Z speaks  ·  Esc leaves");
         assert_eq!(walk_hint(&d, Some(Family::PlayStation)), "D-pad moves  ·  Cross speaks  ·  Options leaves");
+    }
+
+    #[test]
+    fn a_button_is_named_as_the_player_presses_it() {
+        let mut keys = Bindings::default();
+        // the keyboard: each button's first key
+        assert_eq!(label(&keys, None, Button::A), "Z");
+        assert_eq!(label(&keys, None, Button::B), "X");
+        assert_eq!(label(&keys, None, Button::L), "Q");
+        assert_eq!(label(&keys, None, Button::R), "E");
+        // A's Z given K: K; K taken off: Space, the next one; B's X given Esc (B's own): Esc
+        keys.assign(Button::A, Some(egui::Key::Z), egui::Key::K);
+        assert_eq!(label(&keys, None, Button::A), "K");
+        keys.remove(Button::A, egui::Key::K);
+        assert_eq!(label(&keys, None, Button::A), "Space");
+        keys.assign(Button::B, Some(egui::Key::X), egui::Key::Escape);
+        assert_eq!(label(&keys, None, Button::B), "Esc");
+        // a controller: its button as printed on it
+        let d = Bindings::default();
+        assert_eq!(label(&d, Some(Family::Xbox), Button::A), "A");
+        assert_eq!(label(&d, Some(Family::Xbox), Button::B), "B");
+        assert_eq!(label(&d, Some(Family::Xbox), Button::L), "LB");
+        assert_eq!(label(&d, Some(Family::PlayStation), Button::A), "Cross");
+        assert_eq!(label(&d, Some(Family::PlayStation), Button::B), "Circle");
+        assert_eq!(label(&d, Some(Family::PlayStation), Button::R), "R1");
+        assert_eq!(label(&d, Some(Family::RightA), Button::A), "B", "A on the right: the game's A (South) is printed B");
+        // A given North on the controller: Y, Triangle; East given to A too, B has nothing on
+        // the controller: its own name
+        let mut pads = Bindings::default();
+        pads.assign_pad(Button::A, Some(PadButton::South), PadButton::North);
+        assert_eq!(label(&pads, Some(Family::Xbox), Button::A), "Y");
+        assert_eq!(label(&pads, Some(Family::PlayStation), Button::A), "Triangle");
+        pads.assign_pad(Button::A, None, PadButton::East);
+        assert_eq!(label(&pads, Some(Family::Xbox), Button::B), "B");
+        assert_eq!(label(&pads, None, Button::A), "Z", "the keyboard's keys stay as they were");
+        // in use: the player's keys (no test sets other ones), no controller listened to
+        assert_eq!(button_label(Button::A), "Z");
+        assert_eq!(button_label(Button::B), "X");
     }
 
     #[test]
