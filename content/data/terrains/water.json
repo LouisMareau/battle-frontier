@@ -7,5 +7,6 @@
   "pattern": "water",
   "side": "#5b7d8f",
   "walk": "water",
-  "priority": -1
+  "priority": -1,
+  "water": "inland"
 }

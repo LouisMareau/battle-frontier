@@ -557,6 +557,23 @@ impl MapEditor {
                 after.toon = !after.toon;
             }
         });
+        // in the wind: a model by its paint, a stand-in by its record
+        match self.models.get(id) {
+            Some(m) if m.wind > 0 => hint(ui, &format!("Moves in the wind by its model's paint ({} vertices).", m.wind)),
+            Some(_) => hint(ui, "Still in the wind: its model isn't painted for it (in Blender, a \"wind\" colour layer: R sway, G flutter, B phase)."),
+            None => {
+                ui.horizontal(|ui| {
+                    ui.label("Wind").on_hover_text("How its stand-in moves in the wind (a model is painted for it instead)");
+                    let r = ui.add(egui::Slider::new(&mut after.wind.sway, 0.0..=1.0).text("sway")).on_hover_text("Bending with the wind, more the higher up (0: not at all)");
+                    mark("uiPropSway", &r);
+                });
+                ui.horizontal(|ui| {
+                    ui.add_space(34.0);
+                    let r = ui.add(egui::Slider::new(&mut after.wind.flutter, 0.0..=1.0).text("flutter")).on_hover_text("A leaves' quick shiver");
+                    mark("uiPropFlutter", &r);
+                });
+            }
+        }
         // a railing's piece: its style, a span or a post, what its ends say or what it takes
         // and where it stands, how likely it's picked (`world::railings` puts them together)
         if after.category == "railing" {

@@ -81,7 +81,7 @@ impl MapEditor {
                         .map(|(i, v)| {
                             let j = s.joints.get(i).copied().unwrap_or([0; 4]);
                             let weights = s.weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]);
-                            SkinnedVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, joints: j.map(|x| x as u32), weights, toon: toon as u32 as f32 }
+                            SkinnedVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, joints: j.map(|x| x as u32), weights, toon: toon as u32 as f32, wind: v.wind }
                         })
                         .collect();
                     (s.texture.clone().unwrap_or_else(|| WHITE.to_string()), vertices, s.mesh.indices.clone())

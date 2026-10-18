@@ -136,6 +136,9 @@ pub struct MapVertex {
     pub color: [f32; 4],
     /// 1: drawn with the toon look
     pub toon: f32,
+    /// how it moves in the wind: sway, flutter, phase, height above its thing's foot (as
+    /// `world::mesh::Vertex` has it; all 0: it doesn't)
+    pub wind: [u8; 4],
 }
 
 /// The quads that share one texture sheet.
@@ -157,7 +160,7 @@ impl MeshData {
         let (u0, u1, v0, v1) = ((rect[0] + e) / w, (rect[2] - e) / w, (rect[1] + e) / h, (rect[3] - e) / h);
         let uvs = [[u0, v0], [u0, v1], [u1, v1], [u1, v0]];
         for k in 0..4 {
-            self.vertices.push(MapVertex { pos: corners[k], normal, uv: uvs[k], color: [1.0; 4], toon: 0.0 });
+            self.vertices.push(MapVertex { pos: corners[k], normal, uv: uvs[k], color: [1.0; 4], toon: 0.0, wind: [0; 4] });
         }
         self.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
     }

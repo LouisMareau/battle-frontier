@@ -4,6 +4,7 @@
 
 pub mod map;
 pub mod scene;
+pub mod shore;
 
 pub use glam;
 pub use wgpu;

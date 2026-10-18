@@ -184,6 +184,8 @@ struct Globals {
     /// 15-bit colour, 0: all); and b: xy the screen's size in pixels
     retro_a: [f32; 4],
     retro_b: [f32; 4],
+    /// the wind: xy the way it blows (x, z), z how strong, w how gusty
+    wind: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -302,6 +304,8 @@ pub struct SkinnedVertex {
     pub weights: [f32; 4],
     /// 1: drawn with the toon look
     pub toon: f32,
+    /// how it moves in the wind (as `MapVertex::wind`)
+    pub wind: [u8; 4],
 }
 
 /// A skinned model drawn this frame: which (`set_skinned`), where, and its joints' matrices
@@ -344,6 +348,24 @@ pub struct Frame {
     pub retro: Retro,
     /// a blurred copy of the picture for frosted glass over it (`frost_view`)
     pub frost: bool,
+    /// the wind: what's painted for it sways, the water ripples and rolls, the clouds drift
+    pub wind: Wind,
+}
+
+/// The wind as the frame has it: the way it blows on the ground (x, z, a unit long), how
+/// strong (0 calm to 1 a gale) and how much of it comes in gusts (0 to 1).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Wind {
+    pub way: Vec2,
+    pub strength: f32,
+    pub gusts: f32,
+}
+
+impl Default for Wind {
+    /// No wind; the clouds drift east, and a little south.
+    fn default() -> Wind {
+        Wind { way: CLOUD_WIND, strength: 0.0, gusts: 0.0 }
+    }
 }
 
 /// The toon look, for what's flagged toon (vertices, billboards): the sun's and the lamps'
@@ -532,6 +554,10 @@ struct WorldGpu {
     /// other
     layers: BTreeMap<String, Squares>,
     cells: wgpu::Texture,
+    /// how far each cell is from the shore (`shore::shore_texels`), and each terrain's
+    /// water (the palette's columns: 0 none, 1 inland, 2 oceanic)
+    shore: wgpu::Texture,
+    water: Vec<u8>,
     size: [u32; 2],
     bind: wgpu::BindGroup,
     level_height: f32,
@@ -823,7 +849,7 @@ impl SceneRenderer {
         };
         let ground_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("ground"),
-            entries: &[data_texture(2), data_texture(3)],
+            entries: &[data_texture(2), data_texture(3), data_texture(4)],
         });
         let ground_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("ground"),
@@ -888,9 +914,9 @@ impl SceneRenderer {
         });
         let (cap, window) = bones_needed(0, 0, 0, 0);
         let bones = Self::make_bones(device, &bones_layout, cap, window);
-        let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32];
+        let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32, 5 => Unorm8x4];
         let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
-        let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32];
+        let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32, 7 => Unorm8x4];
         let map_buffers = [Some(wgpu::VertexBufferLayout {
             array_stride: std::mem::size_of::<MapVertex>() as u64,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -1029,7 +1055,7 @@ impl SceneRenderer {
     /// which compile shaders on first use do it now and not in the middle of a battle.
     fn warm_up(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
         let target = self.make_target(device, [4, 4]);
-        let ground = self.data_bind(device, queue, &[0, 0, 0, 255], [1, 1], &[255; 16], 1);
+        let ground = self.data_bind(device, queue, &WorldGround { cells: &[0, 0, 0, 255], size: [1, 1], palette: &[255; 16], palette_width: 1, level_height: 1.0 }, &[[0.0; 4]]);
         let zeros = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("warm-up"),
             contents: &[0u8; 3 * 96],
@@ -1072,7 +1098,7 @@ impl SceneRenderer {
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_pipeline);
             pass.draw(0..3, 0..1);
-            pass.set_bind_group(1, &ground.1, &[]);
+            pass.set_bind_group(1, &ground.2, &[]);
             pass.set_pipeline(&self.ground_pipeline);
             pass.draw(0..3, 0..1);
         }
@@ -1086,6 +1112,19 @@ impl SceneRenderer {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
+        }
+        // the frosted glass's three passes
+        let frost = self.make_frost(device, [2, 2]);
+        for (pipeline, bind, into) in [(&self.frost_pipeline, &target.post_bind, &frost.views[0]), (&self.frost_x_pipeline, &frost.binds[0], &frost.views[1]), (&self.frost_y_pipeline, &frost.binds[1], &frost.views[0])] {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("warm-up frost"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: into, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                ..Default::default()
+            });
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
+            pass.set_bind_group(1, bind, &[]);
+            pass.draw(0..3, 0..1);
         }
         queue.submit([encoder.finish()]);
     }
@@ -1269,35 +1308,81 @@ impl SceneRenderer {
     }
 
     /// The cells' and the palette's textures, bound for the ground shader.
-    fn data_bind(&self, device: &wgpu::Device, queue: &wgpu::Queue, cells: &[u8], size: [u32; 2], palette: &[u8], palette_width: u32) -> (wgpu::Texture, wgpu::BindGroup) {
-        let cells = Self::data_texture(device, queue, "cells", cells, size);
-        let palette = Self::data_texture(device, queue, "palette", palette, [palette_width.max(1), 4]);
-        let (cv, pv) = (cells.create_view(&Default::default()), palette.create_view(&Default::default()));
+    fn data_bind(&self, device: &wgpu::Device, queue: &wgpu::Queue, g: &WorldGround, shore: &[[f32; 4]]) -> (wgpu::Texture, wgpu::Texture, wgpu::BindGroup) {
+        let cells = Self::data_texture(device, queue, "cells", g.cells, g.size);
+        let palette = Self::data_texture(device, queue, "palette", g.palette, [g.palette_width.max(1), 4]);
+        let shore = Self::field_texture(device, queue, "shore", shore, g.size);
+        let (cv, pv, sv) = (cells.create_view(&Default::default()), palette.create_view(&Default::default()), shore.create_view(&Default::default()));
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("ground"),
             layout: &self.ground_layout,
             entries: &[
                 wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(&cv) },
                 wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(&pv) },
+                wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&sv) },
             ],
         });
-        (cells, bind)
+        (cells, shore, bind)
+    }
+
+    /// A field of four floats a texel as a texture the shaders load from.
+    fn field_texture(device: &wgpu::Device, queue: &wgpu::Queue, label: &str, field: &[[f32; 4]], size: [u32; 2]) -> wgpu::Texture {
+        let size = [size[0].max(1), size[1].max(1)];
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some(label),
+            size: wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        Self::write_field(queue, &texture, field, size);
+        texture
+    }
+
+    fn write_field(queue: &wgpu::Queue, texture: &wgpu::Texture, field: &[[f32; 4]], size: [u32; 2]) {
+        if field.len() as u32 != size[0] * size[1] {
+            return;
+        }
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            bytemuck::cast_slice(field),
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size[0] * 16), rows_per_image: Some(size[1]) },
+            wgpu::Extent3d { width: size[0], height: size[1], depth_or_array_layers: 1 },
+        );
+    }
+
+    /// Each of the palette's terrains' water (its third row's blue: see the shader).
+    fn waters(palette: &[u8], width: u32) -> Vec<u8> {
+        let w = width as usize;
+        (0..w).map(|t| palette.get((2 * w + t) * 4 + 2).copied().unwrap_or(0)).collect()
+    }
+
+    /// How far each of the cells is from the shore, which way the land is, which water it is
+    /// or is near (`shore::shore_texels`).
+    fn shore_of(cells: &[u8], size: [u32; 2], water: &[u8]) -> Vec<[f32; 4]> {
+        crate::shore::shore_texels(cells, size[0] as usize, size[1] as usize, water)
     }
 
     /// Shows a world map's ground: its cells' texture and palette (the ones it had before
     /// go; its squares stay when it's the same size, else they go too). Battle maps
     /// (`load_map`) and the world draw together; clear the one you don't want.
     pub fn set_world_ground(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, map: &str, g: &WorldGround) {
-        let (cells, bind) = self.data_bind(device, queue, g.cells, g.size, g.palette, g.palette_width);
+        let water = Self::waters(g.palette, g.palette_width);
+        let shore = Self::shore_of(g.cells, g.size, &water);
+        let (cells, shore, bind) = self.data_bind(device, queue, g, &shore);
         let (tops, layers, place) = match self.worlds.remove(map) {
             Some(w) if w.size == g.size => (w.tops, w.layers, w.place),
             Some(w) => (BTreeMap::new(), BTreeMap::new(), w.place),
             None => (BTreeMap::new(), BTreeMap::new(), Place::default()),
         };
-        self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, size: g.size, bind, level_height: g.level_height, place });
+        self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, shore, water, size: g.size, bind, level_height: g.level_height, place });
     }
 
-    /// Repaints a world map's cells only (the same size): what painting terrain changes.
+    /// Repaints a world map's cells only (the same size): what painting terrain changes (the
+    /// shore's field with them).
     pub fn set_world_cells(&mut self, queue: &wgpu::Queue, map: &str, cells: &[u8]) {
         let Some(w) = self.worlds.get(map) else { return };
         if cells.len() as u32 != w.size[0] * w.size[1] * 4 {
@@ -1309,6 +1394,8 @@ impl SceneRenderer {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w.size[0] * 4), rows_per_image: Some(w.size[1]) },
             wgpu::Extent3d { width: w.size[0], height: w.size[1], depth_or_array_layers: 1 },
         );
+        let shore = Self::shore_of(cells, w.size, &w.water);
+        Self::write_field(queue, &w.shore, &shore, w.size);
     }
 
     /// Where a world map sits in the scene (after `set_world_ground`).
@@ -1471,7 +1558,11 @@ impl SceneRenderer {
             toon_e: [if t.crease > 0.0 { t.crease.clamp(1.0, 179.0).to_radians().cos() } else { 2.0 }, (t.ink && toon_seen) as u32 as f32, t.color_steps.min(32) as f32, t.color_softness.clamp(0.0, 1.0)],
             inv_view_proj: frame.view_proj.inverse().to_cols_array_2d(),
             clouds_a: [t.cloud_shadow.clamp(0.0, 1.0) * sun_strength, 1.0 / t.cloud_size.max(1.0), t.cloud_cover.clamp(0.0, 1.0), 0.1],
-            clouds_b: [CLOUD_WIND.x * t.cloud_speed, CLOUD_WIND.y * t.cloud_speed, 28.0, 0.0],
+            // the clouds drift with the wind
+            clouds_b: {
+                let way = frame.wind.way.normalize_or(CLOUD_WIND);
+                [way.x * t.cloud_speed, way.y * t.cloud_speed, 28.0, 0.0]
+            },
             retro_a: [
                 pixel.unwrap_or(0) as f32,
                 frame.retro.lcd.map_or(0.0, Handheld::code),
@@ -1482,6 +1573,10 @@ impl SceneRenderer {
                 if frame.retro.pixels.is_some() { 31.0 } else { 0.0 },
             ],
             retro_b: [screen[0] as f32, screen[1] as f32, 0.0, 0.0],
+            wind: {
+                let way = frame.wind.way.normalize_or(CLOUD_WIND);
+                [way.x, way.y, frame.wind.strength.clamp(0.0, 1.0), frame.wind.gusts.clamp(0.0, 1.0)]
+            },
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -2042,6 +2137,7 @@ mod tests {
             toon: Toon::default(),
             retro: Retro::default(),
             frost: false,
+            wind: Wind { way: Vec2::new(1.0, 0.0), strength: 0.6, gusts: 0.5 },
         }
     }
 
@@ -2070,7 +2166,7 @@ mod tests {
             return;
         };
         let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let vertex = |x: f32, z: f32, joint: u32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0; 4], joints: [joint, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0], toon: 0.0 };
+        let vertex = |x: f32, z: f32, joint: u32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0; 4], joints: [joint, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0], toon: 0.0, wind: [200, 100, 50, 30] };
         let counts = [3usize, 7, 32, 2, 7, 3, 200, 32, 1];
         for (i, &n) in counts.iter().enumerate() {
             let x = i as f32 * 0.5 - 2.0;

@@ -84,6 +84,7 @@ node tools/zonecheck.mjs               # creatures roaming, the debug view, a zo
 node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, "Start new games here"
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, the main, the last battles, a controller; the old handhelds' pixels and LCD
+node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), the Post-processing window's Wind
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
 python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the user's bones
 cargo test -p engine-game -- --ignored shot   # the desktop-only windows drawn on the GPU, no window opened (build/shots/requests-bones.png; SHOT_PICTURE: the picture)
@@ -177,6 +178,29 @@ small one.
   slabs, cracks, lumps; in the terrain's side colour), every edge bevelled: the top edge
   goes down, the ground at the foot comes up into it (not water), and an outer corner
   standing on one level all round is cut off down its height.
+- **Water** is a terrain's `water`: `inland` (lakes, ponds, rivers; what's drawn as water is
+  inland unless it says otherwise) or `oceanic` (the Sea terrain). Inland water ripples the
+  way the wind blows (barely when it's calm) and lands small waves, their foam, on the shore
+  the wind blows to; the sea's waves are rough by default and always roll in to the land,
+  shorter and steeper as it shoals, breaking in foam near the shore, rougher when the wind
+  blows to the land and calmer when it blows out to sea. Both are lighter in the shallows,
+  and the sun glints on them. Where water meets a `beach` (sand is one) it washes up and back:
+  up quickly, back slowly, each stretch of the beach in its own time, as far as the sea's
+  waves or the wind pushing inland water onto that shore say, the sand it reached wet and
+  darker, foam along its edge. The renderer keeps a field of how far each cell is from the
+  shore, which way the land is from there (smoothed), and which water a beach is near on its
+  own level (`crates/render/src/shore.rs`), made again when terrain is painted; the water's
+  edge runs along it, wavering.
+- **The wind** is the world's (`settings/world.json`'s `wind`: the way it blows to, in
+  degrees clockwise from north up the map, its strength from calm to a gale, how much of it
+  comes in gusts; the editor's Post-processing window), and moves only what's painted for it:
+  a model's "wind" colour layer (see Blender: R sway, G flutter, B phase), a
+  stand-in's `wind` (its `sway` and `flutter`, rising with height: the asset inspector's
+  Wind sliders; the trees, bushes and flowers that come with it have one), the tall grass.
+  It leans downwind, sways about that and flutters, the taller the further, in gusts that go
+  by in broad patches (a wood moves as one, a wave going through it), shadows included, on
+  the GPU (`swayed` in the vertex shaders). The water ripples and rolls with it, and the
+  clouds' shadows drift its way.
 - **Abilities** (`moves`) hold what an ability does in battle, its level-ups, what it
   becomes and its timeline; **FX** records hold hand-drawn flipbooks on simple meshes
   (sheets under `assets/fx/`), made in the editor's FX editor.
@@ -368,7 +392,8 @@ round the edge and a glint; ink lines round it where it stands in front of what'
 than an angle; colour steps for the whole picture, toon or not (the world's light in
 bands, the colours kept; the interface untouched); and the clouds' shadows drifting over
 the world (how dark, how big, how fast, how much of the sky; cast along the sun's way, faint
-by moonlight). Changes show at once; Save (or Ctrl+S)
+by moonlight); and the wind (the way it blows, a compass showing it, its strength and its
+gusts). Changes show at once; Save (or Ctrl+S)
 writes them into the world settings record, Revert drops them, Defaults starts over.
 **Abilities** opens the Abilities window: every ability (a move record) of both spaces, one
 picked to edit or a new one (new ones go to `temporary/` unless told otherwise): what it
@@ -470,7 +495,15 @@ light object on it and its sound from a speaker (see `tools/blender/README.md`).
 keeps materials, rigs and animations as Blender writes them: the engine draws base colours
 and textures, and a rigged model plays its "idle" animation (`crates/world/src/anim.rs`
 poses it, the renderer skins it, shadows included); a camera never goes into a model, the
-game has its own. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
+game has its own. What the wind moves is painted for it in Vertex Paint, on a colour layer
+named "wind": its R how far a point sways (0 at a stem's or a trunk's foot, where hair grows;
+1 at the tips), its G how much it flutters (leaves, petals, fur, a cloth's edge), its B its
+phase (different values on different leaves or tufts, so they don't move together); the
+game adds how high the point stands, so taller things bend further. The add-on's "Wind
+paint from height" starts one (the sway rising from the foot, a phase for each loose part);
+Add to the project writes it as the model's second colour layer and marks it (`bf_wind`),
+which the engine reads (`export-glb check` says "painted for the wind") and the import gives
+back as "wind". Unpainted, a model stays still. Same frame everywhere: one unit is a cell (a metre), the asset on the ground at
 the origin, its front to Blender's front view. Models made from the editor's requests come
 through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 
@@ -480,10 +513,10 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 |---|---|
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
-| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
-| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance), the old handhelds' looks (`Retro`: the scene drawn small, its pixels whole squares of the screen's, in 15-bit colour; an LCD's colours and the gaps between its pixels) and a small blurred copy of the picture for frosted glass (`frost_view`, which the game hands egui) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts; every vertex's wind: sway, flutter, phase, height above its foot), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
+| `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance), the wind (what's painted for it swaying in the vertex shaders, shadows too), the water (inland ripples and the sea's waves, foam, the swash up a beach, from the shore's field: `shore.rs`), the old handhelds' looks (`Retro`: the scene drawn small, its pixels whole squares of the screen's, in 15-bit colour; an LCD's colours and the gaps between its pixels) and a small blurred copy of the picture for frosted glass (`frost_view`, which the game hands egui) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `layout.rs` (the HUD's layout groups, frosted buttons, the ring from one to the next), `play_hud.rs` (the overworld's HUD: the Team and its list, Settings, Exit), `team.rs` (who of the team fought in the last battles, the main), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list, the old handhelds' looks), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list, the old handhelds' looks), `watercheck.mjs` (the wind and the water: foam on the downwind shore, the sea rougher onshore, what sways, the Wind section), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 

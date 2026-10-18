@@ -546,11 +546,58 @@ pub struct Settings {
     /// where a new game begins (the map editor's "Start new games here")
     #[serde(skip_serializing_if = "is_default")]
     pub start: Start,
+    /// the wind (the Post-processing window)
+    #[serde(skip_serializing_if = "is_default")]
+    pub wind: Wind,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default() }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default() }
+    }
+}
+
+/// The world's wind: the way it blows, how strong, how gusty. It moves what's painted for it
+/// (props' and creatures' models, a stand-in's `wind`), the tall grass, the water's ripples
+/// and waves, and the clouds.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Wind {
+    /// the way it blows to, in degrees clockwise from north on the map (north is -z): 90 is
+    /// east, 180 south
+    pub direction: f64,
+    /// 0 (calm) to 1 (a gale)
+    pub strength: f64,
+    /// how much of it comes in gusts: 0 (steady) to 1
+    pub gusts: f64,
+}
+
+impl Default for Wind {
+    /// A breeze going east and a little south (the way the clouds always drifted).
+    fn default() -> Wind {
+        Wind { direction: 112.0, strength: 0.35, gusts: 0.5 }
+    }
+}
+
+impl Wind {
+    /// The way it blows on the map's ground, a unit long: (x, z).
+    pub fn way(&self) -> [f64; 2] {
+        let a = self.direction.to_radians();
+        [a.sin(), -a.cos()]
+    }
+
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if !(0.0..=360.0).contains(&self.direction) {
+            out.push(format!("direction {}: 0 to 360 degrees", self.direction));
+        }
+        for (what, v) in [("strength", self.strength), ("gusts", self.gusts)] {
+            if !(0.0..=1.0).contains(&v) {
+                out.push(format!("{what} {v}: 0 to 1"));
+            }
+        }
+        out
     }
 }
 
@@ -711,6 +758,29 @@ pub struct Terrain {
     /// where two terrains meet, the one with the higher priority reaches further
     #[serde(skip_serializing_if = "is_default")]
     pub priority: i16,
+    /// water, and how it moves: "inland" (lakes, ponds, rivers: ripples going with the wind,
+    /// small waves landing on the shore it blows towards) or "oceanic" (the sea: waves always
+    /// rolling in to the land, stronger when the wind blows to land too). A terrain drawn as
+    /// water (its pattern) is inland unless it says so.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub water: String,
+    /// where water meets it, the water washes up onto it and back, as onto sand
+    #[serde(skip_serializing_if = "is_default")]
+    pub beach: bool,
+}
+
+/// The kinds of water (`Terrain::water`).
+pub const WATERS: [&str; 2] = ["inland", "oceanic"];
+
+impl Terrain {
+    /// The kind of water it is, if it's water: "inland" or "oceanic".
+    pub fn water_kind(&self) -> Option<&str> {
+        match self.water.as_str() {
+            "" if self.pattern == "water" => Some("inland"),
+            "" => None,
+            kind => Some(kind),
+        }
+    }
 }
 
 /// A piece of a prop's stand-in model, until it has a real one: a simple shape.
@@ -779,6 +849,26 @@ pub struct Prop {
     /// a piece of railing (category "railing"): its style, and where it goes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub railing: Option<RailingPiece>,
+    /// how its stand-in moves in the wind (a model moves by its own wind paint instead)
+    #[serde(skip_serializing_if = "is_default")]
+    pub wind: Breeze,
+}
+
+/// How a prop's stand-in (its parts, which have no paint) moves in the wind: `sway`, bending
+/// with it, more the higher up (0: not at all, to 1), and `flutter`, a leaves' quick shiver
+/// (0 to 1). A real model is painted for the wind instead (a "wind" colour layer: see the
+/// Blender guide).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Breeze {
+    pub sway: f64,
+    pub flutter: f64,
+}
+
+impl Breeze {
+    pub fn still(&self) -> bool {
+        self.sway <= 0.0 && self.flutter <= 0.0
+    }
 }
 
 /// The points railing pieces stand on: where a span ends ("end"), ends against a wall

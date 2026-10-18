@@ -533,6 +533,19 @@ A prop's parts are its pieces (a lantern's plinth, post, chamber and roof; a che
 and lock), crisp ones as they are (`remesh=False`), each refined on its own; one that moves (a
 lid, a door, a wheel) on a bone of its own, rigged like a creature's jaw.
 
+## The wind
+
+The game's wind sways what's painted for it, and nothing else: a colour layer named "wind",
+its R how far a point sways (0 at its root: a stem's foot, where hair grows; 1 at the tips),
+its G how much it flutters (leaves, petals, fur, a cloth's edge), its B its phase (different
+values on different leaves or tufts, so they don't all move together). The game adds how high
+the point stands, so taller things bend further. `kit.fur` paints its strands itself (rooted,
+swaying and fluttering to their tips, each in its own time); paint the rest of what the wind
+moves with `kit.wind(part, sway=, flutter=, root=)`: hair, a mane, leaves and petals, a
+cloth, a tail's tuft, a flag. A creature's body, head and limbs stay unpainted: the rig moves
+them, the wind doesn't. A prop's: a tree's crown and its leaves (`root` its trunk's foot), a
+bush, flowers, grass, a banner; never a rock or a wall.
+
 The rig and the actions, in `model.py` after `fit`:
 
 ```python
@@ -583,10 +596,10 @@ in heads, widths against heights), model every part, marking and colour they sho
 most fitting tool for each part rather than the quickest:
 
 - **fur and hair**: `kit.fur(part, region, ...)`, strands grown on a colour region as
-  Blender's hair grows them, made mesh (glTF and the game have no particle hair): thousands
-  of strands for a coat (`count`), their `length`, `thickness` and `droop`; then `fit` again
-  so it stands its height with its fur on, then the rig. Short dense fur reads better than
-  long sparse fur, and each strand is 6 faces: mind the budget;
+  Blender's hair grows them, made mesh (glTF and the game have no particle hair), painted for
+  the wind: thousands of strands for a coat (`count`), their `length`, `thickness` and
+  `droop`; then `fit` again so it stands its height with its fur on, then the rig. Short
+  dense fur reads better than long sparse fur, and each strand is 6 faces: mind the budget;
 - **details**: more parts and shapes, `cuts` for openings and grooves, `slab`s for thin flat
   parts (claws, fins, leaves, feathers), a finer remesh (`voxel=size/180`) and a bigger budget
   for each `part` (20000 triangles or more in all);
@@ -636,7 +649,8 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `fuse(shapes, name, colours, smooth=, voxel=, faces=, cuts=[...], paint=[...])` | what `part` remeshes with: joined and voxel-remeshed into one clean watertight mesh, `cuts` carved out, each face given the material of the nearest shape's region (then of the `paint` volume it's in), decimated to about `faces` triangles (smooth 6000, low-poly 800) sparing the borders between regions, smooth (weighted normals) or flat shaded |
 | `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}`: the region's lit tone, its shine as roughness (above, "The design, not the drawing") |
 | `eyes(head, [centres], radius, colour=, look=, separate=True)` | glossy eyes with a glint, seated on the head's surface: parts of their own (`eye.L`, `eye.R`, on the bones of their names, else the head); without `separate`, set into the part (group "eyes", which the rig gives the head) |
-| `fur(part, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws; `fit` again after it |
+| `fur(part, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws, painted for the wind; `fit` again after it |
+| `wind(part, sway=1.0, flutter=0.0, root=None)` | painted for the wind ("The wind"): swaying up to `sway` and fluttering up to `flutter` the further from `root` (a point; by default its lowest), each loose piece in its own time |
 | `tube(points, radius, region, radius_end=)` | a curved part through the points, round, tapering |
 | `with editing(obj) as bm:` | the mesh as a bmesh to edit by hand (extrude, inset, bevel, move...), written back after |
 | `extrude(bm, faces, move)` | in an editing block: faces pulled out with their sides, the old ones gone |

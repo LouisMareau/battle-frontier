@@ -399,6 +399,21 @@ before_fur = len(critter.data.polygons)
 grown = kit.fur(critter, "fur", count=200, length=0.03)
 fur_faces = sum(1 for p in critter.data.polygons[before_fur:] if critter.data.materials[p.material_index].name == "test_critter fur")
 check("fur grown on its region, made mesh", grown == 200 and len(critter.data.polygons) == before_fur + 200 * 6 and fur_faces == 200 * 6, f"{len(critter.data.polygons) - before_fur} new faces")
+wind_layer = critter.data.vertex_colors.get("wind")
+
+
+def wind_of(o, polygons):
+    layer = o.data.vertex_colors["wind"]
+    return [tuple(layer.data[i].color) for p in polygons for i in p.loop_indices]
+
+
+if wind_layer:
+    strands = wind_of(critter, critter.data.polygons[before_fur:])
+    body = wind_of(critter, critter.data.polygons[:before_fur])
+check("  painted for the wind: the strands sway to their tips and flutter, each in its own time; the body stays",
+      wind_layer is not None and max(c[0] for c in strands) > 0.99 and min(c[0] for c in strands) == 0.0 and max(c[1] for c in strands) > 0.6
+      and len({round(c[2], 3) for c in strands}) > 50 and max(max(c[:3]) for c in body) == 0.0,
+      f"{critter.data.vertex_colors.keys()}")
 kit.fit([critter], job.height)  # its height with its fur on
 names = [m.name for m in critter.data.materials]
 used = {p.material_index for p in critter.data.polygons}
@@ -457,6 +472,7 @@ critter_doc = glb_doc(critter_glb) if critter_glb.is_file() else {}
 check("its rig and its idle in the model", len(critter_doc.get("skins", [])) == 1 and [a.get("name") for a in critter_doc.get("animations", [])] == ["idle"], f"{len(critter_doc.get('skins', []))} skins")
 run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(critter_glb)], cwd=str(project), capture_output=True, text=True)
 check("the engine reads its rig and its idle", "a rig of 7 joints" in run.stdout and "idle (2.0 s)" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-300:])
+check("  and its fur's wind paint", "painted for the wind" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-300:])
 # a design that is the user's: into content/
 mr.new(scratch, "Test pot", [scratch / "critter.png"], kind="prop", height=0.5, mine=True)
 job = kit.start(scratch / "private" / "requests" / "test_pot" / "model.py")
@@ -467,6 +483,41 @@ kit.finish(job, [pot], [])
 check("a design of the user's goes to content/", (scratch / "content" / "data" / "props" / "test_pot.json").is_file() and (scratch / "content" / "assets" / "models" / "test_pot.glb").is_file()
       and not (scratch / "temporary" / "data" / "props" / "test_pot.json").exists() and mr.load(scratch, "test_pot")["status"] == "done")
 check("  low-poly: flat shaded, few faces", not any(p.use_smooth for p in pot.data.polygons) and len(pot.data.polygons) <= 800, f"{len(pot.data.polygons)} faces")
+clear()
+
+# 5e. a model painted for the wind: painted from its height (a stem and its leaves, each its
+# own phase), added to the project (its paint the second colour layer, marked so; the meshes
+# left as they were), read by the engine, and back from its .glb with its "wind" layer
+clear()
+stem = solid("shrub stem", lambda bm: bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=0.08, radius2=0.05, depth=1.0, matrix=__import__("mathutils").Matrix.Translation((0, 0, 0.5))), colour=(0.4, 0.25, 0.1, 1))
+leaves = solid("shrub leaves", lambda bm: bmesh.ops.create_uvsphere(bm, u_segments=10, v_segments=6, radius=0.3, matrix=__import__("mathutils").Matrix.Translation((0, 0, 1.2))), colour=(0.2, 0.6, 0.2, 1))
+for o in bpy.context.view_layer.objects:
+    o.select_set(o in (stem, leaves))
+bpy.context.view_layer.objects.active = stem
+r = bpy.ops.battle_frontier.wind_from_height(flutter=0.5)
+foot = min(c[0] for c in wind_of(stem, stem.data.polygons)) if stem.data.vertex_colors.get("wind") else 1
+top = max(c[0] for c in wind_of(leaves, leaves.data.polygons)) if leaves.data.vertex_colors.get("wind") else 0
+phase = {round(c[2], 4) for o in (stem, leaves) for c in wind_of(o, o.data.polygons)} if leaves.data.vertex_colors.get("wind") else set()
+check("wind paint from height: a \"wind\" layer each, rooted at the foot, free at the top, each part in its own time", r == {"FINISHED"} and foot == 0.0 and top > 0.99 and len(phase) == 2, f"{foot} {top} {phase}")
+painted_before = [tuple(c) for c in wind_of(leaves, leaves.data.polygons)]
+r = bpy.ops.battle_frontier.add_to_project(asset_id="test_shrub", asset_name="Test shrub", category="flora")
+shrub_glb = scratch / "content" / "assets" / "models" / "test_shrub.glb"
+shrub = glb_doc(shrub_glb) if shrub_glb.is_file() else {}
+prims = [p for m in shrub.get("meshes", []) for p in m.get("primitives", [])]
+marked = [n for n in shrub.get("nodes", []) if "bf_wind" in json.dumps(n.get("extras", {}))] + [m for m in shrub.get("meshes", []) if "bf_wind" in json.dumps(m.get("extras", {}))]
+check("added: its colours first, its wind paint second, marked so", r == {"FINISHED"} and prims and all("COLOR_0" in p["attributes"] and "COLOR_1" in p["attributes"] for p in prims) and marked,
+      f"{[sorted(p['attributes']) for p in prims]}, {len(marked)} marked")
+check("  the meshes as they were: their one \"wind\" layer", [o.data.vertex_colors.keys() for o in (stem, leaves)] == [["wind"], ["wind"]], f"{[o.data.vertex_colors.keys() for o in (stem, leaves)]}")
+run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(shrub_glb)], cwd=str(project), capture_output=True, text=True)
+check("  the engine reads its wind paint", "painted for the wind" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-300:])
+clear()
+r = bpy.ops.battle_frontier.import_prop(prop_id="test_shrub")
+back = [o for o in bpy.data.objects if o.type == "MESH" and not bf.is_bounds(o)]
+layers = [o.data.vertex_colors.keys() for o in back]
+check("  back from its .glb, its paint the \"wind\" layer again", r == {"FINISHED"} and back and all(k[1:] == ["wind"] for k in layers), f"{layers}")
+if back and all("wind" in o.data.vertex_colors for o in back):
+    tops = [max(c[0] for c in wind_of(o, o.data.polygons)) for o in back]
+    check("    as it was painted", max(tops) > 0.98, f"{tops}")
 clear()
 
 # 5d. a creature in parts, as a modeller makes it for a rigger (requests.md, "Parts"): each part

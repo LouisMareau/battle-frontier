@@ -7,5 +7,6 @@
   "pattern": "sand",
   "side": "#c2a46e",
   "walk": "walk",
-  "priority": 3
+  "priority": 3,
+  "beach": true
 }

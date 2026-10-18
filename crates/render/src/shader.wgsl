@@ -42,6 +42,8 @@ struct Globals {
     // b: xy the screen's size in pixels
     retro_a: vec4<f32>,
     retro_b: vec4<f32>,
+    // the wind: xy the way it blows on the ground (x, z), z how strong (0 to 1), w how gusty
+    wind: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -113,6 +115,8 @@ struct MapIn {
     @location(3) color: vec4<f32>,
     // 1: drawn with the toon look; 2: unlit, as drawn (an FX)
     @location(4) toon: f32,
+    // how it moves in the wind: sway, flutter, phase, height above its foot (8 cells: 1)
+    @location(5) wind: vec4<f32>,
 };
 
 struct MapOut {
@@ -160,10 +164,45 @@ fn look(world: vec3<f32>, n: vec3<f32>, toon: f32) -> vec4<u32> {
     return vec4<u32>(select(0u, 1u, toon > 0.5 && toon < 1.5), depth, e.x, e.y);
 }
 
+// ---------------------------------------------------------------- the wind
+
+// how much stronger the wind is at a point just now, about 1: gusts are broad patches of
+// stronger wind going by with it (as much of it as `g.wind.w` says)
+fn gust_at(p: vec2<f32>) -> f32 {
+    let q = p * 0.06 - g.wind.xy * g.world.w * (0.25 + 0.6 * g.wind.z);
+    let n = noise(q) * 0.65 + noise(q * 2.3 + 7.1) * 0.35;
+    return mix(1.0, 0.35 + 1.45 * n, g.wind.w);
+}
+
+// a point of something painted for the wind, moved by it: `w` its weights (sway, flutter,
+// phase, its height above its foot over 8 cells). It leans downwind as far as its sway, its
+// height and the wind (with its gust) say, swaying about that, and flutters quickly along its
+// surface and across the wind; whatever isn't painted stays.
+fn swayed(p: vec3<f32>, n: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
+    let s = g.wind.z;
+    if (s <= 0.0 || (w.x <= 0.0 && w.y <= 0.0)) {
+        return p;
+    }
+    let t = g.world.w;
+    let way = vec3<f32>(g.wind.x, 0.0, g.wind.y);
+    let height = w.w * 8.0;
+    // its own time, and a little of where it stands (a gust goes through a wood, not all at once)
+    let phase = w.z * 6.2832 + dot(p.xz, vec2<f32>(0.11, 0.07));
+    let gust = gust_at(p.xz);
+    let lean = s * gust * (0.5 + 0.5 * sin(t * (1.1 + 1.6 * s) + phase));
+    let bend = w.x * lean * (0.16 + 0.14 * height);
+    var q = p + way * bend;
+    // bent over, a tip comes down a little
+    q.y = q.y - w.x * bend * bend * 0.35 / max(height, 0.3);
+    let across = vec3<f32>(-way.z, 0.0, way.x);
+    let f = w.y * (0.25 + 0.75 * s) * gust * 0.07 * sin(t * (7.0 + 9.0 * s) + phase * 3.1 + dot(p, vec3<f32>(2.9, 2.1, 3.3)));
+    return q + (n * 0.6 + across * 0.4) * f;
+}
+
 @vertex
 fn vs_map(v: MapIn) -> MapOut {
     var o: MapOut;
-    let pos = v.pos + place.offset.xyz;
+    let pos = swayed(v.pos + place.offset.xyz, v.normal, v.wind);
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
@@ -293,13 +332,16 @@ fn fs_map_fade(i: MapOut) -> @location(0) vec4<f32> {
 // faces, between on the bevels along the cliffs' tops (the faces' rgb darkens their foot).
 // The terrain of every cell is in `cells` (r: terrain, g: level); `palette` has a column
 // per terrain: row 0 its colour, row 1 its second colour, row 2 (pattern, priority + 128,
-// water), row 3 its cliffs' colour. Where terrains meet, the border is drawn here: each of
-// the four nearest cells votes for its terrain by closeness, with noise, so borders come
-// out organic and corners round, whatever was painted, and the painter never picks border
-// tiles.
+// water: 0 none, 1 inland, 2 oceanic; beach), row 3 its cliffs' colour. Where terrains
+// meet, the border is drawn here: each of the four nearest cells votes for its terrain by
+// closeness, with noise, so borders come out organic and corners round, whatever was
+// painted, and the painter never picks border tiles. Where water meets land, `shore` says
+// how far each cell's centre is from the shore (negative on the water), and the water's edge
+// runs along it, wavering: the waves and the foam, and the swash up a beach, go by it.
 
 @group(1) @binding(2) var cells: texture_2d<f32>;
 @group(1) @binding(3) var palette: texture_2d<f32>;
+@group(1) @binding(4) var shore: texture_2d<f32>;
 
 fn hash2(p: vec2<f32>) -> f32 {
     let q = fract(p * vec2<f32>(0.1031, 0.1030));
@@ -349,7 +391,6 @@ fn terrain_color(t: i32, p: vec2<f32>, inside: f32) -> vec3<f32> {
     let c1 = to_linear(pal(t, 0).rgb);
     let c2 = to_linear(pal(t, 1).rgb);
     let kind = i32(round(pal(t, 2).r * 255.0));
-    let time = g.world.w;
     var c = c1;
     switch kind {
         case 1: { // grass
@@ -407,15 +448,166 @@ fn terrain_color(t: i32, p: vec2<f32>, inside: f32) -> vec3<f32> {
             c = mix(c1, c2, fbm(p * 0.8));
             c = c * mix(0.72, 1.0, smoothstep(0.0, 0.05, abs(noise(p * 2.5) - 0.5)));
         }
-        case 8: { // water: moving ripples, lighter at the shore
-            let w = noise(p * 1.2 + vec2<f32>(time * 0.25, time * 0.1)) + noise(p * 2.1 - vec2<f32>(time * 0.15, time * 0.3));
-            c = mix(c1, c1 * 0.78, fbm(p * 0.3));
-            c = mix(c, c2, smoothstep(1.2, 1.5, w) * 0.8);
-            c = mix(c2, c, smoothstep(0.0, 0.22, inside));
-        }
         default: {}
     }
     return c;
+}
+
+// ---------------------------------------------------------------- water
+
+// a terrain's water: 0 none, 1 inland, 2 oceanic; a beach (the water washes onto it)
+fn water_kind(t: i32) -> i32 {
+    return i32(round(pal(t, 2).b * 255.0));
+}
+
+fn is_beach(t: i32) -> bool {
+    return pal(t, 2).a > 0.5;
+}
+
+// the shore at a point of the map (its own cells): how far it is (cells; negative out on
+// the water) and which way the land is (none where there's no telling), from the field at
+// the four nearest cells' centres (r the distance, gb the way, smoothed: it turns gently)
+struct Shore {
+    d: f32,
+    land: vec2<f32>,
+};
+
+fn shore_at(p: vec2<f32>) -> Shore {
+    let size = vec2<i32>(textureDimensions(shore)) - vec2<i32>(1, 1);
+    // the field has the ring of cells round the map first: a cell's centre is a texel's
+    let q = p + 0.5;
+    let b = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    let v00 = textureLoad(shore, clamp(b, vec2<i32>(0, 0), size), 0);
+    let v10 = textureLoad(shore, clamp(b + vec2<i32>(1, 0), vec2<i32>(0, 0), size), 0);
+    let v01 = textureLoad(shore, clamp(b + vec2<i32>(0, 1), vec2<i32>(0, 0), size), 0);
+    let v11 = textureLoad(shore, clamp(b + vec2<i32>(1, 1), vec2<i32>(0, 0), size), 0);
+    let v = mix(mix(v00, v10, f.x), mix(v01, v11, f.x), f.y);
+    var s: Shore;
+    s.d = v.r;
+    s.land = select(vec2<f32>(0.0, 0.0), v.gb / max(length(v.gb), 0.0001), length(v.gb) > 0.05);
+    return s;
+}
+
+// how far off the field's own line the water's edge runs, wavering, so coasts come out
+// organic (within half a cell: the four nearest cells always hold both)
+fn shore_wobble(pg: vec2<f32>) -> f32 {
+    return (noise(pg * 1.7) - 0.5) * 0.36 + (noise(pg * 4.3 + 9.1) - 0.5) * 0.12;
+}
+
+// a point of the ground as drawn: its colour, the way it faces (the water's waves tilt it),
+// how much the sun glints on it
+struct Ground {
+    col: vec3<f32>,
+    n: vec3<f32>,
+    shine: f32,
+};
+
+const TAU: f32 = 6.2831853;
+const FOAM: vec3<f32> = vec3<f32>(0.88, 0.94, 0.97);
+
+// the sea's waves here: rough by default, rougher when the wind blows to the land, calmer
+// when it blows out to sea
+fn swell(land: vec2<f32>) -> f32 {
+    return 0.75 * (1.0 + 0.65 * g.wind.z * dot(g.wind.xy, land));
+}
+
+// how hard the wind pushes inland water onto this shore: as much as it blows to the land
+fn onshore(land: vec2<f32>) -> f32 {
+    return clamp(dot(g.wind.xy, land), 0.0, 1.0) * g.wind.z;
+}
+
+// the water of terrain `t` (its kind: 1 inland, 2 oceanic) at `pg` (the world's grid), `d`
+// from its edge (cells, negative out on it), the land that way. Inland: ripples going with
+// the wind (barely any when it's calm), the calm water's slow glints, small waves landing on
+// the shore the wind blows to, foam along it. Oceanic: waves always rolling in to the land,
+// shorter and steeper as it shoals, breaking near the shore in foam.
+fn water(kind: i32, t: i32, pg: vec2<f32>, d: f32, land_way: vec2<f32>) -> Ground {
+    let time = g.world.w;
+    let c1 = to_linear(pal(t, 0).rgb);
+    let c2 = to_linear(pal(t, 1).rgb);
+    let s = g.wind.z;
+    let way = g.wind.xy;
+    // far from any land the field has no slope: there the waves go with the wind
+    let land = select(way, land_way, dot(land_way, land_way) > 0.5);
+    let depth = max(-d, 0.0);
+    // deep out there, lighter in the shallows
+    var col = mix(c2 * 0.9, c1, smoothstep(0.0, select(2.2, 4.5, kind == 2), depth));
+    if (kind == 2) {
+        col = mix(col, c1 * 0.72, smoothstep(5.0, 16.0, depth));
+    }
+    col = col * (0.94 + 0.12 * fbm(pg * 0.18 + way * time * 0.03));
+    var slope = vec2<f32>(0.0, 0.0);
+    var foam = 0.0;
+    if (kind == 2) {
+        // (the waves' speed never changes from place to place: only how big they are)
+        let k = mix(0.45, 1.25, smoothstep(9.0, 0.0, depth));
+        let strong = swell(land);
+        let ph = d * k - time * 0.38 + fbm(pg * 0.22) * 0.8;
+        let wave = 0.5 + 0.5 * sin(ph * TAU);
+        let crest = smoothstep(0.8, 0.97, wave);
+        col = col * (1.0 - 0.12 * strong * (1.0 - wave));
+        col = mix(col, c2 * 1.1, crest * 0.3 * min(strong, 1.2));
+        slope = land * cos(ph * TAU) * 0.22 * strong;
+        let breaking = smoothstep(2.6, 0.3, depth) * strong;
+        foam = foam + crest * breaking * (0.5 + 0.5 * noise(pg * 2.6 + vec2<f32>(time * 0.4, 0.0)));
+        let wash = 0.5 + 0.5 * sin((time * 0.38 - d * k) * TAU);
+        foam = foam + smoothstep(0.22 + 0.25 * strong * wash, 0.0, depth) * (0.6 + 0.4 * wash);
+    } else {
+        let across = vec2<f32>(-way.y, way.x);
+        let u = dot(pg, way);
+        let v = dot(pg, across);
+        let ph = u * 2.4 - time * (0.7 + 1.6 * s) + fbm(vec2<f32>(u * 0.45, v * 1.2)) * 2.0;
+        let lines = smoothstep(0.84, 0.97, 0.5 + 0.5 * sin(ph * TAU));
+        let broken = smoothstep(0.4, 0.7, noise(vec2<f32>(u * 0.9 - time * 0.4, v * 2.2)));
+        col = mix(col, c2 * 1.12, lines * broken * (0.12 + 0.88 * s) * gust_at(pg) * 0.6);
+        slope = way * cos(ph * TAU) * 0.12 * (0.15 + 0.85 * s);
+        let w = noise(pg * 1.2 + vec2<f32>(time * 0.25, time * 0.1)) + noise(pg * 2.1 - vec2<f32>(time * 0.15, time * 0.3));
+        col = mix(col, c2, smoothstep(1.25, 1.5, w) * 0.4 * (1.0 - 0.6 * s));
+        let on = onshore(land);
+        let lap = time * (1.0 + 1.3 * s) + depth * 4.5;
+        let laps = smoothstep(0.72, 0.95, 0.5 + 0.5 * sin(lap * TAU)) * smoothstep(1.0, 0.15, depth);
+        foam = foam + laps * (0.12 + 0.75 * on);
+        foam = foam + smoothstep(0.1 + 0.12 * on * (0.5 + 0.5 * sin(lap * TAU)), 0.0, depth) * (0.35 + 0.6 * on);
+    }
+    let f = clamp(foam, 0.0, 1.0);
+    var out: Ground;
+    out.col = mix(col, FOAM, f);
+    out.n = normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
+    out.shine = 1.0 - f;
+    return out;
+}
+
+// the water washing up a beach and back: `sand` the beach's colour, `d` how far up it the
+// point is (cells), the land that way, the water's kind and terrain. Up quickly, back slowly,
+// each stretch of the beach in its own time, as far as the waves (the sea's) or the wind
+// pushing onto the shore (inland water) say; the sand it reached darker, wet, and foam along
+// its edge.
+fn swash(sand: vec3<f32>, kind: i32, wt: i32, pg: vec2<f32>, d: f32, land: vec2<f32>) -> Ground {
+    let time = g.world.w;
+    // (its time never changes from place to place but by smooth noise: only how far it goes)
+    var reach = 0.12 + 0.5 * onshore(land);
+    var period = 3.2;
+    if (kind == 2) {
+        reach = 0.45 + 0.7 * swell(land);
+        period = 5.0;
+    }
+    let cycle = fract(time / period + noise(pg * 0.16) * 0.8 + noise(pg * 0.05 + 3.3) * 0.4);
+    let up = select(1.0 - smoothstep(0.3, 1.0, cycle), smoothstep(0.0, 0.3, cycle), cycle < 0.3);
+    let front = reach * up + (noise(pg * 3.7 + vec2<f32>(time * 0.2, 0.0)) - 0.5) * 0.07;
+    let wet = smoothstep(reach + 0.06, reach * 0.4, d) * 0.22 + select(0.0, smoothstep(front + 0.3, front, d) * 0.16, cycle > 0.3);
+    var out: Ground;
+    out.n = vec3<f32>(0.0, 1.0, 0.0);
+    out.shine = wet * 0.6;
+    var col = sand * (1.0 - wet);
+    if (d < front) {
+        let thin = smoothstep(front, front - 0.25, d);
+        col = mix(col, to_linear(pal(wt, 1).rgb) * 0.95, 0.22 + 0.3 * thin);
+        out.shine = 0.8;
+    }
+    let edge = smoothstep(0.07, 0.0, abs(d - front)) * select(0.55, 0.9, cycle < 0.3) * step(0.02, front);
+    out.col = mix(col, FOAM, edge);
+    return out;
 }
 
 fn score(ts: array<i32, 4>, ws: array<f32, 4>, t: i32, p: vec2<f32>) -> f32 {
@@ -483,9 +675,16 @@ fn fs_ground(i: MapOut) -> Solid {
     // the surface's own facet (a cliff face is lumpy; its vertices keep the flat normal)
     let facet = cross(dpdx(i.world), dpdy(i.world));
     var col = vec3<f32>(0.0);
+    var shine = 0.0;
     let fc = p - vec2<f32>(own_cell);
     if (rocky < 0.999) {
-        col = ground_color(own_cell, own, p, pg, fc);
+        let gr = ground_color(own_cell, own, p, pg, fc);
+        col = gr.col;
+        shine = gr.shine;
+        // a top tilts as the water's waves say
+        if (rocky < 0.001) {
+            n = gr.n;
+        }
     }
     if (rocky > 0.001) {
         // along the face (across its normal, on the ground) and up it
@@ -513,16 +712,70 @@ fn fs_ground(i: MapOut) -> Solid {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
     }
+    var lit = col * (1.0 - place.grid.z) * sunlit(n, i.light_pos, i.world);
+    // the sun glinting on the water, and on wet sand
+    if (shine > 0.0) {
+        let h = normalize(g.sun_dir.xyz + normalize(g.camera.xyz - i.world));
+        lit = lit + g.sun_color.rgb * pow(max(dot(n, h), 0.0), 120.0) * shine * 0.8 * lit_by_sun(i.light_pos);
+    }
     var o: Solid;
-    o.color = vec4<f32>(fog(col * (1.0 - place.grid.z) * sunlit(n, i.light_pos, i.world), i.world), 1.0);
+    o.color = vec4<f32>(fog(lit, i.world), 1.0);
     o.look = look(i.world, n, 0.0);
     return o;
 }
 
-// a cell top's colour at p (in the map's cells; `pg`, the same point on the world's grid,
+// the four nearest cells' vote: the terrain that wins, by how much, and the runner-up
+// (`dry`: water doesn't stand)
+struct Vote {
+    bt: i32,
+    best: f32,
+    st: i32,
+    second: f32,
+};
+
+fn vote(ts: array<i32, 4>, f: vec2<f32>, pg: vec2<f32>, dry: bool) -> Vote {
+    let ws = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
+    var tv = ts;
+    var v: Vote;
+    v.bt = tv[0];
+    v.best = -9.0;
+    v.st = tv[0];
+    v.second = -9.0;
+    for (var k = 0; k < 4; k = k + 1) {
+        let t = tv[k];
+        if (dry && water_kind(t) > 0) {
+            continue;
+        }
+        let s = score(ts, ws, t, pg);
+        if (s > v.best) {
+            if (t != v.bt) {
+                v.second = v.best;
+                v.st = v.bt;
+            }
+            v.best = s;
+            v.bt = t;
+        } else if (t != v.bt && s > v.second) {
+            v.second = s;
+            v.st = t;
+        }
+    }
+    return v;
+}
+
+// the land's colour where the vote went (its border with the runner-up drawn soft)
+fn voted_color(v: Vote, pg: vec2<f32>) -> vec3<f32> {
+    var col = terrain_color(v.bt, pg, v.best - v.second);
+    if (v.second > -8.0) {
+        let other = terrain_color(v.st, pg, 0.0);
+        col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, v.best - v.second));
+    }
+    return col;
+}
+
+// a cell top at p (in the map's cells; `pg`, the same point on the world's grid,
 // for the patterns): its terrain, the borders with the terrains around, and the shade at
 // the foot of a cliff
-fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
+fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>, fc: vec2<f32>) -> Ground {
     let q = p - 0.5;
     let b = vec2<i32>(floor(q));
     let f = q - floor(q);
@@ -537,43 +790,50 @@ fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>
         select(own.x, c2.x, c2.y == own.y),
         select(own.x, c3.x, c3.y == own.y),
     );
-    var col: vec3<f32>;
-    if (ts[0] == ts[1] && ts[1] == ts[2] && ts[2] == ts[3]) {
-        // one terrain all around (most of the ground): no border to draw, no votes
-        col = terrain_color(ts[0], pg, 10.0);
-    } else {
-        let ws = array<f32, 4>((1.0 - f.x) * (1.0 - f.y), f.x * (1.0 - f.y), (1.0 - f.x) * f.y, f.x * f.y);
-        var best = -9.0;
-        var bt = own.x;
-        var second = -9.0;
-        var st = own.x;
-        let s0 = score(ts, ws, ts[0], pg);
-        let s1 = score(ts, ws, ts[1], pg);
-        let s2 = score(ts, ws, ts[2], pg);
-        let s3 = score(ts, ws, ts[3], pg);
-        let ss = array<f32, 4>(s0, s1, s2, s3);
-        for (var k = 0; k < 4; k = k + 1) {
-            var t = ts[0];
-            var s = ss[0];
-            if (k == 1) { t = ts[1]; s = ss[1]; }
-            if (k == 2) { t = ts[2]; s = ss[2]; }
-            if (k == 3) { t = ts[3]; s = ss[3]; }
-            if (s > best) {
-                if (t != bt) {
-                    second = best;
-                    st = bt;
-                }
-                best = s;
-                bt = t;
-            } else if (t != bt && s > second) {
-                second = s;
-                st = t;
+    var out: Ground;
+    out.n = vec3<f32>(0.0, 1.0, 0.0);
+    out.shine = 0.0;
+    // water among the four nearest (on this level), and land
+    var tv = ts;
+    var wt = -1;
+    var dry = false;
+    for (var k = 0; k < 4; k = k + 1) {
+        if (water_kind(tv[k]) > 0) {
+            if (wt < 0) {
+                wt = tv[k];
+            }
+        } else {
+            dry = true;
+        }
+    }
+    if (wt >= 0) {
+        // out on the water, or where it meets the land: the water's edge runs along the
+        // shore's field, wavering; up a beach, the swash
+        let sh = shore_at(p);
+        let d = sh.d + shore_wobble(pg);
+        if (!dry || d < 0.0) {
+            out = water(water_kind(wt), wt, pg, min(d, 0.0), sh.land);
+        } else {
+            let v = vote(ts, f, pg, true);
+            out.col = voted_color(v, pg);
+            if (is_beach(v.bt)) {
+                out = swash(out.col, water_kind(wt), wt, pg, d, sh.land);
             }
         }
-        col = terrain_color(bt, pg, best - second);
-        if (second > -8.0) {
-            let other = terrain_color(st, pg, 0.0);
-            col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, best - second));
+    } else if (ts[0] == ts[1] && ts[1] == ts[2] && ts[2] == ts[3]) {
+        // one terrain all around (most of the ground): no border to draw, no votes
+        out.col = terrain_color(ts[0], pg, 10.0);
+    } else {
+        out.col = voted_color(vote(ts, f, pg, false), pg);
+    }
+    // a beach a little further from the water, the swash reaching it: the water its cell is
+    // near, on its own level (the field's fourth: that water's terrain, plus one)
+    if (wt < 0 && is_beach(own.x)) {
+        let size = vec2<i32>(textureDimensions(shore)) - vec2<i32>(1, 1);
+        let nt = i32(round(textureLoad(shore, clamp(own_cell + vec2<i32>(1, 1), vec2<i32>(0, 0), size), 0).a)) - 1;
+        if (nt >= 0) {
+            let sh = shore_at(p);
+            out = swash(out.col, water_kind(nt), nt, pg, sh.d + shore_wobble(pg), sh.land);
         }
     }
     // shade at the foot of a cliff
@@ -582,7 +842,8 @@ fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>
     if (cell_at(own_cell + vec2<i32>(0, 1)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.y)); }
     if (cell_at(own_cell + vec2<i32>(-1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, fc.x)); }
     if (cell_at(own_cell + vec2<i32>(1, 0)).y > own.y) { shade = shade * mix(0.62, 1.0, smoothstep(0.0, 0.7, 1.0 - fc.x)); }
-    return col * shade;
+    out.col = out.col * shade;
+    return out;
 }
 
 
@@ -596,7 +857,7 @@ fn fs_map_shadow(i: MapOut) {
 @vertex
 fn vs_map_shadow(v: MapIn) -> MapOut {
     var o: MapOut;
-    let pos = v.pos + place.offset.xyz;
+    let pos = swayed(v.pos + place.offset.xyz, v.normal, v.wind);
     o.clip = g.light_view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
@@ -617,6 +878,7 @@ struct SkinIn {
     @location(4) joints: vec4<u32>,
     @location(5) weights: vec4<f32>,
     @location(6) toon: f32,
+    @location(7) wind: vec4<f32>,
 };
 
 // each model's joint matrices (placed in the world already), at the draw's offset
@@ -629,8 +891,8 @@ fn skin(v: SkinIn) -> mat4x4<f32> {
 @vertex
 fn vs_skinned(v: SkinIn) -> MapOut {
     let m = skin(v);
-    let p = (m * vec4<f32>(v.pos, 1.0)).xyz;
     let n = normalize((m * vec4<f32>(v.normal, 0.0)).xyz);
+    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, n, v.wind);
     var o: MapOut;
     o.clip = g.view_proj * vec4<f32>(p, 1.0);
     o.uv = v.uv;
@@ -645,7 +907,7 @@ fn vs_skinned(v: SkinIn) -> MapOut {
 @vertex
 fn vs_skinned_shadow(v: SkinIn) -> MapOut {
     let m = skin(v);
-    let p = (m * vec4<f32>(v.pos, 1.0)).xyz;
+    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, normalize((m * vec4<f32>(v.normal, 0.0)).xyz), v.wind);
     var o: MapOut;
     o.clip = g.light_view_proj * vec4<f32>(p, 1.0);
     o.uv = v.uv;

@@ -129,7 +129,9 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   part each. The mouth is built closed, the lips meeting: the lower jaw on a jaw bone, the
   tongue on a chain of its own hanging from it, so the mouth opens and closes and the tongue
   moves by itself; a mouth open in the pictures becomes the "roar" action, not the rest pose.
-  A prop: each piece a part (a lid or a door that moves on a bone of its own);
+  A prop: each piece a part (a lid or a door that moves on a bone of its own). What the wind
+  moves is painted for it (requests.md, "The wind"): kit.fur paints its strands; kit.wind for
+  hair, leaves, petals, a cloth, a tail's tuft; nothing else;
 - render it: python tools/blender/run_request.py {id} (it lays the lines on the model too)
 - compare private/requests/{id}/compare.png and the previews with the pictures (the shapes,
   proportions and colours, not the light: the previews are lit evenly, on purpose); its last

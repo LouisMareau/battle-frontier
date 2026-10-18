@@ -71,6 +71,15 @@ The same as the engine's, so nothing needs converting:
   the origin" does that for you when exporting);
 - its front faces the front view (-Y in Blender, +Z in glTF and in the engine);
 - colours: materials' base colour, vertex colours and base colour textures are all kept;
+- the wind: what it moves is painted for it in Vertex Paint, on a colour layer named
+  "wind": its R how far a point sways (0 at its root, 1 at the tips), its G how much it
+  flutters (leaves, petals, fur, a cloth's edge), its B its phase (different values on
+  different leaves or tufts). **Wind paint from height** (the panel) paints the selected
+  meshes to start with: the sway rising from their foot to their top, a phase for each loose
+  part, the flutter you ask at the top. Add to the project writes the layer as the model's
+  second colour layer (a white one goes first when the mesh has no colours of its own, taken
+  out again after) and marks the mesh `bf_wind`; the engine reads it, and importing the prop
+  gives the layer back as "wind". What isn't painted stays still in the wind;
 - lights: a spot or point light object on the prop, pointing down its -Z as Blender's do;
   1000 W is an intensity of 1. The add-on reads and writes them in Blender's own watts
   (the glTF "Raw" lighting mode of Blender 3.6 and newer, which is all Blender 3.1 to 3.5
@@ -138,4 +147,6 @@ It works on a scratch copy (`build/blender-project`), never on `content/`, excep
 project exports a map to `build/exports/`. It also makes a small creature and a pot through
 the requests' kit there: one mesh with its regions and eyes, a rig with every vertex
 weighted, the idle, the renders, the prop in `temporary/` (or `content/` for a design of the
-user's), the request done, and the engine reading the rig and the idle.
+user's), the request done, and the engine reading the rig and the idle; its fur painted for
+the wind (the strands swaying to their tips, the body still), and a shrub painted from its
+height going out and coming back with its "wind" layer.

@@ -769,6 +769,7 @@ impl GameApp {
         );
         let mut stage = Stage::new(spot, hours);
         stage.toon = crate::stage::toon_look(&content.world().toon);
+        stage.wind = crate::stage::wind_look(&content.world().wind);
         stage.content = Some(content.clone());
         stage.add_people(player_key, foe_key);
         let hud = Hud { icons: self.icons.clone(), ..Default::default() };

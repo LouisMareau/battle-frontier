@@ -9,7 +9,7 @@ use glam::Vec3;
 use crate::mesh::{Mesh, Vertex};
 
 fn vertex(m: &mut Mesh, pos: Vec3, normal: Vec3, uv: [f32; 2]) -> u32 {
-    m.vertices.push(Vertex { pos: pos.to_array(), normal: normal.normalize_or(Vec3::Y).to_array(), uv, color: [1.0; 4], toon: 0.0 });
+    m.vertices.push(Vertex { pos: pos.to_array(), normal: normal.normalize_or(Vec3::Y).to_array(), uv, color: [1.0; 4], toon: 0.0, wind: [0; 4] });
     m.vertices.len() as u32 - 1
 }
 

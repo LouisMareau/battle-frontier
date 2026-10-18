@@ -107,6 +107,8 @@ pub struct Stage {
     pub content: Option<Arc<content::Content>>,
     /// the old handhelds' pixels and colours (the Options')
     pub retro: render::scene::Retro,
+    /// the world's wind (the clouds drift with it)
+    pub wind: render::scene::Wind,
 }
 
 /// An ability's timeline playing out on the stage, from `t0` (ms).
@@ -118,6 +120,13 @@ pub struct Playing {
     pub targets: Vec<Uid>,
     /// the sound clips played
     played: BTreeSet<usize>,
+}
+
+/// The world settings' wind, for the renderer: the way it blows on the ground, how strong,
+/// how gusty.
+pub fn wind_look(w: &content::Wind) -> render::scene::Wind {
+    let [x, z] = w.way();
+    render::scene::Wind { way: glam::Vec2::new(x as f32, z as f32), strength: w.strength.clamp(0.0, 1.0) as f32, gusts: w.gusts.clamp(0.0, 1.0) as f32 }
 }
 
 /// The world settings' toon look, for the renderer.
@@ -231,6 +240,7 @@ impl Stage {
             sounds: vec![],
             content: None,
             retro: Default::default(),
+            wind: Default::default(),
         }
     }
 
@@ -753,7 +763,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false, wind: self.wind }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

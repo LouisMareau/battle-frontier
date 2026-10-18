@@ -20,7 +20,8 @@ own: `editing` (a bmesh by hand: extrude, inset, bevel, move faces, edges and ve
 `modifier` (any of Blender's modifiers, applied), `sculpt` (grab, inflate, smooth, flatten,
 pinch, crease brushes), more shapes as parts of their own, `tube` (curved parts), `fur`. Each
 part says which bones move it: the jaw and the tongue have bones of their own, so the mouth
-closes and the tongue moves by itself. Then `fit` (its height in cells, standing on the
+closes and the tongue moves by itself. What the wind moves (fur, which paints itself; hair,
+leaves, petals, a cloth, a tail's tuft) is painted for it with `wind`; the rest stays still. Then `fit` (its height in cells, standing on the
 origin), for a creature `rig` (each part skinned to its own bones) with `idle` and other
 actions (`action`: a roar, a bite), then `previews`, `compare` and `finish`. One Blender unit
 is one cell; the model faces the front view (-Y). (`fuse` makes several shapes one mesh: what
@@ -825,6 +826,10 @@ def fur(body, region, count=1500, length=0.04, thickness=0.004, droop=0.3, seed=
     rng = random.Random(seed)
     turns = [k / 3 * math.tau for k in range(3)]
     grown = []
+    # each strand in the wind: rooted, swaying and fluttering to its tip, in its own time (its
+    # own dice, so the strands grow where they always did)
+    windy = {}
+    phases = random.Random(seed + 101)
     for _ in range(count):
         f = faces[min(bisect.bisect(areas, rng.random() * total), len(faces) - 1)]
         corners = [v.co for v in f.verts]
@@ -845,6 +850,12 @@ def fur(body, region, count=1500, length=0.04, thickness=0.004, droop=0.3, seed=
             return [bm.verts.new(at + (side * math.cos(t) + other * math.sin(t)) * r) for t in turns]
 
         low, high, point = ring(root, thickness), ring(mid, thickness * 0.55), bm.verts.new(tip)
+        phase = phases.random()
+        for v in low:
+            windy[v] = (0.0, 0.0, phase)
+        for v in high:
+            windy[v] = (0.5 ** 1.5, 0.35, phase)
+        windy[point] = (1.0, 0.7, phase)
         for k in range(3):
             k1 = (k + 1) % 3
             for made in (bm.faces.new((low[k], low[k1], high[k1], high[k])), bm.faces.new((high[k], high[k1], point))):
@@ -853,10 +864,48 @@ def fur(body, region, count=1500, length=0.04, thickness=0.004, droop=0.3, seed=
                 grown.append(made)
     # facing out, each strand
     bmesh.ops.recalc_face_normals(bm, faces=grown)
+    bm.verts.index_update()
+    weights = {v.index: w for v, w in windy.items()}
     bm.to_mesh(me)
     bm.free()
+    # painted for the wind: the strands; the rest of the body as it was painted (a layer just
+    # made is white: there, still)
+    layers = bf.colour_layers(me)
+    fresh = layers.get(bf.WIND) is None
+    layer = layers.get(bf.WIND) or layers.new(name=bf.WIND)
+    colours = [0.0] * (len(me.loops) * 4)
+    layer.data.foreach_get("color", colours)
+    for i, loop in enumerate(me.loops):
+        w = weights.get(loop.vertex_index)
+        if w:
+            colours[i * 4:i * 4 + 4] = [w[0], w[1], w[2], 1.0]
+        elif fresh:
+            colours[i * 4:i * 4 + 4] = [0.0, 0.0, 0.0, 1.0]
+    layer.data.foreach_set("color", colours)
     print(f"{body.name}: {count} strands of fur on {region} ({len(me.polygons)} faces now)", flush=True)
     return count
+
+
+def wind(obj, sway=1.0, flutter=0.0, root=None, seed=1):
+    """Paints a part for the wind (its "wind" colour layer, which the game reads: R sway,
+    G flutter, B phase): swaying up to `sway` and fluttering up to `flutter` the
+    further a point is from `root` (a point in the world; by default the part's lowest),
+    rooted there, each loose piece in its own time. For what the wind moves: hair, leaves,
+    petals, a cloth, a tail's tuft (fur paints itself). Paint it once the part is fitted."""
+    me = obj.data
+    pts = [obj.matrix_world @ v.co for v in me.vertices]
+    if not pts:
+        return obj
+    if root is None:
+        lo = min(p.z for p in pts)
+        hi = max(p.z for p in pts)
+        along = lambda p: (p.z - lo) / max(hi - lo, 1e-6)  # noqa: E731
+    else:
+        r = Vector(root)
+        far = max((p - r).length for p in pts)
+        along = lambda p: (p - r).length / max(far, 1e-6)  # noqa: E731
+    bf.paint_wind(obj, along, sway, flutter, seed)
+    return obj
 
 
 def fit(objects, height):

@@ -8,6 +8,10 @@
 //! `anim::Animation`, and the parts skinned to it apart from the rest (`skinned`), with
 //! their joints and weights, for the renderer to move. Cameras are dropped (the game has
 //! one camera of its own); the rest of the materials stays in the file, unread for now.
+//! The wind's paint (`mesh::WIND`) is a mesh's second colour layer (COLOR_1), read when the
+//! Blender add-on marked its node or mesh so (`"bf_wind"` in its extras); its weights as
+//! painted (the file has them in linear light, as glTF has colours), its height above the
+//! model's foot set here.
 
 use std::collections::BTreeMap;
 
@@ -15,7 +19,22 @@ use content::Light;
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::anim::{Animation, Channel, Node, Path, Rig};
-use crate::mesh::{Mesh, Scene, Vertex};
+use crate::mesh::{wind_of, Mesh, Scene, Vertex};
+
+/// Painted for the wind: the add-on's mark in a node's or a mesh's extras.
+fn marked_for_wind(extras: &gltf::json::Extras) -> bool {
+    extras.as_ref().is_some_and(|e| e.get().contains("\"bf_wind\""))
+}
+
+/// A colour as Blender's paint had it (the file holds it in linear light).
+fn painted(linear: f32) -> f32 {
+    let c = linear.clamp(0.0, 1.0);
+    if c <= 0.003_130_8 {
+        c * 12.92
+    } else {
+        1.055 * c.powf(1.0 / 2.4) - 0.055
+    }
+}
 
 /// An image a model uses, decoded (RGBA8, sRGB).
 #[derive(Clone, Debug)]
@@ -52,6 +71,8 @@ pub struct Model {
     pub lights: Vec<Light>,
     /// cameras in the file, dropped
     pub cameras: usize,
+    /// how many of its vertices are painted for the wind
+    pub wind: usize,
 }
 
 impl Model {
@@ -222,6 +243,7 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
         // a skinned mesh's vertices are placed by its joints, not by its node
         let skinned = node.skin().is_some() && model.rig.is_some();
         if let Some(mesh) = node.mesh() {
+            let windy = marked_for_wind(node.extras()) || marked_for_wind(mesh.extras());
             for prim in mesh.primitives() {
                 if prim.mode() != gltf::mesh::Mode::Triangles {
                     continue;
@@ -233,6 +255,7 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
                 let normals: Option<Vec<Vec3>> = reader.read_normals().map(|n| n.map(|n| (if skinned { Vec3::from(n) } else { normal_m * Vec3::from(n) }).normalize_or(Vec3::Y)).collect());
                 let uvs: Option<Vec<[f32; 2]>> = reader.read_tex_coords(0).map(|t| t.into_f32().collect());
                 let colors: Option<Vec<[f32; 4]>> = reader.read_colors(0).map(|c| c.into_rgba_f32().collect());
+                let winds: Option<Vec<[f32; 4]>> = if windy { reader.read_colors(1).map(|c| c.into_rgba_f32().collect()) } else { None };
                 let indices: Vec<u32> = match reader.read_indices() {
                     Some(i) => i.into_u32().collect(),
                     None => (0..positions.len() as u32).collect(),
@@ -249,8 +272,11 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
                         uv: uvs.as_ref().and_then(|u| u.get(i)).copied().unwrap_or([0.5, 0.5]),
                         color: [factor[0] * c[0], factor[1] * c[1], factor[2] * c[2], factor[3] * c[3]],
                         toon: 0.0,
+                        // as painted; how high it is (a skinned part's: at rest, below)
+                        wind: winds.as_ref().and_then(|w| w.get(i)).map(|w| wind_of(painted(w[0]), painted(w[1]), painted(w[2]), p.y.max(0.0))).unwrap_or([0; 4]),
                     });
                 }
+                model.wind += out.vertices.iter().filter(|v| v.wind[..3] != [0; 3]).count();
                 out.indices = indices.into_iter().filter(|&i| (i as usize) < positions.len()).collect();
                 if normals.is_none() {
                     flat_normals(&mut out);
@@ -270,10 +296,13 @@ pub fn load_model(bytes: &[u8], key: &str) -> Result<Model, String> {
                     (Some(joints), Some(weights)) => {
                         // its bounds at rest
                         let pose = crate::anim::pose(model.rig.as_ref().unwrap(), None, 0.0);
-                        for (i, v) in out.vertices.iter().enumerate() {
+                        for (i, v) in out.vertices.iter_mut().enumerate() {
                             let p = crate::anim::skin_point(Vec3::from(v.pos), joints.get(i).copied().unwrap_or([0; 4]), weights.get(i).copied().unwrap_or([1.0, 0.0, 0.0, 0.0]), &pose);
                             model.min = model.min.min(p);
                             model.max = model.max.max(p);
+                            if v.wind != [0; 4] {
+                                v.wind[3] = wind_of(0.0, 0.0, 0.0, p.y.max(0.0))[3];
+                            }
                         }
                         model.skinned.push(Skinned { mesh: out, joints, weights, texture: texture_key });
                     }
@@ -316,6 +345,9 @@ pub fn extras_note(m: &Model) -> String {
     if !m.animations.is_empty() {
         let names: Vec<String> = m.animations.iter().map(|a| format!("{} ({:.1} s)", if a.name.is_empty() { "unnamed" } else { &a.name }, a.duration)).collect();
         notes.push(format!("{}: {}", count(m.animations.len(), "animation", "animations"), names.join(", ")));
+    }
+    if m.wind > 0 {
+        notes.push(format!("painted for the wind ({})", count(m.wind, "vertex", "vertices")));
     }
     notes.join(", ")
 }

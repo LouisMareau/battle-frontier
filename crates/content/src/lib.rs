@@ -537,9 +537,13 @@ impl Content {
             if !matches!(t.walk.as_str(), "walk" | "water" | "block") {
                 out.push(format!("terrains/{}: walk \"{}\" (walk, water or block)", t.id, t.walk));
             }
+            if !t.water.is_empty() && !model::WATERS.contains(&t.water.as_str()) {
+                out.push(format!("terrains/{}: water \"{}\" ({})", t.id, t.water, model::WATERS.join(" or ")));
+            }
         }
         for s in self.settings.iter() {
             out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
+            out.extend(s.wind.problems().into_iter().map(|e| format!("settings/{}: wind: {e}", s.id)));
             let st = &s.start;
             if !st.map.is_empty() {
                 match self.maps.get(&st.map) {
@@ -560,6 +564,11 @@ impl Content {
             }
             if let Some(s) = &p.sound {
                 out.extend(s.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
+            }
+            for (what, v) in [("sway", p.wind.sway), ("flutter", p.wind.flutter)] {
+                if !(0.0..=1.0).contains(&v) {
+                    out.push(format!("props/{}: wind: {what} {v}: 0 to 1", p.id));
+                }
             }
             match (&p.railing, p.category == "railing") {
                 (Some(r), _) => out.extend(r.problems().into_iter().map(|e| format!("props/{}: {e}", p.id))),

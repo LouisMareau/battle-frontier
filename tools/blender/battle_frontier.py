@@ -14,6 +14,12 @@
 # Conventions, the same as the engine's: one Blender unit is one cell (a metre), the asset
 # stands on Z = 0 with the middle of its footprint at the origin, and its front faces the
 # front view (-Y), which glTF and the engine call +Z.
+#
+# What moves in the wind is painted for it: a colour layer named "wind" (Vertex Paint), its R
+# how far a point sways (0 at a stem's or a trunk's foot, 1 at the tips), its G how much it
+# flutters (leaves, petals, fur, a cloth's edge), its B its phase (different values on
+# different leaves or tufts, so they don't move together). "Wind paint from height" starts
+# one. Unpainted, a model stays still.
 
 bl_info = {
     "name": "Battle Frontier assets",
@@ -28,6 +34,7 @@ bl_info = {
 import json
 import math
 import os
+import random
 import re
 import shutil
 import string
@@ -542,7 +549,137 @@ def import_glb(path):
     before = set(bpy.data.objects)
     # lights in their watts as the project writes them (1000 W = an intensity of 1)
     bpy.ops.import_scene.gltf(filepath=str(path), **gltf_options(bpy.ops.import_scene.gltf, export_import_convert_lighting_mode="RAW"))
-    return [o for o in bpy.data.objects if o not in before]
+    made = [o for o in bpy.data.objects if o not in before]
+    # the wind's paint comes back as the second colour layer of what was marked so
+    for o in made:
+        if o.type == "MESH" and ("bf_wind" in o or "bf_wind" in o.data):
+            layers = colour_layers(o.data)
+            if len(layers) >= 2:
+                layers[1].name = WIND
+    return made
+
+
+# ---------------------------------------------------------------- the wind's paint
+
+WIND = "wind"
+
+
+def colour_layers(me):
+    """A mesh's colour layers on its faces' corners (Blender's vertex colours)."""
+    return me.vertex_colors
+
+
+def _swap_layers(a, b):
+    """Two colour layers trade places: their colours and their names."""
+    n = len(a.data) * 4
+    da, db = [0.0] * n, [0.0] * n
+    a.data.foreach_get("color", da)
+    b.data.foreach_get("color", db)
+    a.data.foreach_set("color", db)
+    b.data.foreach_set("color", da)
+    name_a, name_b = a.name, b.name
+    a.name = "_bf_swap"
+    b.name = name_a
+    a.name = name_b
+
+
+def wind_ready(meshes):
+    """The meshes painted for the wind (a "wind" colour layer) made ready for the game: their
+    colours first and the wind's paint second (glTF's COLOR_0 and COLOR_1; a white colour
+    layer put in first when there's none), each marked so (`bf_wind`, which the game and the
+    import read); one with no wind paint loses a mark it had. Returns the meshes a white
+    layer was put in for (`wind_unready` takes it out again)."""
+    added = []
+    for o in meshes:
+        me = o.data
+        layers = colour_layers(me)
+        if WIND not in [layer.name for layer in layers]:
+            for holder in (o, me):
+                if "bf_wind" in holder:
+                    del holder["bf_wind"]
+            continue
+        if len(layers) == 1:
+            layers.new(name="Col")
+            added.append(o)
+        at = [layer.name for layer in layers].index(WIND)
+        if at != 1:
+            _swap_layers(layers[at], layers[1])
+        # the colours are the layer shown and drawn
+        layers.active_index = 0
+        if hasattr(layers[0], "active_render"):
+            layers[0].active_render = True
+        o["bf_wind"] = 1
+        me["bf_wind"] = 1
+    return added
+
+
+def wind_unready(added):
+    """The white colour layers `wind_ready` put in taken out again (the wind's paint alone,
+    as it was)."""
+    for o in added:
+        layers = colour_layers(o.data)
+        if len(layers) == 2 and layers[1].name == WIND:
+            _swap_layers(layers[0], layers[1])
+            layers.remove(layers[1])
+
+
+def _islands(me):
+    """Each vertex's loose part (an id shared by the vertices joined by edges)."""
+    parent = list(range(len(me.vertices)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for e in me.edges:
+        a, b = find(e.vertices[0]), find(e.vertices[1])
+        if a != b:
+            parent[a] = b
+    return [find(i) for i in range(len(me.vertices))]
+
+
+def paint_wind(o, along, sway=1.0, flutter=0.0, seed=1, keep=None):
+    """Paints `o` for the wind (its "wind" layer, made if it has none): a vertex sways
+    `sway` and flutters `flutter` times how far `along` it is (a function of the vertex's
+    place in the world, 0 rooted to 1 free; the sway rising more slowly at first), each loose
+    part in its own phase. `keep`: which vertices keep the paint they had (a function of the
+    vertex's index), else every one is painted."""
+    me = o.data
+    layers = colour_layers(me)
+    layer = layers.get(WIND) or layers.new(name=WIND)
+    before = [0.0] * (len(me.loops) * 4)
+    layer.data.foreach_get("color", before)
+    part = _islands(me)
+    rng = random.Random(seed * 7919 + len(me.vertices))
+    phases = {}
+    colours = []
+    for i, loop in enumerate(me.loops):
+        v = loop.vertex_index
+        if keep and keep(v):
+            colours.extend(before[i * 4:i * 4 + 4])
+            continue
+        k = part[v]
+        if k not in phases:
+            phases[k] = rng.random()
+        a = max(0.0, min(1.0, along(o.matrix_world @ me.vertices[v].co)))
+        colours.extend((sway * a ** 1.5, flutter * a, phases[k], 1.0))
+    layer.data.foreach_set("color", colours)
+    return layer
+
+
+def paint_wind_by_height(objects, flutter=0.0, sway=1.0):
+    """The objects' meshes painted for the wind by height: swaying from their lowest point
+    to their highest, each loose part in its own phase."""
+    meshes = [o for o in objects if o.type == "MESH"]
+    zs = [(o.matrix_world @ v.co).z for o in meshes for v in o.data.vertices]
+    if not zs:
+        return 0
+    lo, hi = min(zs), max(zs)
+    for k, o in enumerate(meshes):
+        paint_wind(o, lambda p: (p.z - lo) / max(hi - lo, 1e-6), sway, flutter, seed=k + 1)
+    return len(meshes)
 
 
 # ---------------------------------------------------------------- operators
@@ -779,13 +916,17 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     for o in context.view_layer.objects:
         o.select_set(o in objects)
     context.view_layer.update()
+    # the wind's paint second to the colours, marked so (the game reads it then)
+    added = wind_ready(meshes)
     try:
         glb.parent.mkdir(parents=True, exist_ok=True)
-        # materials, textures, vertex colours, rigs, animations and shape keys as Blender
-        # writes them; the lights in watts (1000 W = 1); never a camera
+        # materials, textures, vertex colours (the wind's paint too), rigs, animations and
+        # shape keys as Blender writes them; the lights in watts (1000 W = 1); never a camera
         bpy.ops.export_scene.gltf(filepath=str(glb), export_format="GLB", use_selection=True, export_apply=apply_modifiers, export_yup=True,
-                                  **gltf_options(bpy.ops.export_scene.gltf, export_cameras=False, export_lights=True, export_import_convert_lighting_mode="RAW"))
+                                  **gltf_options(bpy.ops.export_scene.gltf, export_cameras=False, export_lights=True, export_import_convert_lighting_mode="RAW",
+                                                 export_extras=True, export_colors=True, export_all_vertex_colors=True))
     finally:
+        wind_unready(added)
         for o in tops:
             o.location += offset
         for o in context.view_layer.objects:
@@ -973,6 +1114,26 @@ class BF_OT_save_edited(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class BF_OT_wind_from_height(bpy.types.Operator):
+    """Paint the selected meshes for the wind by height (their "wind" layer): R, the sway,
+    rising from their foot to their top; B, the phase, different for each loose part.
+    Refine it in Vertex Paint: G is the flutter of leaves, petals, fur, a cloth's edge"""
+    bl_idname = "battle_frontier.wind_from_height"
+    bl_label = "Wind paint from height"
+    bl_options = {"REGISTER", "UNDO"}
+
+    sway: bpy.props.FloatProperty(name="Sway at the top", default=1.0, min=0.0, max=1.0)
+    flutter: bpy.props.FloatProperty(name="Flutter at the top", default=0.0, min=0.0, max=1.0)
+
+    def execute(self, context):
+        n = paint_wind_by_height(context.selected_objects, self.flutter, self.sway)
+        if not n:
+            self.report({"ERROR"}, "Select the meshes to paint for the wind")
+            return {"CANCELLED"}
+        self.report({"INFO"}, f"{n} mesh{'es' if n > 1 else ''} painted for the wind (their \"wind\" colour layer)")
+        return {"FINISHED"}
+
+
 class BF_OT_add_to_project(bpy.types.Operator):
     """Add the selected objects to the project as a prop: a .glb model and its record"""
     bl_idname = "battle_frontier.add_to_project"
@@ -1084,11 +1245,14 @@ class BF_PT_panel(bpy.types.Panel):
         col = layout.column(align=True)
         col.label(text="Your model", icon="EXPORT")
         col.operator(BF_OT_show_bounds.bl_idname, icon="MESH_GRID")
+        col.operator(BF_OT_wind_from_height.bl_idname, icon="FORCE_WIND")
         col.operator(BF_OT_add_to_project.bl_idname, icon="ADD")
         if context.scene.unit_settings.scale_length != 1.0:
             col.label(text="Unit scale isn't 1: sizes won't match", icon="ERROR")
         col.label(text="Stand it at the origin, front to -Y, 1 unit = 1 cell")
         col.label(text="Select its rig, lights and speakers too; no camera")
+        col.label(text="In the wind: a \"wind\" colour layer (R sway,")
+        col.label(text="G flutter, B phase); unpainted, it stays still")
         layout.separator()
         col = layout.column(align=True)
         col.label(text="Maps and buildings", icon="WORLD")
@@ -1098,7 +1262,7 @@ class BF_PT_panel(bpy.types.Panel):
         col.operator(BF_OT_import_export.bl_idname, icon="IMPORT").file = wm.bf_export
 
 
-CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_export_props, BF_OT_show_bounds, BF_OT_save_edited, BF_OT_add_to_project, BF_PT_panel)
+CLASSES = (BF_Preferences, BF_OT_find_project, BF_OT_import_prop, BF_OT_import_export, BF_OT_export_map, BF_OT_export_props, BF_OT_show_bounds, BF_OT_save_edited, BF_OT_wind_from_height, BF_OT_add_to_project, BF_PT_panel)
 
 
 def _auto_find():

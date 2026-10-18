@@ -1,0 +1,12 @@
+{
+  "id": "ocean",
+  "name": "Sea",
+  "order": 9,
+  "color": "#2463a8",
+  "color2": "#62c6d6",
+  "pattern": "water",
+  "side": "#4f6f80",
+  "walk": "water",
+  "priority": -1,
+  "water": "oceanic"
+}

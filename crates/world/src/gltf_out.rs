@@ -120,8 +120,11 @@ impl Glb {
     }
 
     /// A mesh from primitives (mesh, material, write vertex colours, write uvs); None if empty.
+    /// What moves in the wind keeps its paint: a second colour layer, the mesh marked so
+    /// (`"bf_wind"`, which the add-on reads back as the "wind" layer).
     pub fn mesh(&mut self, name: &str, prims: &[(&Mesh, usize, bool, bool)]) -> Option<usize> {
         let mut out = vec![];
+        let mut windy = false;
         for &(m, material, colors, uvs) in prims {
             if m.indices.is_empty() {
                 continue;
@@ -132,6 +135,16 @@ impl Glb {
             if colors {
                 let col: Vec<f32> = m.vertices.iter().flat_map(|v| v.color).collect();
                 attributes["COLOR_0"] = json!(self.floats(&col, "VEC4", 4, false));
+                if m.vertices.iter().any(|v| v.wind[..3] != [0; 3]) {
+                    // as painted, put in linear light as glTF holds colours
+                    let linear = |b: u8| {
+                        let c = b as f32 / 255.0;
+                        if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) }
+                    };
+                    let wind: Vec<f32> = m.vertices.iter().flat_map(|v| [linear(v.wind[0]), linear(v.wind[1]), linear(v.wind[2]), 1.0]).collect();
+                    attributes["COLOR_1"] = json!(self.floats(&wind, "VEC4", 4, false));
+                    windy = true;
+                }
             }
             if uvs {
                 let uv: Vec<f32> = m.vertices.iter().flat_map(|v| v.uv).collect();
@@ -143,7 +156,11 @@ impl Glb {
         if out.is_empty() {
             return None;
         }
-        self.meshes.push(json!({ "name": name, "primitives": out }));
+        let mut mesh = json!({ "name": name, "primitives": out });
+        if windy {
+            mesh["extras"] = json!({ "bf_wind": true });
+        }
+        self.meshes.push(mesh);
         Some(self.meshes.len() - 1)
     }
 
@@ -275,16 +292,25 @@ pub fn prop_mesh(glb: &mut Glb, prop: &Prop, models: &Models) -> Option<usize> {
         // its skinned parts baked at rest: a rig doesn't go back out yet
         return glb.scene_mesh(&prop.id, &m.rest_scene(), &m.images);
     }
+    // a stand-in in the wind goes out painted for it (white under its parts' colours, so
+    // the paint has a layer to come second to)
+    let windy = !prop.wind.still();
     let mut parts: Vec<(Mesh, usize)> = vec![];
     for (i, p) in prop.parts.iter().enumerate() {
-        let mesh = part_mesh(p, 7 + i as u32 * 31 + prop.id.len() as u32);
+        let mut mesh = part_mesh(p, 7 + i as u32 * 31 + prop.id.len() as u32);
         let at = Vec3::new(p.at[0] as f32, p.at[1] as f32, p.at[2] as f32);
+        crate::mesh::breeze(prop, i, &mut mesh, at.y);
+        if windy {
+            for v in mesh.vertices.iter_mut() {
+                v.color = [1.0; 4];
+            }
+        }
         let mut placed = Mesh::default();
         placed.append(&mesh, Mat4::from_translation(at) * Mat4::from_rotation_y(-(p.turn as f32).to_radians()));
         let material = glb.color_material(color(&p.color));
         parts.push((placed, material));
     }
-    let prims: Vec<(&Mesh, usize, bool, bool)> = parts.iter().map(|(m, mat)| (m, *mat, false, false)).collect();
+    let prims: Vec<(&Mesh, usize, bool, bool)> = parts.iter().map(|(m, mat)| (m, *mat, windy, false)).collect();
     glb.mesh(&prop.id, &prims)
 }
 
@@ -535,12 +561,42 @@ mod tests {
         assert_eq!(doc.lights().map(|l| l.count()).unwrap_or(0), 1);
     }
 
+    /// A stand-in moving in the wind goes out with its paint (a second colour layer, the mesh
+    /// marked so) and comes back moving the same way: its weights as they were, give or take
+    /// a step, its foot rooted, its top swaying; its height above the foot set again.
+    #[test]
+    fn the_winds_paint_goes_out_and_comes_back() {
+        let mut tree = prop();
+        tree.wind = content::Breeze { sway: 0.8, flutter: 0.5 };
+        let out = crate::mesh::prop_model(&tree);
+        let bytes = prop_glb(&tree, &Models::new());
+        let (doc, _, _) = gltf::import_slice(&bytes).expect("a valid glb");
+        let mesh = doc.meshes().next().unwrap();
+        assert!(mesh.extras().as_ref().is_some_and(|e| e.get().contains("bf_wind")), "marked for the wind");
+        assert!(mesh.primitives().all(|p| p.get(&gltf::Semantic::Colors(1)).is_some()), "a second colour layer");
+        let back = load_model(&bytes, "windy.glb").unwrap();
+        assert_eq!(back.wind, out.vertices.iter().filter(|v| v.wind[..3] != [0; 3]).count());
+        assert!(crate::gltf_in::extras_note(&back).contains("painted for the wind"), "{}", crate::gltf_in::extras_note(&back));
+        let near = |a: [u8; 4], b: [u8; 4]| a.iter().zip(b).all(|(x, y)| (*x as i32 - y as i32).abs() <= 2);
+        for (a, b) in out.vertices.iter().zip(&back.scene.plain.vertices) {
+            assert!(near(a.wind, b.wind), "{:?} came back {:?} at {:?}", a.wind, b.wind, a.pos);
+        }
+        let foot = back.scene.plain.vertices.iter().filter(|v| v.pos[1] < 0.01).map(|v| v.wind[0]).max().unwrap();
+        let top = back.scene.plain.vertices.iter().map(|v| v.wind[0]).max().unwrap();
+        assert!(foot == 0 && top > 190, "rooted at its foot ({foot}), free at its top ({top})");
+        // a model with no wind paint has no second layer, nothing marked
+        let still = prop_glb(&prop(), &Models::new());
+        let (doc, _, _) = gltf::import_slice(&still).unwrap();
+        assert!(doc.meshes().all(|m| m.extras().is_none() && m.primitives().all(|p| p.get(&gltf::Semantic::Colors(1)).is_none())));
+        assert_eq!(load_model(&still, "still.glb").unwrap().wind, 0);
+    }
+
     #[test]
     fn textures_go_out_and_come_back() {
         let mut model = crate::gltf_in::Model::default();
         let mut quad = Mesh::default();
         for (p, uv) in [([0.0, 0.0, 0.0], [0.0, 1.0]), ([1.0, 0.0, 0.0], [1.0, 1.0]), ([1.0, 1.0, 0.0], [1.0, 0.0])] {
-            quad.vertices.push(crate::mesh::Vertex { pos: p, normal: [0.0, 0.0, 1.0], uv, color: [1.0; 4], toon: 0.0 });
+            quad.vertices.push(crate::mesh::Vertex { pos: p, normal: [0.0, 0.0, 1.0], uv, color: [1.0; 4], toon: 0.0, wind: [0; 4] });
         }
         quad.indices = vec![0, 1, 2];
         model.scene.textured.insert("sign.glb#0".into(), quad);

@@ -297,7 +297,7 @@ pub struct MapEditor {
 }
 
 pub(crate) fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
-    v.iter().map(|v| MapVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, toon: v.toon }).collect()
+    v.iter().map(|v| MapVertex { pos: v.pos, normal: v.normal, uv: v.uv, color: v.color, toon: v.toon, wind: v.wind }).collect()
 }
 
 fn hex(c: &str) -> Color32 {
@@ -2321,6 +2321,7 @@ impl MapEditor {
             toon: crate::stage::toon_look(&self.toon_settings()),
             retro: self.retro,
             frost: self.frost,
+            wind: crate::stage::wind_look(&self.wind_settings()),
         }
     }
 }

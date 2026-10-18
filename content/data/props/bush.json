@@ -9,5 +9,9 @@
     { "shape": "sphere", "size": [1.0, 0.75, 1.0], "at": [0.0, 0.0, 0.0], "color": "#4a8f3c" },
     { "shape": "sphere", "size": [0.62, 0.52, 0.62], "at": [0.2, 0.32, 0.16], "color": "#58a147" }
   ],
-  "folders": ["Nature", "Buildings/Outside"]
+  "folders": ["Nature", "Buildings/Outside"],
+  "wind": {
+    "sway": 0.6,
+    "flutter": 0.5
+  }
 }

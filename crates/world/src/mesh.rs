@@ -24,6 +24,26 @@ pub struct Vertex {
     pub color: [f32; 4],
     /// 1: drawn with the toon look (its prop's or creature's `toon`)
     pub toon: f32,
+    /// how it moves in the wind (`WIND`): r sway, g flutter, b phase, a height above its
+    /// thing's foot (0 to `WIND_REACH` cells); all 0: it doesn't
+    pub wind: [u8; 4],
+}
+
+/// The wind's weights as painted (a model's "wind" colour layer, the 0 to 1 a painter sees):
+/// R, how far a point sways with the wind (0 rooted: a trunk's or a stem's foot; 1 free: the
+/// tips, a crown, hair's ends); G, how much it flutters (leaves, petals, fur's ends, a
+/// cloth's edge); B, its phase (different values on different leaves or tufts, so they
+/// don't all move together). The game sets the fourth itself: how high above its thing's
+/// foot the point is (taller things bend further).
+pub const WIND: [&str; 3] = ["sway", "flutter", "phase"];
+
+/// The height the wind's fourth weight reaches, in cells (higher counts as this).
+pub const WIND_REACH: f32 = 8.0;
+
+/// A vertex's wind: its painted weights (0 to 1) and its height above its thing's foot.
+pub fn wind_of(sway: f32, flutter: f32, phase: f32, height: f32) -> [u8; 4] {
+    let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+    [byte(sway), byte(flutter), byte(phase), byte(height / WIND_REACH)]
 }
 
 #[derive(Clone, Debug, Default)]
@@ -34,7 +54,7 @@ pub struct Mesh {
 
 impl Mesh {
     fn vertex(&mut self, pos: Vec3, normal: Vec3, color: [f32; 4]) -> u32 {
-        self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), uv: [0.5, 0.5], color, toon: 0.0 });
+        self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), uv: [0.5, 0.5], color, toon: 0.0, wind: [0; 4] });
         self.vertices.len() as u32 - 1
     }
 
@@ -57,14 +77,20 @@ impl Mesh {
         self.indices.extend_from_slice(&[i, i + 1, i + 2]);
     }
 
-    /// Adds another mesh moved by `m` (rotation, uniform scale, translation).
+    /// Adds another mesh moved by `m` (rotation, uniform scale, translation); what moves in
+    /// the wind keeps its height above its foot, scaled too.
     pub fn append(&mut self, other: &Mesh, m: Mat4) {
         let base = self.vertices.len() as u32;
         let rot = Mat3::from_mat4(m);
+        let scale = m.x_axis.truncate().length();
         for v in &other.vertices {
             let pos = m.transform_point3(Vec3::from(v.pos));
             let normal = (rot * Vec3::from(v.normal)).normalize_or(Vec3::Y);
-            self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), ..*v });
+            let mut wind = v.wind;
+            if wind != [0; 4] && (scale - 1.0).abs() > 1e-4 {
+                wind[3] = (wind[3] as f32 * scale).round().min(255.0) as u8;
+            }
+            self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), wind, ..*v });
         }
         self.indices.extend(other.indices.iter().map(|i| i + base));
     }
@@ -281,15 +307,34 @@ pub fn offset_room(prop: &Prop, models: &Models, turn: f64, scale: f64) -> ([f64
     ([xl, zl], [xh, zh])
 }
 
-/// A prop's stand-in model, its footprint's centre at the origin, standing on y = 0.
+/// A prop's stand-in model, its footprint's centre at the origin, standing on y = 0; moving
+/// in the wind as its record says (`breeze`).
 pub fn prop_model(prop: &Prop) -> Mesh {
     let mut out = Mesh::default();
     for (i, p) in prop.parts.iter().enumerate() {
-        let m = part_mesh(p, 7 + i as u32 * 31 + prop.id.len() as u32);
+        let mut m = part_mesh(p, 7 + i as u32 * 31 + prop.id.len() as u32);
         let at = Vec3::new(p.at[0] as f32, p.at[1] as f32, p.at[2] as f32);
+        breeze(prop, i, &mut m, at.y);
         out.append(&m, Mat4::from_translation(at) * Mat4::from_rotation_y(-(p.turn as f32).to_radians()));
     }
     out
+}
+
+/// A stand-in's part (`part`: its place in the prop's parts, standing `foot` high) moving in
+/// the wind as its prop's record says (`Prop::wind`): swaying more the higher up, rooted at
+/// the prop's foot, fluttering, in the part's own time. Nothing when the record asks for no
+/// wind.
+pub fn breeze(prop: &Prop, part: usize, mesh: &mut Mesh, foot: f32) {
+    if prop.wind.still() {
+        return;
+    }
+    let top = (prop.height as f32).max(0.05);
+    let phase = hash(part as i32, prop.id.len() as i32, 5);
+    for v in mesh.vertices.iter_mut() {
+        let y = (v.pos[1] + foot).max(0.0);
+        let up = (y / top).clamp(0.0, 1.0);
+        v.wind = wind_of(prop.wind.sway as f32 * up.powf(1.4), prop.wind.flutter as f32 * up, phase, y);
+    }
 }
 
 /// Where a placed thing stands: at its foot, turned clockwise (seen from above), scaled.
@@ -406,8 +451,8 @@ pub fn cell_texel(map: &WorldMap, x: i32, z: i32) -> Option<usize> {
 }
 
 /// Every terrain of the content, a column each, then one for a terrain it hasn't got
-/// (magenta), in 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water,
-/// 255], the cliff side's colour.
+/// (magenta), in 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water (0
+/// none, 1 inland, 2 oceanic: `water_code`), beach (255) or not (0)], the cliff side's colour.
 pub fn palette(content: &Content) -> (Vec<u8>, u32) {
     let mut rows: [Vec<u8>; 4] = [vec![], vec![], vec![], vec![]];
     let all: Vec<Option<&content::Terrain>> = content.terrains.iter().map(Some).chain(std::iter::once(None)).collect();
@@ -416,10 +461,10 @@ pub fn palette(content: &Content) -> (Vec<u8>, u32) {
             Some(t) => (
                 hex_bytes(&t.color),
                 hex_bytes(if t.color2.is_empty() { &t.color } else { &t.color2 }),
-                [pattern_id(&t.pattern), (t.priority.clamp(-128, 127) + 128) as u8, (t.walk == "water") as u8 * 255, 255],
+                [pattern_id(&t.pattern), (t.priority.clamp(-128, 127) + 128) as u8, water_code(t), if t.beach { 255 } else { 0 }],
                 hex_bytes(if t.side.is_empty() { SIDE } else { &t.side }),
             ),
-            None => ([255, 0, 255, 255], [128, 0, 128, 255], [0, 128, 0, 255], hex_bytes(SIDE)),
+            None => ([255, 0, 255, 255], [128, 0, 128, 255], [0, 128, 0, 0], hex_bytes(SIDE)),
         };
         rows[0].extend_from_slice(&c1);
         rows[1].extend_from_slice(&c2);
@@ -427,6 +472,16 @@ pub fn palette(content: &Content) -> (Vec<u8>, u32) {
         rows[3].extend_from_slice(&side);
     }
     (rows.concat(), all.len() as u32)
+}
+
+/// The kind of water a terrain is, as the palette (and the renderer's shore field) has it:
+/// 0 none, 1 inland, 2 oceanic.
+pub fn water_code(t: &content::Terrain) -> u8 {
+    match t.water_kind() {
+        Some("oceanic") => 2,
+        Some(_) => 1,
+        None => 0,
+    }
 }
 
 pub fn ground(map: &WorldMap, content: &Content, level_height: f32) -> Ground {
@@ -552,7 +607,7 @@ fn top_piece(m: &mut Mesh, ps: &[(Vec3, f32)], uv: [f32; 2]) {
     }
     let i = m.vertices.len() as u32;
     for &(p, rock) in ps {
-        m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock], toon: 0.0 });
+        m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock], toon: 0.0, wind: [0; 4] });
     }
     for k in 1..ps.len() as u32 - 1 {
         m.indices.extend_from_slice(&[i, i + k, i + k + 1]);
@@ -657,7 +712,7 @@ fn face(m: &mut Mesh, points: &[(f32, f32, f32, f32)], rows: usize, out: Vec3, f
             let pinned = r == 0 || r == rows || (ci == 0 && !free[0]) || (ci == last && !free[1]);
             let p = if pinned { p } else { p + out * relief(p) };
             let s = 0.72 + 0.28 * f;
-            m.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0], toon: 0.0 });
+            m.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0], toon: 0.0, wind: [0; 4] });
         }
     }
     let n = rows as u32 + 1;
@@ -770,6 +825,12 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
                 let colour = if k % 3 == 0 { c2 } else { c1 };
                 let mut blade = Mesh::default();
                 shape_round(&mut blade, Vec3::new(0.2, tall, 0.2), colour, 0.0, 4);
+                // swaying from its foot, each tuft in its own time
+                let phase = hash(x, z, k * 3 + 7);
+                for b in blade.vertices.iter_mut() {
+                    let up = (b.pos[1] / tall).clamp(0.0, 1.0);
+                    b.wind = wind_of(up.powf(1.5), 0.3 * up, phase, b.pos[1]);
+                }
                 grass.append(&blade, placement(Vec3::new(fx + u, y + e.height(u, v), fz + v), hash(x, z, k) * 90.0, 1.0));
             }
         }
@@ -840,7 +901,7 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
             let xb = (x + FAR_STEP).min(x1);
             let i = tops.vertices.len() as u32;
             for (px, pz) in [(x, z), (x, zb), (xb, zb), (xb, z)] {
-                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: [1.0, 1.0, 1.0, 0.0], toon: 0.0 });
+                tops.vertices.push(Vertex { pos: [px as f32, level(px, pz), pz as f32], normal: [0.0, 1.0, 0.0], uv: [px as f32 + 0.01, pz as f32 + 0.01], color: [1.0, 1.0, 1.0, 0.0], toon: 0.0, wind: [0; 4] });
             }
             tops.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
             let (mut n, mut forest, mut sum) = (0, 0, 0.0f32);
@@ -1076,5 +1137,65 @@ mod room_tests {
         // a quarter turn: its length runs along z now
         let (_, hi90) = offset_room(&bench, &Models::new(), 90.0, 1.0);
         assert!((hi90[1] - 0.4).abs() < 1e-3 && (hi90[0] - 0.3).abs() < 1e-3, "{hi90:?}");
+    }
+}
+
+#[cfg(test)]
+mod wind_tests {
+    use super::*;
+    use content::Part;
+
+    /// A stand-in in the wind sways more the higher up (its foot rooted), flutters, each part
+    /// in its own time, its height above its foot kept (scaled with it); one that isn't, and
+    /// the ground, don't move; the tall grass sways from its foot.
+    #[test]
+    fn what_moves_in_the_wind_is_weighted_by_height() {
+        let mut tree = Prop { id: "tree".into(), footprint: [1, 1], height: 3.0, ..Default::default() };
+        tree.parts = vec![
+            Part { shape: "cylinder".into(), size: [0.3, 1.2, 0.3], color: "#7a5434".into(), ..Default::default() },
+            Part { shape: "sphere".into(), size: [1.6, 1.4, 1.6], at: [0.0, 1.0, 0.0], color: "#4c9a3e".into(), ..Default::default() },
+        ];
+        assert!(prop_model(&tree).vertices.iter().all(|v| v.wind == [0; 4]), "no wind asked: still");
+        tree.wind = content::Breeze { sway: 1.0, flutter: 0.5 };
+        let m = prop_model(&tree);
+        let foot = m.vertices.iter().filter(|v| v.pos[1] < 0.01).map(|v| v.wind[0]).max().unwrap();
+        let top = m.vertices.iter().max_by(|a, b| a.pos[1].total_cmp(&b.pos[1])).unwrap();
+        assert_eq!(foot, 0, "rooted");
+        // (its top at 2.4 of the prop's 3: swaying (0.8)^1.4, fluttering half of 0.8)
+        let up = top.pos[1] / 3.0;
+        assert!((top.wind[0] as f32 - up.powf(1.4) * 255.0).abs() <= 1.0 && (top.wind[1] as f32 - 0.5 * up * 255.0).abs() <= 1.0, "the top sways and flutters: {:?}", top.wind);
+        assert!((top.wind[3] as f32 / 255.0 * WIND_REACH - top.pos[1]).abs() < 0.05, "its height kept: {:?} at {}", top.wind, top.pos[1]);
+        let phases: std::collections::BTreeSet<u8> = m.vertices.iter().map(|v| v.wind[2]).collect();
+        assert_eq!(phases.len(), 2, "each part in its own time");
+        // placed twice as big: twice as high above its foot
+        let mut placed = Mesh::default();
+        placed.append(&m, placement(Vec3::new(4.0, 2.0, 4.0), 30.0, 2.0));
+        let high = placed.vertices.iter().map(|v| v.wind[3]).max().unwrap();
+        assert!((high as f32 - top.wind[3] as f32 * 2.0).abs() <= 1.0, "{high} vs {}", top.wind[3]);
+        // the tall grass sways from its foot
+        let mut map = WorldMap::new("t", "T", 3, 3, "tall_grass");
+        map.terrains = vec!["tall_grass".into()];
+        let mut content = Content::default();
+        content.terrains.put(content::Terrain { id: "tall_grass".into(), pattern: "tall".into(), color: "#3f9a3e".into(), color2: "#2e7430".into(), ..Default::default() }, content::Space::Content);
+        let g = ground(&map, &content, 2.0);
+        assert!(!g.grass.vertices.is_empty());
+        assert!(g.grass.vertices.iter().any(|v| v.wind[0] > 200) && g.grass.vertices.iter().any(|v| v.wind[0] == 0));
+        assert!(g.tops.vertices.iter().all(|v| v.wind == [0; 4]), "the ground stays");
+    }
+
+    /// The palette says what's water (and of which kind) and what's a beach.
+    #[test]
+    fn the_palette_knows_the_waters_and_the_beaches() {
+        let mut content = Content::default();
+        for (id, pattern, water, beach) in [("grass", "grass", "", false), ("sand", "sand", "", true), ("water", "water", "", false), ("sea", "water", "oceanic", false)] {
+            content.terrains.put(content::Terrain { id: id.into(), pattern: pattern.into(), color: "#808080".into(), water: water.into(), beach, ..Default::default() }, content::Space::Content);
+        }
+        let (palette, width) = palette(&content);
+        let at = |id: &str| terrain_index(&content, id) as usize;
+        let row2 = |t: usize| &palette[(2 * width as usize + t) * 4..(2 * width as usize + t) * 4 + 4];
+        assert_eq!((row2(at("grass"))[2], row2(at("grass"))[3]), (0, 0));
+        assert_eq!((row2(at("sand"))[2], row2(at("sand"))[3]), (0, 255), "sand: a beach");
+        assert_eq!(row2(at("water"))[2], 1, "water drawn as water: inland");
+        assert_eq!(row2(at("sea"))[2], 2, "the sea: oceanic");
     }
 }
