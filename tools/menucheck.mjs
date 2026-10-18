@@ -101,6 +101,7 @@ try {
   await load();
   const again = JSON.parse((await data('keptoptions')) || '{}');
   check('  and kept after the page is loaded again', again.text === 'slow' && again.shadows === 'low' && again.controls?.A?.[0] === 'K', JSON.stringify(again));
+  check("  the menu's hint names K", (await data('keyshint')).includes('K or Space: select'), await data('keyshint'));
   // K picks on the menu now: down to Options, K
   await browser.click(700, 450);
   await browser.key('ArrowDown');
@@ -112,6 +113,7 @@ try {
   await browser.key('x');
   await sleep(300);
   check('  the Controls back as they came; B (X, Esc) closes it', (await data('options')) === '' && JSON.parse(await data('keptoptions')).controls?.A?.[0] === 'Z');
+  check("  and the hint with them", (await data('keyshint')).includes('Z or Space: select'), await data('keyshint'));
 
   // 3. New game: where the world says games start; the story saved as it goes
   await press('uiNewGame');

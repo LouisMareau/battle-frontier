@@ -125,7 +125,7 @@ impl Title {
             let top = screen.top() + screen.height() * if narrow { 0.16 } else { 0.2 };
             let title_size = if narrow { 46.0 } else { 76.0 };
             shadowed(&p, Pos2::new(left, top), align, "Battle Frontier", title_font(title_size), Color32::WHITE);
-            shadowed(&p, Pos2::new(left + if narrow { 0.0 } else { 3.0 }, top + title_size * 1.12), align, "Creatures, timed battles, and the maps between them.", menu_font(if narrow { 14.0 } else { 18.0 }), Color32::from_white_alpha(215));
+            shadowed(&p, Pos2::new(left + if narrow { 0.0 } else { 3.0 }, top + title_size * 1.12), align, "Creatures, timed battles, and the maps between them.", FontId::proportional(if narrow { 14.0 } else { 18.0 }), Color32::from_white_alpha(220));
             // the items
             let first = screen.top() + screen.height() * if narrow { 0.5 } else { 0.47 };
             let (step, size) = if narrow { (54.0, 30.0) } else { (62.0, 36.0) };
@@ -179,9 +179,11 @@ impl Title {
                 let y = first + ITEMS.len() as f32 * step + 6.0;
                 shadowed(&p, Pos2::new(left, y), align, "The browser keeps this tab open: close it to leave.", FontId::proportional(14.0), Color32::from_white_alpha(200));
             }
-            // the keys, bottom left
+            // the player's keys, bottom left
+            let hint = if narrow { String::new() } else { keys_hint(&crate::input::bindings()) };
+            platform::set_hook("keyshint", &hint);
             if !narrow {
-                shadowed(&p, Pos2::new(left, screen.bottom() - 24.0), Align2::LEFT_BOTTOM, "Arrows: choose  ·  Z or Enter: select  ·  X or Esc: back", menu_font(12.5), Color32::from_white_alpha(170));
+                shadowed(&p, Pos2::new(left, screen.bottom() - 24.0), Align2::LEFT_BOTTOM, &hint, FontId::proportional(13.5), Color32::from_white_alpha(190));
             }
             // the Editor: its icon, bottom right, a little bigger when hovered
             let base = 34.0;
@@ -361,6 +363,27 @@ fn key_label(k: egui::Key) -> String {
     }
 }
 
+/// The menu's keys at its foot, from the player's keys: the arrows (else Up's and Down's first
+/// keys) choose, A's first two select, B's first two go back.
+fn keys_hint(keys: &Bindings) -> String {
+    let first = |b: Button, n: usize| keys.keys(b).iter().take(n).map(|&k| key_label(k)).collect::<Vec<_>>().join(" or ");
+    let arrows = keys.keys(Button::Up).contains(&egui::Key::ArrowUp) && keys.keys(Button::Down).contains(&egui::Key::ArrowDown);
+    let (up, down) = (first(Button::Up, 1), first(Button::Down, 1));
+    let choose = if arrows {
+        "Arrows".to_string()
+    } else if up.is_empty() || down.is_empty() {
+        String::new()
+    } else {
+        format!("{up}, {down}")
+    };
+    [(choose, "choose"), (first(Button::A, 2), "select"), (first(Button::B, 2), "back")]
+        .into_iter()
+        .filter(|(keys, _)| !keys.is_empty())
+        .map(|(keys, does)| format!("{keys}: {does}"))
+        .collect::<Vec<_>>()
+        .join("  ·  ")
+}
+
 /// The Options, a dialog over the screen, in tabs: true when an option changed. Done, B (X,
 /// Esc) or a click beside it closes it.
 pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_state: &mut OptionsUi, input: &Input) -> bool {
@@ -517,7 +540,7 @@ fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi) {
     let keys: Bindings = o.controls.clone();
     egui::Grid::new("options-controls").num_columns(3).spacing([14.0, 8.0]).show(ui, |ui| {
         for b in Button::ALL {
-            ui.label(RichText::new(b.name()).font(menu_font(15.0)).color(Color32::WHITE));
+            ui.label(RichText::new(b.name()).size(15.0).color(Color32::WHITE));
             ui.label(RichText::new(b.about()).size(12.5).color(Color32::from_white_alpha(150)));
             ui.horizontal(|ui| {
                 for (i, &k) in keys.keys(b).iter().enumerate() {
@@ -552,4 +575,21 @@ fn choose<T: PartialEq>(ui: &mut egui::Ui, current: &mut T, value: T, label: &st
     let r = ui.selectable_value(current, value, label);
     platform::set_hook(&format!("{hook}_{}", label.trim_end_matches('%')), &format!("{:.0},{:.0}", r.rect.center().x, r.rect.center().y));
     r
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_hint_names_the_players_keys() {
+        let mut keys = Bindings::default();
+        assert_eq!(keys_hint(&keys), "Arrows: choose  ·  Z or Space: select  ·  X or Esc: back");
+        // A's Z given K: the hint follows
+        keys.assign(Button::A, Some(egui::Key::Z), egui::Key::K);
+        assert!(keys_hint(&keys).contains("K or Space: select"), "{}", keys_hint(&keys));
+        // the arrows taken off: Up's and Down's first keys
+        keys.remove(Button::Up, egui::Key::ArrowUp);
+        assert!(keys_hint(&keys).starts_with("W, Down arrow: choose"), "{}", keys_hint(&keys));
+    }
 }
