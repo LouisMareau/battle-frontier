@@ -123,14 +123,42 @@ try {
   check('  LB: back', (await data('optionstab')) === 'Game', await data('optionstab'));
   await tap(B.rb);
   await tap(B.rb);
-  check('  the Controls', (await data('optionstab')) === 'Controls', await data('optionstab'));
-  for (let i = 0; i < 4; i++) await tap(B.right);
-  check("  along A's row to its controller button", (await data('optionsring')) === '0,4', await data('optionsring'));
+  check('  the Controls: the controller\'s buttons only', (await data('optionstab')) === 'Controls' && (await data('controlsview')) === 'controller', `${await data('optionstab')}, ${await data('controlsview')}`);
+  check("  the ring on A's first button", (await data('optionsring')) === '0,0', await data('optionsring'));
   await shot('2-controls');
   await tap(B.south);
   check('  A on it: waits for another', (await data('waitingpad')) === 'A', await data('waitingpad'));
   await tap(B.north);
   check('  North pressed: given to A', (await data('waitingpad')) === '' && (await data('options')) === 'open', `${await data('waitingpad')}, ${await data('options')}`);
+  // one more for A ("+", then West), then West taken off (Select), and North kept (Start);
+  // A is North now
+  await tap(B.right);
+  await tap(B.north);
+  check('  "+": waits for one more', (await data('waitingpad')) === 'A', await data('waitingpad'));
+  await tap(B.west);
+  check('  West added', JSON.stringify((await kept()).pad?.A) === '["North","West"]', JSON.stringify((await kept()).pad?.A));
+  check('  the ring on it', (await data('optionsring')) === '0,1', await data('optionsring'));
+  await tap(B.north);
+  await shot('2c-waiting');
+  await tap(B.select);
+  check('  A on it, Select: taken off', JSON.stringify((await kept()).pad?.A) === '["North"]' && (await data('waitingpad')) === '', JSON.stringify((await kept()).pad?.A));
+  await tap(B.left);
+  await tap(B.north);
+  await tap(B.start);
+  check('  A on North, Start: kept as it was', JSON.stringify((await kept()).pad?.A) === '["North"]' && (await data('waitingpad')) === '', JSON.stringify((await kept()).pad?.A));
+  // a key pressed: the keyboard's keys instead; the controller again: its buttons
+  await browser.key('g');
+  await sleep(200);
+  check('  a key pressed: the keyboard\'s keys only', (await data('device')) === 'keys' && (await data('controlsview')) === 'keyboard', `${await data('device')}, ${await data('controlsview')}`);
+  await shot('2b-controls-keyboard');
+  await tap(B.down);
+  check('  a controller button (Down: B\'s row): its buttons again', (await data('controlsview')) === 'controller' && (await data('optionsring')) === '1,0', `${await data('controlsview')}, ${await data('optionsring')}`);
+  // a key pressed while a button is waited for: the wait is over, nothing changed
+  await tap(B.north);
+  check("  A on B's button: it waits", (await data('waitingpad')) === 'B', await data('waitingpad'));
+  await browser.key('g');
+  await sleep(200);
+  check('  a key meanwhile: no more waiting, the keyboard\'s keys', (await data('waitingpad')) === '' && (await data('controlsview')) === 'keyboard' && JSON.stringify((await kept()).pad?.A) === '["North"]', `${await data('waitingpad')}, ${await data('controlsview')}`);
   await tap(B.east);
   check("  B closes them; what's kept", (await data('options')) === '', await data('options'));
   const k = await kept();

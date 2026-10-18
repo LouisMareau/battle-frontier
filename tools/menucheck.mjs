@@ -85,7 +85,7 @@ try {
   await shot('2-options');
   // Controls: A's first key (Z) given to K
   await press('uiTab_Controls');
-  check('  the Controls tab', (await data('optionstab')) === 'Controls');
+  check("  the Controls tab: the keyboard's keys only (no controller in use)", (await data('optionstab')) === 'Controls' && (await data('controlsview')) === 'keyboard', await data('controlsview'));
   await press('uiKey_A_0');
   check('  a key clicked waits for the new one', (await data('waitingkey')) === 'A');
   await browser.key('k');

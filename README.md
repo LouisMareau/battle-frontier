@@ -24,12 +24,15 @@ replace a saved story), **Options** and **Exit** (in the browser, a tab the page
 says so), in white Roboto: an item hovered grows a little and steps right; one picked steps
 right while the others slide left and fade (every tween 0.3 s at most). The **Options** are in
 tabs: **Game** (text speed, timing windows and rings), **Graphics** (resolution, shadows),
-**Controls** (the keys and the controller buttons each button answers to: one clicked takes
-the next one pressed, "+" adds one, a right-click takes one off) and **Audio** (master,
-effects, ambience); they're kept between runs, in the browser's storage or
-`build/save/options.json`. The mouse works the menus, and so do the game's buttons: in the
-Options, L and R go through the tabs, the d-pad through the rows and their values (a ring
-round what it's on), A presses.
+**Controls** (what each button answers to on the device in use: the keyboard's keys, or a
+controller's buttons while one is in use; one clicked, or A on it, takes the next one
+pressed, "+" adds one; while one waits, Delete or the controller's Select takes it off, Esc
+or its Start keeps it; a right-click takes one off too) and **Audio** (master, effects,
+ambience); they're kept between runs, in the browser's storage or
+`build/save/options.json`. The mouse works the menus, and so does a controller (or the
+keyboard), all of them, with nothing left for the mouse: in the Options, L and R go through
+the tabs, the d-pad through the rows and their values (a ring round what it's on), A presses.
+The Editor's icon is the one exception: the editor is made for a mouse.
 
 **Controllers** work everywhere the game reads its buttons (the menus, the Options, the
 overworld, the battles), read by [gilrs](https://gitlab.com/gilrs-project/gilrs): the

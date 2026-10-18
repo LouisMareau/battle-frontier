@@ -464,6 +464,11 @@ pub fn buttons_text(keys: &Bindings, pad: Option<Family>) -> String {
     )
 }
 
+/// Two buttons' first keys (or controller buttons), "Q / E" or "LB / RB".
+pub fn pair(keys: &Bindings, pad: Option<Family>, a: Button, b: Button) -> String {
+    format!("{} / {}", names(keys, pad, a, 1, ""), names(keys, pad, b, 1, ""))
+}
+
 /// The overworld's buttons, at its foot: what moves, what speaks, what leaves (Esc, or the
 /// controller's Start).
 pub fn walk_hint(keys: &Bindings, pad: Option<Family>) -> String {
@@ -511,11 +516,12 @@ fn tab_rows(tab: usize) -> Vec<Row> {
     rows
 }
 
-/// The places along a row: a button's keys and "+", then its controller buttons and "+";
-/// Done and Defaults; else the row as one.
-fn row_places(row: Row, keys: &Bindings) -> usize {
+/// The places along a row: a button's keys and "+" (its controller buttons and "+" in the
+/// controller's view); Done and Defaults; else the row as one.
+fn row_places(row: Row, keys: &Bindings, pad_view: bool) -> usize {
     match row {
-        Row::Keys(b) => keys.keys(b).len() + 1 + keys.pads(b).len() + 1,
+        Row::Keys(b) if pad_view => keys.pads(b).len() + 1,
+        Row::Keys(b) => keys.keys(b).len() + 1,
         Row::End => 2,
         _ => 1,
     }
@@ -548,9 +554,9 @@ fn nudge(o: &mut Options, tab: usize, row: usize, by: i32) {
 
 /// The game's buttons in the Options: L and R go through the tabs, Up and Down through the
 /// rows (Done and Defaults last), Left and Right change a row's value or go along it, A
-/// presses what they're on. Without a controller in hand, the first press only shows where
-/// they are.
-fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, done: &mut bool, defaults: &mut bool) {
+/// presses what they're on. `pad_view`: a controller is in use (the Controls show its
+/// buttons); without one, the first press only shows where they are.
+fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, pad_view: bool, done: &mut bool, defaults: &mut bool) {
     let tabs_by = input.pressed(Button::R) as i32 - input.pressed(Button::L) as i32;
     if tabs_by != 0 {
         ui_state.tab = (ui_state.tab as i32 + tabs_by).rem_euclid(TABS.len() as i32) as usize;
@@ -560,7 +566,7 @@ fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, 
     if ![Button::Up, Button::Down, Button::Left, Button::Right, Button::A].iter().any(|&b| input.pressed(b)) {
         return;
     }
-    if !(ui_state.ring || crate::pads::on_pad()) {
+    if !(ui_state.ring || pad_view) {
         ui_state.ring = true;
         return;
     }
@@ -575,7 +581,7 @@ fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, 
         row = (row + 1) % n;
     }
     ui_state.row = row;
-    let places = row_places(rows[row], &o.controls);
+    let places = row_places(rows[row], &o.controls, pad_view);
     ui_state.col = ui_state.col.min(places - 1);
     let by = input.pressed(Button::Right) as i32 - input.pressed(Button::Left) as i32;
     if by != 0 {
@@ -587,19 +593,9 @@ fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, 
     if input.pressed(Button::A) {
         match rows[row] {
             Row::Toggle => nudge(o, ui_state.tab, row, 1),
-            Row::Keys(b) => {
-                let (keys, pads) = (o.controls.keys(b).to_vec(), o.controls.pads(b).to_vec());
-                let c = ui_state.col;
-                if c < keys.len() {
-                    ui_state.waiting = Some((b, Some(keys[c])));
-                } else if c == keys.len() {
-                    ui_state.waiting = Some((b, None));
-                } else if c - keys.len() - 1 < pads.len() {
-                    ui_state.waiting_pad = Some((b, Some(pads[c - keys.len() - 1])));
-                } else {
-                    ui_state.waiting_pad = Some((b, None));
-                }
-            }
+            // the one it's on waits for its new key or button ("+": one more)
+            Row::Keys(b) if pad_view => ui_state.waiting_pad = Some((b, o.controls.pads(b).get(ui_state.col).copied())),
+            Row::Keys(b) => ui_state.waiting = Some((b, o.controls.keys(b).get(ui_state.col).copied())),
             Row::End if ui_state.col == 0 => *done = true,
             Row::End => *defaults = true,
             _ => {}
@@ -625,8 +621,15 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
         (ui_state.row, ui_state.col, ui_state.ring) = (0, 0, false);
     }
     ui_state.last_frame = frame_nr;
-    // a key or a controller's button being waited for: the next one pressed (Esc gives up)
+    // the device in use: the Controls show its keys or buttons
+    let pad_view = crate::pads::on_pad();
+    // a key or a controller's button being waited for: the next one pressed (Delete or the
+    // controller's Select takes the one waited on off, Esc or its Start keeps it). The other
+    // device used meanwhile: the wait is over (its chip isn't shown any more).
     let mut caught = false;
+    if (pad_view && ui_state.waiting.take().is_some()) || (!pad_view && ui_state.waiting_pad.take().is_some()) {
+        caught = true;
+    }
     if let Some((button, old)) = ui_state.waiting {
         let key = ctx.input(|i| {
             i.events.iter().find_map(|e| match e {
@@ -635,8 +638,10 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
             })
         });
         if let Some(k) = key {
-            if k != egui::Key::Escape {
-                o.controls.assign(button, old, k);
+            match (k, old) {
+                (egui::Key::Escape, _) | (egui::Key::Delete, None) => {}
+                (egui::Key::Delete, Some(old)) => o.controls.remove(button, old),
+                (k, old) => o.controls.assign(button, old, k),
             }
             ui_state.waiting = None;
             caught = true;
@@ -644,10 +649,11 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
     }
     if let Some((button, old)) = ui_state.waiting_pad {
         if let Some(&p) = crate::pads::raw_pressed().first() {
-            o.controls.assign_pad(button, old, p);
-            ui_state.waiting_pad = None;
-            caught = true;
-        } else if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            match (p, old) {
+                (PadButton::Start, _) | (PadButton::Select, None) => {}
+                (PadButton::Select, Some(old)) => o.controls.remove_pad(button, old),
+                (p, old) => o.controls.assign_pad(button, old, p),
+            }
             ui_state.waiting_pad = None;
             caught = true;
         }
@@ -660,9 +666,9 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
         ui_state.ring = false;
     }
     if !listening {
-        buttons_in_options(o, ui_state, input, &mut done, &mut defaults);
+        buttons_in_options(o, ui_state, input, pad_view, &mut done, &mut defaults);
     }
-    let ring_on = ui_state.ring || crate::pads::on_pad();
+    let ring_on = ui_state.ring || pad_view;
     // where each row's places are, for the ring
     let mut spots: Vec<Vec<Rect>> = vec![];
     let modal = egui::Modal::new(egui::Id::new("game-options")).frame(dialog_frame()).show(ctx, |ui| {
@@ -751,7 +757,7 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
                     ui.add_space(8.0);
                     ui.label(RichText::new("Lower these if the game stutters.").size(12.0).color(Color32::from_white_alpha(140)));
                 }
-                2 => spots.extend(controls(ui, o, ui_state)),
+                2 => spots.extend(controls(ui, o, ui_state, pad_view)),
                 _ => rows(ui, "audio", &mut |ui| {
                     for (name, value, hook, about) in [
                         ("Master", &mut o.volume, "uiVolume", "Everything"),
@@ -814,88 +820,98 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
     o.saved() != before
 }
 
-/// The Controls tab: each button, what it does, its keys and its controller buttons; one
-/// clicked (or A on it) waits for the one to put in its place, "+" for one more, a
-/// right-click takes one off. The places of each row's chips, for the ring.
-fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi) -> Vec<Vec<Rect>> {
+/// The Controls tab, for the device in use: a controller's buttons while one is, else the
+/// keyboard's keys. Each of the game's buttons, what it does and what's on it: one clicked (or
+/// A on it) waits for the one to put in its place, "+" for one more; while one waits, a
+/// controller's Select (the Delete key) takes it off and its Start (Esc) keeps it; a
+/// right-click takes one off too. The places of each row's chips, for the ring.
+fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_view: bool) -> Vec<Vec<Rect>> {
     let keys: Bindings = o.controls.clone();
     let family = crate::pads::family();
     let mut spots = vec![];
-    // the controller in hand, if any
-    let about = match crate::pads::count() {
-        0 => "No controller yet: connect one (in a browser, press one of its buttons too)".to_string(),
-        _ if crate::pads::on_pad() => format!("Controller in use: {}", crate::pads::name()),
-        _ => format!("Controller connected: {} (in use as soon as you press one of its buttons)", crate::pads::name()),
-    };
-    ui.label(RichText::new(about).size(12.5).color(Color32::from_white_alpha(160)));
-    ui.add_space(6.0);
-    let chip = |ui: &mut egui::Ui, text: String, waiting: bool, about: &str| ui.add(egui::Button::new(RichText::new(text).size(12.5)).selected(waiting)).on_hover_text(about);
-    egui::Grid::new("options-controls").num_columns(3).spacing([16.0, 7.0]).show(ui, |ui| {
-        ui.label("");
-        ui.label(RichText::new("Keyboard").font(menu_font(13.0)).color(Color32::from_white_alpha(170)));
-        ui.label(RichText::new("Controller").font(menu_font(13.0)).color(Color32::from_white_alpha(170)));
-        ui.end_row();
+    // whose buttons these are; the other device's show while it's the one in use
+    ui.horizontal(|ui| {
+        let (device, other) = match (pad_view, crate::pads::count()) {
+            (true, _) => (crate::pads::name(), "the keyboard's keys show while it's the one in use"),
+            (false, 0) => ("Keyboard".to_string(), "connect a controller to see and change its buttons"),
+            (false, _) => ("Keyboard".to_string(), "the controller's buttons show once one of them is pressed"),
+        };
+        ui.label(RichText::new(device).font(menu_font(15.0)).color(Color32::WHITE));
+        ui.label(RichText::new(other).size(12.0).color(Color32::from_white_alpha(120)));
+    });
+    platform::set_hook("controlsview", if pad_view { "controller" } else { "keyboard" });
+    ui.add_space(8.0);
+    let chip = |ui: &mut egui::Ui, text: String, waiting: bool| ui.add(egui::Button::new(RichText::new(text).size(13.0)).selected(waiting).min_size(Vec2::new(26.0, 0.0)));
+    let place = |r: Rect| format!("{:.0},{:.0}", r.center().x, r.center().y);
+    egui::Grid::new("options-controls").num_columns(2).spacing([28.0, 8.0]).show(ui, |ui| {
         for b in Button::ALL {
             let mut row = vec![];
             ui.horizontal(|ui| {
-                ui.add_sized(Vec2::new(40.0, 18.0), egui::Label::new(RichText::new(b.name()).size(15.0).color(Color32::WHITE)));
+                ui.add_sized(Vec2::new(44.0, 18.0), egui::Label::new(RichText::new(b.name()).size(15.0).color(Color32::WHITE)));
                 // what it does, unless its name says it (the d-pad's)
                 if b.about() != b.name() {
                     ui.label(RichText::new(b.about()).size(12.0).color(Color32::from_white_alpha(140)));
                 }
             });
             ui.horizontal(|ui| {
-                for (i, &k) in keys.keys(b).iter().enumerate() {
-                    let waiting = ui_state.waiting == Some((b, Some(k)));
-                    let c = chip(ui, if waiting { "Press a key…".to_string() } else { key_label(k) }, waiting, "Click: another key in its place (Esc keeps it). Right-click: take it off");
-                    platform::set_hook(&format!("uiKey_{}_{i}", b.name()), &format!("{:.0},{:.0}", c.rect.center().x, c.rect.center().y));
-                    if c.clicked() {
-                        ui_state.waiting = Some((b, Some(k)));
-                        ui_state.waiting_pad = None;
+                if pad_view {
+                    for (i, &p) in keys.pads(b).iter().enumerate() {
+                        let waiting = ui_state.waiting_pad == Some((b, Some(p)));
+                        let c = chip(ui, if waiting { "Press a button…".to_string() } else { p.label(family).to_string() }, waiting);
+                        platform::set_hook(&format!("uiPad_{}_{i}", b.name()), &place(c.rect));
+                        if c.clicked() {
+                            ui_state.waiting_pad = Some((b, Some(p)));
+                        }
+                        if c.secondary_clicked() {
+                            o.controls.remove_pad(b, p);
+                        }
+                        row.push(c.rect);
                     }
-                    if c.secondary_clicked() {
-                        o.controls.remove(b, k);
+                    let adding = ui_state.waiting_pad == Some((b, None));
+                    let add = chip(ui, if adding { "Press a button…" } else { "+" }.to_string(), adding);
+                    platform::set_hook(&format!("uiPadAdd_{}", b.name()), &place(add.rect));
+                    if add.clicked() {
+                        ui_state.waiting_pad = Some((b, None));
                     }
-                    row.push(c.rect);
-                }
-                let adding = ui_state.waiting == Some((b, None));
-                let add = chip(ui, if adding { "Press a key…" } else { "+" }.to_string(), adding, "One more key for it");
-                platform::set_hook(&format!("uiKeyAdd_{}", b.name()), &format!("{:.0},{:.0}", add.rect.center().x, add.rect.center().y));
-                if add.clicked() {
-                    ui_state.waiting = Some((b, None));
-                    ui_state.waiting_pad = None;
-                }
-                row.push(add.rect);
-            });
-            ui.horizontal(|ui| {
-                for (i, &p) in keys.pads(b).iter().enumerate() {
-                    let waiting = ui_state.waiting_pad == Some((b, Some(p)));
-                    let c = chip(ui, if waiting { "Press a button…".to_string() } else { p.label(family).to_string() }, waiting, "Click (or A): another of the controller's buttons in its place (Esc keeps it). Right-click: take it off");
-                    platform::set_hook(&format!("uiPad_{}_{i}", b.name()), &format!("{:.0},{:.0}", c.rect.center().x, c.rect.center().y));
-                    if c.clicked() {
-                        ui_state.waiting_pad = Some((b, Some(p)));
-                        ui_state.waiting = None;
+                    row.push(add.rect);
+                } else {
+                    for (i, &k) in keys.keys(b).iter().enumerate() {
+                        let waiting = ui_state.waiting == Some((b, Some(k)));
+                        let c = chip(ui, if waiting { "Press a key…".to_string() } else { key_label(k) }, waiting);
+                        platform::set_hook(&format!("uiKey_{}_{i}", b.name()), &place(c.rect));
+                        if c.clicked() {
+                            ui_state.waiting = Some((b, Some(k)));
+                        }
+                        if c.secondary_clicked() {
+                            o.controls.remove(b, k);
+                        }
+                        row.push(c.rect);
                     }
-                    if c.secondary_clicked() {
-                        o.controls.remove_pad(b, p);
+                    let adding = ui_state.waiting == Some((b, None));
+                    let add = chip(ui, if adding { "Press a key…" } else { "+" }.to_string(), adding);
+                    platform::set_hook(&format!("uiKeyAdd_{}", b.name()), &place(add.rect));
+                    if add.clicked() {
+                        ui_state.waiting = Some((b, None));
                     }
-                    row.push(c.rect);
+                    row.push(add.rect);
                 }
-                let adding = ui_state.waiting_pad == Some((b, None));
-                let add = chip(ui, if adding { "Press a button…" } else { "+" }.to_string(), adding, "One more of the controller's buttons for it");
-                platform::set_hook(&format!("uiPadAdd_{}", b.name()), &format!("{:.0},{:.0}", add.rect.center().x, add.rect.center().y));
-                if add.clicked() {
-                    ui_state.waiting_pad = Some((b, None));
-                    ui_state.waiting = None;
-                }
-                row.push(add.rect);
             });
             ui.end_row();
             spots.push(row);
         }
     });
-    ui.add_space(6.0);
-    ui.label(RichText::new("A click on the game's view counts as A; the left stick moves like the d-pad. A key or a button given to one leaves the one that had it.").size(12.0).color(Color32::from_white_alpha(140)));
+    ui.add_space(8.0);
+    // what to do here; while one waits, how to take it off or keep it
+    let (select, start) = (PadButton::Select.label(family), PadButton::Start.label(family));
+    let note = match (pad_view, ui_state.waiting_pad, ui_state.waiting) {
+        (true, Some((_, Some(_))), _) => format!("Press the new button  ·  {select}: take it off  ·  {start}: keep it"),
+        (true, Some((_, None)), _) => format!("Press the button to add  ·  {start}: none"),
+        (false, _, Some((_, Some(_)))) => "Press the new key  ·  Delete: take it off  ·  Esc: keep it".to_string(),
+        (false, _, Some((_, None))) => "Press the key to add  ·  Esc: none".to_string(),
+        (true, ..) => "A on a button, then the new one. The left stick moves like the d-pad.".to_string(),
+        (false, ..) => "Click a key (or A on it), then the new one. A click on the game's view counts as A.".to_string(),
+    };
+    ui.label(RichText::new(note).size(12.0).color(Color32::from_white_alpha(150)));
     spots
 }
 
@@ -943,50 +959,64 @@ mod tests {
         let mut o = Options::default();
         let mut s = OptionsUi::default();
         let (mut done, mut defaults) = (false, false);
-        let mut go = |o: &mut Options, s: &mut OptionsUi, b: Button| buttons_in_options(o, s, &press(b), &mut done, &mut defaults);
-        // the first press only shows where the buttons are (no controller in hand)
-        go(&mut o, &mut s, Button::Down);
+        let mut go = |o: &mut Options, s: &mut OptionsUi, b: Button, pad: bool| buttons_in_options(o, s, &press(b), pad, &mut done, &mut defaults);
+        // the keyboard: the first press only shows where the buttons are
+        go(&mut o, &mut s, Button::Down, false);
         assert!(s.ring);
         assert_eq!((s.row, o.text), (0, 1));
         // Right: the text slower; Down twice, A: the rings off
-        go(&mut o, &mut s, Button::Right);
+        go(&mut o, &mut s, Button::Right, false);
         assert_eq!(o.text, 2);
-        go(&mut o, &mut s, Button::Down);
-        go(&mut o, &mut s, Button::Down);
-        go(&mut o, &mut s, Button::A);
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::A, false);
         assert_eq!(s.row, 2);
         assert!(!o.assist);
         // R: the Graphics tab, from its top; Down, Left: the shadows a step lower
-        go(&mut o, &mut s, Button::R);
+        go(&mut o, &mut s, Button::R, false);
         assert_eq!((s.tab, s.row), (1, 0));
         let shadows = o.graphics.shadows;
-        go(&mut o, &mut s, Button::Down);
-        go(&mut o, &mut s, Button::Left);
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::Left, false);
         assert_eq!(o.graphics.shadows, shadows.saturating_sub(1));
         // L twice: round to Audio; Left: the master volume 5 lower
-        go(&mut o, &mut s, Button::L);
-        go(&mut o, &mut s, Button::L);
+        go(&mut o, &mut s, Button::L, false);
+        go(&mut o, &mut s, Button::L, false);
         assert_eq!(s.tab, 3);
-        go(&mut o, &mut s, Button::Left);
+        go(&mut o, &mut s, Button::Left, false);
         assert_eq!(o.volume, 95);
-        // L: Controls; along the A row to its controller button, A waits for another one
-        go(&mut o, &mut s, Button::L);
+        // L: the Controls, the keyboard's: along A's keys (Z, Space, Enter, "+"), A on Space
+        go(&mut o, &mut s, Button::L, false);
         assert_eq!(s.tab, 2);
-        for _ in 0..4 {
-            go(&mut o, &mut s, Button::Right);
+        for _ in 0..5 {
+            go(&mut o, &mut s, Button::Right, false);
         }
-        assert_eq!(s.col, 4, "Z, Space, Enter, +, then the controller's");
-        go(&mut o, &mut s, Button::A);
+        assert_eq!(s.col, 3, "no further than the \"+\"");
+        go(&mut o, &mut s, Button::A, false);
+        assert_eq!(s.waiting, Some((Button::A, None)), "\"+\": one more key");
+        s.waiting = None;
+        go(&mut o, &mut s, Button::Left, false);
+        go(&mut o, &mut s, Button::Left, false);
+        go(&mut o, &mut s, Button::A, false);
+        assert_eq!(s.waiting, Some((Button::A, Some(egui::Key::Space))));
+        s.waiting = None;
+        // a controller in use: its buttons (South, "+"); the place kept within them
+        go(&mut o, &mut s, Button::Right, true);
+        assert_eq!(s.col, 1, "South, then the \"+\"");
+        go(&mut o, &mut s, Button::Left, true);
+        go(&mut o, &mut s, Button::A, true);
         assert_eq!(s.waiting_pad, Some((Button::A, Some(PadButton::South))));
         assert_eq!(s.waiting, None);
-        // up from the top row: the last (Done, Defaults); A on Done
         s.waiting_pad = None;
-        go(&mut o, &mut s, Button::Up);
+        // up from the top row: the last (Done, Defaults); Right: Defaults; Left, A: Done
+        go(&mut o, &mut s, Button::Up, true);
         assert_eq!(s.row, Button::ALL.len());
-        assert_eq!(s.col, 1, "kept within the row: Defaults");
-        go(&mut o, &mut s, Button::Left);
-        go(&mut o, &mut s, Button::A);
+        go(&mut o, &mut s, Button::Right, true);
+        assert_eq!(s.col, 1);
+        go(&mut o, &mut s, Button::Left, true);
+        go(&mut o, &mut s, Button::A, true);
         assert!(done);
         assert!(!defaults);
     }
 }
+

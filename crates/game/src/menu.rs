@@ -236,7 +236,8 @@ impl Menu {
                                     }
                                 });
                                 if pick.modes.len() > 1 {
-                                    ui.label(egui::RichText::new("L / R (Q / E): change shape").color(MUTED).size(12.0));
+                                    let keys = crate::title::pair(&crate::input::bindings(), crate::title::pad_shown(), Button::L, Button::R);
+                                    ui.label(egui::RichText::new(format!("L / R ({keys}): change shape")).color(MUTED).size(12.0));
                                 }
                             }
                             ui.label(egui::RichText::new(&describe).color(MUTED).size(12.0));
