@@ -5,10 +5,10 @@
   "max_level": 9,
   "toon": {
     "bands": 2,
-    "softness": 0.12,
+    "softness": 1.0,
     "shadow_color": "#5c4d8a",
     "shadow": 0.35,
-    "rim": 0.35,
+    "rim": 0.3,
     "rim_width": 0.4,
     "glint": 0.8,
     "glint_size": 0.2,
@@ -20,5 +20,10 @@
     "crease": 60.0,
     "color_steps": 16,
     "color_softness": 0.0
+  },
+  "start": {
+    "map": "test_meadow",
+    "at": [19, 22],
+    "facing": 180.0
   }
 }

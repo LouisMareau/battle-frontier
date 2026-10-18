@@ -25,6 +25,7 @@ mod stream;
 mod templates;
 mod timeline;
 mod walk;
+mod welcome;
 mod worlds;
 mod zones;
 
@@ -40,6 +41,7 @@ use world::mesh;
 use world::WorldMap;
 
 pub use events::Request;
+pub use welcome::{Leave, WELCOME_NAME};
 #[cfg(not(target_arch = "wasm32"))]
 pub use models::{link_target, open_in_blender};
 #[cfg(windows)]
@@ -219,6 +221,10 @@ pub struct MapEditor {
     assets: assets::Assets,
     /// pictures for Claude to model in Blender
     requests: requests::Requests,
+    /// the welcome (what the editor is, how to add to the game) on top of everything
+    pub welcome: bool,
+    /// its "Don't show this again"
+    welcome_hide: bool,
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
@@ -422,6 +428,8 @@ impl MapEditor {
             focus_sent: None,
             assets: assets::Assets::default(),
             requests: requests::Requests::default(),
+            welcome: false,
+            welcome_hide: false,
             probe: None,
             walker: None,
             fade: None,
@@ -1119,10 +1127,10 @@ impl MapEditor {
         self.ground_hit = None;
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio) -> bool {
+    pub fn ui(&mut self, ui: &mut egui::Ui, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64, audio: &mut crate::audio::Audio) -> Option<Leave> {
         let ctx = ui.ctx().clone();
         self.begin_frame(&ctx, rs, now);
-        let mut back = false;
+        let mut back = None;
         self.take_drops(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1138,8 +1146,8 @@ impl MapEditor {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.spacing_mut().button_padding.x = 3.0;
                 ui.label(RichText::new("Maps").size(16.0).strong());
-                if ui.button("Menu").on_hover_text("Back to the game's menu").clicked() {
-                    back = true;
+                if let Some(to) = self.leave_menu(ui) {
+                    back = Some(to);
                 }
                 ui.separator();
                 self.map_picker(ui);
@@ -1291,6 +1299,7 @@ impl MapEditor {
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
+        self.welcome_modal(&ctx);
         self.end_frame(&ctx, audio, now);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
         crate::platform::set_hook("chunked", if self.map.chunk > 0 { "1" } else { "0" });
@@ -1758,6 +1767,7 @@ impl MapEditor {
         for (what, n) in rows {
             ui.label(RichText::new(format!("{n} {what}")).size(12.5));
         }
+        self.start_section(ui);
         section(ui, "Blender");
         let export = ui.button("The map to Blender").on_hover_text("The whole map as a .glb: ground, props, trees and buildings as separate objects");
         mark("uiExportMap", &export);
@@ -1770,7 +1780,7 @@ impl MapEditor {
 
     fn keys(&mut self, ctx: &egui::Context) {
         // a bone line being drawn over a request's picture has Escape and Backspace
-        if ctx.egui_wants_keyboard_input() || self.requests.drawing_bones() {
+        if ctx.egui_wants_keyboard_input() || self.requests.drawing_bones() || self.welcome {
             return;
         }
         let (mods, keys) = ctx.input(|i| (i.modifiers, i.keys_down.clone()));

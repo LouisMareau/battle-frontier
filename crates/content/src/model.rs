@@ -543,12 +543,25 @@ pub struct Settings {
     /// how what's toon looks (props and creatures say whether they are)
     #[serde(skip_serializing_if = "is_default")]
     pub toon: Toon,
+    /// where a new game begins (the map editor's "Start new games here")
+    #[serde(skip_serializing_if = "is_default")]
+    pub start: Start,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default() }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default() }
     }
+}
+
+/// Where a new game begins: a map, the cell the player stands on and the way they face
+/// (degrees, as the walker turns). No map: the first map, wherever the walk starts.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Start {
+    pub map: String,
+    pub at: [i32; 2],
+    pub facing: f64,
 }
 
 /// The toon look (the Post-processing window): the sun's and the lamps' light in steps, the

@@ -18,10 +18,11 @@ use crate::director::Director;
 use crate::editor::Browser;
 use crate::hud::{Hud, ACCENT, MUTED, TEXT};
 use crate::input::{Button, Input};
-use crate::mapedit::{MapEditor, SaveGame, SAVE_NAME};
+use crate::mapedit::{Leave, MapEditor, SaveGame, SAVE_NAME, WELCOME_NAME};
 use crate::platform::{self, Files, Load};
 use crate::presets::{kind_label, kind_of, pool, spec, DEFAULT_BAG};
 use crate::stage::Stage;
+use crate::title::Choice;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum TimeChoice {
@@ -36,9 +37,90 @@ pub struct Options {
     pub assist: bool,
     /// 0 fast, 1 normal, 2 slow
     pub text: usize,
+    /// the editor's Test battles: the party at each encounter's level, the AI on your side
     pub match_level: bool,
     pub auto: bool,
     pub graphics: Graphics,
+    /// the sound's volume, percent
+    pub volume: u8,
+}
+
+/// The options kept between runs (the Options window's; `platform::store_text`, "options"),
+/// as words a person can read in the file.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct KeptOptions {
+    /// clock, morning, day or night
+    pub time: String,
+    /// fast, normal or slow
+    pub text: String,
+    /// easy, normal or hard
+    pub timing: String,
+    pub rings: bool,
+    /// percent of the screen's resolution
+    pub resolution: u8,
+    /// off, low, medium or high
+    pub shadows: String,
+    pub volume: u8,
+}
+
+impl Default for KeptOptions {
+    fn default() -> Self {
+        Options::default().saved()
+    }
+}
+
+/// The name the options are kept under.
+pub const OPTIONS_NAME: &str = "options";
+const SPEEDS: [&str; 3] = ["fast", "normal", "slow"];
+const TIMINGS: [&str; 3] = ["easy", "normal", "hard"];
+
+impl Default for Options {
+    fn default() -> Self {
+        Options { time: TimeChoice::Clock, difficulty: 1, assist: true, text: 1, match_level: true, auto: false, graphics: Graphics::default(), volume: 100 }
+    }
+}
+
+impl Options {
+    /// What's kept of them.
+    pub fn saved(&self) -> KeptOptions {
+        KeptOptions {
+            time: match self.time {
+                TimeChoice::Clock => "clock".into(),
+                TimeChoice::Fixed(p) => p.name().to_lowercase(),
+            },
+            text: SPEEDS[self.text.min(2)].into(),
+            timing: TIMINGS[self.difficulty.min(2)].into(),
+            rings: self.assist,
+            resolution: self.graphics.scale,
+            shadows: Graphics::SHADOWS[self.graphics.shadows.min(3)].0.to_lowercase(),
+            volume: self.volume,
+        }
+    }
+
+    /// Kept options put back (what can't be read keeps its value).
+    pub fn apply(&mut self, k: &KeptOptions) {
+        self.time = match k.time.as_str() {
+            "morning" => TimeChoice::Fixed(Period::Morning),
+            "day" => TimeChoice::Fixed(Period::Day),
+            "night" => TimeChoice::Fixed(Period::Night),
+            _ => TimeChoice::Clock,
+        };
+        self.text = SPEEDS.iter().position(|s| *s == k.text).unwrap_or(self.text);
+        self.difficulty = TIMINGS.iter().position(|s| *s == k.timing).unwrap_or(self.difficulty);
+        self.assist = k.rings;
+        if [100, 75, 50].contains(&k.resolution) {
+            self.graphics.scale = k.resolution;
+        }
+        self.graphics.shadows = Graphics::SHADOWS.iter().position(|(n, _)| n.eq_ignore_ascii_case(&k.shadows)).unwrap_or(self.graphics.shadows);
+        self.volume = k.volume.min(100);
+    }
+
+    /// The Options window's options as they came (the Test battles' own stay).
+    pub fn reset(&mut self) {
+        let (match_level, auto) = (self.match_level, self.auto);
+        *self = Options { match_level, auto, ..Options::default() };
+    }
 }
 
 /// How much the GPU draws (for machines that can't keep up): the 3D scene's resolution
@@ -110,7 +192,11 @@ struct Results {
 
 enum Screen {
     Boot,
+    /// the main menu
     Menu,
+    /// the editor's Test battles: any encounter, to try it
+    Battles,
+    /// the editor's content browser
     Editor(Box<Browser>),
     Maps(Box<MapEditor>),
     /// the overworld: a map walked in the game
@@ -171,6 +257,22 @@ pub struct GameApp {
     leaving: bool,
     last_save: Option<SaveGame>,
     last_save_at: f64,
+    /// the main menu
+    title: crate::title::Title,
+    /// the Test battles' own Options window
+    battles_options: bool,
+    /// a battle from the Test battles goes back to them
+    battles_back: bool,
+    /// the map the editor had open (it opens on it again)
+    editor_map: Option<String>,
+    /// the editor's welcome shown this run (and the player's word that it needn't be again)
+    welcomed: bool,
+    /// why there are no battles (no creatures): the Test battles say so
+    no_battles: Option<String>,
+    /// when the main menu last looked for the saved story, and its place
+    saved_at: (f64, Option<String>),
+    /// the screen last frame (its `data-state`)
+    last_state: &'static str,
 }
 
 pub struct SceneCallback {
@@ -227,26 +329,29 @@ impl GameApp {
                 files.request(&format!("{}/bundle.json", space.dir()));
             }
         }
-        let options = Options {
-            time: match cli.time.as_deref() {
-                Some("morning") => TimeChoice::Fixed(Period::Morning),
-                Some("day") => TimeChoice::Fixed(Period::Day),
-                Some("night") => TimeChoice::Fixed(Period::Night),
-                _ => TimeChoice::Clock,
-            },
-            difficulty: 1,
-            assist: true,
-            text: if cli.preset.is_some() { 0 } else { 1 },
-            match_level: true,
-            auto: cli.auto,
-            graphics: Graphics::default(),
-        };
+        // the options as the player left them, then what the command line says
+        let mut options = Options::default();
+        if let Some(kept) = platform::stored_text(OPTIONS_NAME).and_then(|t| serde_json::from_str::<KeptOptions>(&t).ok()) {
+            options.apply(&kept);
+        }
+        match cli.time.as_deref() {
+            Some("morning") => options.time = TimeChoice::Fixed(Period::Morning),
+            Some("day") => options.time = TimeChoice::Fixed(Period::Day),
+            Some("night") => options.time = TimeChoice::Fixed(Period::Night),
+            _ => {}
+        }
+        if cli.preset.is_some() {
+            options.text = 0;
+        }
+        options.auto = cli.auto;
         let mut audio = crate::audio::Audio::new();
         audio.enabled = !cli.mute;
+        audio.master = options.volume as f32 / 100.0;
         GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
+            title: Default::default(), battles_options: false, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
         }
     }
 
@@ -291,7 +396,7 @@ impl GameApp {
                 self.screen = Screen::Menu;
             }
             Err(e) => {
-                self.error = Some(format!("No battles yet: the content has no creatures ({e}). The editors work; add creatures to content/ (or local placeholders to temporary/)."));
+                self.no_battles = Some(format!("No battles yet: the content has no creatures ({e}). The editors work; add creatures to content/ (or local placeholders to temporary/)."));
                 self.screen = Screen::Menu;
             }
         }
@@ -357,11 +462,15 @@ impl GameApp {
         }
     }
 
-    /// The overworld: the saved map (or `map`, or the first), walked from where the save
-    /// left off, with the story's flags.
+    /// The overworld: the saved map (or `map`), walked from where the save left off, with
+    /// the story's flags; with no story saved, where a new game starts.
     fn explore(&mut self, map: Option<&str>) {
         let Some(c) = self.content.clone() else { return };
         let save: Option<SaveGame> = platform::stored_text(SAVE_NAME).and_then(|t| serde_json::from_str(&t).ok());
+        if save.is_none() && map.is_none() {
+            self.new_game();
+            return;
+        }
         let map = map
             .map(String::from)
             .or_else(|| save.as_ref().map(|s| s.map.clone()).filter(|m| c.maps.contains(m)))
@@ -372,6 +481,48 @@ impl GameApp {
         };
         self.last_save = save.clone();
         self.screen = Screen::Overworld(Box::new(MapEditor::new_play(c, &map, self.files.clone(), save.as_ref())));
+    }
+
+    /// A new story: the saved one given up, the player where the world says a game starts
+    /// (the editor's "Start new games here"; else on the first map).
+    fn new_game(&mut self) {
+        let Some(c) = self.content.clone() else { return };
+        platform::forget_text(SAVE_NAME);
+        self.last_save = None;
+        let start = c.world().start;
+        let (map, arrival) = if c.maps.contains(&start.map) {
+            let at = SaveGame { map: start.map.clone(), at: start.at, facing: start.facing, ..Default::default() };
+            (Some(start.map.clone()), Some(at))
+        } else {
+            (c.maps.iter().next().map(|m| m.id.clone()), None)
+        };
+        let Some(map) = map else {
+            self.error = Some("No map to start on: make one in the editor first.".into());
+            return;
+        };
+        self.screen = Screen::Overworld(Box::new(MapEditor::new_play(c, &map, self.files.clone(), arrival.as_ref())));
+    }
+
+    /// The editor, on the map it had open; the welcome first when the player came in by
+    /// the main menu's Editor (once a run, until they say not to).
+    fn open_editor(&mut self, welcome: bool) {
+        let Some(c) = self.content.clone() else { return };
+        // the map it had open, else the one games start on
+        let start = c.world().start.map;
+        let open = self.editor_map.clone().or_else(|| (!start.is_empty()).then_some(start));
+        let mut ed = MapEditor::new(c, open.as_deref(), self.files.clone());
+        if welcome && !self.welcomed && platform::stored_text(WELCOME_NAME).is_none() {
+            ed.welcome = true;
+            self.welcomed = true;
+        }
+        self.screen = Screen::Maps(Box::new(ed));
+    }
+
+    /// Out of the map editor (its content kept, the map it had open remembered).
+    fn leave_editor(&mut self, ed: &MapEditor) {
+        self.content = Some(ed.content());
+        self.editor_map = Some(ed.map_id().to_string());
+        self.audio.stop_all();
     }
 
     /// Keeps the story between runs: when the map or the flags change, where the player
@@ -599,7 +750,12 @@ impl GameApp {
                 "start" => {
                     let found = self.content.as_ref().and_then(|c| c.encounters.entries().iter().position(|e| e.value.id == arg));
                     if let Some(i) = found {
-                        if matches!(self.screen, Screen::Menu | Screen::Results(..)) {
+                        match self.screen {
+                            Screen::Menu => self.battles_back = false,
+                            Screen::Battles => self.battles_back = true,
+                            _ => {}
+                        }
+                        if matches!(self.screen, Screen::Menu | Screen::Battles | Screen::Results(..)) {
                             self.start(i);
                         }
                     }
@@ -649,9 +805,15 @@ impl GameApp {
                         self.explore((!arg.is_empty()).then_some(arg));
                     }
                 }
+                "battles" => {
+                    if matches!(self.screen, Screen::Menu) && self.content.is_some() {
+                        self.screen = Screen::Battles;
+                    }
+                }
                 "forget" => {
                     platform::forget_text(SAVE_NAME);
                     self.last_save = None;
+                    self.saved_at.0 = f64::NEG_INFINITY;
                 }
                 "view" => {
                     if let Some(ed) = self.editor_mut() {
@@ -687,7 +849,7 @@ impl GameApp {
                         if let Screen::Maps(ed) = &self.screen {
                             self.content = Some(ed.content());
                         }
-                        if matches!(self.screen, Screen::Results(..) | Screen::Editor(_) | Screen::Maps(_)) {
+                        if matches!(self.screen, Screen::Results(..) | Screen::Editor(_) | Screen::Maps(_) | Screen::Battles) {
                             self.screen = Screen::Menu;
                         }
                     }
@@ -707,6 +869,7 @@ impl GameApp {
                 Screen::Editor(_) => "editor".into(),
                 Screen::Maps(_) => "map editor".into(),
                 Screen::Overworld(_) => "overworld".into(),
+                Screen::Battles => "test battles".into(),
                 _ => "menu".into(),
             };
             self.hitches.push(format!("{gap:.0}ms at {:.1}s {what}", (now - self.started_at) / 1000.0));
@@ -761,79 +924,87 @@ impl GameApp {
         }
     }
 
-    fn menu_screen(&mut self, ui: &mut egui::Ui) {
+    /// The main menu: Continue, New game, Options, Exit, and the Editor in the corner.
+    fn menu_screen(&mut self, ui: &mut egui::Ui, now: f64) {
+        // the saved story's place, looked at once a second (a file on the desktop)
+        if now - self.saved_at.0 > 1000.0 {
+            let place = platform::stored_text(SAVE_NAME).and_then(|t| serde_json::from_str::<SaveGame>(&t).ok()).map(|s| {
+                self.content.as_ref().and_then(|c| c.maps.get(&s.map)).map(|m| m.name.clone()).unwrap_or(s.map)
+            });
+            self.saved_at = (now, place);
+        }
+        let saved = self.saved_at.1.clone();
+        platform::set_hook("continue", if saved.is_some() { "1" } else { "" });
+        platform::set_hook("keptoptions", &serde_json::to_string(&self.options.saved()).unwrap_or_default());
+        let mut changed = false;
+        let choice = self.title.ui(ui, &self.input, now, saved.as_deref(), &mut self.options, &mut changed);
+        if changed {
+            self.keep_options();
+        }
+        match choice {
+            Some(Choice::Continue) => self.explore(None),
+            Some(Choice::NewGame) => self.new_game(),
+            Some(Choice::Exit) => {
+                if cfg!(target_arch = "wasm32") {
+                    platform::close_window();
+                } else {
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+            }
+            Some(Choice::Editor) => self.open_editor(true),
+            None => {}
+        }
+    }
+
+    /// The options written down, as the Options window left them.
+    fn keep_options(&mut self) {
+        self.audio.master = self.options.volume as f32 / 100.0;
+        if let Ok(text) = serde_json::to_string_pretty(&self.options.saved()) {
+            if let Err(e) = platform::store_text(OPTIONS_NAME, &text) {
+                log::warn!("the options weren't kept: {e}");
+            }
+        }
+    }
+
+    /// The editor's Test battles: every encounter, by region, to play; the party, its own
+    /// options; back to the editor.
+    fn battles_screen(&mut self, ui: &mut egui::Ui) {
         let mut start = None;
-        let mut open_editor = false;
-        let mut open_maps = false;
-        let mut open_explore = false;
-        let mut forget = false;
-        let has_save = platform::stored_text(SAVE_NAME).is_some();
+        let mut back = false;
         let order = self.encounter_order();
         let content = self.content.clone();
+        egui::Panel::top("battles-top").show(ui, |ui| {
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.heading(RichText::new("Test battles").strong());
+                ui.add_space(12.0);
+                let b = ui.button("Back to the editor").on_hover_text("B");
+                platform::set_hook("uiBackToEditor", &format!("{:.0},{:.0}", b.rect.center().x, b.rect.center().y));
+                if b.clicked() {
+                    back = true;
+                }
+                if ui.button("Options").on_hover_text("Time of day, text, timing windows, graphics and sound (the main menu's)").clicked() {
+                    self.battles_options = true;
+                }
+                ui.separator();
+                ui.checkbox(&mut self.options.match_level, "Party matches each encounter's level");
+                ui.checkbox(&mut self.options.auto, "AI plays your side");
+            });
+            ui.add_space(6.0);
+        });
         egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28)).inner_margin(24.0)).show(ui, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.heading(RichText::new("Battle Frontier").size(28.0).strong().color(TEXT));
-                ui.label(RichText::new("Creature battles with timed hits and blocks, MP, moves that level up and change shape, locks on big attacks, rounds ordered by Speed. Each battle happens on its region's map.").color(MUTED));
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Browse the content").clicked() {
-                        open_editor = true;
-                    }
-                    if ui.button("Edit maps").clicked() {
-                        open_maps = true;
-                    }
-                    ui.separator();
-                    let explore = ui.add(egui::Button::new(RichText::new("Explore").strong())).on_hover_text("Walk the maps: the arrows move, A speaks to what's in front, Esc comes back. The story is kept.");
-                    platform::set_hook("ui-explore", &format!("{:.0},{:.0}", explore.rect.center().x, explore.rect.center().y));
-                    if explore.clicked() {
-                        open_explore = true;
-                    }
-                    if has_save && ui.button("Forget the story").on_hover_text("Starts the story over: the flags and where you stood").clicked() {
-                        forget = true;
-                    }
-                });
-                ui.add_space(10.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Time of day").color(TEXT));
-                    let now = Period::of_hour(platform::local_hour()).name();
-                    for (label, t) in [(format!("Clock (now: {now})"), TimeChoice::Clock), ("Morning".into(), TimeChoice::Fixed(Period::Morning)), ("Day".into(), TimeChoice::Fixed(Period::Day)), ("Night".into(), TimeChoice::Fixed(Period::Night))] {
-                        ui.selectable_value(&mut self.options.time, t, label);
-                    }
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Timing windows").color(TEXT));
-                    for (i, l) in ["Easy", "Normal", "Hard"].iter().enumerate() {
-                        ui.selectable_value(&mut self.options.difficulty, i, *l);
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.options.assist, "Timing rings");
-                    ui.separator();
-                    ui.label(RichText::new("Text").color(TEXT));
-                    for (i, l) in ["Fast", "Normal", "Slow"].iter().enumerate() {
-                        ui.selectable_value(&mut self.options.text, i, *l);
-                    }
-                    ui.separator();
-                    ui.checkbox(&mut self.options.match_level, "Party matches each encounter's level");
-                    ui.checkbox(&mut self.options.auto, "AI plays your side");
-                });
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(RichText::new("Graphics").color(TEXT));
-                    ui.label(RichText::new("resolution").color(MUTED));
-                    for p in [100u8, 75, 50] {
-                        ui.selectable_value(&mut self.options.graphics.scale, p, format!("{p}%"));
-                    }
-                    ui.separator();
-                    ui.label(RichText::new("shadows").color(MUTED));
-                    for (i, (name, _)) in Graphics::SHADOWS.iter().enumerate() {
-                        ui.selectable_value(&mut self.options.graphics.shadows, i, *name);
-                    }
-                    ui.label(RichText::new("(lower these if the frame rate drops)").color(MUTED).size(11.5));
-                });
-                ui.add_space(8.0);
+                ui.label(RichText::new("Any encounter, to try it: its creatures, their moves and its map. The party is the content's player party.").color(MUTED));
+                if let Some(why) = &self.no_battles {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(why).color(Color32::from_rgb(255, 150, 130)));
+                }
                 let Some(content) = content else { return };
-                let names: Vec<String> = self.party.iter().map(|s| content.creatures.get(&s.species).map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone())).collect();
-                ui.label(RichText::new(format!("Your party: {}", names.join(", "))).color(MUTED));
                 ui.add_space(8.0);
+                let names: Vec<String> = self.party.iter().map(|s| content.creatures.get(&s.species).map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone())).collect();
+                if !names.is_empty() {
+                    ui.label(RichText::new(format!("Your party: {}", names.join(", "))).color(MUTED));
+                }
                 let entries = content.encounters.entries();
                 for region in content.regions.iter() {
                     ui.add_space(6.0);
@@ -862,7 +1033,14 @@ impl GameApp {
                 ui.label(RichText::new("A: Z / Space / Enter · B: X / Esc · d-pad: arrows · L / R: Q / E. Contact moves: press A at impact. Beams: hold A, release when the ring fills. Multi-hit: press A on every hit. Foe attacks: press A at impact to block.").color(MUTED).size(12.0));
             });
         });
-        // the keyboard picks an encounter too
+        let ctx = ui.ctx().clone();
+        if self.battles_options {
+            if crate::title::options_window(&ctx, &mut self.options, &mut self.battles_options, &self.input) {
+                self.keep_options();
+            }
+            return;
+        }
+        // the keyboard picks an encounter too; B goes back
         let n = order.len().max(1);
         if self.input.pressed(Button::Down) {
             self.menu_sel = (self.menu_sel + 1) % n;
@@ -873,27 +1051,15 @@ impl GameApp {
         if self.input.pressed(Button::A) && !order.is_empty() {
             start = Some(order[self.menu_sel.min(order.len() - 1)]);
         }
-        if open_editor {
-            if let Some(c) = &self.content {
-                self.screen = Screen::Editor(Box::new(Browser::new(c.clone())));
-                return;
-            }
+        if self.input.pressed(Button::B) && !ctx.egui_wants_keyboard_input() {
+            back = true;
         }
-        if open_maps {
-            if let Some(c) = &self.content {
-                self.screen = Screen::Maps(Box::new(MapEditor::new(c.clone(), None, self.files.clone())));
-                return;
-            }
-        }
-        if forget {
-            platform::forget_text(SAVE_NAME);
-            self.last_save = None;
-        }
-        if open_explore {
-            self.explore(None);
+        if back {
+            self.open_editor(false);
             return;
         }
         if let Some(i) = start {
+            self.battles_back = true;
             self.start(i);
         }
     }
@@ -945,6 +1111,7 @@ impl eframe::App for GameApp {
         let state = match &self.screen {
             Screen::Boot => "boot",
             Screen::Menu => "menu",
+            Screen::Battles => "battles",
             Screen::Editor(_) => "editor",
             Screen::Maps(_) => "maps",
             Screen::Overworld(_) => "explore",
@@ -953,6 +1120,11 @@ impl eframe::App for GameApp {
             Screen::Results(..) => "results",
         };
         platform::set_hook("state", state);
+        // back on the main menu: it looks at the saved story again
+        if state != self.last_state {
+            self.saved_at.0 = f64::NEG_INFINITY;
+            self.last_state = state;
+        }
         platform::set_hook("audio", self.audio.state());
 
         if let Screen::Loading(_) = self.screen {
@@ -971,20 +1143,31 @@ impl eframe::App for GameApp {
             }
             Screen::Menu => {
                 self.audio.stop_all();
-                self.menu_screen(ui)
+                self.menu_screen(ui, now)
+            }
+            Screen::Battles => {
+                self.audio.stop_all();
+                self.battles_screen(ui)
             }
             Screen::Editor(browser) => {
                 if browser.ui(ui, &self.files) || self.input.pressed(Button::B) && !ctx.egui_wants_keyboard_input() {
-                    self.screen = Screen::Menu;
+                    self.open_editor(false);
                 }
             }
             Screen::Maps(ed) => {
-                let back = ed.ui(ui, frame.wgpu_render_state(), now, &mut self.audio);
+                let leave = ed.ui(ui, frame.wgpu_render_state(), now, &mut self.audio);
                 let request = ed.take_request();
-                if back {
-                    self.content = Some(ed.content());
-                    self.screen = Screen::Menu;
-                    self.audio.stop_all();
+                if let Some(to) = leave {
+                    let Screen::Maps(ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { unreachable!() };
+                    self.leave_editor(&ed);
+                    self.screen = match to {
+                        Leave::Menu => Screen::Menu,
+                        Leave::Battles => Screen::Battles,
+                        Leave::Content => match &self.content {
+                            Some(c) => Screen::Editor(Box::new(Browser::new(c.clone()))),
+                            None => Screen::Menu,
+                        },
+                    };
                 } else if request.is_some() {
                     self.pending = request;
                 }
@@ -1109,7 +1292,13 @@ impl eframe::App for GameApp {
                             if ui.add(egui::Button::new(RichText::new("Fight again (A)").color(Color32::from_rgb(34, 34, 34)).strong()).fill(ACCENT)).clicked() {
                                 choice = Some(true);
                             }
-                            if ui.button(match &self.parked { Some(ed) if ed.playing() => "Back to the map (B)", Some(_) => "Back to the editor (B)", None => "Back to the menu (B)" }).clicked() {
+                            let back_to = match &self.parked {
+                                Some(ed) if ed.playing() => "Back to the map (B)",
+                                Some(_) => "Back to the editor (B)",
+                                None if self.battles_back => "Back to the battles (B)",
+                                None => "Back to the menu (B)",
+                            };
+                            if ui.button(back_to).clicked() {
                                 choice = Some(false);
                             }
                         });
@@ -1131,6 +1320,7 @@ impl eframe::App for GameApp {
                             ed.resume_after_battle();
                             self.screen = Self::screen_of(ed);
                         }
+                        None if self.battles_back => self.screen = Screen::Battles,
                         None => self.screen = Screen::Menu,
                     },
                     None => {}
@@ -1150,7 +1340,10 @@ impl eframe::App for GameApp {
         let r = ctx.content_rect();
         // (at the bottom in the map editor, whose top bar is full)
         let (at, align) = if matches!(self.screen, Screen::Maps(_) | Screen::Overworld(_)) { (Pos2::new(r.right() - 10.0, r.bottom() - 7.0), Align2::RIGHT_BOTTOM) } else { (Pos2::new(r.right() - 10.0, r.top() + 8.0), Align2::RIGHT_TOP) };
-        painter.text(at, align, format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap), FontId::proportional(11.0), Color32::from_white_alpha(150));
+        // (not over the main menu: F3 has them there)
+        if !matches!(self.screen, Screen::Menu) {
+            painter.text(at, align, format!("{} fps · worst frame {:.1} ms", self.stats.fps, self.stats.worst_gap), FontId::proportional(11.0), Color32::from_white_alpha(150));
+        }
         if ctx.input(|i| i.key_pressed(egui::Key::F3)) {
             self.perf_panel = !self.perf_panel;
         }
@@ -1175,7 +1368,7 @@ impl eframe::App for GameApp {
         }
         // what went wrong with the content or a battle's loading: a small box at the bottom
         // of the landing page, and nowhere else (the editors have their own status lines)
-        if let (Some(e), Screen::Menu) = (&self.error, &self.screen) {
+        if let (Some(e), Screen::Menu | Screen::Battles) = (&self.error, &self.screen) {
             let galley = painter.layout(e.clone(), FontId::proportional(12.0), Color32::from_rgb(255, 150, 130), (r.width() - 40.0).max(120.0));
             let text_rect = Rect::from_min_size(Pos2::new(r.left() + 16.0, r.bottom() - 16.0 - galley.size().y), galley.size());
             painter.rect_filled(text_rect.expand(6.0), 4.0, Color32::from_black_alpha(180));

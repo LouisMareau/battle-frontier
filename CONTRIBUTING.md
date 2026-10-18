@@ -3,6 +3,20 @@
 Thanks for helping. Battle Frontier is an original game: every contribution must be your
 own work, or work you have the right to submit under this project's licenses.
 
+## From the editor to the game
+
+The game's own editor makes most of what the game is: open the game and click **Editor** in
+the bottom-right corner of its main menu. Maps, props, creatures' looks, abilities and their
+effects are all made there.
+
+- In the desktop app (`cargo run -p engine-game --release`), what you save is written into
+  the project: `content/data/<collection>/<id>.json` and `content/assets/`.
+- In the browser, saving downloads each file: put it in the same place in a clone of the
+  repository.
+
+Then commit those files on a branch of your fork and open a pull request (below). Once it's
+reviewed and merged, everyone plays it.
+
 ## What a pull request can contain
 
 - **Original work only.** No names, text, pictures, sounds, music, models or data taken

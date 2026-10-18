@@ -294,6 +294,18 @@ pub fn open_link(url: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// The main menu's Exit in the browser: the tab closes when the browser lets a page close
+/// it (one opened on its own, an installed app's window); else it stays, and the menu says so.
+#[cfg(target_arch = "wasm32")]
+pub fn close_window() {
+    if let Some(w) = web_sys::window() {
+        let _ = w.close();
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+pub fn close_window() {}
+
 /// A command left by a test in `<body data-cmd>` (taken once).
 #[cfg(target_arch = "wasm32")]
 pub fn take_command() -> Option<String> {

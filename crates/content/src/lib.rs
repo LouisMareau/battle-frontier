@@ -520,6 +520,16 @@ impl Content {
         }
         for s in self.settings.iter() {
             out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
+            let st = &s.start;
+            if !st.map.is_empty() {
+                match self.maps.get(&st.map) {
+                    None => out.push(format!("settings/{}: start: no map {}", s.id, st.map)),
+                    Some(m) if st.at[0] < 0 || st.at[1] < 0 || st.at[0] >= m.width as i32 || st.at[1] >= m.height as i32 => {
+                        out.push(format!("settings/{}: start: {}, {} is off {} ({} x {})", s.id, st.at[0], st.at[1], st.map, m.width, m.height))
+                    }
+                    Some(_) => {}
+                }
+            }
         }
         for p in self.props.iter() {
             if p.footprint[0] == 0 || p.footprint[1] == 0 {
@@ -1115,4 +1125,26 @@ pub fn from_bundles(bundles: &[&str]) -> Content {
     }
     content.sort();
     content
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_new_games_start_is_on_a_map() {
+        let mut c = Content::default();
+        c.maps.put(Map { id: "meadow".into(), name: "Meadow".into(), width: 10, height: 8, ..Default::default() }, Space::Content);
+        let with = |c: &Content, map: &str, at: [i32; 2]| {
+            let mut c = c.clone();
+            c.settings.put(Settings { start: Start { map: map.into(), at, facing: 0.0 }, ..Default::default() }, Space::Content);
+            c.validate().into_iter().filter(|p| p.contains("start")).collect::<Vec<_>>()
+        };
+        assert!(with(&c, "meadow", [9, 7]).is_empty(), "on the map");
+        assert!(with(&c, "", [0, 0]).is_empty(), "none: the first map");
+        assert_eq!(with(&c, "nowhere", [0, 0]), ["settings/world: start: no map nowhere"]);
+        assert_eq!(with(&c, "meadow", [10, 2]), ["settings/world: start: 10, 2 is off meadow (10 x 8)"]);
+        // kept out of the record when it's not set
+        assert!(!to_text(&Settings::default()).contains("start"));
+    }
 }
