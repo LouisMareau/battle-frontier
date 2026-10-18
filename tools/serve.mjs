@@ -4,10 +4,12 @@
 //     node tools/serve.mjs [port]  -> http://localhost:8080/
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';
-import { extname, join, normalize } from 'node:path';
+import { extname, join, normalize, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = fileURLToPath(new URL('../build/dist/', import.meta.url));
+// another built site than build/dist when DIST says so (`trunk build --release --dist DIR`):
+// a check can run on its own build while another one is made
+const root = process.env.DIST ? resolve(process.env.DIST) + sep : fileURLToPath(new URL('../build/dist/', import.meta.url));
 const temporary = fileURLToPath(new URL('../temporary/', import.meta.url));
 const TYPES = {
   '.html': 'text/html', '.js': 'text/javascript', '.wasm': 'application/wasm', '.json': 'application/json',

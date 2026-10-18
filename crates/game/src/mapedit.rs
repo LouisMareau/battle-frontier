@@ -1161,11 +1161,18 @@ impl MapEditor {
         let t = ((now - *self.backdrop_t0.get_or_insert(now)) / 1000.0) as f32;
         let (w, h) = (self.map.width as f32, self.map.height as f32);
         let middle = Vec3::new(w / 2.0, 0.0, h / 2.0);
-        self.cam.target = middle + Vec3::new((t * 0.021).sin() * w * 0.22, 0.0, (t * 0.017).cos() * h * 0.2);
-        self.cam.yaw = (20.0 + t * 2.0).rem_euclid(360.0);
+        // one angle, never turning: the view glides sideways across the map and back (a round
+        // trip every two and a half minutes), drifting nearer and further more slowly still
+        self.cam.yaw = 25.0;
         self.cam.pitch = 34.0;
         self.cam.distance = (w.max(h) * 0.55).clamp(18.0, 40.0);
         self.cam.zoom = 1.0;
+        let (right, forward) = self.cam.ground_axes();
+        let reach = |axis: Vec3| (axis.x.abs() * w + axis.z.abs() * h) * 0.5;
+        let across = (t * std::f32::consts::TAU / 150.0).sin() * reach(right) * 0.6;
+        let along = (t * std::f32::consts::TAU / 410.0 + 1.3).sin() * reach(forward) * 0.3;
+        self.cam.target = middle + right * across + forward * along;
+        crate::platform::set_hook("menucam", &format!("{:.3},{:.3},{:.1}", self.cam.target.x, self.cam.target.z, self.cam.yaw));
         self.begin_frame(ctx, rs, now);
         let rect = ctx.content_rect();
         self.viewport = rect;

@@ -67,6 +67,15 @@ try {
   check('  its icon grows when hovered', Number(await data('editorgrow')) > 0.9, await data('editorgrow'));
   await browser.move(700, 450);
   check('  no story yet: Continue can\'t be picked', (await data('continue')) === '');
+  // the camera over the world: one angle, never turning, gliding sideways across the map
+  const cam = async () => (await data('menucam')).split(',').map(Number);
+  const c0 = await cam();
+  await sleep(1500);
+  const c1 = await cam();
+  const yaw = (c0[2] * Math.PI) / 180;
+  const moved = Math.hypot(c1[0] - c0[0], c1[1] - c0[1]);
+  const sideways = Math.abs((c1[0] - c0[0]) * Math.cos(yaw) - (c1[1] - c0[1]) * Math.sin(yaw));
+  check('  the camera never turns, and glides sideways', c0[2] === c1[2] && moved > 0.2 && sideways > 0.9 * moved, `${c0} -> ${c1}`);
   await shot('1-menu');
   await press('uiContinue');
   check('  a click on it does nothing', (await data('state')) === 'menu');
