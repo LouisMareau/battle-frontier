@@ -1,13 +1,17 @@
 // The overworld's HUD in the built site: its buttons in their groups (Settings left of Exit,
 // top right; the Team bottom left), frosted; Esc no longer leaving (it puts the ring on the
 // buttons); the Team's list (opening beside the Team, closing with the Team again, a click
-// anywhere else, Settings, View all), the main pinned first and unpinned, the creatures that
-// fought most in the last battles next; the story keeping them; Exit back to the menu; a
-// controller working all of it (Start, the d-pad, A, B). And the old handhelds' looks from the
-// Options: the world in big square pixels, an LCD's gaps between them.
+// anywhere else, Settings, View all), always a main (the team's first in a new game), pinned
+// first, staying when clicked again, the creatures that fought most in the last battles next;
+// the story keeping them; Exit back to the menu; a controller working all of it (Start, the
+// d-pad, A, B). And the pixelation from the Options (a category of them closing and opening):
+// the world in big square pixels, as dense as asked, bigger as the camera comes closer and
+// smaller as it pulls back; an LCD's gaps between them. Last, a battle from the overworld (an
+// event the check puts on the start map, with the placeholders' first wild encounter): the
+// main sent out first.
 // Screenshots to screenshots/hud-*.png. Exits 1 when something fails.
 //     node tools/hudcheck.mjs
-import { mkdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
@@ -46,7 +50,21 @@ const B = { south: 0, east: 1, start: 9, up: 12, down: 13, left: 14, right: 15 }
 
 const W = 1400;
 const H = 900;
-const server = await serve(0);
+// a battle the check can start from the overworld: an event on the cell west of where games
+// start, its encounter the placeholders' first wild one (none without them: no battle then)
+const FIGHT = [18, 22];
+const temporary = join(root, 'temporary', 'bundle.json');
+const wild = existsSync(temporary)
+  ? Object.entries(JSON.parse(readFileSync(temporary, 'utf8')).files).find(([path, e]) => path.startsWith('encounters/') && e.kind === 'wild')?.[1].id
+  : undefined;
+const rewrite = (path, body) => {
+  if (path !== 'content/bundle.json' || !wild) return body;
+  const bundle = JSON.parse(body.toString('utf8'));
+  const map = bundle.files['maps/test_meadow.json'];
+  map.events = [...(map.events ?? []), { id: 'check_fight', trigger: 'enter', area: [...FIGHT, 1, 1], script: [`battle ${wild}`] }];
+  return Buffer.from(JSON.stringify(bundle));
+};
+const server = await serve(0, { rewrite });
 const browser = await Browser.launch({ width: W, height: H, port: 9502, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu'] });
 const url = `http://127.0.0.1:${server.address().port}/index.html`;
 const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(key)}] ?? ''`);
@@ -83,8 +101,9 @@ const explore = async (what) => {
 const open = (name) => data(name).then((v) => v === 'open');
 
 // The screen in cells of `k` pixels from the top left: how many cells in the middle of the
-// screen are one colour, and how much darker their edges are than their middles.
-const cells = (img, k) => {
+// screen are one colour (inside a pixel's rim: `inset`), and how much darker their edges are
+// than their middles.
+const cells = (img, k, inset = 1) => {
   const px = (x, y) => {
     const i = (y * img.width + x) * 4;
     return [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2]];
@@ -97,7 +116,7 @@ const cells = (img, k) => {
   for (let cy = Math.floor(H * 0.3 / k); cy < Math.floor(H * 0.7 / k); cy += 3) {
     for (let cx = Math.floor(W * 0.3 / k); cx < Math.floor(W * 0.7 / k); cx += 3) {
       const inner = [];
-      for (let y = 1; y < k - 1; y++) for (let x = 1; x < k - 1; x++) inner.push(px(cx * k + x, cy * k + y).join());
+      for (let y = inset; y < k - inset; y++) for (let x = inset; x < k - inset; x++) inner.push(px(cx * k + x, cy * k + y).join());
       all++;
       if (new Set(inner).size === 1) even++;
       edges += lum(px(cx * k, cy * k + (k >> 1)));
@@ -168,7 +187,9 @@ try {
   check('  Done: the Options closed', !(await open('hudoptions')));
 
   if (all.length >= 3) {
-    // 4. the main: a creature clicked is pinned, first; clicked again, unpinned
+    // 4. the main: in a new game the team's first; a creature clicked is pinned, first;
+    // clicked again, it stays (there's always a main)
+    check('a new game: its first creature the main', (await data('hudmain')) === all[0], `${await data('hudmain')} (${all[0]})`);
     await press('uiHudTeam', 450);
     await press('uiTeam_2');
     check('a creature clicked: pinned as the main', (await data('hudmain')) === all[2], `${await data('hudmain')} (${all[2]})`);
@@ -178,13 +199,13 @@ try {
     const [hx, hy] = await at('uiTeam_0');
     await browser.move(hx, hy);
     await sleep(300);
-    check('  its caption: the main, a click unpins', (await data('hudcaption')).includes('your main · click: unpin'), await data('hudcaption'));
+    check('  its caption: the main, sent out first', (await data('hudcaption')).includes('your main, sent out first'), await data('hudcaption'));
     await shot('4-main');
     await press('uiTeam_0');
-    check('  clicked again: unpinned', (await data('hudmain')) === '' && (await data('hudteamshown')).split(',')[0] === all[0], await data('hudteamshown'));
+    check('  clicked again: still the main', (await data('hudmain')) === all[2] && (await data('hudteamshown')).split(',')[0] === all[2], await data('hudteamshown'));
+    const main = (await data('hudteamshown')).split(',')[1];
     await press('uiTeam_1');
-    const main = all[1];
-    check('  another pinned', (await data('hudmain')) === main);
+    check('  another pinned', (await data('hudmain')) === main, `${await data('hudmain')} (${main})`);
 
     // 5. View all: the window opens, the list closes
     await press('uiTeamAll', 400);
@@ -207,7 +228,8 @@ try {
     await press('uiContinue');
     await explore('the story again');
     await press('uiHudTeam', 450);
-    const expect = [main, late, all[2], all[0], ...all.filter((id) => ![main, late, all[2], all[0]].includes(id))].slice(0, 5);
+    const ranked = [...new Set([late, all[2], all[0]])].filter((id) => id !== main);
+    const expect = [main, ...ranked, ...all.filter((id) => id !== main && !ranked.includes(id))].slice(0, 5);
     check('  the main first, then who fought most (the latest first)', (await data('hudteamshown')) === expect.join(), `${await data('hudteamshown')} (${expect})`);
     await press('uiHudTeam', 450);
   } else {
@@ -230,9 +252,10 @@ try {
   if (all.length >= 2) {
     await tap(B.right);
     const second = (await data('hudteamshown')).split(',')[1];
+    check('  right: its caption names A', (await data('hudcaption')).includes('A: pin as your main'), await data('hudcaption'));
     await tap(B.south);
-    check('  right, A: the second pinned', (await data('hudmain')) === second, `${await data('hudmain')} (${second})`);
-    check('  its caption names A', (await data('hudcaption')).includes('A: unpin'), await data('hudcaption'));
+    check('  A: the second pinned', (await data('hudmain')) === second, `${await data('hudmain')} (${second})`);
+    check('  its caption: the main now', (await data('hudcaption')).includes('your main, sent out first'), await data('hudcaption'));
   }
   await shot('6-pad');
   await tap(B.east);
@@ -247,42 +270,75 @@ try {
   await browser.click(W / 2, H / 2);
   await sleep(200);
 
-  // 8. the old handhelds' looks: Settings, Graphics, the GBA's pixels: the world in squares
-  // of whole pixels; its LCD: their edges darker
+  // 8. the pixelation: Settings, Graphics, its category (closing it and opening it again), on:
+  // the world in squares of whole pixels; at density 0 the fewest (about as many as the GBC's
+  // screen had); an LCD's gaps between them
   await press('uiHudSettings', 500);
   await press('uiTab_Graphics');
-  await press('uiPixels_GBA', 800);
-  check("the GBA's pixels", (await data('retro')) === 'gba/off', await data('retro'));
+  await press('uiSection_Postprocessing', 500);
+  check('Post-processing closed', (await data('optionsclosed')) === 'Post-processing', await data('optionsclosed'));
+  await press('uiSection_Postprocessing', 600);
+  check('  and open again', (await data('optionsclosed')) === '', await data('optionsclosed'));
+  await press('uiPixelation_On', 800);
+  check('  the pixelation on, as dense as it comes', (await data('retro')) === '0.35/off', await data('retro'));
   await press('uiOptionsDone', 800);
-  // about as many pixels as the GBA's screen had (240 by 160)
-  const k = Math.round(Math.sqrt((W * H) / (240 * 160)));
+  await cmd('pixelation:0');
+  await sleep(600);
+  const fewest = Math.round(Math.sqrt((W * H) / (160 * 144)));
+  const k = Number(await data('pixel'));
   const plain = cells(await browser.pixels(join(shots, 'hud-7-pixels.png')), k);
-  check(`  the world in squares of ${k} pixels, one colour each`, plain.even > 0.97, `${(plain.even * 100).toFixed(1)}%`);
+  check(`  at density 0, the fewest: squares of ${k} pixels, one colour each`, k === fewest && plain.even > 0.97, `${(plain.even * 100).toFixed(1)}% (${fewest} a side)`);
   await press('uiHudSettings', 500);
   await press('uiLcd_GBA', 800);
-  check("  the GBA's LCD", (await data('retro')) === 'gba/gba', await data('retro'));
+  check("  the GBA's LCD", (await data('retro')) === '0.00/gba', await data('retro'));
   await press('uiOptionsDone', 800);
   const lcd = cells(await browser.pixels(join(shots, 'hud-8-lcd.png')), k);
   check('  the gaps between its pixels: their edges darker', lcd.edges < lcd.middles * 0.975, `edges ${lcd.edges.toFixed(1)}, middles ${lcd.middles.toFixed(1)}`);
-  await cmd('pixels:gbc');
-  await cmd('lcd:off');
-  await sleep(600);
-  // the GBC's: bigger (about as many as its 160 by 144)
-  const kc = Math.round(Math.sqrt((W * H) / (160 * 144)));
-  const gbc = cells(await browser.pixels(), kc);
-  check(`  the GBC's pixels: squares of ${kc}, bigger than the GBA's ${k}`, kc > k && gbc.even > 0.97, `${(gbc.even * 100).toFixed(1)}%`);
   await cmd('lcd:gbc');
   await sleep(600);
   await shot('9-gbc');
-  check("  the GBC's LCD", (await data('retro')) === 'gbc/gbc', await data('retro'));
-  // kept with the options; off again
+  check("  the GBC's LCD", (await data('retro')) === '0.00/gbc', await data('retro'));
+  // kept with the options, as they were when the Options last changed one (the density the
+  // check set, the GBA's LCD)
   const kept = JSON.parse((await browser.evaluate('localStorage.getItem("options")')) || '{}');
-  check('  kept with the options', kept.pixels === 'gba' && kept.lcd === 'gba', JSON.stringify(kept));
-  await cmd('pixels:off');
+  check('  kept with the options', kept.pixelation === true && kept.pixel_density === 0 && kept.lcd === 'gba', JSON.stringify(kept));
+  // as dense as asked: the camera closer, bigger pixels; further out, smaller (what's far
+  // keeps its shape); none at all far enough out
   await cmd('lcd:off');
+  await cmd('pixelation:0.5');
+  await sleep(600);
+  const mid = Number(await data('pixel'));
+  await browser.move(W / 2, H / 2);
+  for (let i = 0; i < 6; i++) await browser.wheel(W / 2, H / 2, -400);
+  await sleep(1200);
+  const near = Number(await data('pixel'));
+  const close = cells(await browser.pixels(join(shots, 'hud-10-closer.png')), near);
+  check(`  density 0.5: ${mid} pixels a side; the camera closer, bigger: ${near}`, near > mid && close.even > 0.97, `${(close.even * 100).toFixed(1)}%`);
+  for (let i = 0; i < 12; i++) await browser.wheel(W / 2, H / 2, 400);
+  await sleep(1200);
+  const far = Number(await data('pixel'));
+  await shot('11-further');
+  check(`  further out, smaller: ${far}`, far < mid, `${far}`);
+  await cmd('pixelation:0');
+  await sleep(600);
+  const farK = Number(await data('pixel'));
+  const farCells = cells(await browser.pixels(), farK, 0);
+  check(`  there at density 0: squares of ${farK}, smaller than the usual distance's ${k}`, farK < k && farK > 1 && farCells.even > 0.97, `${(farCells.even * 100).toFixed(1)}%`);
+  await cmd('pixelation:off');
   await sleep(600);
   const back = cells(await browser.pixels(), k);
-  check('  off: the screen\'s own pixels again', back.even < 0.9, `${(back.even * 100).toFixed(1)}%`);
+  check("  off: the screen's own pixels again", back.even < 0.9 && (await data('pixel')) === '1', `${(back.even * 100).toFixed(1)}%, ${await data('pixel')}`);
+
+  // 9. a battle from the overworld: the main sent out first, the others after it in the
+  // team's order
+  if (wild && all.length >= 2) {
+    const main = await data('hudmain');
+    await cmd(`walkto:${FIGHT.join(',')}`);
+    await state('battle', 'the battle');
+    const party = (await data('battleparty')).split(',');
+    check('a battle from the overworld: the main sent out first', party[0] === main, `${party} (${main})`);
+    check("  the others after it, in the team's order", party.slice(1).join() === all.filter((id) => id !== main).join(), `${party}`);
+  }
 } catch (e) {
   console.log(`FAIL ${e.message}`);
   failed++;

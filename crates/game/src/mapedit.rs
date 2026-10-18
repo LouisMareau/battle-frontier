@@ -66,6 +66,10 @@ pub const SAVE_NAME: &str = "story";
 
 use crate::stage::lighting_at;
 
+/// The overworld camera's usual distance from the walker (the wheel takes it from 6 to 40): the
+/// pixelation's pixels are as dense as the Options say there, bigger closer, smaller further.
+const PLAY_DISTANCE: f32 = 16.0;
+
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
 const OWN: Color32 = Color32::from_rgb(110, 210, 130);
 
@@ -545,7 +549,7 @@ impl MapEditor {
 
     /// The overworld's view: close, over the walker's shoulder.
     fn play_camera(&mut self) {
-        self.cam.distance = 16.0;
+        self.cam.distance = PLAY_DISTANCE;
         self.cam.pitch = 50.0;
         self.cam.yaw = 0.0;
         if let Some(w) = &self.walker {
@@ -2319,7 +2323,8 @@ impl MapEditor {
             dim: self.focus_dim(now),
             overlays,
             toon: crate::stage::toon_look(&self.toon_settings()),
-            retro: self.retro,
+            // the pixelation's pixels grow and shrink with the camera
+            retro: render::scene::Retro { zoom: PLAY_DISTANCE / (self.cam.distance * self.cam.zoom).max(1.0), ..self.retro },
             frost: self.frost,
             wind: crate::stage::wind_look(&self.wind_settings()),
         }

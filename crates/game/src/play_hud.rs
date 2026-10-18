@@ -4,8 +4,9 @@
 //!
 //! The Team's list: the five creatures the player fought with most in their last battles,
 //! their main (pinned) first, then "View all" (a window of all of them). Clicking a creature
-//! pins it as the main (clicking the main unpins it). The list closes with the Team again, a
-//! click anywhere else, or that window opening.
+//! pins it as the main, the one sent out first in battle; there's always one (the team's first
+//! until another is pinned). The list closes with the Team again, a click anywhere else, or
+//! that window opening.
 //!
 //! The mouse works it all, and so do the game's buttons: Esc (or a controller's Start) puts a
 //! ring on the HUD, the arrows (the d-pad) move it, A presses, B goes back.
@@ -130,6 +131,8 @@ impl PlayHud {
         });
         let open = ctx.animate_bool_with_time(Id::new("hud-team-open"), self.team_open, OPEN_S);
         let ids: Vec<String> = team.iter().map(|m| m.id.clone()).collect();
+        // there's always a main (the story keeps it)
+        log.settle(&ids);
         let shown = log.most_used(&ids, SHOWN);
         let ((team_clicked, team_rect, list), bottom) = BOTTOM_LEFT.show(ctx, enabled, |row| {
             let r = row.button(egui::include_image!("../icons/team.svg"), "Team: your creatures", TEAM);
@@ -321,7 +324,7 @@ fn member_caption(m: &Member, log: &TeamLog, ring: bool) -> (String, String) {
         n => format!("in {n} of your last {RECENT} battles"),
     };
     let how = if ring { button_label(Button::A) } else { "click".to_string() };
-    let does = if log.main.as_deref() == Some(m.id.as_str()) { format!("your main · {how}: unpin") } else { format!("{how}: pin as your main") };
+    let does = if log.main.as_deref() == Some(m.id.as_str()) { "your main, sent out first".to_string() } else { format!("{how}: pin as your main") };
     (format!("{} · Lv {}", m.name, m.level), format!("{fought} · {does}"))
 }
 

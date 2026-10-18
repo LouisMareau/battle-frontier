@@ -58,8 +58,10 @@ pub struct KeptOptions {
     pub resolution: u8,
     /// off, low, medium or high
     pub shadows: String,
-    /// the old handhelds' pixels and LCD colours: off, gba or gbc
-    pub pixels: String,
+    /// the pixelation, and how dense its pixels are (0 the fewest, 1 the screen's own)
+    pub pixelation: bool,
+    pub pixel_density: f32,
+    /// an old handheld's LCD colours: off, gba or gbc
     pub lcd: String,
     pub volume: u8,
     pub effects: u8,
@@ -108,7 +110,8 @@ impl Options {
             rings: self.assist,
             resolution: self.graphics.scale,
             shadows: Graphics::SHADOWS[self.graphics.shadows.min(3)].0.to_lowercase(),
-            pixels: Graphics::HANDHELDS[self.graphics.pixels.min(2)].to_lowercase(),
+            pixelation: self.graphics.pixelation,
+            pixel_density: (self.graphics.density * 100.0).round() / 100.0,
             lcd: Graphics::HANDHELDS[self.graphics.lcd.min(2)].to_lowercase(),
             volume: self.volume,
             effects: self.effects,
@@ -127,7 +130,10 @@ impl Options {
             self.graphics.scale = k.resolution;
         }
         self.graphics.shadows = Graphics::SHADOWS.iter().position(|(n, _)| n.eq_ignore_ascii_case(&k.shadows)).unwrap_or(self.graphics.shadows);
-        self.graphics.pixels = Graphics::handheld(&k.pixels).unwrap_or(self.graphics.pixels);
+        self.graphics.pixelation = k.pixelation;
+        if k.pixel_density.is_finite() {
+            self.graphics.density = k.pixel_density.clamp(0.0, 1.0);
+        }
         self.graphics.lcd = Graphics::handheld(&k.lcd).unwrap_or(self.graphics.lcd);
         self.volume = k.volume.min(100);
         self.effects = k.effects.min(100);
@@ -156,22 +162,25 @@ impl Options {
 }
 
 /// How much the GPU draws (for machines that can't keep up): the 3D scene's resolution
-/// against the screen's, and the shadows' sharpness; and the old handhelds' looks.
+/// against the screen's, and the shadows' sharpness; and the post-processing: the pixelation
+/// and an old handheld's LCD.
 #[derive(Clone, Copy, PartialEq)]
 pub struct Graphics {
     /// percent of the screen's resolution
     pub scale: u8,
     /// 0 none, 1 low, 2 medium, 3 high
     pub shadows: usize,
-    /// the old handhelds' pixels, and their LCDs' colours: 0 none, 1 the GBA's, 2 the GBC's
-    /// (`HANDHELDS`)
-    pub pixels: usize,
+    /// the world in big square pixels (in 15-bit colours), and how dense they are: 0 the
+    /// fewest, 1 the screen's own (none); they grow and shrink with the camera's zoom
+    pub pixelation: bool,
+    pub density: f32,
+    /// an old handheld's LCD colours: 0 none, 1 the GBA's, 2 the GBC's (`HANDHELDS`)
     pub lcd: usize,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Graphics { scale: 100, shadows: 2, pixels: 0, lcd: 0 }
+        Graphics { scale: 100, shadows: 2, pixelation: false, density: 0.35, lcd: 0 }
     }
 }
 
@@ -184,14 +193,14 @@ impl Graphics {
         Self::HANDHELDS.iter().position(|h| h.eq_ignore_ascii_case(name))
     }
 
-    /// The handhelds' looks, for the game's screens.
+    /// The post-processing, for the game's screens (the camera's zoom is theirs to give).
     pub fn retro(self) -> Retro {
-        let of = |i: usize| match i {
+        let lcd = match self.lcd {
             1 => Some(Handheld::Gba),
             2 => Some(Handheld::Gbc),
             _ => None,
         };
-        Retro { pixels: of(self.pixels), lcd: of(self.lcd) }
+        Retro { pixelation: self.pixelation.then_some(self.density.clamp(0.0, 1.0)), lcd, ..Retro::default() }
     }
 
     fn quality(self) -> Quality {
@@ -282,6 +291,8 @@ pub struct GameApp {
     content: Option<Arc<Content>>,
     dex: Option<Arc<Dex>>,
     party: Vec<MonSpec>,
+    /// the party's places in the battle's order (the story's main first, sent out first)
+    fielded: Vec<usize>,
     /// the player's trainer picture, from the root
     player_sprite: Option<String>,
     options: Options,
@@ -409,7 +420,7 @@ impl GameApp {
         // the icons are SVG
         egui_extras::install_image_loaders(&cc.egui_ctx);
         GameApp {
-            files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
+            files, content: None, dex: None, party: vec![], fielded: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
             title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
@@ -728,9 +739,22 @@ impl GameApp {
         drop(guard);
         let (encounter, period, hours) = (load.encounter, load.period, load.hours);
         let (player_key, foe_key) = (load.player_key.clone(), load.foe_key.clone());
+        self.fielded = self.battle_order();
+        // the party as it goes into the battle, for the checks (the main first)
+        let ids = crate::team::ids(&self.party);
+        platform::set_hook("battleparty", &self.fielded.iter().filter_map(|&i| ids.get(i).map(String::as_str)).collect::<Vec<_>>().join(","));
         let director = self.make_battle(encounter, period, hours, spot, player_key, foe_key);
         self.screen = Screen::Battle(Box::new(director), encounter);
         Ok(true)
+    }
+
+    /// The party in the order it goes into a battle (its places): in the story, the main
+    /// first (it's sent out first); else as it is.
+    fn battle_order(&self) -> Vec<usize> {
+        match self.parked.as_ref().filter(|ed| ed.playing()) {
+            Some(ed) => ed.team.battle_order(&crate::team::ids(&self.party)),
+            None => (0..self.party.len()).collect(),
+        }
     }
 
     fn make_battle(&self, encounter: usize, period: Period, hours: f32, spot: render::map::Spot, player_key: Option<String>, foe_key: Option<String>) -> Director {
@@ -740,8 +764,9 @@ impl GameApp {
         let cfg = self.config();
         let mut rng = Rng::new((platform::now_ms() as u64 % 1_000_000_007) as u32 ^ 0x9e37_79b9);
         let party: Vec<Mon> = self
-            .party
+            .fielded
             .iter()
+            .filter_map(|&i| self.party.get(i))
             .map(|s| {
                 let mut s = s.clone();
                 if self.options.match_level {
@@ -808,10 +833,11 @@ impl GameApp {
             .collect()
     }
 
-    /// The party keeps what its moves learned (XP), not the levels set for the encounter.
+    /// The party keeps what its moves learned (XP), not the levels set for the encounter (the
+    /// battle's party in its order: `fielded`).
     fn keep_xp(&mut self, battle: &Battle) {
-        for (i, spec) in self.party.iter_mut().enumerate() {
-            if let Some(m) = battle.side(Side::Player).party.get(i) {
+        for (k, &i) in self.fielded.iter().enumerate() {
+            if let (Some(spec), Some(m)) = (self.party.get_mut(i), battle.side(Side::Player).party.get(k)) {
                 spec.moves = m.moves.iter().map(|s| battle.dex.mv(s.id).key.clone()).collect();
                 spec.move_xp = m.moves.iter().map(|s| s.xp).collect();
                 spec.move_levels.clear();
@@ -873,7 +899,16 @@ impl GameApp {
                     }
                 }
                 // the old handhelds' looks: off, gba or gbc
-                "pixels" => self.options.graphics.pixels = Graphics::handheld(arg).unwrap_or(self.options.graphics.pixels),
+                "pixelation" => match arg {
+                    "off" => self.options.graphics.pixelation = false,
+                    "on" => self.options.graphics.pixelation = true,
+                    d => {
+                        if let Ok(d) = d.parse::<f32>() {
+                            self.options.graphics.pixelation = true;
+                            self.options.graphics.density = d.clamp(0.0, 1.0);
+                        }
+                    }
+                },
                 "lcd" => self.options.graphics.lcd = Graphics::handheld(arg).unwrap_or(self.options.graphics.lcd),
                 "levels" => {
                     if let Ok(lv) = arg.parse::<u8>() {
@@ -1235,7 +1270,10 @@ impl eframe::App for GameApp {
         }
         platform::set_hook("frost", if self.frost.is_some() { "1" } else { "" });
         let g = self.options.graphics;
-        platform::set_hook("retro", &format!("{}/{}", Graphics::HANDHELDS[g.pixels.min(2)], Graphics::HANDHELDS[g.lcd.min(2)]).to_lowercase());
+        let pixelation = if g.pixelation { format!("{:.2}", g.density) } else { "off".to_string() };
+        platform::set_hook("retro", &format!("{pixelation}/{}", Graphics::HANDHELDS[g.lcd.min(2)].to_lowercase()));
+        // how big the pixelation's pixels were last frame (the camera's zoom sets them too)
+        platform::set_hook("pixel", &self.draws.pixel.to_string());
         let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
         // the controllers first: who's listened to this frame, then what it pressed
         self.pads.update(&ctx, now);
@@ -1414,7 +1452,9 @@ impl eframe::App for GameApp {
                     // the story's: who of the team fought (the HUD's Team counts them), before
                     // what was caught joins it
                     if let Some(ed) = self.parked.as_mut().filter(|ed| ed.playing()) {
-                        ed.team.record(crate::team::fought(&director.battle, &crate::team::ids(&self.party)));
+                        let ids = crate::team::ids(&self.party);
+                        let in_battle: Vec<String> = self.fielded.iter().filter_map(|&i| ids.get(i).cloned()).collect();
+                        ed.team.record(crate::team::fought(&director.battle, &in_battle));
                     }
                     self.keep_xp(&director.battle);
                     let results = Results {
@@ -1532,7 +1572,13 @@ impl eframe::App for GameApp {
                 format!("scene: {} draws, {}k triangles", d.draws, d.triangles / 1000),
                 format!("shadow: {} draws, {}k triangles", d.shadow_draws, d.shadow_triangles / 1000),
                 format!("out of sight: {} squares", d.culled),
-                format!("resolution {}% · shadows {} · pixels {} · lcd {}", g.scale, Graphics::SHADOWS[g.shadows.min(3)].0.to_lowercase(), Graphics::HANDHELDS[g.pixels.min(2)], Graphics::HANDHELDS[g.lcd.min(2)]),
+                format!(
+                    "resolution {}% · shadows {} · pixelation {} · lcd {}",
+                    g.scale,
+                    Graphics::SHADOWS[g.shadows.min(3)].0.to_lowercase(),
+                    if g.pixelation { format!("{:.2} ({} px)", g.density, d.pixel) } else { "off".to_string() },
+                    Graphics::HANDHELDS[g.lcd.min(2)]
+                ),
                 "F3 hides this".to_string(),
             ];
             let font = FontId::monospace(11.0);

@@ -1,7 +1,8 @@
 //! The game's main menu, the first thing on screen: Continue (the saved story), New game,
 //! Options and Exit over the world (the app draws a map behind it, its camera drifting), and
 //! the Editor's icon in the bottom-right corner. And the Options, in tabs (Game, Graphics,
-//! Controls, Audio), which the editor's Test battles open too; they're kept between runs.
+//! Controls, Audio), each in categories that open and close, which the editor's Test battles
+//! open too; they're kept between runs.
 //!
 //! The words are Roboto (Bold for the titles, Medium for the items, the tabs and headings,
 //! Light for the rest); every move here is a quick tween (0.3 s at most): an item hovered grows a little and
@@ -10,6 +11,7 @@
 //! The mouse works all of it, and so do the game's buttons, on the keyboard or a controller
 //! (whichever is in use: `pads`): the hints name that device's keys or buttons.
 
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use egui::{Align2, Color32, FontFamily, FontId, Pos2, Rect, RichText, Sense, Stroke, Vec2};
@@ -388,6 +390,8 @@ pub struct OptionsUi {
     ring: bool,
     /// the frame the window was last drawn (opened again, the buttons start at the top)
     last_frame: u64,
+    /// the categories closed, by name (they come open)
+    closed: BTreeSet<&'static str>,
 }
 
 /// A key's name as the Controls show it.
@@ -513,29 +517,68 @@ pub fn pad_shown() -> Option<Family> {
     crate::pads::on_pad().then(crate::pads::family)
 }
 
+/// What an option is (the rows of the Options that change one).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Item {
+    TextSpeed,
+    Timing,
+    Rings,
+    Resolution,
+    Shadows,
+    Pixelation,
+    Density,
+    Lcd,
+    Volume,
+    Effects,
+    Ambience,
+}
+
 /// What a row of the Options does with the game's buttons.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Row {
     /// one of a few values: Left and Right go through them
-    Pick,
-    /// on or off: A, Left or Right turns it
-    Toggle,
-    /// a level: Left and Right by 5
-    Level,
+    Pick(Item),
+    /// on or off: A turns it (Left and Right too)
+    Toggle(Item),
+    /// a level: Left and Right by a step
+    Level(Item),
     /// a button's keys and controller buttons: Left and Right go along them, A changes one
     Keys(Button),
+    /// a category closed (its place in the tab's `sections`): A (or Right) opens it
+    Section(usize),
     /// Done and Defaults
     End,
 }
 
-/// A tab's rows, top to bottom.
-fn tab_rows(tab: usize) -> Vec<Row> {
-    let mut rows = match tab {
-        0 => vec![Row::Pick, Row::Pick, Row::Toggle],
-        1 => vec![Row::Pick, Row::Pick, Row::Pick, Row::Pick],
-        2 => Button::ALL.iter().map(|&b| Row::Keys(b)).collect(),
-        _ => vec![Row::Level, Row::Level, Row::Level],
-    };
+/// The Controls' categories: the buttons, then the d-pad.
+const BUTTONS: [Button; 4] = [Button::A, Button::B, Button::L, Button::R];
+const D_PAD: [Button; 4] = [Button::Up, Button::Down, Button::Left, Button::Right];
+
+/// A tab's categories, each shown under its name, open or closed, with its rows (the World's
+/// has none to go to, only words).
+fn sections(tab: usize) -> Vec<(&'static str, Vec<Row>)> {
+    match tab {
+        0 => vec![("Battles", vec![Row::Pick(Item::TextSpeed), Row::Pick(Item::Timing), Row::Toggle(Item::Rings)]), ("World", vec![])],
+        1 => vec![
+            ("Quality", vec![Row::Pick(Item::Resolution), Row::Pick(Item::Shadows)]),
+            ("Post-processing", vec![Row::Toggle(Item::Pixelation), Row::Level(Item::Density), Row::Pick(Item::Lcd)]),
+        ],
+        2 => vec![("Buttons", BUTTONS.map(Row::Keys).to_vec()), ("D-pad", D_PAD.map(Row::Keys).to_vec())],
+        _ => vec![("Volume", vec![Row::Level(Item::Volume), Row::Level(Item::Effects), Row::Level(Item::Ambience)])],
+    }
+}
+
+/// A tab's rows, top to bottom: the open categories' rows and the closed ones' names (to open
+/// them), then Done and Defaults.
+fn tab_rows(tab: usize, closed: &BTreeSet<&'static str>) -> Vec<Row> {
+    let mut rows = vec![];
+    for (i, (name, items)) in sections(tab).into_iter().enumerate() {
+        if closed.contains(name) {
+            rows.push(Row::Section(i));
+        } else {
+            rows.extend(items);
+        }
+    }
     rows.push(Row::End);
     rows
 }
@@ -551,30 +594,45 @@ fn row_places(row: Row, keys: &Bindings, pad_view: bool) -> usize {
     }
 }
 
-/// Left (-1) or Right (+1) on an option's row: its next value that way (a toggle turns).
-fn nudge(o: &mut Options, tab: usize, row: usize, by: i32) {
+/// Left (-1) or Right (+1) on an option's row: its next value that way (the rings turn either
+/// way; the pixelation is on to the right, off to the left). What's greyed out stays.
+fn nudge(o: &mut Options, item: Item, by: i32) {
     let step = |v: usize, n: usize| (v as i32 + by).clamp(0, n as i32 - 1) as usize;
-    match (tab, row) {
-        (0, 0) => o.text = step(o.text, 3),
-        (0, 1) => o.difficulty = step(o.difficulty, 3),
-        (0, 2) => o.assist = !o.assist,
-        (1, 0) => {
+    let level = |v: u8| (v as i32 + by * 5).clamp(0, 100) as u8;
+    let g = &mut o.graphics;
+    match item {
+        Item::TextSpeed => o.text = step(o.text, 3),
+        Item::Timing => o.difficulty = step(o.difficulty, 3),
+        Item::Rings => o.assist = !o.assist,
+        // the pixelation sets the resolution itself
+        Item::Resolution if !g.pixelation => {
             let scales = [100u8, 75, 50];
-            let i = scales.iter().position(|&s| s == o.graphics.scale).unwrap_or(0);
-            o.graphics.scale = scales[step(i, scales.len())];
+            let i = scales.iter().position(|&s| s == g.scale).unwrap_or(0);
+            g.scale = scales[step(i, scales.len())];
         }
-        (1, 1) => o.graphics.shadows = step(o.graphics.shadows, Graphics::SHADOWS.len()),
-        (1, 2) => o.graphics.pixels = step(o.graphics.pixels, Graphics::HANDHELDS.len()),
-        (1, 3) => o.graphics.lcd = step(o.graphics.lcd, Graphics::HANDHELDS.len()),
-        (3, r) => {
-            let level = match r {
-                0 => &mut o.volume,
-                1 => &mut o.effects,
-                _ => &mut o.ambience,
-            };
-            *level = (*level as i32 + by * 5).clamp(0, 100) as u8;
-        }
-        _ => {}
+        Item::Shadows => g.shadows = step(g.shadows, Graphics::SHADOWS.len()),
+        Item::Pixelation => g.pixelation = by > 0,
+        Item::Density if g.pixelation => g.density = ((g.density * 20.0).round() + by as f32).clamp(0.0, 20.0) / 20.0,
+        Item::Resolution | Item::Density => {}
+        Item::Lcd => g.lcd = step(g.lcd, Graphics::HANDHELDS.len()),
+        Item::Volume => o.volume = level(o.volume),
+        Item::Effects => o.effects = level(o.effects),
+        Item::Ambience => o.ambience = level(o.ambience),
+    }
+}
+
+/// A on a toggle's row: it turns.
+fn flip(o: &mut Options, item: Item) {
+    match item {
+        Item::Pixelation => o.graphics.pixelation = !o.graphics.pixelation,
+        _ => nudge(o, item, 1),
+    }
+}
+
+/// A closed category of the tab shown, opened.
+fn open_section(ui_state: &mut OptionsUi, i: usize) {
+    if let Some((name, _)) = sections(ui_state.tab).get(i) {
+        ui_state.closed.remove(name);
     }
 }
 
@@ -597,7 +655,7 @@ fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, 
         return;
     }
     ui_state.ring = true;
-    let rows = tab_rows(ui_state.tab);
+    let rows = tab_rows(ui_state.tab, &ui_state.closed);
     let n = rows.len();
     let mut row = ui_state.row.min(n - 1);
     if input.pressed(Button::Up) {
@@ -613,12 +671,15 @@ fn buttons_in_options(o: &mut Options, ui_state: &mut OptionsUi, input: &Input, 
     if by != 0 {
         match rows[row] {
             Row::Keys(_) | Row::End => ui_state.col = (ui_state.col as i32 + by).clamp(0, places as i32 - 1) as usize,
-            _ => nudge(o, ui_state.tab, row, by),
+            Row::Pick(item) | Row::Toggle(item) | Row::Level(item) => nudge(o, item, by),
+            Row::Section(i) if by > 0 => open_section(ui_state, i),
+            Row::Section(_) => {}
         }
     }
     if input.pressed(Button::A) {
         match rows[row] {
-            Row::Toggle => nudge(o, ui_state.tab, row, 1),
+            Row::Toggle(item) => flip(o, item),
+            Row::Section(i) => open_section(ui_state, i),
             // the one it's on waits for its new key or button ("+": one more)
             Row::Keys(b) if pad_view => ui_state.waiting_pad = Some((b, o.controls.pads(b).get(ui_state.col).copied())),
             Row::Keys(b) => ui_state.waiting = Some((b, o.controls.keys(b).get(ui_state.col).copied())),
@@ -736,101 +797,125 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
         ui.allocate_ui(Vec2::new(ui.available_width(), 0.0), |ui| {
             ui.set_min_height(300.0);
             match ui_state.tab {
-                0 => rows(ui, "game", &mut |ui| {
-                    label(ui, "Text speed");
-                    let r = ui.horizontal(|ui| {
-                        for (i, l) in ["Fast", "Normal", "Slow"].iter().enumerate() {
-                            choose(ui, &mut o.text, i, l, "uiText");
-                        }
-                    });
-                    spots.push(vec![r.response.rect]);
-                    ui.end_row();
-                    label(ui, "Timing windows");
-                    let r = ui.horizontal(|ui| {
-                        for (i, l) in ["Easy", "Normal", "Hard"].iter().enumerate() {
-                            choose(ui, &mut o.difficulty, i, l, "uiTiming").on_hover_text("How much time a hit, a block or a release gives you");
-                        }
-                    });
-                    spots.push(vec![r.response.rect]);
-                    ui.end_row();
-                    label(ui, "Timing rings");
-                    let r = ui.checkbox(&mut o.assist, "Show when to press").on_hover_text("A ring that closes on the moment to press");
-                    spots.push(vec![r.rect]);
-                    ui.end_row();
-                    label(ui, "Time of day");
-                    ui.label(RichText::new(format!("The real one, where you are: now {}", platform::clock_text(platform::local_hours()))).color(Color32::from_white_alpha(150)));
-                    ui.end_row();
-                }),
-                1 => {
-                    rows(ui, "graphics", &mut |ui| {
-                        label(ui, "Resolution");
-                        // the old handhelds' pixels set it themselves
-                        let own = o.graphics.pixels == 0;
-                        let r = ui.add_enabled_ui(own, |ui| {
-                            ui.horizontal(|ui| {
-                                for p in [100u8, 75, 50] {
-                                    choose(ui, &mut o.graphics.scale, p, &format!("{p}%"), "uiResolution");
+                0 => {
+                    section(ui, &mut ui_state.closed, "Battles", &mut spots, |ui, spots| {
+                        rows(ui, "battles", &mut |ui| {
+                            label(ui, "Text speed");
+                            let r = ui.horizontal(|ui| {
+                                for (i, l) in ["Fast", "Normal", "Slow"].iter().enumerate() {
+                                    choose(ui, &mut o.text, i, l, "uiText");
                                 }
-                            })
-                        });
-                        let r = if own { r.response } else { r.response.on_disabled_hover_text("The pixels set it") };
-                        spots.push(vec![r.rect]);
-                        ui.end_row();
-                        label(ui, "Shadows");
-                        let r = ui.horizontal(|ui| {
-                            for (i, (name, _)) in Graphics::SHADOWS.iter().enumerate() {
-                                choose(ui, &mut o.graphics.shadows, i, name, "uiShadows");
-                            }
-                        });
-                        spots.push(vec![r.response.rect]);
-                        ui.end_row();
-                        label(ui, "Pixels");
-                        let r = ui.horizontal(|ui| {
-                            for (i, name) in Graphics::HANDHELDS.iter().enumerate() {
-                                let about = match i {
-                                    0 => "The world at the screen's own resolution",
-                                    1 => "The world in big pixels, about as many as the GBA's screen had (240 by 160), in its 15-bit colours",
-                                    _ => "The world in bigger pixels, about as many as the GBC's screen had (160 by 144), in its 15-bit colours",
-                                };
-                                choose(ui, &mut o.graphics.pixels, i, name, "uiPixels").on_hover_text(about);
-                            }
-                        });
-                        spots.push(vec![r.response.rect]);
-                        ui.end_row();
-                        label(ui, "LCD screen");
-                        let r = ui.horizontal(|ui| {
-                            for (i, name) in Graphics::HANDHELDS.iter().enumerate() {
-                                let about = match i {
-                                    0 => "The colours as they are",
-                                    1 => "The colours as the GBA's screen showed them: dimmer, muted, mixed (with Pixels on, the thin gaps between its pixels too)",
-                                    _ => "The colours as the GBC's screen mixed them (with Pixels on, the gaps between its pixels too)",
-                                };
-                                choose(ui, &mut o.graphics.lcd, i, name, "uiLcd").on_hover_text(about);
-                            }
-                        });
-                        spots.push(vec![r.response.rect]);
-                        ui.end_row();
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                            label(ui, "Timing windows");
+                            let r = ui.horizontal(|ui| {
+                                for (i, l) in ["Easy", "Normal", "Hard"].iter().enumerate() {
+                                    choose(ui, &mut o.difficulty, i, l, "uiTiming").on_hover_text("How much time a hit, a block or a release gives you");
+                                }
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                            label(ui, "Timing rings");
+                            let r = ui.checkbox(&mut o.assist, "Show when to press").on_hover_text("A ring that closes on the moment to press");
+                            spots.push(vec![r.rect]);
+                            ui.end_row();
+                        })
                     });
-                    ui.add_space(8.0);
-                    ui.label(RichText::new("Lower the resolution or the shadows if the game stutters. Pixels and LCD screen are the old handhelds' looks.").size(12.0).color(Color32::from_white_alpha(140)));
+                    section(ui, &mut ui_state.closed, "World", &mut spots, |ui, _| {
+                        rows(ui, "world", &mut |ui| {
+                            label(ui, "Time of day");
+                            ui.label(RichText::new(format!("The real one, where you are: now {}", platform::clock_text(platform::local_hours()))).color(Color32::from_white_alpha(150)));
+                            ui.end_row();
+                        })
+                    });
                 }
-                2 => spots.extend(controls(ui, o, ui_state, pad_view)),
-                _ => rows(ui, "audio", &mut |ui| {
-                    for (name, value, hook, about) in [
-                        ("Master", &mut o.volume, "uiVolume", "Everything"),
-                        ("Effects", &mut o.effects, "uiEffects", "Cries, hits, chimes: the sounds that play once"),
-                        ("Ambience", &mut o.ambience, "uiAmbience", "Wind, water, crickets, what hums: the sounds that go on"),
-                    ] {
-                        label(ui, name);
-                        let mut v = *value as f32;
-                        let s = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).step_by(5.0).fixed_decimals(0).suffix("%")).on_hover_text(about);
-                        platform::set_hook(hook, &format!("{:.0},{:.0}", s.rect.center().x, s.rect.center().y));
-                        spots.push(vec![s.rect]);
-                        if s.changed() {
-                            *value = v.round() as u8;
+                1 => {
+                    section(ui, &mut ui_state.closed, "Quality", &mut spots, |ui, spots| {
+                        rows(ui, "quality", &mut |ui| {
+                            label(ui, "Resolution");
+                            // the pixelation sets it itself
+                            let own = !o.graphics.pixelation;
+                            let r = ui.add_enabled_ui(own, |ui| {
+                                ui.horizontal(|ui| {
+                                    for p in [100u8, 75, 50] {
+                                        choose(ui, &mut o.graphics.scale, p, &format!("{p}%"), "uiResolution");
+                                    }
+                                })
+                            });
+                            let r = if own { r.response } else { r.response.on_disabled_hover_text("The pixelation sets it") };
+                            spots.push(vec![r.rect]);
+                            ui.end_row();
+                            label(ui, "Shadows");
+                            let r = ui.horizontal(|ui| {
+                                for (i, (name, _)) in Graphics::SHADOWS.iter().enumerate() {
+                                    choose(ui, &mut o.graphics.shadows, i, name, "uiShadows");
+                                }
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                        });
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Lower the resolution or the shadows if the game stutters.").size(12.0).color(Color32::from_white_alpha(140)));
+                    });
+                    section(ui, &mut ui_state.closed, "Post-processing", &mut spots, |ui, spots| {
+                        rows(ui, "post", &mut |ui| {
+                            label(ui, "Pixelation");
+                            let r = ui.horizontal(|ui| {
+                                choose(ui, &mut o.graphics.pixelation, false, "Off", "uiPixelation").on_hover_text("The world at the screen's own resolution");
+                                choose(ui, &mut o.graphics.pixelation, true, "On", "uiPixelation")
+                                    .on_hover_text("The world in big square pixels, in 15-bit colours: as dense as the density says, finer as the camera pulls back (what's far keeps its shape)");
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                            label(ui, "Pixel density");
+                            let on = o.graphics.pixelation;
+                            let mut d = o.graphics.density;
+                            let s = ui
+                                .add_enabled(on, egui::Slider::new(&mut d, 0.0..=1.0).step_by(0.05).fixed_decimals(2))
+                                .on_hover_text("1: none, the screen's own pixels; 0: the fewest, about as many as an old handheld's screen had")
+                                .on_disabled_hover_text("With the pixelation on");
+                            platform::set_hook("uiPixelDensity", &format!("{:.0},{:.0}", s.rect.center().x, s.rect.center().y));
+                            if s.changed() {
+                                o.graphics.density = d;
+                            }
+                            spots.push(vec![s.rect]);
+                            ui.end_row();
+                            label(ui, "LCD screen");
+                            let r = ui.horizontal(|ui| {
+                                for (i, name) in Graphics::HANDHELDS.iter().enumerate() {
+                                    let about = match i {
+                                        0 => "The colours as they are",
+                                        1 => "The colours as the GBA's screen showed them: dimmer, muted, mixed (with the pixelation on, the thin gaps between its pixels too)",
+                                        _ => "The colours as the GBC's screen mixed them (with the pixelation on, the gaps between its pixels too)",
+                                    };
+                                    choose(ui, &mut o.graphics.lcd, i, name, "uiLcd").on_hover_text(about);
+                                }
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                        })
+                    });
+                }
+                2 => controls(ui, o, ui_state, pad_view, &mut spots),
+                _ => section(ui, &mut ui_state.closed, "Volume", &mut spots, |ui, spots| {
+                    rows(ui, "audio", &mut |ui| {
+                        for (name, value, hook, about) in [
+                            ("Master", &mut o.volume, "uiVolume", "Everything"),
+                            ("Effects", &mut o.effects, "uiEffects", "Cries, hits, chimes: the sounds that play once"),
+                            ("Ambience", &mut o.ambience, "uiAmbience", "Wind, water, crickets, what hums: the sounds that go on"),
+                        ] {
+                            label(ui, name);
+                            let mut v = *value as f32;
+                            let s = ui.add(egui::Slider::new(&mut v, 0.0..=100.0).step_by(5.0).fixed_decimals(0).suffix("%")).on_hover_text(about);
+                            platform::set_hook(hook, &format!("{:.0},{:.0}", s.rect.center().x, s.rect.center().y));
+                            spots.push(vec![s.rect]);
+                            if s.changed() {
+                                *value = v.round() as u8;
+                            }
+                            ui.end_row();
                         }
-                        ui.end_row();
-                    }
+                    })
                 }),
             }
         });
@@ -871,21 +956,70 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
         ui_state.waiting_pad = None;
     }
     platform::set_hook("optionstab", TABS[ui_state.tab]);
+    platform::set_hook("optionsclosed", &ui_state.closed.iter().copied().collect::<Vec<_>>().join(","));
     platform::set_hook("waitingkey", &ui_state.waiting.map(|(b, _)| b.name().to_string()).unwrap_or_default());
     platform::set_hook("waitingpad", &ui_state.waiting_pad.map(|(b, _)| b.name().to_string()).unwrap_or_default());
     platform::set_hook("optionsring", &if ring_on { format!("{},{}", ui_state.row, ui_state.col) } else { String::new() });
     o.saved() != before
 }
 
+/// One of a tab's categories: its name (a click opens or closes it; `uiSection_<name>` for the
+/// checks, "uiSection_Postprocessing"), then its rows while it's open, sliding open and shut. The places for the ring:
+/// its rows' while it's open, else its name's.
+fn section(ui: &mut egui::Ui, closed: &mut BTreeSet<&'static str>, name: &'static str, spots: &mut Vec<Vec<Rect>>, body: impl FnOnce(&mut egui::Ui, &mut Vec<Vec<Rect>>)) {
+    let open = !closed.contains(name);
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.make_persistent_id(("options-section", name)), true);
+    state.set_open(open);
+    let header = section_header(ui, name, state.openness(ui.ctx()));
+    // (no hyphens in a hook's name: the page's dataset won't take them)
+    platform::set_hook(&format!("uiSection_{}", name.replace([' ', '-'], "")), &format!("{:.0},{:.0}", header.rect.center().x, header.rect.center().y));
+    if header.clicked() {
+        if open {
+            closed.insert(name);
+        } else {
+            closed.remove(name);
+        }
+    }
+    if !open {
+        spots.push(vec![header.rect]);
+    }
+    let mut rows = vec![];
+    state.show_body_unindented(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin { left: 18, right: 0, top: 4, bottom: 8 }).show(ui, |ui| body(ui, &mut rows));
+    });
+    if open {
+        spots.extend(rows);
+    }
+}
+
+/// A category's name over its rows, a chevron before it (down while it's open, turning as it
+/// opens and shuts) and a faint line after it; the whole line clicks.
+fn section_header(ui: &mut egui::Ui, name: &str, openness: f32) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 26.0), Sense::click());
+    let c = if r.hovered() { Color32::WHITE } else { Color32::from_white_alpha(190) };
+    let p = ui.painter();
+    let at = Pos2::new(rect.left() + 6.0, rect.center().y);
+    let turn = egui::emath::Rot2::from_angle(openness * std::f32::consts::FRAC_PI_2);
+    let chevron: Vec<Pos2> = [Vec2::new(-2.5, -5.0), Vec2::new(2.5, 0.0), Vec2::new(-2.5, 5.0)].iter().map(|&v| at + turn * v).collect();
+    p.add(egui::Shape::line(chevron, Stroke::new(1.6, c)));
+    let text = p.text(Pos2::new(rect.left() + 18.0, rect.center().y), Align2::LEFT_CENTER, name, menu_font(15.0), c);
+    let y = rect.center().y + 1.0;
+    p.line_segment([Pos2::new(text.right() + 10.0, y), Pos2::new(rect.right(), y)], Stroke::new(1.0, Color32::from_white_alpha(25)));
+    if r.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    r
+}
+
 /// The Controls tab, for the device in use: a controller's buttons while one is, else the
-/// keyboard's keys. Each of the game's buttons, what it does and what's on it: one clicked (or
-/// A on it) waits for the one to put in its place, "+" for one more; while one waits, a
-/// controller's Select (the Delete key) takes it off and its Start (Esc) keeps it; a
-/// right-click takes one off too. The places of each row's chips, for the ring.
-fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_view: bool) -> Vec<Vec<Rect>> {
+/// keyboard's keys, in two categories (the buttons, the d-pad). Each of the game's buttons,
+/// what it does and what's on it: one clicked (or A on it) waits for the one to put in its
+/// place, "+" for one more; while one waits, a controller's Select (the Delete key) takes it
+/// off and its Start (Esc) keeps it; a right-click takes one off too. The places of each
+/// row's chips, for the ring, go into `spots`.
+fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_view: bool, spots: &mut Vec<Vec<Rect>>) {
     let keys: Bindings = o.controls.clone();
     let family = crate::pads::family();
-    let mut spots = vec![];
     // whose buttons these are; the other device's show while it's the one in use
     ui.horizontal(|ui| {
         let (device, other) = match (pad_view, crate::pads::count()) {
@@ -900,64 +1034,69 @@ fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_vi
     ui.add_space(8.0);
     let chip = |ui: &mut egui::Ui, text: String, waiting: bool| ui.add(egui::Button::new(RichText::new(text).size(13.0)).selected(waiting).min_size(Vec2::new(26.0, 0.0)));
     let place = |r: Rect| format!("{:.0},{:.0}", r.center().x, r.center().y);
-    egui::Grid::new("options-controls").num_columns(2).spacing([28.0, 8.0]).show(ui, |ui| {
-        for b in Button::ALL {
-            let mut row = vec![];
-            ui.horizontal(|ui| {
-                ui.add_sized(Vec2::new(44.0, 18.0), egui::Label::new(RichText::new(b.name()).size(15.0).color(Color32::WHITE)));
-                // what it does, unless its name says it (the d-pad's)
-                if b.about() != b.name() {
-                    ui.label(RichText::new(b.about()).size(12.0).color(Color32::from_white_alpha(140)));
+    for (name, buttons) in [("Buttons", BUTTONS), ("D-pad", D_PAD)] {
+        let (waiting, waiting_pad) = (&mut ui_state.waiting, &mut ui_state.waiting_pad);
+        section(ui, &mut ui_state.closed, name, spots, |ui, spots| {
+            // as wide a first column in both, so their keys line up
+            egui::Grid::new(("options-controls", name)).num_columns(2).spacing([28.0, 8.0]).min_col_width(230.0).show(ui, |ui| {
+                for b in buttons {
+                    let mut row = vec![];
+                    ui.horizontal(|ui| {
+                        ui.add_sized(Vec2::new(44.0, 18.0), egui::Label::new(RichText::new(b.name()).size(15.0).color(Color32::WHITE)));
+                        // what it does, unless its name says it (the d-pad's)
+                        if b.about() != b.name() {
+                            ui.label(RichText::new(b.about()).size(12.0).color(Color32::from_white_alpha(140)));
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        if pad_view {
+                            for (i, &p) in keys.pads(b).iter().enumerate() {
+                                let wait = *waiting_pad == Some((b, Some(p)));
+                                let c = chip(ui, if wait { "Press a button…".to_string() } else { p.label(family).to_string() }, wait);
+                                platform::set_hook(&format!("uiPad_{}_{i}", b.name()), &place(c.rect));
+                                if c.clicked() {
+                                    *waiting_pad = Some((b, Some(p)));
+                                }
+                                if c.secondary_clicked() {
+                                    o.controls.remove_pad(b, p);
+                                }
+                                row.push(c.rect);
+                            }
+                            let adding = *waiting_pad == Some((b, None));
+                            let add = chip(ui, if adding { "Press a button…" } else { "+" }.to_string(), adding);
+                            platform::set_hook(&format!("uiPadAdd_{}", b.name()), &place(add.rect));
+                            if add.clicked() {
+                                *waiting_pad = Some((b, None));
+                            }
+                            row.push(add.rect);
+                        } else {
+                            for (i, &k) in keys.keys(b).iter().enumerate() {
+                                let wait = *waiting == Some((b, Some(k)));
+                                let c = chip(ui, if wait { "Press a key…".to_string() } else { key_label(k) }, wait);
+                                platform::set_hook(&format!("uiKey_{}_{i}", b.name()), &place(c.rect));
+                                if c.clicked() {
+                                    *waiting = Some((b, Some(k)));
+                                }
+                                if c.secondary_clicked() {
+                                    o.controls.remove(b, k);
+                                }
+                                row.push(c.rect);
+                            }
+                            let adding = *waiting == Some((b, None));
+                            let add = chip(ui, if adding { "Press a key…" } else { "+" }.to_string(), adding);
+                            platform::set_hook(&format!("uiKeyAdd_{}", b.name()), &place(add.rect));
+                            if add.clicked() {
+                                *waiting = Some((b, None));
+                            }
+                            row.push(add.rect);
+                        }
+                    });
+                    ui.end_row();
+                    spots.push(row);
                 }
             });
-            ui.horizontal(|ui| {
-                if pad_view {
-                    for (i, &p) in keys.pads(b).iter().enumerate() {
-                        let waiting = ui_state.waiting_pad == Some((b, Some(p)));
-                        let c = chip(ui, if waiting { "Press a button…".to_string() } else { p.label(family).to_string() }, waiting);
-                        platform::set_hook(&format!("uiPad_{}_{i}", b.name()), &place(c.rect));
-                        if c.clicked() {
-                            ui_state.waiting_pad = Some((b, Some(p)));
-                        }
-                        if c.secondary_clicked() {
-                            o.controls.remove_pad(b, p);
-                        }
-                        row.push(c.rect);
-                    }
-                    let adding = ui_state.waiting_pad == Some((b, None));
-                    let add = chip(ui, if adding { "Press a button…" } else { "+" }.to_string(), adding);
-                    platform::set_hook(&format!("uiPadAdd_{}", b.name()), &place(add.rect));
-                    if add.clicked() {
-                        ui_state.waiting_pad = Some((b, None));
-                    }
-                    row.push(add.rect);
-                } else {
-                    for (i, &k) in keys.keys(b).iter().enumerate() {
-                        let waiting = ui_state.waiting == Some((b, Some(k)));
-                        let c = chip(ui, if waiting { "Press a key…".to_string() } else { key_label(k) }, waiting);
-                        platform::set_hook(&format!("uiKey_{}_{i}", b.name()), &place(c.rect));
-                        if c.clicked() {
-                            ui_state.waiting = Some((b, Some(k)));
-                        }
-                        if c.secondary_clicked() {
-                            o.controls.remove(b, k);
-                        }
-                        row.push(c.rect);
-                    }
-                    let adding = ui_state.waiting == Some((b, None));
-                    let add = chip(ui, if adding { "Press a key…" } else { "+" }.to_string(), adding);
-                    platform::set_hook(&format!("uiKeyAdd_{}", b.name()), &place(add.rect));
-                    if add.clicked() {
-                        ui_state.waiting = Some((b, None));
-                    }
-                    row.push(add.rect);
-                }
-            });
-            ui.end_row();
-            spots.push(row);
-        }
-    });
-    ui.add_space(8.0);
+        });
+    }
     // what to do here; while one waits, how to take it off or keep it
     let (select, start) = (PadButton::Select.label(family), PadButton::Start.label(family));
     let note = match (pad_view, ui_state.waiting_pad, ui_state.waiting) {
@@ -969,7 +1108,6 @@ fn controls(ui: &mut egui::Ui, o: &mut Options, ui_state: &mut OptionsUi, pad_vi
         (false, ..) => format!("Click a key (or {} on it), then the new one. A click on the game's view counts as A.", label(&keys, None, Button::A)),
     };
     ui.label(RichText::new(note).size(12.0).color(Color32::from_white_alpha(150)));
-    spots
 }
 
 /// One of an option's values, picked by a click; its place kept for the checks
@@ -1077,16 +1215,25 @@ mod tests {
         go(&mut o, &mut s, Button::Down, false);
         go(&mut o, &mut s, Button::Left, false);
         assert_eq!(o.graphics.shadows, shadows.saturating_sub(1));
-        // Down, Right: the GBA's pixels; Down, Right twice: the GBC's LCD (no further)
+        // Down, A: the pixelation on; Down, Left: its pixels a step fewer; Down, Right twice:
+        // the GBC's LCD (no further)
         go(&mut o, &mut s, Button::Down, false);
-        go(&mut o, &mut s, Button::Right, false);
-        assert_eq!(o.graphics.pixels, 1);
+        go(&mut o, &mut s, Button::A, false);
+        assert!(o.graphics.pixelation);
+        let density = o.graphics.density;
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::Left, false);
+        assert!((o.graphics.density - (density - 0.05)).abs() < 1e-4, "{}", o.graphics.density);
         go(&mut o, &mut s, Button::Down, false);
         for _ in 0..3 {
             go(&mut o, &mut s, Button::Right, false);
         }
-        assert_eq!((s.row, o.graphics.lcd), (3, 2));
-        assert_eq!(o.graphics.retro(), render::scene::Retro { pixels: Some(render::scene::Handheld::Gba), lcd: Some(render::scene::Handheld::Gbc) });
+        assert_eq!((s.row, o.graphics.lcd), (4, 2));
+        assert_eq!(o.graphics.retro(), render::scene::Retro { pixelation: Some(o.graphics.density), lcd: Some(render::scene::Handheld::Gbc), ..Default::default() });
+        // the resolution stays as it is while the pixelation sets it
+        let scale = o.graphics.scale;
+        nudge(&mut o, Item::Resolution, 1);
+        assert_eq!(o.graphics.scale, scale);
         // L twice: round to Audio; Left: the master volume 5 lower
         go(&mut o, &mut s, Button::L, false);
         go(&mut o, &mut s, Button::L, false);
@@ -1125,6 +1272,27 @@ mod tests {
         go(&mut o, &mut s, Button::A, true);
         assert!(done);
         assert!(!defaults);
+    }
+
+    /// A closed category is one row, its name: A opens it again, its rows back in their
+    /// places; the Controls in theirs (the buttons, then the d-pad).
+    #[test]
+    fn a_closed_category_is_one_row() {
+        let mut closed = BTreeSet::new();
+        assert_eq!(tab_rows(1, &closed).len(), 6, "the Graphics' five, Done and Defaults");
+        closed.insert("Quality");
+        assert_eq!(tab_rows(1, &closed), [Row::Section(0), Row::Toggle(Item::Pixelation), Row::Level(Item::Density), Row::Pick(Item::Lcd), Row::End]);
+        let mut o = Options::default();
+        let mut s = OptionsUi { tab: 1, closed, ring: true, ..Default::default() };
+        let (mut done, mut defaults) = (false, false);
+        let a = Input { presses: vec![Press { button: Button::A, down: true, time: 0.0 }], a_held: false };
+        buttons_in_options(&mut o, &mut s, &a, false, &mut done, &mut defaults);
+        assert!(s.closed.is_empty());
+        assert_eq!(tab_rows(1, &s.closed)[0], Row::Pick(Item::Resolution));
+        let keys: Vec<Row> = tab_rows(2, &BTreeSet::new());
+        assert_eq!(keys[..8], [Button::A, Button::B, Button::L, Button::R, Button::Up, Button::Down, Button::Left, Button::Right].map(Row::Keys));
+        // the World's category has no rows to go to: closed, its name is one
+        assert_eq!(tab_rows(0, &BTreeSet::from(["World"])), [Row::Pick(Item::TextSpeed), Row::Pick(Item::Timing), Row::Toggle(Item::Rings), Row::Section(1), Row::End]);
     }
 }
 

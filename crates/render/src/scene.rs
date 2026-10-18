@@ -3,8 +3,8 @@
 //! map first): what's solid first, writing its look too (toon or not, how far, which way
 //! it faces) to a second target, then what's see-through; then blitted into whatever pass
 //! the host gives (egui's, in the game), with the toon look's ink lines found in the looks,
-//! and the old handhelds' pixels and LCD colours if the game asks; a small blurred copy of
-//! the picture besides, for frosted glass over it (`frost_view`).
+//! and the pixelation and an old handheld's LCD colours if the game asks; a small blurred
+//! copy of the picture besides, for frosted glass over it (`frost_view`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -64,16 +64,26 @@ impl Default for Quality {
     }
 }
 
-/// The old handhelds' screens over the game's picture: their pixels (the scene drawn with
-/// about as many pixels as their screens had, each a square of the screen's, its colours in
-/// 15 bits) and their LCDs' colours (with the thin gaps between their pixels, where those are
-/// big).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+/// The post-processing over the game's picture: the pixelation (the scene drawn with fewer
+/// pixels, each a square of the screen's, its colours in 15 bits: as dense as asked, growing
+/// and shrinking with the camera's zoom) and an old handheld's LCD colours (with the thin
+/// gaps between the pixels, where those are big).
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Retro {
-    /// whose pixels (none: the screen's own resolution)
-    pub pixels: Option<Handheld>,
+    /// the pixelation, how dense its pixels are: 0 the fewest (about as many as an old
+    /// handheld's screen had), 1 the screen's own (none). None: off.
+    pub pixelation: Option<f32>,
+    /// how close the camera is against its usual distance (1; half as far: 2): the
+    /// pixelation's pixels grow with it, so what's further off keeps its shape
+    pub zoom: f32,
     /// whose LCD colours (none: the colours as they are)
     pub lcd: Option<Handheld>,
+}
+
+impl Default for Retro {
+    fn default() -> Self {
+        Retro { pixelation: None, zoom: 1.0, lcd: None }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,14 +95,6 @@ pub enum Handheld {
 }
 
 impl Handheld {
-    /// Its screen's pixels across and down.
-    pub fn size(self) -> [u32; 2] {
-        match self {
-            Handheld::Gba => [240, 160],
-            Handheld::Gbc => [160, 144],
-        }
-    }
-
     /// How dark the gaps between its LCD's pixels are.
     fn grid(self) -> f32 {
         match self {
@@ -110,12 +112,23 @@ impl Handheld {
     }
 }
 
-/// How many of the screen's pixels a side the old handheld's pixels are on a `screen`, for
-/// the picture to have about as many as its screen had (the GBA's 240 by 160, the GBC's 160
-/// by 144: the GBC's come out bigger): a whole number, so they're all the same size.
-pub fn retro_pixel(screen: [u32; 2], handheld: Handheld) -> u32 {
-    let [w, h] = handheld.size();
-    ((screen[0] as f32 * screen[1] as f32 / (w * h) as f32).sqrt().round() as u32).max(1)
+/// The fewest pixels the pixelation leaves the picture, at its lowest density: about as many
+/// as the GBC's screen had (160 by 144).
+const FEWEST: f32 = 160.0 * 144.0;
+
+/// How many of the screen's pixels a side the pixelation's pixels are on a `screen`: at
+/// `density` 0 the picture has about `FEWEST`, at 1 the screen's own (1: none), and in between
+/// evenly in their ratio; times the camera's `zoom` (further out, smaller, so what's far keeps
+/// its shape; closer, bigger, but never bigger than the fewest's). A whole number, so they're
+/// all the same size.
+pub fn pixel_size(screen: [u32; 2], density: f32, zoom: f32) -> u32 {
+    let density = density.clamp(0.0, 1.0);
+    if density >= 1.0 {
+        return 1;
+    }
+    let fewest = (screen[0] as f32 * screen[1] as f32 / FEWEST).sqrt().max(1.0);
+    let k = fewest.powf(1.0 - density) * zoom.max(0.0);
+    (k.min(fewest).round() as u32).max(1)
 }
 
 /// What the last frame had drawn: draw calls and triangles, in the scene and in the shadow.
@@ -127,6 +140,8 @@ pub struct DrawStats {
     pub shadow_triangles: u32,
     /// world chunks left out because they were out of sight (scene + shadow)
     pub culled: u32,
+    /// how big the pixelation's pixels were, in the screen's a side (1: none)
+    pub pixel: u32,
 }
 
 /// A view's six planes (from its view-projection; depth 0 to 1, as wgpu has it).
@@ -1550,10 +1565,10 @@ impl SceneRenderer {
     /// Uploads the frame and records the shadow and scene passes into `encoder`.
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, frame: &Frame, size: [u32; 2]) {
         let screen = [size[0].max(1), size[1].max(1)];
-        // the old handhelds' pixels: the scene with about as many pixels as their screens, each
-        // of its pixels a square of the screen's; else as much of the screen's resolution as
-        // the quality says
-        let pixel = frame.retro.pixels.map(|h| retro_pixel(screen, h)).filter(|&k| k > 1);
+        // the pixelation: the scene with fewer pixels, each a square of the screen's (as dense
+        // as asked, as big as the camera's zoom makes them); else as much of the screen's
+        // resolution as the quality says
+        let pixel = frame.retro.pixelation.map(|d| pixel_size(screen, d, frame.retro.zoom)).filter(|&k| k > 1);
         let (size, scale) = match pixel {
             Some(k) => ([screen[0].div_ceil(k), screen[1].div_ceil(k)], 1.0 / k as f32),
             None => {
@@ -1613,7 +1628,8 @@ impl SceneRenderer {
                     (Some(_), Some(h)) => h.grid(),
                     _ => 0.0,
                 },
-                if frame.retro.pixels.is_some() { 31.0 } else { 0.0 },
+                // in 15-bit colours while it's on, however big its pixels just now
+                if frame.retro.pixelation.is_some_and(|d| d < 1.0) { 31.0 } else { 0.0 },
             ],
             retro_b: [screen[0] as f32, screen[1] as f32, 0.0, 0.0],
             wind: {
@@ -1782,7 +1798,7 @@ impl SceneRenderer {
             queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
         }
 
-        let mut stats = DrawStats::default();
+        let mut stats = DrawStats { pixel: pixel.unwrap_or(1), ..Default::default() };
         let eye = Frustum::new(&frame.view_proj);
         let sun = Frustum::new(&light_view_proj);
 
@@ -2229,23 +2245,29 @@ mod tests {
         }
     }
 
-    /// The old handhelds' pixels are whole squares of the screen's, the picture about as many
-    /// of them as their screens had: on 1920 by 1080, the GBA's sevens (about 274 by 154, near
-    /// its 38400) and the GBC's nines (about 213 by 120, near its 23040); a screen too small
-    /// for them keeps its own pixels.
+    /// The pixelation's pixels are whole squares of the screen's: at density 0 the picture
+    /// about as many as the GBC's screen had (on 1920 by 1080 nines, about 213 by 120, near its
+    /// 23040), at 1 the screen's own, evenly between; smaller with the camera further out,
+    /// bigger closer, never bigger than the fewest's; a screen too small keeps its own pixels.
     #[test]
-    fn the_handhelds_pixels_are_whole_squares() {
-        assert_eq!(retro_pixel([1920, 1080], Handheld::Gba), 7);
-        assert_eq!(retro_pixel([1920, 1080], Handheld::Gbc), 9);
-        assert_eq!(retro_pixel([1280, 720], Handheld::Gba), 5);
-        assert_eq!(retro_pixel([1280, 720], Handheld::Gbc), 6);
-        assert_eq!(retro_pixel([1400, 900], Handheld::Gba), 6);
-        assert_eq!(retro_pixel([1400, 900], Handheld::Gbc), 7);
-        assert_eq!(retro_pixel([200, 150], Handheld::Gba), 1);
-        assert_eq!(retro_pixel([0, 0], Handheld::Gba), 1);
+    fn the_pixelations_pixels_are_whole_squares_as_dense_as_asked() {
+        assert_eq!(pixel_size([1920, 1080], 0.0, 1.0), 9);
+        assert_eq!(pixel_size([1400, 900], 0.0, 1.0), 7);
+        assert_eq!(pixel_size([1920, 1080], 0.5, 1.0), 3);
+        assert_eq!(pixel_size([1920, 1080], 1.0, 1.0), 1);
+        assert_eq!(pixel_size([1920, 1080], 1.0, 3.0), 1, "none, however close");
+        // the camera further out: smaller; closer: bigger, up to the fewest's
+        assert_eq!(pixel_size([1920, 1080], 0.0, 0.4), 4);
+        assert_eq!(pixel_size([1920, 1080], 0.5, 2.0), 6);
+        assert_eq!(pixel_size([1920, 1080], 0.0, 3.0), 9);
+        assert_eq!(pixel_size([200, 150], 0.0, 1.0), 1);
+        assert_eq!(pixel_size([0, 0], 0.0, 1.0), 1);
+        // the denser, the smaller (never bigger)
+        let sizes: Vec<u32> = (0..=20).map(|i| pixel_size([1920, 1080], i as f32 / 20.0, 1.0)).collect();
+        assert!(sizes.windows(2).all(|w| w[1] <= w[0]), "{sizes:?}");
     }
 
-    /// A frame in the old handhelds' pixels and LCD colours, with frosted glass: drawn and
+    /// A frame pixelated and in an old handheld's LCD colours, with frosted glass: drawn and
     /// blitted with no error from the GPU, the scene that small, the glass's texture there
     /// (its generation the same while the screen's size is).
     #[test]
@@ -2267,9 +2289,9 @@ mod tests {
         });
         let out = out.create_view(&Default::default());
         let mut generations = vec![];
-        for (pixels, lcd) in [(Some(Handheld::Gba), Some(Handheld::Gba)), (Some(Handheld::Gbc), Some(Handheld::Gbc)), (None, Some(Handheld::Gba)), (Some(Handheld::Gba), None)] {
+        for (pixels, lcd) in [(Some(0.2), Some(Handheld::Gba)), (Some(0.0), Some(Handheld::Gbc)), (None, Some(Handheld::Gba)), (Some(0.5), None)] {
             let mut frame = frame_of(vec![]);
-            frame.retro = Retro { pixels, lcd };
+            frame.retro = Retro { pixelation: pixels, lcd, ..Default::default() };
             frame.frost = true;
             let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
             let mut encoder = device.create_command_encoder(&Default::default());
@@ -2285,8 +2307,9 @@ mod tests {
             queue.submit([encoder.finish()]);
             let error = block_on(scope.pop());
             assert!(error.is_none(), "{pixels:?} {lcd:?}: {error:?}");
-            let k = pixels.map(|h| retro_pixel([640, 480], h)).unwrap_or(1);
+            let k = pixels.map(|d| pixel_size([640, 480], d, 1.0)).unwrap_or(1);
             assert_eq!(r.target.as_ref().map(|t| t.size), Some([640u32.div_ceil(k), 480u32.div_ceil(k)]), "{pixels:?}");
+            assert_eq!(r.stats().pixel, k);
             generations.push(r.frost_view().map(|(_, g)| g));
         }
         assert!(generations.iter().all(|g| *g == Some(1)), "{generations:?}");
