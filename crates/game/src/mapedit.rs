@@ -1122,7 +1122,8 @@ impl MapEditor {
         let ctx = ui.ctx().clone();
         self.hours = hours;
         self.begin_frame(&ctx, rs, now);
-        let leave = !ctx.egui_wants_keyboard_input() && self.story.dialog.is_none() && self.story.machine.is_none() && ctx.input(|i| i.key_pressed(egui::Key::Escape));
+        // Esc leaves, or the controller's Start (Menu, Options, Plus)
+        let leave = !ctx.egui_wants_keyboard_input() && self.story.dialog.is_none() && self.story.machine.is_none() && (ctx.input(|i| i.key_pressed(egui::Key::Escape)) || crate::pads::start_pressed());
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -1132,7 +1133,9 @@ impl MapEditor {
             // the place and the keys, bottom left; what a script said, above
             let p = ui.painter();
             let font = egui::FontId::proportional(12.0);
-            p.text(rect.left_bottom() + egui::vec2(12.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("{} · arrows move · A speaks · Esc leaves", self.map.name), font.clone(), Color32::from_white_alpha(170));
+            let buttons = crate::title::walk_hint(&crate::input::bindings(), crate::title::pad_shown());
+            crate::platform::set_hook("walkhint", &buttons);
+            p.text(rect.left_bottom() + egui::vec2(12.0, -10.0), egui::Align2::LEFT_BOTTOM, format!("{}  ·  {buttons}", self.map.name), font.clone(), Color32::from_white_alpha(170));
             if self.loading.is_some() {
                 p.text(rect.center(), egui::Align2::CENTER_CENTER, "Loading…", egui::FontId::proportional(18.0), Color32::from_white_alpha(200));
             }

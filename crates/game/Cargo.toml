@@ -18,6 +18,9 @@ eframe.workspace = true
 egui.workspace = true
 # the game's icons are SVG (crates/game/icons/), drawn at any size
 egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
+# controllers: the system's own way on the desktop (Windows.Gaming.Input on Windows, evdev
+# on Linux: CI needs libudev-dev), the Gamepad API in the browser
+gilrs = "0.11"
 image.workspace = true
 glam.workspace = true
 log = "0.4"

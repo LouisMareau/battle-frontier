@@ -75,6 +75,18 @@ fn os_local_hours() -> f32 {
     }
 }
 
+/// The game's window is the one in use: on the desktop, focused; in the browser, the page
+/// shown and focused (whichever of its parts has the focus).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn window_active(ctx: &egui::Context) -> bool {
+    ctx.input(|i| i.focused)
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn window_active(_ctx: &egui::Context) -> bool {
+    web_sys::window().and_then(|w| w.document()).is_some_and(|d| !d.hidden() && d.has_focus().unwrap_or(true))
+}
+
 /// A "HH:MM" of hours (0 to 24).
 pub fn clock_text(hours: f32) -> String {
     let minutes = (hours.rem_euclid(24.0) * 60.0).floor() as u32;

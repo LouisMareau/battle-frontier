@@ -20,6 +20,7 @@ mod hud;
 mod input;
 mod mapedit;
 mod menu;
+mod pads;
 mod platform;
 mod presets;
 #[cfg(all(test, not(target_arch = "wasm32")))]

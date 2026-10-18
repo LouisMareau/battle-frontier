@@ -40,7 +40,7 @@ pub struct Options {
     pub volume: u8,
     pub effects: u8,
     pub ambience: u8,
-    /// the keys each button answers to
+    /// the keys and the controller's buttons each button answers to
     pub controls: crate::input::Bindings,
 }
 
@@ -63,6 +63,8 @@ pub struct KeptOptions {
     pub ambience: u8,
     /// each button's keys, by name ("A": ["Z", "Space", "Enter"])
     pub controls: BTreeMap<String, Vec<String>>,
+    /// each button's controller buttons, by name ("A": ["South"])
+    pub pad: BTreeMap<String, Vec<String>>,
 }
 
 impl Default for KeptOptions {
@@ -107,6 +109,7 @@ impl Options {
             effects: self.effects,
             ambience: self.ambience,
             controls: self.controls.names(),
+            pad: self.controls.pad_names(),
         }
     }
 
@@ -122,7 +125,7 @@ impl Options {
         self.volume = k.volume.min(100);
         self.effects = k.effects.min(100);
         self.ambience = k.ambience.min(100);
-        self.controls = crate::input::Bindings::from_names(&k.controls);
+        self.controls = crate::input::Bindings::from_names(&k.controls, &k.pad);
     }
 
     /// One of the Options' tabs as it came: 0 Game, 1 Graphics, 2 Controls, 3 Audio.
@@ -283,6 +286,8 @@ pub struct GameApp {
     last_save_at: f64,
     /// the main menu
     title: crate::title::Title,
+    /// the controllers, and who's listened to
+    pads: crate::pads::Pads,
     /// the Test battles' own Options window, and its tab
     battles_options: bool,
     battles_options_ui: crate::title::OptionsUi,
@@ -376,7 +381,7 @@ impl GameApp {
             files, content: None, dex: None, party: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
-            title: Default::default(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
+            title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
         }
     }
 
@@ -1071,7 +1076,8 @@ impl GameApp {
                     }
                 }
                 ui.add_space(12.0);
-                ui.label(RichText::new("A: Z / Space / Enter · B: X / Esc · d-pad: arrows · L / R: Q / E. Contact moves: press A at impact. Beams: hold A, release when the ring fills. Multi-hit: press A on every hit. Foe attacks: press A at impact to block.").color(MUTED).size(12.0));
+                let buttons = crate::title::buttons_text(&crate::input::bindings(), crate::title::pad_shown());
+                ui.label(RichText::new(format!("{buttons}. Contact moves: press A at impact. Beams: hold A, release when the ring fills. Multi-hit: press A on every hit. Foe attacks: press A at impact to block.")).color(MUTED).size(12.0));
             });
         });
         let ctx = ui.ctx().clone();
@@ -1118,6 +1124,14 @@ impl GameApp {
 }
 
 impl eframe::App for GameApp {
+    /// A controller has just taken over: egui is told the mouse pointer is gone (where it
+    /// rests, nothing shows hovered) until it moves again.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        if self.pads.take_hide_pointer() {
+            raw_input.events.push(egui::Event::PointerGone);
+        }
+    }
+
     fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let now = platform::now_ms();
@@ -1133,6 +1147,8 @@ impl eframe::App for GameApp {
             }
         }
         let timing_read = matches!(&self.screen, Screen::Battle(d, _) if !d.menu_open());
+        // the controllers first: who's listened to this frame, then what it pressed
+        self.pads.update(&ctx, now);
         self.input.read(&ctx, now, timing_read);
         // browsers play no sound before a click or a key
         if ctx.input(|i| i.pointer.any_pressed() || !i.keys_down.is_empty()) {
@@ -1414,6 +1430,12 @@ impl eframe::App for GameApp {
             let text_rect = Rect::from_min_size(Pos2::new(r.left() + 16.0, r.bottom() - 16.0 - galley.size().y), galley.size());
             painter.rect_filled(text_rect.expand(6.0), 4.0, Color32::from_black_alpha(180));
             painter.galley(text_rect.min, galley, Color32::from_rgb(255, 150, 130));
+        }
+        // a controller come or gone; with one in hand, no mouse pointer over the game (the
+        // editors keep theirs)
+        self.pads.note_ui(&ctx, now);
+        if crate::pads::on_pad() && !matches!(self.screen, Screen::Maps(_) | Screen::Editor(_)) {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
         }
         ctx.request_repaint();
     }
