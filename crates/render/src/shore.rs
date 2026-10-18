@@ -36,8 +36,9 @@ pub fn shore_field(water: &[bool], width: usize, height: usize) -> Vec<f32> {
         .collect()
 }
 
-/// How far from the water a land cell may be and still know which water it's near.
-const NEAR: i64 = 2;
+/// How far from the water a land cell may be and still know which water it's near (past the
+/// furthest a swash goes, from a cell's corner).
+const NEAR: i64 = 3;
 
 /// The field for a world map's cells (`cells` as their texture has them: terrain, level, 0,
 /// 255 a texel, `width` a row; `kinds` each terrain's water: 0 none, 1 inland, 2 oceanic):
@@ -45,7 +46,7 @@ const NEAR: i64 = 2;
 /// where there's no telling (far from any shore, or where two shores are as near): the
 /// distance's slope, smoothed over the cells around (twice over three by three). `water` is
 /// one more than the terrain of the water a cell is (the water's own), or of the nearest
-/// water on its level within two cells (the land's), else 0.
+/// water on its level within three cells (the land's), else 0.
 pub fn shore_texels(cells: &[u8], width: usize, height: usize, kinds: &[u8]) -> Vec<[f32; 4]> {
     let n = width * height;
     if cells.len() != n * 4 || n == 0 {

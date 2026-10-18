@@ -2,7 +2,8 @@
 // a sandy coast to the west, a lake with a beach, tall grass, trees): inland water lands its
 // small waves (their foam) on the shore the wind blows to, not the other; the sea's waves are
 // rougher when the wind blows to the land than out to sea, and roll in either way; the tall
-// grass and the trees sway in the wind and stand still when it's calm; the Post-processing
+// grass and the trees sway in the wind and stand still when it's calm; the clouds' shadows drift
+// the way the wind blows, morph as they go, and run on across a cliff; the Post-processing
 // window's Wind section sets it (the way, the strength, the gusts), back to the defaults too.
 // Screenshots to screenshots/water-*.png. Exits 1 when something fails.
 //     node tools/watercheck.mjs
@@ -45,14 +46,28 @@ for (let z = 0; z < H; z++) {
 const props = [[18, 4, 'round_tree'], [20, 6, 'pine_tree'], [16, 7, 'round_tree'], [21, 20, 'bush'], [23, 21, 'flowers']].map(([x, z, prop]) => ({ prop, at: [x + 0.5, z + 0.5], level: 0 }));
 const map = { id: 'water_test', name: 'Water test', width: W, height: H, legend: { g: 'grass', s: 'sand', w: 'water', o: 'ocean', t: 'tall_grass' }, terrain, props };
 let wind = { direction: 90, strength: 0.7, gusts: 0.3 };
+// no clouds' shadows unless a part asks for them (they'd darken what's measured); never colour
+// steps (they'd band it)
+let clouds = { cloud_shadow: 0 };
+// for the clouds: a grass map, lowland west, a plateau east (a level up), and the same all
+// lowland
+const cliffMap = {
+  id: 'cloud_test', name: 'Cloud test', width: 40, height: 30, legend: { g: 'grass' },
+  terrain: Array.from({ length: 30 }, () => 'g'.repeat(40)), levels: Array.from({ length: 30 }, () => '0'.repeat(20) + '1'.repeat(20)),
+};
+const flatMap = { ...cliffMap, id: 'cloud_flat', name: 'Cloud flat', levels: Array.from({ length: 30 }, () => '0'.repeat(40)) };
+// a level's height, as the world says
+let levelHeight = 2;
 const rewrite = (path, body) => {
   if (path !== 'content/bundle.json') return body;
   const bundle = JSON.parse(body.toString('utf8'));
   bundle.files['maps/water_test.json'] = map;
+  bundle.files['maps/cloud_test.json'] = cliffMap;
+  bundle.files['maps/cloud_flat.json'] = flatMap;
   const world = bundle.files['settings/world.json'];
+  levelHeight = (world.character_height ?? 1.5) + (world.level_padding ?? 0.5);
   world.wind = wind;
-  // no clouds' shadows, no colour steps: they'd darken or band what's measured
-  world.toon = Object.assign(world.toon ?? {}, { cloud_shadow: 0, color_steps: 0 });
+  world.toon = Object.assign(world.toon ?? {}, { color_steps: 0 }, clouds);
   return Buffer.from(JSON.stringify(bundle));
 };
 
@@ -72,18 +87,19 @@ const press = async (name) => {
   await sleep(300);
 };
 // where a point of the world is on the screen
-const screen = async (x, z) => {
-  await cmd(`point:${x},0,${z}`);
+const screen = async (x, z, y = 0) => {
+  await cmd(`point:${x},${y},${z}`);
   await sleep(150);
   return (await data('point')).split(',').map(Number);
 };
-// the map open in the editor, the wind as given, the grid off
-const open = async (w) => {
+// the map open in the editor, the wind (and the clouds) as given, the grid off
+const open = async (w, c = { cloud_shadow: 0 }, id = 'water_test') => {
   wind = w;
+  clouds = c;
   await browser.goto(url);
   await browser.waitFor('document.body.dataset.state === "menu"', { timeout: 90000, what: 'the menu' });
-  await cmd('map:water_test');
-  await browser.waitFor('document.body.dataset.map === "water_test" && document.body.dataset.loading === "0"', { timeout: 30000, what: 'the test map' });
+  await cmd(`map:${id}`);
+  await browser.waitFor(`document.body.dataset.map === ${JSON.stringify(id)} && document.body.dataset.loading === "0"`, { timeout: 30000, what: 'the test map' });
   await sleep(1500);
   await browser.click(700, 450);
   await browser.key('g');
@@ -116,6 +132,47 @@ const changed = (a, b, [cx, cy], r) => {
   }
   return n / all;
 };
+// a picture's light in blocks of 8 by 8 pixels, over the 3D view
+const BLOCK = 8;
+const view = { x0: 270, y0: 70, x1: 1150, y1: 850 };
+const blocks = (img) => {
+  const w = Math.floor((view.x1 - view.x0) / BLOCK);
+  const h = Math.floor((view.y1 - view.y0) / BLOCK);
+  const out = new Float32Array(w * h);
+  for (let by = 0; by < h; by++) {
+    for (let bx = 0; bx < w; bx++) {
+      let sum = 0;
+      for (let y = 0; y < BLOCK; y++) {
+        for (let x = 0; x < BLOCK; x++) {
+          const i = ((view.y0 + by * BLOCK + y) * img.width + view.x0 + bx * BLOCK + x) * 4;
+          sum += img.rgba[i] * 0.3 + img.rgba[i + 1] * 0.59 + img.rgba[i + 2] * 0.11;
+        }
+      }
+      out[by * w + bx] = sum / (BLOCK * BLOCK);
+    }
+  }
+  return { w, h, l: out };
+};
+// how far (in pixels) the second picture's light is moved from the first's: the shift that
+// matches them best
+const shift = (a, b, reach = 14) => {
+  let best = [0, 0, Infinity];
+  for (let dy = -reach; dy <= reach; dy++) {
+    for (let dx = -reach; dx <= reach; dx++) {
+      let sum = 0;
+      let n = 0;
+      for (let y = reach; y < a.h - reach; y++) {
+        for (let x = reach; x < a.w - reach; x++) {
+          sum += Math.abs(a.l[y * a.w + x] - b.l[(y + dy) * a.w + x + dx]);
+          n++;
+        }
+      }
+      if (sum / n < best[2]) best = [dx * BLOCK, dy * BLOCK, sum / n];
+    }
+  }
+  return best;
+};
+
 // foam round a point, summed over a few moments (the waves come and go)
 const foamOver = async (point, r, name) => {
   let sum = 0;
@@ -193,7 +250,92 @@ try {
   check('the tall grass sways in the wind', grass > 0.06 && grass > calmGrass * 3, `${(grass * 100).toFixed(1)}% vs ${(calmGrass * 100).toFixed(1)}% calm`);
   check('  the trees too', trees > 0.01 && trees > calmTrees * 3, `${(trees * 100).toFixed(1)}% vs ${(calmTrees * 100).toFixed(1)}% calm`);
 
-  // 4. the Post-processing window's Wind: its way, strength and gusts; calm at the strength's
+  // 4. the clouds' shadows drift the way the wind blows (east, then south), and morph as they
+  // go (with no drift at all, they still change); cast from their own height, they run on
+  // across a cliff (cast from the ground's, a level's step shifted them, a seam along it)
+  const heavy = { cloud_shadow: 0.8, cloud_cover: 0.5, cloud_size: 9.5, cloud_speed: 1.5 };
+  const drift = async (direction) => {
+    await open({ direction, strength: 0, gusts: 0 }, heavy, 'cloud_test');
+    await cmd('view:10,15,24,0,89');
+    await sleep(1200);
+    const [ox, oy] = await screen(10, 15);
+    const [ex, ey] = await screen(11, 15);
+    const [sx, sy] = await screen(10, 16);
+    const a = blocks(await browser.pixels(join(shots, `water-clouds-${direction}.png`)));
+    await sleep(1000);
+    const b = blocks(await browser.pixels());
+    const [dx, dy] = shift(a, b, 24);
+    // the way the wind blows, on the screen
+    const way = direction === 90 ? [ex - ox, ey - oy] : [sx - ox, sy - oy];
+    const len = Math.hypot(...way) * Math.hypot(dx, dy);
+    return [dx, dy, len > 0 ? (dx * way[0] + dy * way[1]) / len : 0];
+  };
+  const [cx, cy, eastward] = await drift(90);
+  check("the clouds' shadows drift the way the wind blows: east", eastward > 0.9 && Math.hypot(cx, cy) > 24, `moved ${cx},${cy} px, ${eastward.toFixed(2)} along the wind`);
+  const [qx, qy, southward] = await drift(180);
+  check('  and south', southward > 0.9 && Math.hypot(qx, qy) > 24, `moved ${qx},${qy} px, ${southward.toFixed(2)} along the wind`);
+  await open({ direction: 90, strength: 0, gusts: 0 }, { ...heavy, cloud_speed: 0 }, 'cloud_test');
+  await cmd('view:10,15,24,0,89');
+  await sleep(1200);
+  const still0 = await browser.pixels();
+  await sleep(300);
+  const still1 = await browser.pixels();
+  await sleep(14000);
+  const later = await browser.pixels();
+  const centre = await screen(10, 15);
+  const moment = changed(still0, still1, centre, 300);
+  const morphed = changed(still0, later, centre, 300);
+  check('  with no drift, they morph (slowly)', morphed > 0.02 && morphed > moment * 5, `${(morphed * 100).toFixed(1)}% changed in 14 s, ${(moment * 100).toFixed(1)}% in 0.3 s`);
+  // a plateau a level up has the shadows the same ground has with no cliff at all (a flat
+  // copy of the map, at the same moment: no drift, the morph slow); cast from the ground's
+  // own height, a level's step moved them along the sun's way, a seam along it (some three
+  // cells at 17:30)
+  const still = { ...heavy, cloud_speed: 0 };
+  const picture = async (id) => {
+    await open({ direction: 90, strength: 0, gusts: 0 }, still, id);
+    await cmd('period:17:30');
+    await cmd('view:20,15,24,0,89');
+    await sleep(1500);
+    return browser.pixels(join(shots, `water-${id}.png`));
+  };
+  const flat = await picture('cloud_flat');
+  const stepped = await picture('cloud_test');
+  // where the ground (or the plateau's top) is on the screen: seen near enough straight down,
+  // a level plane's points are where three of them say
+  const plane = async (y) => {
+    const [o, ex, ez] = [await screen(20, 15, y), await screen(24, 15, y), await screen(20, 19, y)];
+    return (x, z) => [0, 1].map((k) => o[k] + ((ex[k] - o[k]) * (x - 20) + (ez[k] - o[k]) * (z - 15)) / 4);
+  };
+  const [ground, top] = [await plane(0), await plane(levelHeight)];
+  const inside = ([px, py]) => px > view.x0 + 2 && px < view.x1 - 2 && py > view.y0 + 2 && py < view.y1 - 2;
+  // the light round a point, 3 by 3 pixels
+  const lum = (img, [px, py]) => {
+    let sum = 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const i = ((Math.round(py) + dy) * img.width + Math.round(px) + dx) * 4;
+        sum += img.rgba[i] * 0.3 + img.rgba[i + 1] * 0.59 + img.rgba[i + 2] * 0.11;
+      }
+    }
+    return sum / 9;
+  };
+  let apart = 0;
+  const lights = [];
+  for (let z = 9.5; z <= 20.5; z += 0.5) {
+    for (let x = 21; x <= 25.5; x += 0.5) {
+      const [a, b] = [ground(x, z), top(x, z)];
+      if (!inside(a) || !inside(b)) continue;
+      const l = lum(flat, a);
+      apart += Math.abs(lum(stepped, b) - l);
+      lights.push(l);
+    }
+  }
+  const n = Math.max(lights.length, 1);
+  const mean = lights.reduce((sum, l) => sum + l, 0) / n;
+  const spread = lights.reduce((sum, l) => sum + Math.abs(l - mean), 0) / n;
+  check('  cast from their own height: a plateau has the shadows its ground would have with no cliff', lights.length > 100 && spread > 6 && apart / n < spread * 0.3, `${(apart / n).toFixed(1)} apart, the shadows' own spread ${spread.toFixed(1)} (${lights.length} points)`);
+
+  // 5. the Post-processing window's Wind: its way, strength and gusts; calm at the strength's
   // left end; back to the defaults
   await open({ direction: 90, strength: 0.7, gusts: 0.3 });
   await press('uiPost');

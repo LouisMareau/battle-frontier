@@ -184,8 +184,12 @@ struct Globals {
     /// 15-bit colour, 0: all); and b: xy the screen's size in pixels
     retro_a: [f32; 4],
     retro_b: [f32; 4],
-    /// the wind: xy the way it blows (x, z), z how strong, w how gusty
+    /// the wind: xy the way it blows (x, z), z how strong, w how gusty; b: xy how far its gusts
+    /// have gone (cells), z the sway's phase, w the flutter's (radians); c: x the ripples'
+    /// phase, y the laps' (turns)
     wind: [f32; 4],
+    wind_b: [f32; 4],
+    wind_c: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -196,6 +200,45 @@ pub const MAX_LIGHTS: usize = 32;
 
 /// The way the clouds drift (cells, a unit long): east, and a little south.
 const CLOUD_WIND: glam::Vec2 = glam::Vec2::new(0.928, 0.371);
+
+/// What moves with the wind at the wind's speed, added up frame by frame: where its gusts and
+/// the clouds have got to, the phases of the sway, the flutter, the ripples and the laps, how
+/// far the clouds have morphed. A change of the wind's way or strength turns them or speeds
+/// them up from where they are; were they its speed times the time, they'd jump.
+#[derive(Clone, Copy, Debug, Default)]
+struct WindClock {
+    last: Option<f32>,
+    gusts: Vec2,
+    clouds: Vec2,
+    sway: f64,
+    flutter: f64,
+    ripple: f64,
+    lap: f64,
+    morph: f64,
+}
+
+impl WindClock {
+    /// On to `time` (the frame's seconds) with this wind and these clouds.
+    fn step(&mut self, time: f32, wind: Wind, cloud_speed: f32) {
+        let dt = match self.last {
+            Some(l) if time >= l => (time - l).min(0.25),
+            _ => 0.0,
+        };
+        self.last = Some(time);
+        let way = wind.way.normalize_or(CLOUD_WIND);
+        let s = wind.strength.clamp(0.0, 1.0);
+        self.gusts += way * (4.2 + 10.0 * s) * dt;
+        self.clouds += way * cloud_speed.max(0.0) * dt;
+        let dt = dt as f64;
+        let s = s as f64;
+        self.sway = (self.sway + (1.1 + 1.6 * s) * dt) % std::f64::consts::TAU;
+        self.flutter = (self.flutter + (7.0 + 9.0 * s) * dt) % std::f64::consts::TAU;
+        self.ripple = (self.ripple + (0.7 + 1.6 * s) * dt) % 1.0;
+        self.lap = (self.lap + (1.0 + 1.3 * s) * dt) % 1.0;
+        // the clouds change their shapes slowly, a little faster in a stronger wind
+        self.morph += (0.018 + 0.02 * s) * dt;
+    }
+}
 
 /// A spot light: a cone of light from `pos` along `dir`, `range` long.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -679,6 +722,7 @@ pub struct SceneRenderer {
     /// bumped each time the frosted glass's textures are made again (the host's handle on
     /// them is then out of date)
     frost_generation: u64,
+    wind_clock: WindClock,
     ground_pipeline: wgpu::RenderPipeline,
     ground_layout: wgpu::BindGroupLayout,
     /// the world maps shown, by id: the one the camera is on and the ones around it
@@ -1006,7 +1050,7 @@ impl SceneRenderer {
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
-            frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0,
+            frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0, wind_clock: WindClock::default(),
             ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![],
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
             sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
@@ -1527,6 +1571,8 @@ impl SceneRenderer {
         }
         let l = &frame.light;
         let t = &frame.toon;
+        self.wind_clock.step(frame.time, frame.wind, t.cloud_speed);
+        let clock = self.wind_clock;
         // the ink lines cost a look at every pixel's neighbours: only when something toon
         // is drawn
         let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).flatten().chain(&self.extra).chain(&self.fade).any(|(_, m)| m.toon);
@@ -1558,11 +1604,8 @@ impl SceneRenderer {
             toon_e: [if t.crease > 0.0 { t.crease.clamp(1.0, 179.0).to_radians().cos() } else { 2.0 }, (t.ink && toon_seen) as u32 as f32, t.color_steps.min(32) as f32, t.color_softness.clamp(0.0, 1.0)],
             inv_view_proj: frame.view_proj.inverse().to_cols_array_2d(),
             clouds_a: [t.cloud_shadow.clamp(0.0, 1.0) * sun_strength, 1.0 / t.cloud_size.max(1.0), t.cloud_cover.clamp(0.0, 1.0), 0.1],
-            // the clouds drift with the wind
-            clouds_b: {
-                let way = frame.wind.way.normalize_or(CLOUD_WIND);
-                [way.x * t.cloud_speed, way.y * t.cloud_speed, 28.0, 0.0]
-            },
+            // the clouds drift with the wind (how far they have), morphing as they go
+            clouds_b: [clock.clouds.x, clock.clouds.y, 28.0, clock.morph as f32],
             retro_a: [
                 pixel.unwrap_or(0) as f32,
                 frame.retro.lcd.map_or(0.0, Handheld::code),
@@ -1577,6 +1620,8 @@ impl SceneRenderer {
                 let way = frame.wind.way.normalize_or(CLOUD_WIND);
                 [way.x, way.y, frame.wind.strength.clamp(0.0, 1.0), frame.wind.gusts.clamp(0.0, 1.0)]
             },
+            wind_b: [clock.gusts.x, clock.gusts.y, clock.sway as f32, clock.flutter as f32],
+            wind_c: [clock.ripple as f32, clock.lap as f32, 0.0, 0.0],
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -2245,6 +2290,34 @@ mod tests {
             generations.push(r.frost_view().map(|(_, g)| g));
         }
         assert!(generations.iter().all(|g| *g == Some(1)), "{generations:?}");
+    }
+
+    /// What goes with the wind turns with it and never jumps: the clouds' drift and the gusts
+    /// carry on from where they are when the wind changes its way or its strength; a long
+    /// pause doesn't throw them far; the phases stay small.
+    #[test]
+    fn the_winds_clock_turns_and_never_jumps() {
+        let mut c = WindClock::default();
+        let east = Wind { way: Vec2::X, strength: 0.5, gusts: 0.5 };
+        let north = Wind { way: Vec2::NEG_Y, strength: 1.0, gusts: 0.5 };
+        let mut t = 0.0f32;
+        for _ in 0..36_000 {
+            c.step(t, east, 0.2);
+            t += 1.0 / 60.0;
+        }
+        let (clouds, gusts) = (c.clouds, c.gusts);
+        assert!((clouds.x - 120.0).abs() < 0.5 && clouds.y.abs() < 1e-3, "ten minutes at 0.2 cells a second, east: {clouds}");
+        c.step(t, north, 0.2);
+        assert!((c.clouds - clouds).length() < 0.01 && (c.gusts - gusts).length() < 0.3, "turned, not jumped");
+        for _ in 0..60 {
+            t += 1.0 / 60.0;
+            c.step(t, north, 0.2);
+        }
+        assert!((c.clouds - clouds - Vec2::new(0.0, -0.2)).length() < 0.02, "a second later, 0.2 cells north: {}", c.clouds - clouds);
+        let before = c.clouds;
+        c.step(t + 30.0, north, 0.2);
+        assert!((c.clouds - before).length() <= 0.05 + 1e-4, "a pause of 30 s counts as a quarter of one");
+        assert!(c.sway < std::f64::consts::TAU && c.flutter < std::f64::consts::TAU && c.ripple < 1.0 && c.lap < 1.0);
     }
 
     #[test]
