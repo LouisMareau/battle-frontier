@@ -181,16 +181,29 @@ small one.
   simple shapes (`parts`) until a real model (glTF, `model`) comes. Trees and flora can't be
   scaled; the rest can be scaled down. A prop (a character is one) or a creature can be
   `toon`: drawn with the toon look, which `settings/world.json`'s `toon` describes (the
-  editor's Post-processing window).
+  editor's Post-processing window). A prop of category `railing` is a piece of a railing
+  style (`railing`: its `style`, a `span` along one cell edge, modelled from x -0.5 to 0.5,
+  or a `post` on a point where spans meet or end; a span's two `ends` say what each needs of
+  the point there, a post `takes` some of those words and stands `at` some kinds of point:
+  `end`, `wall`, `line`, `corner`, `tee`, `cross`; a `weight` for how often). A railing is
+  put together from its style's pieces by wave function collapse (`world::railings`): each
+  span and point starts with every piece that fits it, the one with the fewest left is
+  decided by weight from a seed (the same railing every time), and what no longer agrees
+  with its neighbours goes. The styles that come with it: wood (balusters, now and then a
+  panel between posts), iron (bars, now and then a ring) and stone (a balustrade with piers);
+  a style is new as soon as one span says it, and the asset browser edits a piece's
+  `railing` in its inspector.
 - **Tree areas** are cells the player can't cross. The engine fills them with trees from
   the area's settings (which trees, spacing, size range, density, a tree in every edge
   cell, seed): the same trees every time.
 - **Buildings** have a footprint of cells (any shape, in one piece), floors one level each
   (each with its flooring, never empty; any cell may have a flooring of its own, and above
-  the ground floor a cell may be a hole, open down to the floor below with a railing along
-  its edge: an inner balcony), walls along the outline in a style (plaster, planks, bricks,
-  stone, logs; any segment of a floor's walls may have a style of its own: `tiles`,
-  `holes`, `walls` on a floor), doors and windows in them (an opening is as wide, in cells,
+  the ground floor a cell may be a hole, open down to the floor below, with a railing of a
+  style along its edge or none: an inner balcony), walls along the outline in a style
+  (plaster, planks, bricks, stone, logs; any segment of a floor's walls may have a style of
+  its own, outside and inside apart: an inside face is as its outside unless it has its own
+  or the building has one for all its insides, `inner_wall`, and its own is kept whatever its
+  outside becomes; `tiles`, `holes`, `walls`, `inner` on a floor), doors and windows in them (an opening is as wide, in cells,
   as its asset: a 2-cell span only offers 2-cell doors), what stands inside each floor,
   pillars on points of the outline, a roof (gabled on a rectangle unless `flat_roof` asks
   for a flat one; flat with a parapet on any other shape), things hung on its walls
@@ -298,10 +311,12 @@ map is darkened, and nothing lands outside the building. *Structure* is flooring
 roof (a flat roof for a rectangle, if you want one), doors and windows (drag along an outside
 wall, then pick an asset that wide), pillars, and cell by cell: *Flooring* (click or drag
 over the floor's cells: each takes the flooring picked, or its floor's own again; above the
-ground floor, "Empty: a hole" opens a cell down to the floor below, a railing along its
-edge, never where something stands; the walker can't step into one, nothing is placed over
-one) and *Walls* (click or drag along the floor's walls: each segment takes the style
-picked, on this floor or on every floor at once);
+ground floor, "Empty: a hole" opens a cell down to the floor below, with the railing picked
+under it (a style, or none; a hole painted again takes the one picked), never where
+something stands; the walker can't step into one, nothing is placed over one) and *Walls*
+(click or drag along the floor's walls: each segment's outside, or with "Inside" its inside,
+takes the style picked, on this floor or on every floor at once; Style's "Inside" gives all
+the inside faces one style, "As the outside" by default);
 *Inside* places what the `Buildings/Inside` folder holds on the floor being designed (on its
 inner walls for things that hang); *Outside* asks for a wall first (a court's walls count),
 then hangs what `Buildings/Outside` holds on it or stands it on the ground up to two cells in
@@ -445,7 +460,7 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 |---|---|
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
-| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`), which cells block and where walls are, buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/post.rs` the Post-processing window, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
 | `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs`, `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |

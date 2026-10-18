@@ -1,0 +1,19 @@
+{
+  "id": "stone_balustrade_pier",
+  "name": "Stone balustrade pier",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.97,
+  "parts": [
+    { "shape": "box", "size": [0.26, 0.9, 0.26], "at": [0.0, 0.0, 0.0], "color": "#b7ae9c" },
+    { "shape": "box", "size": [0.3, 0.07, 0.3], "at": [0.0, 0.9, 0.0], "color": "#cfc8b8" }
+  ],
+  "railing": {
+    "style": "stone",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail"],
+    "at": ["end", "wall", "line", "corner", "tee", "cross"],
+    "weight": 1.0
+  }
+}

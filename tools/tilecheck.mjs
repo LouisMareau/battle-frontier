@@ -2,9 +2,11 @@
 // headless Chrome: a house of 3 by 4 cells with a door; on its ground floor two cells take
 // stone slabs (a drag) and one is laid back as the floor's own; a wall segment takes bricks;
 // stairs up to a second floor, where a hole is refused under a table, made beside the
-// stairs' top (the stairs' own opening stays as it is), and a table over it is refused; a
-// wall segment bricks on every floor at once. Confirmed, then walked: in through the door,
-// up the stairs, and the hole stops the walker. The map's download has it all.
+// stairs' top with a wood railing, painted again with an iron one (the stairs' own opening
+// stays as it is), a table over it is refused, and another hole has no railing; a wall
+// segment bricks on every floor at once; a segment's inside stone, then its outside planks
+// (the inside kept). Confirmed, then walked: in through the door, up the stairs, and the
+// hole stops the walker. The map's download has it all.
 // Screenshots go to screenshots/tiles-*.png.
 //     node tools/tilecheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -122,10 +124,21 @@ try {
   await browser.click(...(await at(21.5, UP, 16.5)));
   await expect('no hole under the table', 'buildholes', 0);
   check('  and why', (await data('status')).includes('stands there'), await data('status'));
+  await expect('  its railing: wood to start with', 'railingbrush', 'wood');
+  for (const k of ['uiRailing_wood', 'uiRailing_iron', 'uiRailing_stone', 'uiRailingNone']) {
+    check(`  ${k} on screen`, (await data(k)) !== '', await data(k));
+  }
   await browser.click(...(await at(22.5, UP, 16.5)));
-  await expect('a hole beside the stairs\' top', 'buildholes', 1);
+  await expect('a hole beside the stairs\' top, a wood railing', 'buildrailed', 'wood');
+  await expect('  one hole', 'buildholes', 1);
+  await press('uiRailing_iron');
+  await browser.click(...(await at(22.5, UP, 16.5)));
+  await expect('  painted again: an iron railing', 'buildrailed', 'iron');
   await browser.click(...(await at(23.5, UP, 17.5)));
   await expect('  the stairs\' own opening left as it is', 'buildholes', 1);
+  await press('uiRailingNone');
+  await browser.click(...(await at(21.5, UP, 18.5)));
+  check('another hole, no railing', (await data('buildholes')) === '2' && (await data('buildrailed')) === 'iron', `${await data('buildholes')} holes, railed: ${await data('buildrailed')}`);
   await press('uiInside');
   await press('uiPick_table');
   await browser.click(...(await at(22.5, UP, 16.5)));
@@ -140,8 +153,23 @@ try {
   await press('uiFloor1');
   await expect('  and on the ground floor', 'buildwalls', 2);
   await press('uiFloor2');
+  // a segment's inside on its own: stone inside the west wall, then its outside planks;
+  // the inside kept
+  await press('uiWallEveryFloor');
+  await press('uiWallFaceInside');
+  await expect('  the inside faces', 'wallface', 'inside');
+  await press('uiWallBrush_stone_wall');
+  await browser.click(...(await at(21.05, UP, 18.5)));
+  await expect('a segment\'s inside in stone', 'buildinner', 1);
+  await press('uiWallFaceOutside');
+  await press('uiWallBrush_plank_wall');
+  await browser.click(...(await at(21.05, UP, 18.5)));
+  check('  its outside planks, its inside kept', (await data('buildwalls')) === '2' && (await data('buildinner')) === '1', `${await data('buildwalls')} outside, ${await data('buildinner')} inside`);
   await cmd('view:22.5,17.5,11,-35,48');
   await shot('2-hole-and-railing');
+  // from above the east side, down onto the west wall's inside and the hole with no railing
+  await cmd('view:22,18.4,10,90,68');
+  await shot('2b-inside-wall');
   await cmd('view:22.5,18,15,0,58');
 
   // 7. confirmed; walked: in through the door, up the stairs, the hole stops the walker
@@ -179,9 +207,10 @@ try {
   const saved = JSON.parse(readFileSync(join(downloads, 'test_meadow.json'), 'utf8'));
   const b = saved.buildings?.[buildings0];
   const [f1, f2] = [b?.floors?.[0] ?? {}, b?.floors?.[1] ?? {}];
-  check('downloaded', !!b && JSON.stringify(f1.tiles) === '[{"cell":[0,0],"tile":"stone_floor"}]' && f1.walls?.length === 2 && f2.walls?.length === 1
-    && JSON.stringify(f2.holes) === '[[1,0]]' && f1.holes === undefined && f2.walls[0].side === 'e',
-    b ? JSON.stringify({ tiles: f1.tiles, walls1: f1.walls, walls2: f2.walls, holes: f2.holes }) : 'no building');
+  check('downloaded', !!b && JSON.stringify(f1.tiles) === '[{"cell":[0,0],"tile":"stone_floor"}]' && f1.walls?.length === 2 && f2.walls?.length === 2
+    && JSON.stringify(f2.holes) === '[{"cell":[1,0],"railing":"iron"},{"cell":[0,2]}]' && f1.holes === undefined && f2.walls[0].side === 'e'
+    && JSON.stringify(f2.inner) === '[{"cell":[0,2],"side":"w","wall":"stone_wall"}]' && f2.walls.some((w) => w.wall === 'plank_wall' && w.side === 'w') && f1.inner === undefined,
+    b ? JSON.stringify({ tiles: f1.tiles, walls1: f1.walls, walls2: f2.walls, inner2: f2.inner, holes: f2.holes }) : 'no building');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

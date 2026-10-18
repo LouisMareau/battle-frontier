@@ -87,6 +87,10 @@ pub(super) struct Draft {
     pub wall_brush: String,
     /// Walls: given on every floor at once, not just the one being designed
     pub every_floor: bool,
+    /// Walls: the brush paints the segments' inside faces (else their outside)
+    pub inner_face: bool,
+    /// Flooring: the railing a hole painted gets (a style; "": none)
+    pub railing_brush: String,
     /// Flooring: the cell under the pointer (from `at`)
     pub hover_cell: Option<(i32, i32)>,
     /// a stroke of flooring or walls going on (the button held down)
@@ -120,6 +124,23 @@ fn choices(ed: &MapEditor, category: &str) -> Vec<(String, String, String)> {
     ids_of(ed, &[category]).into_iter().map(|(id, name, _, color)| (id, name, color)).collect()
 }
 
+/// The railing styles (those with a span among the railing props) as choices: (style, its
+/// name, its span's colour).
+fn railing_styles(ed: &MapEditor) -> Vec<(String, String, String)> {
+    let mut out: Vec<(String, String, String)> = vec![];
+    for p in ed.content.props.iter() {
+        let Some(r) = p.railing.as_ref().filter(|r| r.is_span()) else { continue };
+        if out.iter().any(|s| s.0 == r.style) {
+            continue;
+        }
+        let words = r.style.replace('_', " ");
+        let name = words.get(..1).map(|c| c.to_uppercase() + &words[1..]).unwrap_or_default();
+        out.push((r.style.clone(), name, p.color(0).to_string()));
+    }
+    out.sort();
+    out
+}
+
 /// Shifts everything a building holds when its corner moves from `old` to its `at`, and
 /// drops what no longer fits the footprint.
 fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
@@ -136,9 +157,9 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
             t.cell = [t.cell[0] + dx, t.cell[1] + dz];
         }
         for h in f.holes.iter_mut() {
-            *h = [h[0] + dx, h[1] + dz];
+            h.cell = [h.cell[0] + dx, h.cell[1] + dz];
         }
-        for w in f.walls.iter_mut() {
+        for w in f.walls.iter_mut().chain(f.inner.iter_mut()) {
             w.cell = [w.cell[0] + dx, w.cell[1] + dz];
         }
     }
@@ -159,8 +180,9 @@ fn rebase(b: &mut Building, old: [i32; 2]) -> usize {
         dropped += before - f.openings.len() - f.props.len();
         // a cell's flooring, a hole, a wall's style: gone with their cell or wall
         f.tiles.retain(|t| copy.has(t.cell[0], t.cell[1]));
-        f.holes.retain(|h| copy.has(h[0], h[1]));
+        f.holes.retain(|h| copy.has(h.cell[0], h.cell[1]));
         f.walls.retain(|w| copy.is_edge(w.cell[0], w.cell[1], &w.side));
+        f.inner.retain(|w| copy.is_edge(w.cell[0], w.cell[1], &w.side));
     }
     let corners = copy.corners();
     let before = b.pillars.len() + b.anchors.len() + b.outside.len();
@@ -201,10 +223,14 @@ impl MapEditor {
         // the brushes: another flooring and another style than the building's to start with
         let tile_brush = choices(self, "floor").into_iter().map(|c| c.0).find(|id| b.floors.first().map(|f| &f.tile) != Some(id)).unwrap_or_default();
         let wall_brush = choices(self, "wall").into_iter().map(|c| c.0).find(|id| *id != b.wall).unwrap_or_default();
+        let styles = railing_styles(self);
+        let railing_brush = styles.iter().find(|s| s.0 == content::DEFAULT_RAILING).or(styles.first()).map(|s| s.0.clone()).unwrap_or_default();
         self.draft = Some(Draft {
             tile_brush,
             wall_brush,
             every_floor: false,
+            inner_face: false,
+            railing_brush,
             hover_cell: None,
             painting: false,
             step: if editing.is_some() { Step::Design } else { Step::Footprint },
@@ -522,9 +548,16 @@ impl MapEditor {
                             let floors: Vec<usize> = if d.every_floor { (0..d.b.floors.len()).collect() } else { vec![d.floor] };
                             let mut changed = false;
                             for f in floors {
-                                let before = d.b.floors[f].wall_at(x, z, side, &wall).to_string();
-                                d.b.floors[f].set_wall(x, z, side, &d.wall_brush, &wall);
-                                changed |= d.b.floors[f].wall_at(x, z, side, &wall) != before;
+                                // the inside face keeps its own style whatever the outside becomes
+                                if d.inner_face {
+                                    let before = d.b.wall_inside(f, x, z, side).to_string();
+                                    d.b.floors[f].set_inner(x, z, side, &d.wall_brush);
+                                    changed |= d.b.wall_inside(f, x, z, side) != before;
+                                } else {
+                                    let before = d.b.floors[f].wall_at(x, z, side, &wall).to_string();
+                                    d.b.floors[f].set_wall(x, z, side, &d.wall_brush, &wall);
+                                    changed |= d.b.floors[f].wall_at(x, z, side, &wall) != before;
+                                }
                             }
                             if changed {
                                 self.need_buildings = true;
@@ -558,7 +591,8 @@ impl MapEditor {
             return Ok(false);
         }
         let floor = &mut d.b.floors[f];
-        let before = (floor.tile_at(x, z).to_string(), floor.is_hole(x, z));
+        let state = |floor: &content::Floor| (floor.tile_at(x, z).to_string(), floor.hole(x, z).map(|h| h.railing.clone()));
+        let before = state(floor);
         if d.tile_brush == HOLE {
             if f == 0 {
                 return Err("The ground floor has nothing under it: holes go in the floors above".into());
@@ -566,11 +600,12 @@ impl MapEditor {
             if let Some(name) = standing.first() {
                 return Err(format!("{name} stands there: move it first (Inside)"));
             }
-            floor.set_hole(x, z, true);
+            // a hole painted again takes the railing picked
+            floor.set_hole(x, z, Some(&d.railing_brush));
         } else {
             floor.set_tile(x, z, &d.tile_brush);
         }
-        Ok(before != (floor.tile_at(x, z).to_string(), floor.is_hole(x, z)))
+        Ok(before != state(floor))
     }
 
     /// The Build tool's marks: on the ground while the footprint is drawn; over everything
@@ -636,7 +671,7 @@ impl MapEditor {
                     Clicks::Tiles => {
                         // the floor's holes, and the cell under the pointer
                         for h in d.b.floors[d.floor].holes.iter().filter(|_| d.floor > 0) {
-                            overlays.push(rect(ox + h[0] as f32 + 0.5, y - 0.02, oz + h[1] as f32 + 0.5, 0.9, 0.9, [0.1, 0.12, 0.3, 0.35]));
+                            overlays.push(rect(ox + h.cell[0] as f32 + 0.5, y - 0.02, oz + h.cell[1] as f32 + 0.5, 0.9, 0.9, [0.1, 0.12, 0.3, 0.35]));
                         }
                         if let Some((x, z)) = d.hover_cell {
                             let c = if d.tile_brush == HOLE { [1.0, 0.55, 0.3, 0.5] } else { [1.0, 1.0, 1.0, 0.45] };
@@ -807,6 +842,7 @@ impl MapEditor {
     /// Flooring, walls and roof; then doors and windows, or pillars.
     fn structure_panel(&mut self, ui: &mut egui::Ui) -> bool {
         let (tiles, walls, roofs, pillars) = (choices(self, "floor"), choices(self, "wall"), choices(self, "roof"), choices(self, "pillar"));
+        let rails = railing_styles(self);
         let doors = ids_of(self, &["door"]);
         let windows = ids_of(self, &["window"]);
         let content = self.content.clone();
@@ -819,6 +855,14 @@ impl MapEditor {
             ui.end_row();
             ui.label("Walls");
             changed |= pick(ui, "wall", &mut d.b.wall, &walls);
+            ui.end_row();
+            // the inside faces: as each one's outside, or all of one style (a face painted
+            // on its own keeps its own)
+            ui.label("Inside");
+            let outside_color = walls.iter().find(|w| w.0 == d.b.wall).map(|w| w.2.clone()).unwrap_or_else(|| "#888888".into());
+            let mut inner = vec![(String::new(), "As the outside".to_string(), outside_color)];
+            inner.extend(walls.iter().cloned());
+            changed |= pick(ui, "inner_wall", &mut d.b.inner_wall, &inner);
             ui.end_row();
             ui.label("Roof");
             changed |= pick(ui, "roof", &mut d.b.roof, &roofs);
@@ -933,9 +977,20 @@ impl MapEditor {
                 let (own_name, own_color) = tiles.iter().find(|t| t.0 == own).map(|t| (t.1.clone(), t.2.clone())).unwrap_or((own, "#888888".into()));
                 brush(ui, &mut d.tile_brush, "", &format!("As the floor ({own_name})"), Some(own_color.as_str()), "uiTileOwn").on_hover_text("Back to this floor's own flooring (Style: Floor)");
                 if d.floor > 0 {
-                    brush(ui, &mut d.tile_brush, HOLE, "Empty: a hole", Some("#1c2130"), "uiTileHole").on_hover_text("No floor there: open down to the floor below, a railing along its edge (an inner balcony)");
+                    brush(ui, &mut d.tile_brush, HOLE, "Empty: a hole", Some("#1c2130"), "uiTileHole").on_hover_text("No floor there: open down to the floor below (an inner balcony), with the railing picked below or none");
                 } else {
                     hint(ui, "Holes go in the floors above: there's nothing under the ground floor.");
+                }
+                // a hole's railing: a style (its pieces put together along the edge) or none
+                if d.tile_brush == HOLE {
+                    ui.indent("hole-railing", |ui| {
+                        ui.label(RichText::new("Its railing").size(12.0));
+                        for (id, name, color) in &rails {
+                            brush(ui, &mut d.railing_brush, id, name, Some(color.as_str()), &format!("uiRailing_{id}"));
+                        }
+                        brush(ui, &mut d.railing_brush, "", "No railing", Some("#1c2130"), "uiRailingNone");
+                        hint(ui, "A hole painted again takes the railing picked.");
+                    });
                 }
                 let fl = &d.b.floors[d.floor];
                 let (n, h) = (fl.tiles.len(), fl.holes.len());
@@ -949,19 +1004,36 @@ impl MapEditor {
                 }
             }
             Clicks::Walls => {
-                hint(ui, "Click or drag along this floor's walls: each segment takes the style picked.");
+                // which face: the outside, or the inside (kept whatever the outside becomes)
+                ui.horizontal(|ui| {
+                    super::mark("uiWallFaceOutside", &ui.radio_value(&mut d.inner_face, false, "Outside"));
+                    super::mark("uiWallFaceInside", &ui.radio_value(&mut d.inner_face, true, "Inside"));
+                });
+                hint(ui, if d.inner_face { "Click or drag along this floor's walls: each segment's inside takes the style picked, and keeps it whatever its outside becomes." } else { "Click or drag along this floor's walls: each segment's outside takes the style picked." });
                 for (id, name, color) in &walls {
                     brush(ui, &mut d.wall_brush, id, name, Some(color.as_str()), &format!("uiWallBrush_{id}"));
                 }
-                let own = d.b.wall.clone();
-                let (own_name, own_color) = walls.iter().find(|w| w.0 == own).map(|w| (w.1.clone(), w.2.clone())).unwrap_or((own, "#888888".into()));
-                brush(ui, &mut d.wall_brush, "", &format!("As the building ({own_name})"), Some(own_color.as_str()), "uiWallOwn").on_hover_text("Back to the building's own walls (Style: Walls)");
+                let find = |id: &str| walls.iter().find(|w| w.0 == id).map(|w| (w.1.clone(), w.2.clone())).unwrap_or((id.to_string(), "#888888".into()));
+                let (own, about) = match (d.inner_face, d.b.inner_wall.is_empty()) {
+                    (false, _) => (format!("As the building ({})", find(&d.b.wall).0), "Back to the building's own walls (Style: Walls)"),
+                    (true, true) => ("As the outside".to_string(), "Back to as its outside is (Style: Inside)"),
+                    (true, false) => (format!("As the building's inside ({})", find(&d.b.inner_wall).0), "Back to the building's inside walls (Style: Inside)"),
+                };
+                let own_color = find(if d.inner_face && !d.b.inner_wall.is_empty() { &d.b.inner_wall } else { &d.b.wall }).1;
+                brush(ui, &mut d.wall_brush, "", &own, Some(own_color.as_str()), "uiWallOwn").on_hover_text(about);
                 let every = ui.checkbox(&mut d.every_floor, "On every floor").on_hover_text("A segment takes the style all the way up, not just on this floor");
                 super::mark("uiWallEveryFloor", &every);
-                let n = d.b.floors[d.floor].walls.len();
-                ui.label(format!("{n} segment{} of another style on this floor", if n == 1 { "" } else { "s" }));
-                if ui.add_enabled(n > 0, egui::Button::new("All as the building").small()).clicked() {
-                    d.b.floors[d.floor].walls.clear();
+                let fl = &d.b.floors[d.floor];
+                let n = if d.inner_face { fl.inner.len() } else { fl.walls.len() };
+                let face = if d.inner_face { "inside" } else { "outside" };
+                ui.label(format!("{n} segment{} with an {face} of its own on this floor", if n == 1 { "" } else { "s" }));
+                if ui.add_enabled(n > 0, egui::Button::new(if d.inner_face { "All insides as the building" } else { "All as the building" }).small()).clicked() {
+                    let fl = &mut d.b.floors[d.floor];
+                    if d.inner_face {
+                        fl.inner.clear();
+                    } else {
+                        fl.walls.clear();
+                    }
                     changed = true;
                 }
             }
@@ -972,6 +1044,10 @@ impl MapEditor {
         crate::platform::set_hook("buildtiles", &fl.tiles.len().to_string());
         crate::platform::set_hook("buildholes", &fl.holes.len().to_string());
         crate::platform::set_hook("buildwalls", &fl.walls.len().to_string());
+        crate::platform::set_hook("buildinner", &fl.inner.len().to_string());
+        crate::platform::set_hook("buildrailed", &fl.holes.iter().filter(|h| !h.railing.is_empty()).map(|h| h.railing.as_str()).collect::<Vec<_>>().join(","));
+        crate::platform::set_hook("railingbrush", &d.railing_brush);
+        crate::platform::set_hook("wallface", if d.inner_face { "inside" } else { "outside" });
         crate::platform::set_hook("tilebrush", &d.tile_brush);
         crate::platform::set_hook("wallbrush", &d.wall_brush);
         crate::platform::set_hook("hovercell", &d.hover_cell.map(|(x, z)| format!("{x},{z}")).unwrap_or_default());

@@ -1,0 +1,18 @@
+{
+  "id": "stone_balustrade_joint",
+  "name": "Stone balustrade joint",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "parts": [
+    { "shape": "box", "size": [0.025, 0.1, 0.225], "at": [0.0, 0.8, 0.0], "color": "#b7ae9c" }
+  ],
+  "railing": {
+    "style": "stone",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail"],
+    "at": ["line"],
+    "weight": 2.0
+  }
+}

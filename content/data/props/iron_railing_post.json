@@ -1,0 +1,19 @@
+{
+  "id": "iron_railing_post",
+  "name": "Iron railing post",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.99,
+  "parts": [
+    { "shape": "box", "size": [0.05, 0.9, 0.05], "at": [0.0, 0.0, 0.0], "color": "#2f3036" },
+    { "shape": "sphere", "size": [0.09, 0.09, 0.09], "at": [0.0, 0.94, 0.0], "color": "#4a4b52" }
+  ],
+  "railing": {
+    "style": "iron",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail", "post"],
+    "at": ["end", "wall", "line", "corner", "tee", "cross"],
+    "weight": 1.0
+  }
+}

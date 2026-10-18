@@ -1,0 +1,18 @@
+{
+  "id": "iron_railing_joint",
+  "name": "Iron railing joint",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "parts": [
+    { "shape": "box", "size": [0.03, 0.06, 0.06], "at": [0.0, 0.85, 0.0], "color": "#4a4b52" }
+  ],
+  "railing": {
+    "style": "iron",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail"],
+    "at": ["line"],
+    "weight": 3.0
+  }
+}

@@ -776,6 +776,81 @@ pub struct Prop {
     /// drawn with the toon look (the world settings' `toon`): light in steps, ink lines
     #[serde(skip_serializing_if = "is_default")]
     pub toon: bool,
+    /// a piece of railing (category "railing"): its style, and where it goes
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub railing: Option<RailingPiece>,
+}
+
+/// The points railing pieces stand on: where a span ends ("end"), ends against a wall
+/// ("wall"), two spans in a line ("line") or at a right angle ("corner"), three ("tee"),
+/// four ("cross").
+pub const JUNCTIONS: [&str; 6] = ["end", "wall", "line", "corner", "tee", "cross"];
+
+/// What a railing's piece is (category "railing"). A railing is put together from the
+/// pieces of one style: a span along each cell edge (modelled from x -0.5 to 0.5 along the
+/// edge, z across it, standing on y 0) and a post on each point where spans meet or end (at
+/// the origin, its +x along a span going away from the point). A span's `ends` say what each
+/// of its ends needs of the point there, a post `takes` some of those words and stands `at`
+/// some kinds of points: the pieces are picked so they all agree (wave function collapse:
+/// `world::railings`), the likelier by `weight`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RailingPiece {
+    /// its style ("wood", "iron"...): one railing is all of one style
+    pub style: String,
+    /// "span" or "post"
+    pub part: String,
+    /// a span: its -x end's word, then its +x end's ("rail": the rail goes on through the
+    /// point; "post": it needs a post there, say)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ends: Vec<String>,
+    /// a post: the span ends it stands between
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub takes: Vec<String>,
+    /// a post: the points it stands on (`JUNCTIONS`)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub at: Vec<String>,
+    /// how likely it's picked among the pieces that fit (more: more often)
+    pub weight: f64,
+}
+
+impl Default for RailingPiece {
+    fn default() -> Self {
+        RailingPiece { style: String::new(), part: "span".into(), ends: vec!["rail".into(), "rail".into()], takes: vec![], at: vec![], weight: 1.0 }
+    }
+}
+
+impl RailingPiece {
+    pub fn is_span(&self) -> bool {
+        self.part == "span"
+    }
+
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if self.style.is_empty() {
+            out.push("a railing piece with no style".to_string());
+        }
+        match self.part.as_str() {
+            "span" if self.ends.len() != 2 => out.push(format!("a span has two ends' words, not {}", self.ends.len())),
+            "span" => {}
+            "post" => {
+                if self.takes.is_empty() {
+                    out.push("a post that takes no span's end".into());
+                }
+                if self.at.is_empty() {
+                    out.push(format!("a post that stands nowhere (at: {})", JUNCTIONS.join(", ")));
+                }
+                for a in self.at.iter().filter(|a| !JUNCTIONS.contains(&a.as_str())) {
+                    out.push(format!("a post at \"{a}\": {}", JUNCTIONS.join(", ")));
+                }
+            }
+            other => out.push(format!("a railing piece is a span or a post, not \"{other}\"")),
+        }
+        if self.weight.is_nan() || self.weight <= 0.0 {
+            out.push("a railing piece's weight is above 0".into());
+        }
+        out
+    }
 }
 
 /// A light a prop gives off: a spot (a cone of light) or a point (light all around). `at`
@@ -899,6 +974,7 @@ impl Prop {
             "furniture" | "stairs" => INSIDE,
             "wall_decoration" => OUTSIDE,
             "door" | "window" | "wall" | "pillar" | "floor" | "roof" => "Buildings/Structure",
+            "railing" => "Buildings/Railings",
             "character" => "Characters",
             _ => "Town",
         };

@@ -1,14 +1,16 @@
 //! Buildings' geometry: on each floor, each cell's flooring (open where stairs come up and
-//! over its holes, a railing round those), walls along the outline (each segment in its
-//! style, patterned on the outside, with holes where doors and windows are), the doors,
-//! windows and what stands inside; pillars as high as the building; a gabled roof on a
-//! rectangle, a flat one with a parapet on any other shape; decorations on the walls.
-//! A building can be cut away above a floor, for editing it.
+//! over its holes, the holes' railings put together from their style's pieces: `railings`),
+//! walls along the outline (each segment's outside and inside in their styles, patterned,
+//! with holes where doors and windows are), the doors, windows and what stands inside;
+//! pillars as high as the building; a gabled roof on a rectangle, a flat one with a parapet
+//! on any other shape; decorations on the walls. A building can be cut away above a floor,
+//! for editing it.
 
 use content::{segment_ends, side_turn, Anchor, Building, Content};
 use glam::{Mat4, Vec3};
 
 use crate::mesh::{placement, prop_scene, Mesh, Models, Scene};
+use crate::railings;
 use crate::{color, WorldMap};
 
 /// How thick walls are, inwards from the outline.
@@ -46,13 +48,19 @@ fn tri_facing(m: &mut Mesh, a: Vec3, b: Vec3, c: Vec3, out: Vec3, color: [f32; 4
 
 /// A box between two corners.
 pub fn aabb(m: &mut Mesh, lo: Vec3, hi: Vec3, c: [f32; 4]) {
+    aabb_by(m, lo, hi, &|_| c);
+}
+
+/// A box between two corners, each face the colour `color` gives for its outward normal
+/// (the bottom a shade darker).
+fn aabb_by(m: &mut Mesh, lo: Vec3, hi: Vec3, color: &dyn Fn(Vec3) -> [f32; 4]) {
     let p = |x: f32, y: f32, z: f32| Vec3::new(x, y, z);
-    m.quad([p(lo.x, hi.y, lo.z), p(lo.x, hi.y, hi.z), p(hi.x, hi.y, hi.z), p(hi.x, hi.y, lo.z)], c);
-    m.quad([p(hi.x, lo.y, lo.z), p(hi.x, lo.y, hi.z), p(lo.x, lo.y, hi.z), p(lo.x, lo.y, lo.z)], shade(c, 0.7));
-    m.quad([p(lo.x, hi.y, hi.z), p(lo.x, lo.y, hi.z), p(hi.x, lo.y, hi.z), p(hi.x, hi.y, hi.z)], c);
-    m.quad([p(hi.x, hi.y, lo.z), p(hi.x, lo.y, lo.z), p(lo.x, lo.y, lo.z), p(lo.x, hi.y, lo.z)], c);
-    m.quad([p(hi.x, hi.y, hi.z), p(hi.x, lo.y, hi.z), p(hi.x, lo.y, lo.z), p(hi.x, hi.y, lo.z)], c);
-    m.quad([p(lo.x, hi.y, lo.z), p(lo.x, lo.y, lo.z), p(lo.x, lo.y, hi.z), p(lo.x, hi.y, hi.z)], c);
+    m.quad([p(lo.x, hi.y, lo.z), p(lo.x, hi.y, hi.z), p(hi.x, hi.y, hi.z), p(hi.x, hi.y, lo.z)], color(Vec3::Y));
+    m.quad([p(hi.x, lo.y, lo.z), p(hi.x, lo.y, hi.z), p(lo.x, lo.y, hi.z), p(lo.x, lo.y, lo.z)], shade(color(Vec3::NEG_Y), 0.7));
+    m.quad([p(lo.x, hi.y, hi.z), p(lo.x, lo.y, hi.z), p(hi.x, lo.y, hi.z), p(hi.x, hi.y, hi.z)], color(Vec3::Z));
+    m.quad([p(hi.x, hi.y, lo.z), p(hi.x, lo.y, lo.z), p(lo.x, lo.y, lo.z), p(lo.x, hi.y, lo.z)], color(Vec3::NEG_Z));
+    m.quad([p(hi.x, hi.y, hi.z), p(hi.x, lo.y, hi.z), p(hi.x, lo.y, lo.z), p(hi.x, hi.y, lo.z)], color(Vec3::X));
+    m.quad([p(lo.x, hi.y, lo.z), p(lo.x, lo.y, lo.z), p(lo.x, lo.y, hi.z), p(lo.x, hi.y, hi.z)], color(Vec3::NEG_X));
 }
 
 /// A wall line: which side it faces, where it is, and how to go from (along, height) to
@@ -84,28 +92,33 @@ impl Line<'_> {
         }
     }
 
-    /// A box of wall from a0 to a1 along, y0 to y1 up.
-    fn piece(&self, m: &mut Mesh, a0: f32, a1: f32, y0: f32, y1: f32, c: [f32; 4]) {
+    /// A box of wall from a0 to a1 along, y0 to y1 up: its inside face in `inside`, the rest
+    /// in `outside`.
+    #[allow(clippy::too_many_arguments)]
+    fn piece(&self, m: &mut Mesh, a0: f32, a1: f32, y0: f32, y1: f32, outside: [f32; 4], inside: [f32; 4]) {
         let (p, q) = (self.point(a0, y0, 0.0), self.point(a1, y1, WALL));
-        aabb(m, p.min(q), p.max(q), c);
+        let out = self.out();
+        aabb_by(m, p.min(q), p.max(q), &|n: Vec3| if n.dot(out) < -0.5 { inside } else { outside });
     }
 
-    /// A flat rectangle on the wall's outside face, a hair out.
-    fn face(&self, m: &mut Mesh, a0: f32, a1: f32, y0: f32, y1: f32, c: [f32; 4]) {
-        let e = -0.004;
-        quad_facing(m, [self.point(a0, y1, e), self.point(a0, y0, e), self.point(a1, y0, e), self.point(a1, y1, e)], self.out(), c);
+    /// A flat rectangle on the wall's outside face, a hair out (`inner`: on its inside face,
+    /// a hair in).
+    #[allow(clippy::too_many_arguments)]
+    fn face(&self, m: &mut Mesh, a0: f32, a1: f32, y0: f32, y1: f32, c: [f32; 4], inner: bool) {
+        let (e, facing) = if inner { (WALL + 0.004, -self.out()) } else { (-0.004, self.out()) };
+        quad_facing(m, [self.point(a0, y1, e), self.point(a0, y0, e), self.point(a1, y0, e), self.point(a1, y1, e)], facing, c);
     }
 }
 
-/// The outside of a piece of wall, in the wall's pattern; (a0, a1) along, (v0, v1) from
-/// the floor at `floor_y`. Patterns line up from piece to piece (they're laid from fixed
-/// points).
+/// One face of a piece of wall (the outside, or with `inner` the inside), in the wall's
+/// pattern; (a0, a1) along, (v0, v1) from the floor at `floor_y`. Patterns line up from piece
+/// to piece (they're laid from fixed points).
 #[allow(clippy::too_many_arguments)]
-fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4], a0: f32, a1: f32, v0: f32, v1: f32, floor_y: f32, level_height: f32) {
+fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4], a0: f32, a1: f32, v0: f32, v1: f32, floor_y: f32, level_height: f32, inner: bool) {
     let tile = |m: &mut Mesh, b0: f32, b1: f32, w0: f32, w1: f32, c: [f32; 4]| {
         let (b0, b1, w0, w1) = (b0.max(a0), b1.min(a1), w0.max(v0), w1.min(v1));
         if b1 - b0 > 0.02 && w1 - w0 > 0.02 {
-            line.face(m, b0, b1, floor_y + w0, floor_y + w1, c);
+            line.face(m, b0, b1, floor_y + w0, floor_y + w1, c, inner);
         }
     };
     let rows = |h: f32| ((v0 / h).floor() as i32, (v1 / h).ceil() as i32);
@@ -214,11 +227,12 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     let lh = level_height;
     let base = b.level as f32 * lh;
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
-    // the walls' looks: the building's first, then every other style a segment has
+    // the walls' looks: the building's first, then every other style a face has
     let mut looks = vec![(b.wall.clone(), look_of(content, &b.wall))];
-    for w in b.floors.iter().flat_map(|f| &f.walls) {
-        if !looks.iter().any(|(id, _)| *id == w.wall) {
-            looks.push((w.wall.clone(), look_of(content, &w.wall)));
+    let others = std::iter::once(&b.inner_wall).chain(b.floors.iter().flat_map(|f| f.walls.iter().chain(&f.inner)).map(|w| &w.wall));
+    for id in others.filter(|id| !id.is_empty()) {
+        if !looks.iter().any(|(l, _)| l == id) {
+            looks.push((id.clone(), look_of(content, id)));
         }
     }
     let look_index = |id: &str| looks.iter().position(|(l, _)| l == id).unwrap_or(0);
@@ -253,36 +267,30 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             }
         }
     };
-    // a railing along a hole's edges, where the floor goes on (not where another hole or the
-    // stairs' opening is, nor along the outside wall): a rail on top, one low, balusters
-    let railing = |m: &mut Mesh, open: &[(i32, i32)], also_open: &[(i32, i32)], y: f32, color: [f32; 4]| {
-        for &(x, z) in open {
-            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                let n = (x + dx, z + dz);
-                if open.contains(&n) || also_open.contains(&n) || !b.has(n.0, n.1) {
-                    continue;
-                }
-                let (cx, cz) = (ox + x as f32, oz + z as f32);
-                let (a, c) = match (dx, dz) {
-                    (1, 0) => (Vec3::new(cx + 1.0, y, cz), Vec3::new(cx + 1.0, y, cz + 1.0)),
-                    (-1, 0) => (Vec3::new(cx, y, cz), Vec3::new(cx, y, cz + 1.0)),
-                    (0, 1) => (Vec3::new(cx, y, cz + 1.0), Vec3::new(cx + 1.0, y, cz + 1.0)),
-                    _ => (Vec3::new(cx, y, cz), Vec3::new(cx + 1.0, y, cz)),
-                };
-                // thick across the edge only; along it the rails end a hair inside the edge's
-                // ends (inside the outside wall there, never through it nor flush with its face)
-                let t = if dx != 0 { Vec3::new(0.035, 0.0, 0.0) } else { Vec3::new(0.0, 0.0, 0.035) };
-                let inset = (c - a).normalize() * 0.01;
-                let (a, c) = (a + inset, c - inset);
-                aabb(m, a.min(c) - t + Vec3::Y * (RAIL - 0.07), a.max(c) + t + Vec3::Y * RAIL, color);
-                aabb(m, a.min(c) - t + Vec3::Y * 0.1, a.max(c) + t + Vec3::Y * 0.15, color);
-                for k in 0..4 {
-                    let p = a + (c - a) * (0.125 + 0.25 * k as f32);
-                    aabb(m, p - Vec3::new(0.022, 0.0, 0.022), p + Vec3::new(0.022, RAIL - 0.07, 0.022), color);
-                }
+    // a plain railing along edges whose style has no pieces: a rail on top, one low,
+    // balusters (thick across the edge only; along it the rails end a hair inside the edge's
+    // ends: inside the outside wall there, never through it nor flush with its face)
+    let plain_railing = |m: &mut Mesh, edges: &[railings::Edge], y: f32, color: [f32; 4]| {
+        for e in edges {
+            let (a, c) = (Vec3::new(ox + e.a.0 as f32, y, oz + e.a.1 as f32), Vec3::new(ox + e.b.0 as f32, y, oz + e.b.1 as f32));
+            let t = if e.a.1 == e.b.1 { Vec3::new(0.0, 0.0, 0.035) } else { Vec3::new(0.035, 0.0, 0.0) };
+            let inset = (c - a).normalize() * 0.01;
+            let (a, c) = (a + inset, c - inset);
+            aabb(m, a.min(c) - t + Vec3::Y * (RAIL - 0.07), a.max(c) + t + Vec3::Y * RAIL, color);
+            aabb(m, a.min(c) - t + Vec3::Y * 0.1, a.max(c) + t + Vec3::Y * 0.15, color);
+            for k in 0..4 {
+                let p = a + (c - a) * (0.125 + 0.25 * k as f32);
+                aabb(m, p - Vec3::new(0.022, 0.0, 0.022), p + Vec3::new(0.022, RAIL - 0.07, 0.022), color);
             }
         }
     };
+    // a point on the outline: railings that end there end against the outside wall
+    let at_wall = |(px, pz): (i32, i32)| {
+        let inside = [(px - 1, pz - 1), (px, pz - 1), (px - 1, pz), (px, pz)].iter().filter(|c| b.has(c.0, c.1)).count();
+        inside > 0 && inside < 4
+    };
+    // railing pieces' models, made once
+    let mut pieces: Vec<(String, Option<Scene>)> = vec![];
     // the models' textured parts (the plain ones go into m)
     let mut textured = Scene::default();
     let put = |m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4| {
@@ -325,7 +333,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
         // the floor, each cell its flooring; open where stairs come up from below, and over
         // its holes (never the ground floor's), a railing round those
         let holes = b.stairwells(f, &stairs);
-        let open: Vec<(i32, i32)> = if f > 0 { floor.holes.iter().map(|h| (h[0], h[1])).filter(|c| !holes.contains(c)).collect() } else { vec![] };
+        let open: Vec<(i32, i32)> = if f > 0 { floor.holes.iter().map(|h| (h.cell[0], h.cell[1])).filter(|c| !holes.contains(c)).collect() } else { vec![] };
         let mut tiles: Vec<(&str, Option<Scene>)> = vec![];
         for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c) && !open.contains(c)) {
             let id = floor.tile_at(x, z);
@@ -341,9 +349,42 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                 put(&mut m, &mut textured, tile, Mat4::from_translation(at));
             }
         }
+        // the holes' railings: along their edges where the floor goes on (not where another
+        // hole or the stairs' opening is, nor along the outside wall), of each hole's style
+        let mut edges = vec![];
+        for h in floor.holes.iter().filter(|h| f > 0 && !h.railing.is_empty()) {
+            let (x, z) = (h.cell[0], h.cell[1]);
+            for (dx, dz) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
+                let n = (x + dx, z + dz);
+                if open.contains(&n) || holes.contains(&n) || !b.has(n.0, n.1) || holes.contains(&(x, z)) {
+                    continue;
+                }
+                let (a, c) = match (dx, dz) {
+                    (1, 0) => ((x + 1, z), (x + 1, z + 1)),
+                    (-1, 0) => ((x, z), (x, z + 1)),
+                    (0, 1) => ((x, z + 1), (x + 1, z + 1)),
+                    _ => ((x, z), (x + 1, z)),
+                };
+                edges.push(railings::Edge { a, b: c, style: h.railing.clone() });
+            }
+        }
+        let seed = b.id.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3)) ^ (f as u64).wrapping_mul(0x9e37_79b9);
+        let (puts, plain) = railings::assemble(&edges, content, &at_wall, WALL, seed);
+        for r in &puts {
+            let k = match pieces.iter().position(|(id, _)| *id == r.prop) {
+                Some(k) => k,
+                None => {
+                    pieces.push((r.prop.clone(), model(&r.prop)));
+                    pieces.len() - 1
+                }
+            };
+            if let Some(scene) = &pieces[k].1 {
+                put(&mut m, &mut textured, scene, placement(Vec3::new(ox + r.at.x, y0 + r.at.y, oz + r.at.z), r.turn, 1.0));
+            }
+        }
         let from = m.vertices.len();
         rim(&mut m, &holes, y0, trim);
-        railing(&mut m, &open, &holes, y0, trim);
+        plain_railing(&mut m, &plain, y0, trim);
         toon_from(&mut m, from, wall_toon);
         // the walls, with their doors and windows
         for &(side, l, p0, p1) in &runs {
@@ -387,12 +428,13 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
             }
             holes.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut cur = start;
-            // each segment's style (the floor's own for it, else the building's), and where
-            // along the run it changes
-            let styles: Vec<usize> = (p0..=p1)
+            // each segment's styles, outside (the floor's own for it, else the building's) and
+            // inside (its own, else the building's inside one, else as its outside), and where
+            // along the run either changes
+            let styles: Vec<(usize, usize)> = (p0..=p1)
                 .map(|k| {
                     let (x, z) = cell_at(k);
-                    look_index(floor.wall_at(x, z, side, &b.wall))
+                    (look_index(floor.wall_at(x, z, side, &b.wall)), look_index(b.wall_inside(f, x, z, side)))
                 })
                 .collect();
             let breaks: Vec<f32> = (p0 + 1..=p1).filter(|&k| styles[(k - p0) as usize] != styles[(k - 1 - p0) as usize]).map(|k| k as f32).collect();
@@ -405,11 +447,15 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                 cuts.push(a1);
                 for w in cuts.windows(2) {
                     let k = ((w[0] + 0.001).floor() as i32).clamp(p0, p1);
-                    let look = &looks[styles[(k - p0) as usize]].1;
+                    let (outer, inner) = styles[(k - p0) as usize];
+                    let (outer, inner) = (&looks[outer].1, &looks[inner].1);
                     let from = m.vertices.len();
-                    line.piece(m, origin + w[0], origin + w[1], y0 + v0, y0 + v1, look.body);
-                    pattern(m, line, &look.kind, look.main, look.trim, origin + w[0], origin + w[1], v0, v1, y0, lh);
-                    toon_from(m, from, look.toon);
+                    line.piece(m, origin + w[0], origin + w[1], y0 + v0, y0 + v1, outer.body, inner.body);
+                    pattern(m, line, &outer.kind, outer.main, outer.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, false);
+                    toon_from(m, from, outer.toon);
+                    let from = m.vertices.len();
+                    pattern(m, line, &inner.kind, inner.main, inner.trim, origin + w[0], origin + w[1], v0, v1, y0, lh, true);
+                    toon_from(m, from, inner.toon);
                 }
             };
             for &(h0, h1, bottom, top) in &holes {
@@ -483,7 +529,7 @@ fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4],
             let (p, q) = segment_ends(x, z, side);
             let line = Line { side, at: if matches!(side, "n" | "s") { oz + p[1] as f32 } else { ox + p[0] as f32 } };
             let (a0, a1) = if matches!(side, "n" | "s") { (ox + p[0] as f32, ox + q[0] as f32) } else { (oz + p[1] as f32, oz + q[1] as f32) };
-            line.piece(m, a0, a1, top, top + 0.42, trim);
+            line.piece(m, a0, a1, top, top + 0.42, trim, trim);
         }
         return;
     }
@@ -626,7 +672,7 @@ mod tests {
         let baluster = |m: &Mesh, x: f32, z: f32| m.vertices.iter().any(|v| (v.pos[0] - x).abs() < 0.03 && (v.pos[2] - z).abs() < 0.03 && v.pos[1] > 2.5 && v.pos[1] < 2.0 + RAIL);
         let before = drawn(&b);
         assert!(tiles_up(&before) > 0 && rail_top(&before, 2.0) == 0);
-        b.floors[1].set_hole(1, 1, true);
+        b.floors[1].set_hole(1, 1, Some("wood"));
         let after = drawn(&b);
         assert_eq!(tiles_up(&after) * 6, tiles_up(&before) * 5, "five of its six cells floored");
         assert!(rail_top(&after, 2.0) > 0, "a railing round it");
@@ -652,5 +698,33 @@ mod tests {
         // on the floor above too: that floor's segment
         b.floors[1].set_wall(0, 0, "n", "bricks", "plaster");
         assert!(bricks(&drawn(&b)).iter().any(|p| p[1] > 2.01));
+    }
+
+    #[test]
+    fn a_hole_without_railing_has_none() {
+        let mut b = house();
+        b.floors[1].set_hole(1, 1, Some(""));
+        let m = drawn(&b);
+        assert!(!m.vertices.iter().any(|v| (v.pos[1] - (2.0 + RAIL)).abs() < 0.01), "no rail at its height");
+    }
+
+    #[test]
+    fn inside_faces_in_their_own_style() {
+        // the bricks' joints (trim) colour, on a face: outside a hair out of the north wall
+        // (z < 0), inside a hair in (z past the wall's thickness)
+        let face = |m: &Mesh, inside: bool| of(m, "#b5523b").iter().chain(of(m, "#d8cbb8").iter()).filter(|p| p[1] < 2.0 && p[0] < 1.0).any(|p| if inside { p[2] > WALL } else { p[2] < 0.0 });
+        let mut b = house();
+        // by default an inside face is as its outside: bricks both sides
+        b.floors[0].set_wall(0, 0, "n", "bricks", "plaster");
+        let m = drawn(&b);
+        assert!(face(&m, false) && face(&m, true));
+        // its own: plaster inside, bricks kept outside; the outside changed: the inside kept
+        b.floors[0].set_inner(0, 0, "n", "plaster");
+        let m = drawn(&b);
+        assert!(face(&m, false) && !face(&m, true));
+        b.floors[0].set_inner(0, 0, "n", "bricks");
+        b.floors[0].set_wall(0, 0, "n", "plaster", "plaster");
+        let m = drawn(&b);
+        assert!(!face(&m, false) && face(&m, true), "bricks inside only");
     }
 }

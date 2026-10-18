@@ -409,6 +409,26 @@ impl Content {
     }
 
     /// Every reference that points nowhere, and other mistakes a review should catch.
+    /// The railing styles there are: those with a span among the railing props.
+    pub fn railing_styles(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.props.iter().filter_map(|p| p.railing.as_ref().filter(|r| r.is_span()).map(|r| r.style.clone())).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// A building's holes with railings of styles there are no pieces for.
+    fn railing_problems(&self, b: &Building) -> Vec<String> {
+        let styles = self.railing_styles();
+        let mut out = vec![];
+        for (f, floor) in b.floors.iter().enumerate() {
+            for h in floor.holes.iter().filter(|h| !h.railing.is_empty() && !styles.contains(&h.railing)) {
+                out.push(format!("building \"{}\": floor {}: a hole's railing \"{}\", no railing style of that name (props of category \"railing\")", b.id, f + 1, h.railing));
+            }
+        }
+        out
+    }
+
     pub fn validate(&self) -> Vec<String> {
         let mut out = self.problems.clone();
         let mut need = |ok: bool, what: String| {
@@ -540,6 +560,11 @@ impl Content {
             }
             if let Some(s) = &p.sound {
                 out.extend(s.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
+            }
+            match (&p.railing, p.category == "railing") {
+                (Some(r), _) => out.extend(r.problems().into_iter().map(|e| format!("props/{}: {e}", p.id))),
+                (None, true) => out.push(format!("props/{}: a railing piece says what it is (\"railing\": its style, span or post)", p.id)),
+                (None, false) => {}
             }
         }
         let world = self.world();
@@ -678,6 +703,7 @@ impl Content {
         let mut taken: BTreeMap<(i32, i32), String> = BTreeMap::new();
         for b in &m.buildings {
             out.extend(b.problems(&prop).into_iter().map(|p| format!("{at}: {p}")));
+            out.extend(self.railing_problems(b).into_iter().map(|p| format!("{at}: {p}")));
             if m.buildings.iter().filter(|o| o.id == b.id).count() > 1 {
                 out.push(format!("{at}: two buildings with the id \"{}\"", b.id));
             }
@@ -818,6 +844,7 @@ impl Content {
         let prop = |id: &str| self.props.get(id).map(|p| (p.category.clone(), p.footprint));
         for b in &t.buildings {
             out.extend(b.problems(&prop).into_iter().map(|p| format!("{at}: {p}")));
+            out.extend(self.railing_problems(b).into_iter().map(|p| format!("{at}: {p}")));
             if t.buildings.iter().filter(|o| o.id == b.id).count() > 1 {
                 out.push(format!("{at}: two buildings with the id \"{}\"", b.id));
             }

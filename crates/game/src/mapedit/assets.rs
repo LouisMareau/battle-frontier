@@ -22,9 +22,9 @@ use super::{badge, hint, mark, requests, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
-const CATEGORIES: [&str; 18] = [
+const CATEGORIES: [&str; 19] = [
     "decoration", "furniture", "wall_decoration", "stairs", "flora", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor", "roof",
-    "sign", "light", "other",
+    "railing", "sign", "light", "other",
 ];
 
 /// "#rrggbb" as bytes (magenta when it isn't one).
@@ -557,6 +557,57 @@ impl MapEditor {
                 after.toon = !after.toon;
             }
         });
+        // a railing's piece: its style, a span or a post, what its ends say or what it takes
+        // and where it stands, how likely it's picked (`world::railings` puts them together)
+        if after.category == "railing" {
+            let r = after.railing.get_or_insert_with(|| content::RailingPiece { style: content::DEFAULT_RAILING.into(), ..Default::default() });
+            section(ui, "Railing piece");
+            ui.horizontal(|ui| {
+                ui.label("Style");
+                ui.add(egui::TextEdit::singleline(&mut r.style).desired_width(110.0)).on_hover_text("The pieces of one style are put together into a railing");
+            });
+            ui.horizontal(|ui| {
+                ui.radio_value(&mut r.part, "span".to_string(), "Span").on_hover_text("Along one cell edge: modelled from x -0.5 to 0.5, z across");
+                ui.radio_value(&mut r.part, "post".to_string(), "Post").on_hover_text("On a point where spans meet or end: at the origin, +x along a span");
+            });
+            let words = |ui: &mut egui::Ui, list: &mut Vec<String>, about: &str| {
+                let mut text = list.join(", ");
+                if ui.add(egui::TextEdit::singleline(&mut text).desired_width(140.0)).on_hover_text(about).changed() {
+                    *list = text.split(',').map(|w| w.trim().to_string()).filter(|w| !w.is_empty()).collect();
+                }
+            };
+            if r.part == "span" {
+                if r.ends.len() != 2 {
+                    r.ends = vec!["rail".into(), "rail".into()];
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Ends");
+                    ui.add(egui::TextEdit::singleline(&mut r.ends[0]).desired_width(60.0)).on_hover_text("What its -x end needs of the point there (a word a post takes: \"rail\", \"post\"...)");
+                    ui.add(egui::TextEdit::singleline(&mut r.ends[1]).desired_width(60.0)).on_hover_text("What its +x end needs");
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Takes");
+                    words(ui, &mut r.takes, "The span ends it stands between, comma-separated");
+                });
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Stands at");
+                    for j in content::JUNCTIONS {
+                        let mut on = r.at.iter().any(|a| a == j);
+                        if ui.checkbox(&mut on, j).changed() {
+                            r.at.retain(|a| a != j);
+                            if on {
+                                r.at.push(j.to_string());
+                            }
+                        }
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                ui.label("Weight");
+                ui.add(egui::DragValue::new(&mut r.weight).speed(0.1).range(0.1..=100.0)).on_hover_text("How likely it's picked among the pieces that fit");
+            });
+        }
         // its light: the window
         ui.horizontal(|ui| {
             let light = ui.button(if p.light.is_some() { "Light…" } else { "Give it a light…" });

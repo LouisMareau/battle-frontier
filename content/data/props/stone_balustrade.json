@@ -1,0 +1,20 @@
+{
+  "id": "stone_balustrade",
+  "name": "Stone balustrade",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.1, 0.2], "at": [0.0, 0.0, 0.0], "color": "#b7ae9c" },
+    { "shape": "box", "size": [1.0, 0.1, 0.22], "at": [0.0, 0.8, 0.0], "color": "#cfc8b8" },
+    { "shape": "cylinder", "size": [0.11, 0.7, 0.11], "at": [-0.33, 0.1, 0.0], "color": "#ddd6c6" },
+    { "shape": "cylinder", "size": [0.11, 0.7, 0.11], "at": [0.0, 0.1, 0.0], "color": "#ddd6c6" },
+    { "shape": "cylinder", "size": [0.11, 0.7, 0.11], "at": [0.33, 0.1, 0.0], "color": "#ddd6c6" }
+  ],
+  "railing": {
+    "style": "stone",
+    "part": "span",
+    "ends": ["rail", "rail"],
+    "weight": 1.0
+  }
+}

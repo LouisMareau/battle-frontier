@@ -1,0 +1,21 @@
+{
+  "id": "wood_railing",
+  "name": "Wood railing",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.07, 0.07], "at": [0.0, 0.83, 0.0], "color": "#9c7149" },
+    { "shape": "box", "size": [1.0, 0.05, 0.07], "at": [0.0, 0.1, 0.0], "color": "#9c7149" },
+    { "shape": "box", "size": [0.045, 0.68, 0.045], "at": [-0.375, 0.15, 0.0], "color": "#c49867" },
+    { "shape": "box", "size": [0.045, 0.68, 0.045], "at": [-0.125, 0.15, 0.0], "color": "#c49867" },
+    { "shape": "box", "size": [0.045, 0.68, 0.045], "at": [0.125, 0.15, 0.0], "color": "#c49867" },
+    { "shape": "box", "size": [0.045, 0.68, 0.045], "at": [0.375, 0.15, 0.0], "color": "#c49867" }
+  ],
+  "railing": {
+    "style": "wood",
+    "part": "span",
+    "ends": ["rail", "rail"],
+    "weight": 3.0
+  }
+}

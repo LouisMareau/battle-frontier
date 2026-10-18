@@ -1,0 +1,19 @@
+{
+  "id": "wood_railing_post",
+  "name": "Wood railing post",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.97,
+  "parts": [
+    { "shape": "box", "size": [0.11, 0.92, 0.11], "at": [0.0, 0.0, 0.0], "color": "#7d5636" },
+    { "shape": "box", "size": [0.15, 0.05, 0.15], "at": [0.0, 0.92, 0.0], "color": "#9c7149" }
+  ],
+  "railing": {
+    "style": "wood",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail", "post"],
+    "at": ["end", "wall", "line", "corner", "tee", "cross"],
+    "weight": 1.0
+  }
+}

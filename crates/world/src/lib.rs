@@ -11,6 +11,7 @@ pub mod gltf_in;
 pub mod gltf_out;
 pub mod lights;
 pub mod mesh;
+pub mod railings;
 pub mod sounds;
 pub mod spawn;
 pub mod templates;

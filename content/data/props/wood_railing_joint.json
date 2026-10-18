@@ -1,0 +1,18 @@
+{
+  "id": "wood_railing_joint",
+  "name": "Wood railing joint",
+  "category": "railing",
+  "footprint": [1, 1],
+  "height": 0.9,
+  "parts": [
+    { "shape": "box", "size": [0.02, 0.075, 0.075], "at": [0.0, 0.828, 0.0], "color": "#7d5636" }
+  ],
+  "railing": {
+    "style": "wood",
+    "part": "post",
+    "ends": ["rail", "rail"],
+    "takes": ["rail"],
+    "at": ["line"],
+    "weight": 2.0
+  }
+}
