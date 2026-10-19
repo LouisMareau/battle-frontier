@@ -12,6 +12,7 @@ pub mod gltf_out;
 pub mod lights;
 pub mod mesh;
 pub mod railings;
+pub mod ramps;
 pub mod sounds;
 pub mod spawn;
 pub mod templates;
@@ -19,7 +20,7 @@ pub mod trees;
 
 use std::collections::BTreeMap;
 
-use content::{side_step, Actor, Ambience, Building, Cells, Chunk, Content, Event, Map, Placed, SpawnLink, TreeArea, Zone};
+use content::{side_step, Actor, Ambience, Building, Cells, Chunk, Content, Event, Map, Placed, Ramp, SpawnLink, TreeArea, Zone};
 
 /// A map, decoded. Cells are row by row, north first: index = z * width + x.
 #[derive(Clone, Debug)]
@@ -38,6 +39,8 @@ pub struct WorldMap {
     pub tree_areas: Vec<TreeArea>,
     pub props: Vec<Placed>,
     pub buildings: Vec<Building>,
+    /// rows of cells along the top of a step, going down a level (`ramps`)
+    pub ramps: Vec<Ramp>,
     /// 0: none, else 1 + the index in `zones`
     pub zone: Vec<u8>,
     pub zones: Vec<Zone>,
@@ -69,6 +72,7 @@ impl WorldMap {
             tree_areas: vec![],
             props: vec![],
             buildings: vec![],
+            ramps: vec![],
             zone: vec![0; width * height],
             zones: vec![],
             links: vec![],
@@ -101,6 +105,7 @@ impl WorldMap {
             tree_areas: m.tree_areas.clone(),
             props: m.props.clone(),
             buildings: m.buildings.clone(),
+            ramps: m.ramps.clone(),
             zone: cells.zone,
             zones: m.zones.clone(),
             links: m.links.clone(),
@@ -137,6 +142,7 @@ impl WorldMap {
             tree_areas: self.tree_areas.clone(),
             props: self.props.clone(),
             buildings: self.buildings.clone(),
+            ramps: self.ramps.clone(),
             zones: self.zones.clone(),
             links: self.links.clone(),
             actors: self.actors.clone(),
@@ -204,6 +210,8 @@ impl WorldMap {
             }
         }
         (self.width, self.height, self.terrain, self.level, self.area, self.zone) = (width, height, terrain, level, area, zone);
+        // a ramp the map no longer holds goes
+        self.ramps.retain(|r| r.at[0] + r.size[0] as i32 <= width as i32 && r.at[1] + r.size[1] as i32 <= height as i32);
         self.props.retain(|p| p.at[0] < width as f64 && p.at[1] < height as f64);
     }
 
@@ -327,10 +335,56 @@ impl WorldMap {
         out
     }
 
-    /// Can the player step from one cell to the next (same level, nothing in the way)?
+    /// Can the player step from one cell to the next (the ground lets them, nothing in the
+    /// way)?
     pub fn can_step(&self, blocked: &[bool], from: (i32, i32), to: (i32, i32)) -> bool {
         match (self.index(from.0, from.1), self.index(to.0, to.1)) {
-            (Some(a), Some(b)) => !blocked[b] && self.level[a] == self.level[b] && !self.wall_between(from, to, self.level[a]),
+            (Some(a), Some(b)) => !blocked[b] && self.ground_steps(from, to) && !self.wall_between(from, to, self.level[a]),
+            _ => false,
+        }
+    }
+
+    /// Where a placed prop stands: its place, on the ground of its level there (a ramp's
+    /// slope too).
+    pub fn prop_foot(&self, p: &Placed, level_height: f32) -> glam::Vec3 {
+        let pos = p.pos();
+        let (x, z) = (pos[0] as f32, pos[1] as f32);
+        glam::Vec3::new(x, self.ground_y(x, z, p.level, level_height), z)
+    }
+
+    /// The ramp a cell is on, if it's on one.
+    pub fn ramp_at(&self, x: i32, z: i32) -> Option<&Ramp> {
+        self.ramps.iter().find(|r| r.has(x, z))
+    }
+
+    /// The ground's height at a point (in cells) of a cell on `level`: the level's, or where a
+    /// ramp goes down from that level, the ramp's there.
+    pub fn ground_y(&self, px: f32, pz: f32, level: u8, level_height: f32) -> f32 {
+        let (x, z) = (px.floor() as i32, pz.floor() as i32);
+        let base = level as f32 * level_height;
+        match self.ramp_at(x, z) {
+            Some(r) if self.level_at(x, z) == Some(level) => ramps::height(r, base, level_height, px, pz),
+            _ => base,
+        }
+    }
+
+    /// How high a cell's ground is, in levels, halfway along its side towards (dx, dz): its
+    /// level, or on a ramp the ramp's (smooth) height there, a level down at its foot.
+    pub fn edge_level(&self, x: i32, z: i32, (dx, dz): (i32, i32)) -> Option<f32> {
+        let l = self.level_at(x, z)? as f32;
+        Some(match self.ramp_at(x, z) {
+            Some(r) => l - 1.0 + ramps::profile(r.along(x as f64 + 0.5 + dx as f64 * 0.5, z as f64 + 0.5 + dz as f64 * 0.5).0 as f32),
+            None => l,
+        })
+    }
+
+    /// Does the ground let one step from a cell to the next: level with it, or up and down a
+    /// ramp, from its foot to its top and along it (never off its sides, half a level from the
+    /// ground beside)?
+    pub fn ground_steps(&self, from: (i32, i32), to: (i32, i32)) -> bool {
+        let d = (to.0 - from.0, to.1 - from.1);
+        match (self.edge_level(from.0, from.1, d), self.edge_level(to.0, to.1, (-d.0, -d.1))) {
+            (Some(a), Some(b)) => (a - b).abs() < 0.5,
             _ => false,
         }
     }

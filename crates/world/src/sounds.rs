@@ -32,7 +32,7 @@ pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
     for (i, p) in map.props.iter().enumerate() {
         let Some((s, scalable)) = sound(&p.prop) else { continue };
         let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, format!("prop:{i}"), &p.prop, s, placement(Vec3::new(p.pos()[0] as f32, p.level as f32 * level_height, p.pos()[1] as f32), p.turn as f32, scale));
+        put(&mut out, format!("prop:{i}"), &p.prop, s, placement(map.prop_foot(p, level_height), p.turn as f32, scale));
     }
     for (bi, b) in map.buildings.iter().enumerate() {
         let base = b.level as f32 * level_height;

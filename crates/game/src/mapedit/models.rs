@@ -185,7 +185,7 @@ impl MapEditor {
                 continue;
             }
             let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-            let at = Vec3::new(pos[0] as f32, p.level as f32 * lh, pos[1] as f32);
+            let at = self.map.prop_foot(p, lh);
             let phase = (i as f32 * 0.37) % 1.0 * anim.map(|a| a.duration).unwrap_or(1.0).max(0.1);
             out.push(Animated { key: p.prop.clone(), model: placement(at, p.turn as f32, scale), joints: world::anim::pose(rig, anim, t + phase) });
         }

@@ -11,7 +11,7 @@ use content::{Content, Part, Prop};
 use glam::{Mat3, Mat4, Vec3};
 
 use crate::trees::{trees, Tree};
-use crate::{color, Rng, WorldMap};
+use crate::{color, ramps, Rng, WorldMap};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
@@ -386,7 +386,7 @@ fn hex_bytes(hex: &str) -> [u8; 4] {
     [(v >> 16) as u8, (v >> 8) as u8, v as u8, 255]
 }
 
-fn hash(x: i32, z: i32, k: i32) -> f32 {
+pub(crate) fn hash(x: i32, z: i32, k: i32) -> f32 {
     let mut h = (x as u32).wrapping_mul(374761393) ^ (z as u32).wrapping_mul(668265263) ^ (k as u32).wrapping_mul(2246822519);
     h = (h ^ (h >> 13)).wrapping_mul(1274126177);
     ((h ^ (h >> 16)) & 0xffff) as f32 / 65535.0
@@ -680,7 +680,7 @@ fn cell_top(m: &mut Mesh, fx: f32, fz: f32, y: f32, e: &Edges) {
 const RELIEF: f32 = 0.13;
 
 /// Smooth noise in space, 0 to 1: values on a lattice `scale` apart, eased between.
-fn noise3(p: Vec3, scale: f32, seed: i32) -> f32 {
+pub(crate) fn noise3(p: Vec3, scale: f32, seed: i32) -> f32 {
     let q = p / scale;
     let i = q.floor();
     let f = q - i;
@@ -706,11 +706,13 @@ fn face(m: &mut Mesh, points: &[(f32, f32, f32, f32)], rows: usize, out: Vec3, f
     let base = m.vertices.len() as u32;
     let last = points.len() - 1;
     for (ci, &(px, pz, top, foot)) in points.iter().enumerate() {
+        // (a low face, a ramp's wall near its foot, is only as lumpy as it's high)
+        let lumpy = ((top - foot) / 0.6).clamp(0.0, 1.0);
         for r in 0..=rows {
             let f = r as f32 / rows as f32;
             let p = Vec3::new(px, foot + (top - foot) * f, pz);
             let pinned = r == 0 || r == rows || (ci == 0 && !free[0]) || (ci == last && !free[1]);
-            let p = if pinned { p } else { p + out * relief(p) };
+            let p = if pinned { p } else { p + out * relief(p) * lumpy };
             let s = 0.72 + 0.28 * f;
             m.vertices.push(Vertex { pos: p.to_array(), normal: out.to_array(), uv, color: [s, s, s, 1.0], toon: 0.0, wind: [0; 4] });
         }
@@ -724,13 +726,74 @@ fn face(m: &mut Mesh, points: &[(f32, f32, f32, f32)], rows: usize, out: Vec3, f
     }
 }
 
+/// Where a ramp cell's grid runs across it (and its walls' points along its edges): every
+/// quarter, and where the cells next to it bend at their rims (so they meet without cracks).
+const RAMP_AT: [f32; 7] = [0.0, CHAMFER, 0.25, 0.5, 0.75, 1.0 - CHAMFER, 1.0];
+
+/// A ramp cell's top: a grid of quads on its ground (`at`: the height at a point of it), lit
+/// as it slopes there, its alpha the rock showing there (`rock`).
+fn ramp_top(m: &mut Mesh, fx: f32, fz: f32, rock: &dyn Fn(f32, f32) -> f32, at: &dyn Fn(f32, f32) -> f32) {
+    let uv = [fx + 0.5, fz + 0.5];
+    let base = m.vertices.len() as u32;
+    let e = 0.04;
+    for v in RAMP_AT {
+        for u in RAMP_AT {
+            let (px, pz) = (fx + u, fz + v);
+            let n = Vec3::new(at(px - e, pz) - at(px + e, pz), 2.0 * e, at(px, pz - e) - at(px, pz + e)).normalize();
+            m.vertices.push(Vertex { pos: [px, at(px, pz), pz], normal: n.to_array(), uv, color: [1.0, 1.0, 1.0, rock(px, pz)], toon: 0.0, wind: [0; 4] });
+        }
+    }
+    let row = RAMP_AT.len() as u32;
+    for j in 0..row - 1 {
+        for i in 0..row - 1 {
+            let a = base + j * row + i;
+            m.indices.extend_from_slice(&[a, a + row, a + row + 1, a, a + row + 1, a + 1]);
+        }
+    }
+}
+
+/// A wall down a run of points (x, z, its top, its foot), as a cliff face, unless it has no
+/// height anywhere.
+fn wall(m: &mut Mesh, points: &[(f32, f32, f32, f32)], out: Vec3, uv: [f32; 2]) {
+    let high = points.iter().map(|&(_, _, top, foot)| top - foot).fold(0.0f32, f32::max);
+    if high > 0.005 {
+        face(m, points, (high / 0.5).ceil().max(1.0) as usize, out, [false, false], uv);
+    }
+}
+
+/// Tufts of tall grass on a cell, swaying from their feet: each standing where `foot` says
+/// (its height at a point of the cell, from its north-west corner; none where it's cut away).
+fn tall_grass(grass: &mut Mesh, t: &content::Terrain, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> Option<f32>) {
+    let (c1, c2) = (color(&t.color), color(&t.color2));
+    let (fx, fz) = (x as f32, z as f32);
+    for k in 0..9 {
+        let (u, v) = (0.12 + 0.76 * hash(x, z, k * 3), 0.12 + 0.76 * hash(x, z, k * 3 + 1));
+        let Some(y) = foot(u, v) else { continue };
+        let tall = 0.42 + 0.22 * hash(x, z, k * 3 + 2);
+        let colour = if k % 3 == 0 { c2 } else { c1 };
+        let mut blade = Mesh::default();
+        shape_round(&mut blade, Vec3::new(0.2, tall, 0.2), colour, 0.0, 4);
+        // swaying from its foot, each tuft in its own time
+        let phase = hash(x, z, k * 3 + 7);
+        for b in blade.vertices.iter_mut() {
+            let up = (b.pos[1] / tall).clamp(0.0, 1.0);
+            b.wind = wind_of(up.powf(1.5), 0.3 * up, phase, b.pos[1]);
+        }
+        grass.append(&blade, placement(Vec3::new(fx + u, y, fz + v), hash(x, z, k) * 90.0, 1.0));
+    }
+}
+
 /// The cell tops, the cliff faces and the tall grass of a region's cells. Every edge of a
 /// step in the ground is bevelled: the top edge (the higher cell's rim goes down), the foot
 /// (the lower cell's rim comes up, unless it's water), and an outer corner standing on one
 /// level all round (cut off down its height, the ground below filling the cut). The faces
 /// run from the higher cell's rim down to the lower's, lumpy; they look at the neighbours
 /// (two cells out), so the whole grid is read, and past the edge `beyond` (the map next to
-/// this one: on its level, no face at all).
+/// this one: on its level, no face at all). A ramp's cells follow its ground (`ramps`: down a
+/// level from their own), with walls on their sides where the ground next to them is lower,
+/// or on their level (the step's top either side, down to the ramp's slope); the ground next
+/// to a ramp on its level, or a level down, meets it unbevelled (its top, its foot, the walls
+/// between), and higher ground has its cliff down onto it.
 pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond) -> (Mesh, Mesh, Mesh) {
     let mut tops = Mesh::default();
     let mut cliffs = Mesh::default();
@@ -743,25 +806,81 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
         Some(id) => content.terrains.get(id).map(|t| t.walk == "water").unwrap_or(false),
         None => beyond.terrain(x, z).and_then(|t| water.get(t as usize).copied()).unwrap_or(false),
     };
+    // the ramps here and round about (the cells next to them see them)
+    let near: Vec<&content::Ramp> = map
+        .ramps
+        .iter()
+        .filter(|r| r.at[0] - 3 < region[2] && r.at[1] - 3 < region[3] && r.at[0] + r.size[0] as i32 + 3 > region[0] && r.at[1] + r.size[1] as i32 + 3 > region[1])
+        .collect();
+    let ramp = |x: i32, z: i32| near.iter().copied().find(|r| r.has(x, z) && map.inside(x, z));
+    // the levels around a cell on `own`, as it sees them: a ramp's cell is level with it
+    // when it's on the ramp's level or a level down (the ramp's walls fill in between)
+    let seen = |own: Option<u8>| {
+        move |x: i32, z: i32| -> Option<u8> {
+            let l = level(x, z);
+            match (own, l) {
+                (Some(o), Some(r)) if (o == r || o + 1 == r) && ramp(x, z).is_some() => Some(o),
+                _ => l,
+            }
+        }
+    };
     // a cell's top at a point on it (world x, z); off the map, the skirt's foot
     let surface = |x: i32, z: i32, px: f32, pz: f32| match level(x, z) {
-        Some(l) => l as f32 * level_height + Edges::of(&level, &flat, x, z).height(px - x as f32, pz - z as f32),
+        Some(l) => match ramp(x, z) {
+            Some(r) => ramps::height(r, l as f32 * level_height, level_height, px, pz),
+            None => l as f32 * level_height + Edges::of(&seen(Some(l)), &flat, x, z).height(px - x as f32, pz - z as f32),
+        },
         None => SKIRT,
     };
     for (x, z) in region_cells(map, region) {
-        let y = level(x, z).unwrap_or(0) as f32 * level_height;
+        let own = level(x, z);
+        let y = own.unwrap_or(0) as f32 * level_height;
         let (fx, fz) = (x as f32, z as f32);
-        let e = Edges::of(&level, &flat, x, z);
-        cell_top(&mut tops, fx, fz, y, &e);
         let uv = [fx + 0.5, fz + 0.5];
-        // a face on each side that steps down, seen from outside, sampled where the rims
-        // either side bend; it stops short of a rounded corner
+        // each side's run along the cell's edge, seen from outside, and its corners
         let sides = [
             ([(fx + 1.0, fz), (fx, fz)], [1, 0]),
             ([(fx, fz + 1.0), (fx + 1.0, fz + 1.0)], [2, 3]),
             ([(fx, fz), (fx, fz + 1.0)], [0, 2]),
             ([(fx + 1.0, fz + 1.0), (fx + 1.0, fz)], [3, 1]),
         ];
+        if let Some(r) = ramp(x, z) {
+            let at = |px: f32, pz: f32| ramps::height(r, y, level_height, px, pz);
+            ramp_top(&mut tops, fx, fz, &|px, pz| ramps::rock(r.along(px as f64, pz as f64).0 as f32), &at);
+            for (k, ([(ax, az), (bx, bz)], _)) in sides.into_iter().enumerate() {
+                let (dx, dz) = SIDES[k];
+                let (nx, nz) = (x + dx, z + dz);
+                let next = ramp(nx, nz);
+                if next.is_some_and(|o| std::ptr::eq(o, r)) {
+                    continue;
+                }
+                let points: Vec<(f32, f32, f32, f32)> = RAMP_AT
+                    .iter()
+                    .map(|&t| {
+                        let (px, pz) = (ax + (bx - ax) * t, az + (bz - az) * t);
+                        (px, pz, at(px, pz), surface(nx, nz, px, pz))
+                    })
+                    .collect();
+                // down to lower ground
+                let down: Vec<(f32, f32, f32, f32)> = points.iter().map(|&(px, pz, top, other)| (px, pz, top, other.min(top))).collect();
+                wall(&mut cliffs, &down, Vec3::new(dx as f32, 0.0, dz as f32), uv);
+                // up to the ground on its level next to it (the step's top either side, or its
+                // foot's level where it dips under); higher ground has its own cliff down to it
+                let up_to = level(nx, nz).zip(own).is_some_and(|(l, o)| l <= o);
+                if next.is_none() && up_to {
+                    let up: Vec<(f32, f32, f32, f32)> = points.iter().rev().map(|&(px, pz, top, other)| (px, pz, other.max(top), top)).collect();
+                    wall(&mut cliffs, &up, Vec3::new(-dx as f32, 0.0, -dz as f32), uv);
+                }
+            }
+            if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
+                tall_grass(&mut grass, t, x, z, &|u, v| Some(at(fx + u, fz + v)));
+            }
+            continue;
+        }
+        let e = Edges::of(&seen(own), &flat, x, z);
+        cell_top(&mut tops, fx, fz, y, &e);
+        // a face on each side that steps down, sampled where the rims either side bend; it
+        // stops short of a rounded corner
         for (k, ([(ax, az), (bx, bz)], ends)) in sides.into_iter().enumerate() {
             if !e.low[k] {
                 continue;
@@ -771,7 +890,8 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             let foot = across.map(|l| l as f32 * level_height).unwrap_or(SKIRT);
             let rows = ((y - c - foot) / 0.5).ceil().max(1.0) as usize;
             let (ex, ez) = ((bx - ax) as i32, (bz - az) as i32);
-            let goes_on = |cx: i32, cz: i32| level(cx, cz) == level(x, z) && level(cx + dx, cz + dz) == across;
+            // (not into a ramp: its walls meet the face where it stops, pinned)
+            let goes_on = |cx: i32, cz: i32| level(cx, cz) == level(x, z) && level(cx + dx, cz + dz) == across && ramp(cx, cz).is_none() && ramp(cx + dx, cz + dz).is_none();
             let free = [goes_on(x - ex, z - ez), goes_on(x + ex, z + ez)];
             let mut cols = vec![0.0, c, 0.5, 1.0 - c, 1.0];
             if e.round[ends[0]] {
@@ -815,24 +935,7 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
         }
         // tall grass: tufts of blades, standing on the top (on its rim too)
         if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
-            let (c1, c2) = (color(&t.color), color(&t.color2));
-            for k in 0..9 {
-                let (u, v) = (0.12 + 0.76 * hash(x, z, k * 3), 0.12 + 0.76 * hash(x, z, k * 3 + 1));
-                if e.cut_away(u, v) {
-                    continue;
-                }
-                let tall = 0.42 + 0.22 * hash(x, z, k * 3 + 2);
-                let colour = if k % 3 == 0 { c2 } else { c1 };
-                let mut blade = Mesh::default();
-                shape_round(&mut blade, Vec3::new(0.2, tall, 0.2), colour, 0.0, 4);
-                // swaying from its foot, each tuft in its own time
-                let phase = hash(x, z, k * 3 + 7);
-                for b in blade.vertices.iter_mut() {
-                    let up = (b.pos[1] / tall).clamp(0.0, 1.0);
-                    b.wind = wind_of(up.powf(1.5), 0.3 * up, phase, b.pos[1]);
-                }
-                grass.append(&blade, placement(Vec3::new(fx + u, y + e.height(u, v), fz + v), hash(x, z, k) * 90.0, 1.0));
-            }
+            tall_grass(&mut grass, t, x, z, &|u, v| (!e.cut_away(u, v)).then(|| y + e.height(u, v)));
         }
     }
     (tops, cliffs, grass)
@@ -850,8 +953,7 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
     for p in map.props.iter().filter(|p| in_region(region, p.at[0].floor() as i32, p.at[1].floor() as i32)) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-        let pos = p.pos();
-        let at = Vec3::new(pos[0] as f32, p.level as f32 * level_height, pos[1] as f32);
+        let at = map.prop_foot(p, level_height);
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
         out.append(scene, placement(at, p.turn as f32, scale));
     }

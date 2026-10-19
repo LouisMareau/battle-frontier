@@ -51,10 +51,10 @@ pub fn trees(map: &WorldMap, level_height: f32) -> Vec<Tree> {
         };
         let mut add = |grid: &mut HashMap<(i32, i32), Vec<[f32; 2]>>, rng: &mut Rng, p: [f32; 2], cell: (i32, i32)| {
             grid.entry(key(p)).or_default().push(p);
-            let level = map.level_at(cell.0, cell.1).unwrap_or(0) as f32;
+            let level = map.level_at(cell.0, cell.1).unwrap_or(0);
             let prop = area.trees[((rng.next() * area.trees.len() as f32) as usize).min(area.trees.len() - 1)].clone();
             let scale = rng.range(area.height[0] as f32, area.height[1].max(area.height[0]) as f32);
-            out.push(Tree { prop, pos: [p[0], level * level_height, p[1]], scale, turn: rng.next() * 360.0 });
+            out.push(Tree { prop, pos: [p[0], map.ground_y(p[0], p[1], level, level_height), p[1]], scale, turn: rng.next() * 360.0 });
         };
         if area.solid_edge {
             for &(x, z) in &cells {

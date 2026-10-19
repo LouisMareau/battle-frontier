@@ -143,6 +143,11 @@ fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> 
         .collect()
 }
 
+/// Whether a ramp covers any of a region's cells, or comes within `pad` cells of them.
+fn overlaps(r: &content::Ramp, region: [i32; 4], pad: i32) -> bool {
+    r.at[0] - pad < region[2] && r.at[1] - pad < region[3] && r.at[0] + r.size[0] as i32 + pad > region[0] && r.at[1] + r.size[1] as i32 + pad > region[1]
+}
+
 /// The cells texture's blue channel: 255 on the cells in the focus.
 fn mark_focus(map: &WorldMap, cells: &mut [u8], focus: Option<&[(i32, i32)]>) {
     for &(x, z) in focus.unwrap_or(&[]) {
@@ -208,11 +213,17 @@ impl Feed<'_> {
                         }
                     }
                 }
+                // the ramps on it and round it (their walls come down onto the ground across)
+                for ramp in m.ramps.iter().filter(|q| overlaps(q, r, 3)) {
+                    format!("{ramp:?}").hash(&mut h);
+                }
                 (s, h.finish())
             })
             .collect()
     }
 
+    /// The props and the actors standing on each square (on a ramp's slope: the ramps there
+    /// too).
     fn prop_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
         let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
         for p in &self.map.props {
@@ -226,6 +237,11 @@ impl Feed<'_> {
                 let h = by.entry(square(a.at[0], a.at[1])).or_default();
                 (&a.look, a.at, a.level, a.facing.to_bits()).hash(h);
                 a.look.strip_prefix("prop:").and_then(|id| records.get(id)).hash(h);
+            }
+        }
+        for (s, h) in by.iter_mut() {
+            for ramp in self.map.ramps.iter().filter(|q| overlaps(q, region(*s), 0)) {
+                format!("{ramp:?}").hash(h);
             }
         }
         by.into_iter().map(|(s, h)| (s, h.finish())).collect()
@@ -284,7 +300,8 @@ impl Feed<'_> {
                     // the people standing where they were put
                     for a in self.map.actors.iter().filter(|a| square(a.at[0], a.at[1]) == s) {
                         let Some(prop) = a.look.strip_prefix("prop:").and_then(|id| self.content.props.get(id)) else { continue };
-                        let at = Vec3::new(a.at[0] as f32 + 0.5, a.level as f32 * lh, a.at[1] as f32 + 0.5);
+                        let (x, z) = (a.at[0] as f32 + 0.5, a.at[1] as f32 + 0.5);
+                        let at = Vec3::new(x, self.map.ground_y(x, z, a.level, lh), z);
                         scene.append(&prop_scene(prop, self.models), placement(at, a.facing as f32, 1.0));
                     }
                 }

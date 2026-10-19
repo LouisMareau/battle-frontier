@@ -12,6 +12,7 @@
 
 pub mod building;
 pub mod model;
+pub mod ramp;
 pub mod script;
 
 use std::collections::{BTreeMap, HashMap};
@@ -21,6 +22,7 @@ use serde::{Deserialize, Serialize};
 
 pub use building::*;
 pub use model::*;
+pub use ramp::*;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -627,6 +629,23 @@ impl Content {
         out
     }
 
+    /// A map's ramps on its cells: each on one level, the ground past its foot a level down,
+    /// never on water.
+    fn check_ramps(&self, at: &str, m: &Map, cells: &Cells) -> Vec<String> {
+        let (w, h) = (m.width as i32, m.height as i32);
+        let index = |x: i32, z: i32| (x >= 0 && z >= 0 && x < w && z < h).then(|| (z * w + x) as usize);
+        let level = |x: i32, z: i32| index(x, z).and_then(|i| cells.level.get(i).copied());
+        let water = |i: usize| cells.terrain.get(i).and_then(|&t| cells.terrains.get(t as usize)).and_then(|id| self.terrains.get(id)).map(|t| t.walk == "water").unwrap_or(false);
+        let mut out = vec![];
+        for r in &m.ramps {
+            out.extend(r.problems(&level).into_iter().map(|p| format!("{at}: {p}")));
+            if r.cells().into_iter().filter_map(|(x, z)| index(x, z)).any(water) {
+                out.push(format!("{at}: the ramp at {}, {} is on water", r.at[0], r.at[1]));
+            }
+        }
+        out
+    }
+
     fn check_map(&self, m: &Map, world: &Settings) -> Vec<String> {
         let at = format!("maps/{}", m.id);
         let mut out = vec![];
@@ -738,6 +757,20 @@ impl Content {
             if b.level > world.max_level {
                 out.push(format!("{at}: building \"{}\" on level {}", b.id, b.level));
             }
+        }
+        // the ramps: none over another or a building (on their cells: `check_ramps`)
+        for r in &m.ramps {
+            let name = format!("the ramp at {}, {}", r.at[0], r.at[1]);
+            for (x, z) in r.cells() {
+                if let Some(other) = taken.insert((x, z), name.clone()) {
+                    let other = if other.starts_with("the ramp") { other } else { format!("building \"{other}\"") };
+                    out.push(format!("{at}: {name} and {other} both cover {x}, {z}"));
+                    break;
+                }
+            }
+        }
+        if !m.chunked() && !m.ramps.is_empty() {
+            out.extend(self.check_ramps(&at, m, &m.cells(&[])));
         }
         // where props stand within their cells
         for p in &m.props {
@@ -1108,6 +1141,11 @@ pub mod disk {
                     out.push(format!("{at}: chunk {name} names a zone the map doesn't have"));
                 }
             }
+            if !m.ramps.is_empty() {
+                if let Ok(chunks) = read_chunks(root, e.space, m) {
+                    out.extend(content.check_ramps(&at, m, &m.cells(&chunks)));
+                }
+            }
         }
         out
     }
@@ -1191,5 +1229,41 @@ mod tests {
         assert_eq!(with(&c, "meadow", [10, 2]), ["settings/world: start: 10, 2 is off meadow (10 x 8)"]);
         // kept out of the record when it's not set
         assert!(!to_text(&Settings::default()).contains("start"));
+    }
+
+    #[test]
+    fn ramps_go_down_one_level_where_nothing_else_is() {
+        let mut c = Content::default();
+        c.terrains.put(Terrain { id: "grass".into(), walk: "walk".into(), ..Default::default() }, Space::Content);
+        c.terrains.put(Terrain { id: "pond".into(), walk: "water".into(), pattern: "water".into(), ..Default::default() }, Space::Content);
+        // 6 x 6: a plateau on 2 up north (z 0, 1), a tower on 3 at its east end, the lowland
+        // on 1, a pond at its south-west corner
+        let mut legend = BTreeMap::new();
+        legend.insert("g".to_string(), "grass".to_string());
+        legend.insert("w".to_string(), "pond".to_string());
+        let mut terrain = vec!["gggggg".to_string(); 6];
+        terrain[5] = "wwgggg".into();
+        let levels = ["222233", "222233", "111111", "111111", "111111", "111111"].map(String::from).to_vec();
+        let ramps = vec![
+            // along the plateau's edge, down to the lowland
+            Ramp { at: [1, 1], size: [2, 1], up: "n".into(), ..Default::default() },
+            // the tower's edge: 3 down to 1, no
+            Ramp { at: [4, 1], size: [2, 1], up: "n".into(), ..Default::default() },
+            // on the first one
+            Ramp { at: [2, 1], size: [1, 1], up: "n".into(), ..Default::default() },
+            // on the pond, its foot off the map
+            Ramp { at: [0, 5], size: [1, 1], up: "n".into(), ..Default::default() },
+        ];
+        let m = Map { id: "hill".into(), name: "Hill".into(), width: 6, height: 6, legend, terrain, levels, ramps, ..Default::default() };
+        c.maps.put(m, Space::Content);
+        let problems: Vec<String> = c.validate().into_iter().filter(|p| p.contains("ramp")).collect();
+        let has = |what: &str| problems.iter().any(|p| p.contains(what));
+        assert!(!problems.iter().any(|p| p.starts_with("maps/hill: the ramp at 1, 1:")), "{problems:?}");
+        assert!(has("the ramp at 4, 1: a ramp goes down one level, 3 to 2, but past its foot the ground is on 1"), "{problems:?}");
+        assert!(has("the ramp at 2, 1 and the ramp at 1, 1 both cover 2, 1"), "{problems:?}");
+        assert!(has("the ramp at 0, 5 is on water") && has("the ramp at 0, 5: its foot is past the map's edge"), "{problems:?}");
+        assert_eq!(problems.len(), 4, "{problems:?}");
+        // a map without them says nothing of them
+        assert!(!to_text(&Map::default()).contains("ramps"));
     }
 }

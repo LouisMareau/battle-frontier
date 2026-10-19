@@ -186,7 +186,7 @@ impl Spawner {
         self.next_link.resize(map.links.len(), 0.5);
         let walk = |a: (i32, i32), b: (i32, i32), goal: (i32, i32)| -> bool {
             let (Some(ia), Some(ib)) = (map.index(a.0, a.1), map.index(b.0, b.1)) else { return false };
-            (b == goal || !blocked[ib]) && map.level[ia] == map.level[ib] && !map.wall_between(a, b, map.level[ia])
+            (b == goal || !blocked[ib]) && map.ground_steps(a, b) && !map.wall_between(a, b, map.level[ia])
         };
         // creatures showing up inside their zones
         for (zi, zone) in map.zones.iter().enumerate() {

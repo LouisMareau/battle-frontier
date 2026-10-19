@@ -1232,6 +1232,9 @@ pub struct Map {
     pub props: Vec<Placed>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub buildings: Vec<crate::building::Building>,
+    /// rows of cells along the top of a step whose ground goes down a level (see `Ramp`)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ramps: Vec<crate::ramp::Ramp>,
     /// the zone each cell belongs to (its `mark`), '.' for none
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zone_cells: Vec<String>,

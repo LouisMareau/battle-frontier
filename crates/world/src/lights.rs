@@ -41,7 +41,7 @@ pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
     for p in &map.props {
         let Some((l, scalable)) = light(&p.prop) else { continue };
         let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, l, placement(Vec3::new(p.pos()[0] as f32, p.level as f32 * level_height, p.pos()[1] as f32), p.turn as f32, scale));
+        put(&mut out, l, placement(map.prop_foot(p, level_height), p.turn as f32, scale));
     }
     for b in &map.buildings {
         let base = b.level as f32 * level_height;

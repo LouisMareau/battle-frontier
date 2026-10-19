@@ -92,9 +92,11 @@ impl Walker {
 }
 
 impl MapEditor {
+    /// Where one stands on a cell: its centre, on its ground (a ramp's slope there).
     pub(super) fn cell_pos(&self, c: (i32, i32)) -> Vec3 {
-        let level = self.map.level_at(c.0, c.1).unwrap_or(0) as f32;
-        Vec3::new(c.0 as f32 + 0.5, level * self.level_height, c.1 as f32 + 0.5)
+        let level = self.map.level_at(c.0, c.1).unwrap_or(0);
+        let (x, z) = (c.0 as f32 + 0.5, c.1 as f32 + 0.5);
+        Vec3::new(x, self.map.ground_y(x, z, level, self.level_height), z)
     }
 
     fn stand(&mut self, cell: (i32, i32), facing: f32) {
@@ -470,6 +472,7 @@ impl MapEditor {
         }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
+        crate::platform::set_hook("walkery", &format!("{:.2}", pos.y));
         crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
     }
 

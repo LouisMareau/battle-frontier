@@ -326,15 +326,22 @@ impl MapEditor {
         }
     }
 
+    /// The ground's height at a cell's centre (a ramp's slope there too).
     pub(super) fn cell_y(&self, x: i32, z: i32) -> f32 {
-        self.map.level_at(x, z).unwrap_or(0) as f32 * self.level_height
+        self.ground_at(x as f32 + 0.5, z as f32 + 0.5)
+    }
+
+    /// The ground's height at a point of the map (a ramp's slope there too).
+    pub(super) fn ground_at(&self, px: f32, pz: f32) -> f32 {
+        let level = self.map.level_at(px.floor() as i32, pz.floor() as i32).unwrap_or(0);
+        self.map.ground_y(px, pz, level, self.level_height)
     }
 
     fn treeline_centre(&self, line: &[(i32, i32)]) -> Vec3 {
         let n = line.len().max(1) as f32;
         let (sx, sz) = line.iter().fold((0.0, 0.0), |(a, b), c| (a + c.0 as f32 + 0.5, b + c.1 as f32 + 0.5));
         let (x, z) = (sx / n, sz / n);
-        Vec3::new(x, self.cell_y(x.floor() as i32, z.floor() as i32) + 0.1, z)
+        Vec3::new(x, self.ground_at(x, z) + 0.1, z)
     }
 
     fn zone_centre(&self, zone: usize) -> Option<Vec3> {
@@ -400,9 +407,9 @@ impl MapEditor {
         if self.debug {
             // where each creature is going
             for r in &self.spawner.roamers {
-                let mut from = Vec3::new(r.pos.x, self.cell_y(r.pos.x.floor() as i32, r.pos.y.floor() as i32) + 0.1, r.pos.y);
+                let mut from = Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y) + 0.1, r.pos.y);
                 for p in &r.path {
-                    let to = Vec3::new(p.x, self.cell_y(p.x.floor() as i32, p.y.floor() as i32) + 0.1, p.y);
+                    let to = Vec3::new(p.x, self.ground_at(p.x, p.y) + 0.1, p.y);
                     let d = Vec3::new(to.x - from.x, 0.0, to.z - from.z).normalize_or_zero();
                     let side = Vec3::new(-d.z, 0.0, d.x) * 0.04;
                     shapes.push(quad([from + side, from - side, to - side, to + side], [1.0, 1.0, 1.0, 0.6]));
@@ -428,7 +435,7 @@ impl MapEditor {
         let mut out = vec![];
         for r in &self.spawner.roamers {
             let Some(l) = self.content.creatures.get(&r.creature).and_then(|c| c.light.as_ref()) else { continue };
-            let feet = Vec3::new(r.pos.x, self.cell_y(r.pos.x.floor() as i32, r.pos.y.floor() as i32), r.pos.y);
+            let feet = Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y), r.pos.y);
             let mut placed = world::lights::carried(l, feet, Vec3::new(r.heading.x, 0.0, r.heading.y));
             placed.light.intensity *= r.presence.clamp(0.0, 1.0) as f64;
             out.push(placed);
@@ -449,7 +456,7 @@ impl MapEditor {
             let c = &e.value;
             let back = r.moving && r.heading.dot(away) > 0.35;
             let (path, b) = if back { (&c.sprites.back, c.sprites.back_box) } else { (&c.sprites.front, c.sprites.front_box) };
-            let y = self.cell_y(r.pos.x.floor() as i32, r.pos.y.floor() as i32);
+            let y = self.ground_at(r.pos.x, r.pos.y);
             let pos = Vec3::new(r.pos.x, y, r.pos.y);
             let grow = 0.25 + 0.75 * r.presence.clamp(0.0, 1.0);
             let h = ((c.body.height_m as f32) * 1.1).clamp(0.45, 2.4) * grow;

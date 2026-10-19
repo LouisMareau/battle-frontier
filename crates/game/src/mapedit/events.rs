@@ -537,14 +537,13 @@ impl MapEditor {
 
     /// The events' areas, the actors' areas and paths, the drag going on.
     pub(super) fn events_shapes(&self, shapes: &mut Vec<Shape>, now: f64) {
-        let lh = self.level_height;
         let rect = |x: i32, z: i32, w: i32, h: i32, y: f32, color: [f32; 4]| Shape {
             kind: ShapeKind::Rect { width: w as f32, depth: h as f32 },
             center: Vec3::new(x as f32 + w as f32 / 2.0, y, z as f32 + h as f32 / 2.0),
             color,
             additive: false,
         };
-        let y_at = |x: i32, z: i32| self.map.level_at(x, z).unwrap_or(0) as f32 * lh + 0.06;
+        let y_at = |x: i32, z: i32| self.cell_y(x, z) + 0.06;
         if self.tool != Tool::Events {
             return;
         }

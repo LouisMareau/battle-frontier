@@ -19,6 +19,7 @@ mod dock;
 mod events;
 mod models;
 mod post;
+mod ramps;
 mod requests;
 mod rooms;
 mod sounds;
@@ -176,6 +177,8 @@ pub struct MapEditor {
     brush: i32,
     terrain: String,
     set_level: bool,
+    /// the Ground tool's ramps
+    ramp: ramps::RampTool,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -418,6 +421,7 @@ impl MapEditor {
             brush: 0,
             terrain,
             set_level: true,
+            ramp: ramps::RampTool::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -799,6 +803,7 @@ impl MapEditor {
         self.zone_sel = self.zone_sel.filter(|&i| i < self.map.zones.len());
         self.selected = self.selected.filter(|&i| i < self.map.props.len());
         self.selected_building = self.selected_building.filter(|&i| i < self.map.buildings.len());
+        self.ramp.selected = self.ramp.selected.filter(|&i| i < self.map.ramps.len());
         self.evt.actor_sel = self.evt.actor_sel.filter(|&i| i < self.map.actors.len());
         self.evt.event_sel = self.evt.event_sel.filter(|&r| self.event(r).is_some());
         self.rebuild_actors();
@@ -947,7 +952,7 @@ impl MapEditor {
             }
             let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
             if let Some(l) = self.map.level_at(x, z) {
-                if p.y <= l as f32 * lh + 0.001 {
+                if p.y <= self.map.ground_y(p.x, p.z, l, lh) + 0.001 {
                     return Some((x, z));
                 }
             }
@@ -962,8 +967,7 @@ impl MapEditor {
         let (w, d) = if quarter { (prop.footprint[1], prop.footprint[0]) } else { (prop.footprint[0], prop.footprint[1]) };
         let s = if prop.scalable() { p.scale as f32 } else { 1.0 };
         let half = Vec3::new(w as f32 / 2.0, 0.0, d as f32 / 2.0) * s;
-        let pos = p.pos();
-        let base = Vec3::new(pos[0] as f32, p.level as f32 * self.level_height, pos[1] as f32);
+        let base = self.map.prop_foot(p, self.level_height);
         Some((base - half, base + half + Vec3::Y * (prop.height as f32 * s).max(0.3)))
     }
 
@@ -1049,6 +1053,13 @@ impl MapEditor {
                 self.need_ground = true;
                 // what stood on the old ground keeps standing on it
                 self.need_trees = true;
+                // a ramp's cells are on one level: one painted to another, it's gone
+                if let Some(r) = self.map.ramps.iter().position(|r| r.has(x, z)) {
+                    self.map.ramps.remove(r);
+                    self.ramp.selected = None;
+                    self.need_props = true;
+                    self.status = "The ramp there is gone: its cells are on another level now".into();
+                }
             }
         }
         if fresh {
@@ -1444,6 +1455,7 @@ impl MapEditor {
             crate::platform::set_hook("anchors", &b.anchors.len().to_string());
         }
         crate::platform::set_hook("tool", self.tool.key());
+        self.ramp_hooks();
         back
     }
 
@@ -1630,6 +1642,20 @@ impl MapEditor {
     }
 
     fn ground_panel(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            for (ramps, name, about, key) in [(false, "Paint", "Paint terrain and levels", "uiGroundPaint"), (true, "Ramps", "Ramps down a level, along the top of a step in the ground", "uiGroundRamps")] {
+                let r = ui.selectable_label(self.ramp.on == ramps, name).on_hover_text(about);
+                mark(key, &r);
+                if r.clicked() {
+                    self.ramp.on = ramps;
+                    self.ramp.drag = None;
+                }
+            }
+        });
+        if self.ramp.on {
+            self.ramp_panel(ui);
+            return;
+        }
         section(ui, "Terrain");
         let terrains: Vec<(String, String, String, String)> = self.content.terrains.iter().map(|t| (t.id.clone(), t.name.clone(), t.color.clone(), t.walk.clone())).collect();
         for (id, name, color, walk) in terrains {
@@ -1982,6 +2008,9 @@ impl MapEditor {
                 self.stop_walk();
             } else if let Some(d) = self.draft.as_mut().filter(|d| d.sel.is_some()) {
                 d.sel = None;
+            } else if self.tool == Tool::Ground && self.ramp.on && (self.ramp.selected.is_some() || self.ramp.drag.is_some()) {
+                self.ramp.selected = None;
+                self.ramp.drag = None;
             } else {
                 self.selected = None;
             }
@@ -1989,6 +2018,8 @@ impl MapEditor {
         if pressed(egui::Key::Delete) || pressed(egui::Key::Backspace) {
             if self.tool == Tool::Build && self.draft.is_some() {
                 self.build_keys(0.0, true);
+            } else if let (Tool::Ground, true, Some(i)) = (self.tool, self.ramp.on, self.ramp.selected) {
+                self.remove_ramp(i);
             } else if let Some(i) = self.selected_building.take() {
                 self.checkpoint();
                 self.map.buildings.remove(i);
@@ -2116,6 +2147,10 @@ impl MapEditor {
                         self.terrain = self.map.terrain_at(x, z).unwrap_or("grass").to_string();
                         self.level = self.map.level_at(x, z).unwrap_or(0);
                     }
+                }
+                if self.ramp.on {
+                    self.ramp_input(response.hovered(), primary_pressed, primary_released);
+                    return;
                 }
                 // a stroke starts on the map (not on a map around it)
                 let on_map = (if self.set_level { plane_cell } else { self.ground_hit }).map(|c| self.map.inside(c.0, c.1)).unwrap_or(false);
@@ -2307,6 +2342,7 @@ impl MapEditor {
         crate::platform::set_hook("lights", &light.lights.len().to_string());
         let rect_at = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
         match self.tool {
+            Tool::Ground if self.ramp.on => self.ramp_shapes(&mut shapes),
             Tool::Ground | Tool::Trees => {
                 let at_plane = self.tool == Tool::Ground && self.set_level;
                 let cell = if at_plane { self.plane_hit.map(|p| (p.x.floor() as i32, p.z.floor() as i32)) } else { self.ground_hit };

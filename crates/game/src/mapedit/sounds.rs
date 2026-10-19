@@ -33,7 +33,7 @@ impl MapEditor {
             for r in &self.spawner.roamers {
                 let Some(e) = self.content.creatures.entry(&r.creature) else { continue };
                 let Some(s) = &e.value.sound else { continue };
-                let feet = Vec3::new(r.pos.x, self.cell_y(r.pos.x.floor() as i32, r.pos.y.floor() as i32), r.pos.y);
+                let feet = Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y), r.pos.y);
                 out.push(Want { key: format!("roamer:{}", r.id), file: e.space.asset(&s.file), pos: Some(feet), volume: s.volume as f32 * r.presence.clamp(0.0, 1.0), range: s.range as f32 });
             }
         }
