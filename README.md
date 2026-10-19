@@ -88,7 +88,7 @@ node tools/floorcheck.mjs              # floors laid with a set of tiles: a hous
 node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/levelcheck.mjs              # painting levels: the brush on the cell under the pointer, on its own ground, whatever the level picked (raised from the lowland, sunk from a hill's top), a stroke held still painting its own cells and no more, ground raised to meet a hill's top joining it with no seam, saved
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
-node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, "Start new games here"
+node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view)
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, always a main, the last battles, View all's board of cards (its order, sorts, a type, a card's pin, a creature's details and moves, one lost for good), a controller; the pixelation (as dense as asked, with the camera's zoom: hook `pixelzoom`) and LCD, an Options category closed and opened
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
@@ -121,7 +121,8 @@ read in progress), and in the map editor `data-map`, `data-mapsize`, `data-tool`
 `data-assets`, `data-folder`, `data-shown`, `data-dropped`, `data-models`, `data-requests`, `data-chunked`,
 `data-loading`, `data-squares` (the ground's squares held / in the map), `data-world`,
 `data-pieces`, on the main menu `data-continue`, `data-options`, `data-confirmnew` and
-`data-keptoptions`, in the editor `data-welcome` and `data-start` (where new games start),
+`data-keptoptions`, in the editor `data-welcome`, `data-start` and `data-startfacing` (where new games start),
+`data-startmark` (where it's marked on the map open), `data-startpick` and `data-worldstart`,
 and the places of the buttons the checks press (`data-ui-*`) on `<body>`;
 `view:x,z,distance,yaw,pitch` points the editor's camera and `point:x,y,z` reports where a
 world point is on the screen (`data-point`): that's what the checks drive.
@@ -358,8 +359,12 @@ maps).
   walker (trees, props) is seen through round them, dithered away more the nearer the middle of
   a cone from the camera to them, so they never go out of sight in a wood (the editor's Walk
   too). A new game starts where the world settings say (`start`: a map, a
-  cell and a facing; the editor's map panel, "Start new games here", sets it where the
-  walker stands or the view looks). The story is kept between runs, one slot: the map, where
+  cell and a facing, one for the whole world). The editor's map panel (nothing selected),
+  under New game, sets it: "Pick it on the map", then click the cell (or drag from it the
+  way the player faces; Esc stops), or "Start new games here" (where the walker stands or
+  the view looks); "Facing" turns it a quarter, "Go to it" opens its map on it. Set on any
+  map it moves there; it's marked on its map (a ring, an arrow the way the player faces)
+  and in the World view. The story is kept between runs, one slot: the map, where
   you stood and which way you faced, and the flags (the browser's storage;
   `build/save/story.json` on the desktop), saved as they change. Warps, seams and a script's
   battle work there (the battle plays, then it's back to the map).

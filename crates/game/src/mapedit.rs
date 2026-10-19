@@ -203,6 +203,8 @@ pub struct MapEditor {
     ramp: ramps::RampTool,
     /// the Ground tool's Floors tab: flooring out of doors
     floorer: floors::Floorer,
+    /// where new games start, being picked on the map (the map panel's New game)
+    start_pick: welcome::StartPick,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -453,6 +455,7 @@ impl MapEditor {
             set_level: true,
             ramp: ramps::RampTool::default(),
             floorer: floors::Floorer::default(),
+            start_pick: Default::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -2121,7 +2124,10 @@ impl MapEditor {
             self.recentre();
         }
         if pressed(egui::Key::Escape) {
-            if self.tpl.capturing {
+            if self.start_pick.on {
+                self.start_pick = Default::default();
+                self.status = "Where new games start: as it was".into();
+            } else if self.tpl.capturing {
                 self.tpl.capturing = false;
                 self.tpl.drag = None;
             } else if self.evt.placing.is_some() {
@@ -2247,7 +2253,10 @@ impl MapEditor {
             self.drag_over(p);
         } else {
             self.tpl.ghost = None;
-            if let Some((origin, dir)) = ray {
+            if self.start_pick.on {
+                // where new games start, picked on the map: the pointer does nothing else
+                self.start_input(primary_pressed && response.hovered(), primary_released);
+            } else if let Some((origin, dir)) = ray {
                 if self.tl.fx_edit.is_some() {
                     // an FX's mesh dragged on the map
                     self.fx_view_input(origin, dir, primary_down && response.dragged());
@@ -2502,6 +2511,9 @@ impl MapEditor {
         }
         crate::platform::set_hook("lights", &light.lights.len().to_string());
         let rect_at = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
+        if !self.play {
+            self.start_shapes(&mut shapes, &mut overlays);
+        }
         match self.tool {
             Tool::Ground if self.ramp.on => self.ramp_shapes(&mut shapes),
             Tool::Ground if self.floorer.on => self.floor_shapes(&mut shapes),

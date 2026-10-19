@@ -260,6 +260,9 @@ impl MapEditor {
         let pointer = resp.hover_pos().or(resp.interact_pointer_pos());
         let sized: Vec<Option<(u16, u16)>> = world.pieces.iter().map(|p| size(&p.map)).collect();
         let mut rects: Vec<Option<Rect>> = vec![None; world.pieces.len()];
+        // where new games start: one for the whole world, marked on its map
+        let start = content.world().start;
+        let mut start_at = None;
         for (i, p) in world.pieces.iter().enumerate() {
             let Some((w, h)) = sized[i] else { continue };
             let r = Rect::from_min_max(to_screen(p.at[0] as f32, p.at[1] as f32), to_screen((p.at[0] + w as i32) as f32, (p.at[1] + h as i32) as f32));
@@ -276,7 +279,15 @@ impl MapEditor {
             }
             let c = r.center();
             crate::platform::set_hook(&format!("uiPiece_{}", p.map), &format!("{:.0},{:.0}", c.x, c.y));
+            if p.map == start.map {
+                start_at = Some(to_screen((p.at[0] + start.at[0]) as f32 + 0.5, (p.at[1] + start.at[1]) as f32 + 0.5));
+            }
         }
+        if let Some(at) = start_at {
+            painter.circle(at, 4.5, Color32::from_rgb(255, 204, 72), Stroke::new(1.5, Color32::from_rgb(40, 30, 10)));
+            painter.text(at + egui::vec2(7.0, 0.0), Align2::LEFT_CENTER, "Start", FontId::proportional(11.0), Color32::from_rgb(255, 214, 110));
+        }
+        crate::platform::set_hook("worldstart", &start_at.map(|at| format!("{:.0},{:.0}", at.x, at.y)).unwrap_or_default());
         // the piece under a point: the last drawn is on top
         let piece_at = |q: Pos2| rects.iter().rposition(|r| r.map(|r| r.contains(q)).unwrap_or(false));
         let hit = pointer.and_then(piece_at);

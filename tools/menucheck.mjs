@@ -3,10 +3,12 @@
 // says games start, its question when a story would be given up), the Options in tabs (kept
 // after the page is loaded again; a key given to A works on the menu), and the Editor's icon
 // in the corner (growing when hovered): its welcome (once a run, never again once asked), its
-// Menu (the main menu, the content, the test battles) and its "Start new games here".
+// Menu (the main menu, the content, the test battles) and where new games start: "Start new
+// games here", then picked on the map (a cell clicked, then dragged from the way the player
+// faces), marked there, turned, and in the World view.
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
@@ -40,6 +42,22 @@ const press = async (name) => {
   if (!(x > 0 && y > 0)) throw new Error(`${name} isn't on screen`);
   await browser.click(x, y);
   await sleep(300);
+};
+// a point in the world on the screen, and the cell (x,z) the pointer is over there
+const point = async (x, y, z) => {
+  await cmd(`point:${x},${y},${z}`);
+  return (await data('point')).split(',').map(Number);
+};
+const cellAt = async ([x, y]) => {
+  await browser.move(x, y);
+  await sleep(250);
+  return (await data('groundcell')).split(',').slice(0, 2).join(',');
+};
+// the world.json downloaded last (the browser numbers the ones after the first)
+const lastWorld = () => {
+  const files = readdirSync(downloads).filter((f) => /^world.*\.json$/.test(f)).map((f) => join(downloads, f));
+  files.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
+  return files.length ? JSON.parse(readFileSync(files[files.length - 1], 'utf8')) : {};
 };
 const state = (s, what) => browser.waitFor(`document.body.dataset.state === ${JSON.stringify(s)}`, { timeout: 30000, what });
 const load = async () => {
@@ -223,6 +241,38 @@ try {
   const world = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
   check('  world.json downloaded with it (the browser can\'t write the project)', world.start?.map === 'test_meadow' && world.start?.at?.join(',') === '12,20', JSON.stringify(world.start));
   await shot('9-start-here');
+
+  // 8. picked on the map: a cell clicked (facing as it was), marked there; then dragged from
+  // another, facing the way it went; turned a quarter; in the World view
+  await press('uiStartPick');
+  check('"Pick it on the map": picking', (await data('startpick')) === '1');
+  const one = await point(10.5, 0, 19.5);
+  const clicked = await cellAt(one);
+  await browser.click(...one);
+  await sleep(600);
+  check('  a cell clicked: new games start there, picking over', (await data('start')) === `test_meadow:${clicked}` && (await data('startpick')) === '', `${await data('start')} (clicked ${clicked})`);
+  check('  facing as it was (south), marked on the map', (await data('startfacing')) === 'south' && (await data('startmark')) === `${clicked}:south`, `${await data('startfacing')} ${await data('startmark')}`);
+  await press('uiStartPick');
+  const from = await point(11.5, 0, 21.5);
+  const to = await point(14.5, 0, 21.5);
+  const dragged = await cellAt(from);
+  await browser.drag([from, to]);
+  await sleep(600);
+  check('  dragged east from a cell: there, facing east', (await data('start')) === `test_meadow:${dragged}` && (await data('startfacing')) === 'east', `${await data('start')} ${await data('startfacing')} (from ${dragged})`);
+  const picked = lastWorld();
+  check('  world.json downloaded with it: one start, facing east (270)', picked.start?.map === 'test_meadow' && picked.start?.at?.join(',') === dragged && picked.start?.facing === 270, JSON.stringify(picked.start));
+  await shot('10-start-picked');
+  await press('uiStartFacing');
+  await sleep(500);
+  check('  "Facing" turned a quarter clockwise: east to south', (await data('startfacing')) === 'south' && lastWorld().start?.facing === 0, `${await data('startfacing')} ${JSON.stringify(lastWorld().start)}`);
+  await press('uiStartPick');
+  await browser.key('Escape');
+  await sleep(300);
+  check('  Esc stops picking, the start as it was', (await data('startpick')) === '' && (await data('start')) === `test_meadow:${dragged}`, `${await data('startpick')} ${await data('start')}`);
+  await press('uiWorld');
+  await sleep(800);
+  check('  marked in the World view', /^\d+,\d+$/.test(await data('worldstart')), await data('worldstart'));
+  await shot('11-start-world');
 
   if (browser.errors.length) {
     failed++;
