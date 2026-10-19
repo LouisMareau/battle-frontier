@@ -2,9 +2,9 @@
 //! most in their last battles first, and before all of them the one they pinned as their main.
 //! There's always a main (while there's a team), and it's the one sent out first in a battle.
 //! The board of cards (View all) has them all, the main first, then as the list has them, or
-//! as the player sorts and filters them. Each has lifeforce (the world says how much): one
-//! lost each time it's knocked out in a battle, and with none left it's lost for good: it
-//! fights no more and isn't the main.
+//! as the player sorts and filters them. Each has lifeforce, a gauge (the world says its top,
+//! 100, and what a knock-out costs, 25): some lost each time it's knocked out in a battle, and
+//! with none left it's lost for good: it fights no more and isn't the main.
 //! The story keeps who fought in each of the last battles, and the main (`SaveGame.team`).
 
 use std::collections::HashMap;
@@ -62,7 +62,8 @@ pub struct TeamLog {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main: Option<String>,
     /// how much lifeforce those that lost some have left, by their ids (the others have all
-    /// of theirs); none left: lost for good
+    /// of theirs): a plain number on the world's gauge, so a rest can give some back; none
+    /// left: lost for good
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub lifeforce: std::collections::BTreeMap<String, u8>,
 }
@@ -124,9 +125,9 @@ impl TeamLog {
         self.lifeforce.get(id) == Some(&0)
     }
 
-    /// `id` was knocked out in a battle: one lifeforce less (of `max`, if it had lost none).
-    pub fn knocked_out(&mut self, id: &str, max: u8) {
-        let left = self.lifeforce(id, max).saturating_sub(1);
+    /// `id` was knocked out in a battle: `cost` less lifeforce (of `max`, if it had lost none).
+    pub fn knocked_out(&mut self, id: &str, max: u8, cost: u8) {
+        let left = self.lifeforce(id, max).saturating_sub(cost);
         self.lifeforce.insert(id.to_string(), left);
     }
 
@@ -287,20 +288,20 @@ mod tests {
         assert!(TeamLog::default().board(&[], |_| true, same, false).is_empty());
     }
 
-    /// Lifeforce: all of it at first; one less for each knock-out; none left, lost for good:
-    /// not sent into battle, not the main (another alive is), not pinned; all lost, none
-    /// fights.
+    /// Lifeforce, a gauge: all of it at first; a knock-out's cost less for each; none left,
+    /// lost for good: not sent into battle, not the main (another alive is), not pinned; all
+    /// lost, none fights.
     #[test]
     fn lifeforce_runs_out_and_the_lost_fight_no_more() {
         let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
         let mut log = TeamLog::default();
-        assert_eq!((log.lifeforce("a", 5), log.is_lost("a")), (5, false));
-        log.knocked_out("a", 5);
-        assert_eq!(log.lifeforce("a", 5), 4);
-        for _ in 0..10 {
-            log.knocked_out("a", 5);
-        }
-        assert!(log.is_lost("a") && log.lifeforce("a", 5) == 0);
+        assert_eq!((log.lifeforce("a", 100), log.is_lost("a")), (100, false));
+        log.knocked_out("a", 100, 25);
+        assert_eq!(log.lifeforce("a", 100), 75);
+        log.knocked_out("a", 100, 70);
+        assert_eq!(log.lifeforce("a", 100), 5, "a knock-out costs what the world says");
+        log.knocked_out("a", 100, 25);
+        assert!(log.is_lost("a") && log.lifeforce("a", 100) == 0, "never under nothing");
         assert_eq!(log.battle_order(&ids), [1, 2], "the main lost: the next alive goes first");
         log.pin("a");
         assert_ne!(log.main.as_deref(), Some("a"), "no pinning the lost");
@@ -309,12 +310,12 @@ mod tests {
         log.main = Some("a".into());
         assert_eq!(log.main_of(&ids), Some(1), "pinned before it was lost: another is the main");
         for id in ["b", "c"] {
-            for _ in 0..5 {
-                log.knocked_out(id, 5);
+            for _ in 0..4 {
+                log.knocked_out(id, 100, 25);
             }
         }
-        assert!(log.battle_order(&ids).is_empty() && log.main_of(&ids).is_none(), "none alive, none fights");
-        assert_eq!(log.lifeforce("b", 3), 0);
+        assert!(log.battle_order(&ids).is_empty() && log.main_of(&ids).is_none(), "four knock-outs at 25: none alive, none fights");
+        assert_eq!(log.lifeforce("b", 50), 0);
         let text = serde_json::to_string(&log).unwrap();
         assert_eq!(serde_json::from_str::<TeamLog>(&text).unwrap(), log, "kept with the story");
     }

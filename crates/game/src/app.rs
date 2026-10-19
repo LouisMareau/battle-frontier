@@ -849,7 +849,7 @@ impl GameApp {
         use crate::play_hud::{Card, Member, MoveInfo, TypeTag};
         let cfg = self.config();
         let content = self.content.as_deref();
-        let max_lifeforce = content.map_or(5, |c| c.world().lifeforce);
+        let max_lifeforce = content.map_or(100, |c| c.world().lifeforce);
         let log = match &self.screen {
             Screen::Overworld(ed) => Some(&ed.team),
             _ => None,
@@ -1552,11 +1552,12 @@ impl eframe::App for GameApp {
                         let ids = crate::team::ids(&self.party);
                         let in_battle: Vec<String> = self.fielded.iter().filter_map(|&i| ids.get(i).cloned()).collect();
                         ed.team.record(crate::team::fought(&director.battle, &in_battle));
-                        // each knocked out at the end loses one lifeforce
-                        let max = self.content.as_ref().map_or(5, |c| c.world().lifeforce);
+                        // each knocked out at the end loses lifeforce: what the world says a
+                        // knock-out costs
+                        let (max, cost) = self.content.as_ref().map(|c| c.world()).map_or((100, 25), |w| (w.lifeforce, w.lifeforce_per_ko));
                         for (k, id) in in_battle.iter().enumerate() {
                             if director.battle.side(Side::Player).party.get(k).is_some_and(|m| m.hp <= 0) {
-                                ed.team.knocked_out(id, max);
+                                ed.team.knocked_out(id, max, cost);
                             }
                         }
                     }

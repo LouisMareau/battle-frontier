@@ -546,8 +546,11 @@ impl Content {
         }
         for s in self.settings.iter() {
             out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
-            if !(1..=20).contains(&s.lifeforce) {
-                out.push(format!("settings/{}: lifeforce {}: 1 to 20", s.id, s.lifeforce));
+            if s.lifeforce == 0 {
+                out.push(format!("settings/{}: lifeforce 0: 1 to 255 (100: a gauge of 100)", s.id));
+            }
+            if s.lifeforce_per_ko == 0 || s.lifeforce_per_ko > s.lifeforce {
+                out.push(format!("settings/{}: lifeforce_per_ko {}: 1 to the lifeforce ({})", s.id, s.lifeforce_per_ko, s.lifeforce));
             }
             out.extend(s.wind.problems().into_iter().map(|e| format!("settings/{}: wind: {e}", s.id)));
             let st = &s.start;

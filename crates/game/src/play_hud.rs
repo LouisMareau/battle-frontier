@@ -726,15 +726,17 @@ fn interact_item(ui: &egui::Ui, m: &Member, main: bool, rect: Rect, badge: Pos2)
     (r, pin)
 }
 
-/// A bar across `w`: its label, how full (`share`, 0 to 1) in `color`, its value at its end.
-fn bar_line(ui: &mut egui::Ui, w: f32, label: &str, share: f32, color: Color32, value: &str) {
-    let (r, _) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::hover());
+/// A bar across `w`: its label, how full (`share`, 0 to 1) in `color`, its value at its end;
+/// where it is (for a tip).
+fn bar_line(ui: &mut egui::Ui, w: f32, label: &str, share: f32, color: Color32, value: &str) -> egui::Response {
+    let (r, response) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::hover());
     let p = ui.painter();
     p.text(Pos2::new(r.left(), r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), Color32::from_white_alpha(170));
     p.text(Pos2::new(r.right(), r.center().y), Align2::RIGHT_CENTER, value, FontId::proportional(12.5), Color32::WHITE);
-    let track = Rect::from_min_max(Pos2::new(r.left() + 40.0, r.center().y - 3.5), Pos2::new(r.right() - 132.0, r.center().y + 3.5));
+    let track = Rect::from_min_max(Pos2::new(r.left() + 64.0, r.center().y - 3.5), Pos2::new(r.right() - 132.0, r.center().y + 3.5));
     p.rect_filled(track, 3.5, Color32::from_white_alpha(28));
     p.rect_filled(Rect::from_min_size(track.min, Vec2::new(track.width() * share.clamp(0.0, 1.0), track.height())), 3.5, color);
+    response
 }
 
 /// A title over a part of the details.
@@ -792,26 +794,11 @@ fn detail_panel(ui: &mut egui::Ui, m: &Member, main: bool, open_move: usize) -> 
             };
             bar_line(ui, w, "Exp", level_progress(c), EXP_COLOR, &exp);
             ui.add_space(6.0);
-            // its lifeforce: a pip each, lit while it lasts
+            // its lifeforce, a gauge: some lost to each knock-out, none left lost for good
             let (left, max) = c.lifeforce;
-            let r = ui
-                .horizontal(|ui| {
-                    ui.label(RichText::new("Lifeforce").size(12.5).color(Color32::from_white_alpha(170)));
-                    let (pips, _) = ui.allocate_exact_size(Vec2::new(max as f32 * 17.0, 16.0), Sense::hover());
-                    for k in 0..max {
-                        let at = Pos2::new(pips.left() + 8.0 + k as f32 * 17.0, pips.center().y);
-                        let diamond = vec![at + Vec2::new(0.0, -6.0), at + Vec2::new(6.0, 0.0), at + Vec2::new(0.0, 6.0), at + Vec2::new(-6.0, 0.0)];
-                        if k < left {
-                            ui.painter().add(egui::Shape::convex_polygon(diamond, LIFE_COLOR, Stroke::NONE));
-                        } else {
-                            ui.painter().add(egui::Shape::closed_line(diamond, Stroke::new(1.2, Color32::from_white_alpha(90))));
-                        }
-                    }
-                    let words = if left == 0 { "Lost for good".to_string() } else { format!("{left} of {max}") };
-                    ui.label(RichText::new(words).size(12.5).color(if left == 0 { Color32::from_rgb(232, 110, 110) } else { Color32::WHITE }));
-                })
-                .response;
-            r.on_hover_text("One is lost each time it's knocked out; with none left it's lost for good");
+            let words = if left == 0 { "0: lost for good".to_string() } else { format!("{left} / {max}") };
+            let r = bar_line(ui, w, "Lifeforce", left as f32 / max.max(1) as f32, LIFE_COLOR, &words);
+            r.on_hover_text("Some is lost each time it's knocked out in a battle; with none left it's lost for good");
             if c.lost() {
                 ui.label(RichText::new("It can't be brought back but by a very rare consumable.").size(12.0).color(soft));
             }
@@ -1345,6 +1332,7 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
     platform::set_hook("hudboarddetail", shown.map_or("", |m| m.id.as_str()));
     platform::set_hook("hudboardmove", &shown.and_then(|m| m.card.moves.get(board.move_open)).map(|mv| format!("{}:{}:{}", mv.name, mv.level, mv.levels.len())).unwrap_or_default());
     platform::set_hook("hudboardlost", &team.iter().filter(|m| m.card.lost()).map(|m| m.id.as_str()).collect::<Vec<_>>().join(","));
+    platform::set_hook("hudboardlife", &shown.map(|m| format!("{}/{}", m.card.lifeforce.0, m.card.lifeforce.1)).unwrap_or_default());
     open
 }
 

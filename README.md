@@ -342,17 +342,19 @@ small one.
   the cards turn into thumbnails (the picture, the level, the main's pin), three a row down
   the left, one clicked showing its own, and the creature fills the right: its picture (three
   times its pixels; its model, idle, once creatures have models), what its card has, its
-  lifeforce, a button to pin it, and its moves, a tab each, the one open with its type, kind,
+  lifeforce (a bar, with its number), a button to pin it, and its moves, a tab each, the one open with its type, kind,
   power, accuracy, MP, what it does and its five levels (those reached lit, the one it's at
   marked, the XP for the next). With the game's buttons the arrows or the d-pad go over the
   cards (or the thumbnails and the details' buttons) and the controls above them (and an open
   dropdown's choices), A presses, L and R go through the sorts, B closes a dropdown, then the
   details, then the board; the info icon by Close (the cross, top right) says so.
-  **Lifeforce** (`settings/world.json`'s `lifeforce`, 5 unless it says otherwise): a creature
-  knocked out in a story's battle loses one; with none left it's lost for good (greyed,
-  LOST): it isn't sent into battle and can't be the main, and only a very rare consumable
-  (to come) could bring it back. With none of the team left to fight, a battle doesn't
-  happen. The story keeps each one's lifeforce with the team.
+  **Lifeforce** is a gauge, 0 to the world's top (`settings/world.json`'s `lifeforce`, 100
+  unless it says otherwise): a creature knocked out in a story's battle loses what the world
+  says a knock-out costs (`lifeforce_per_ko`, 25: four take it all); with none left it's lost
+  for good (greyed, LOST): it isn't sent into battle and can't be the main, and only a very
+  rare consumable (to come) could bring it back. Ways to get some back (resting at an inn)
+  are to come too. With none of the team left to fight, a battle doesn't happen. The story
+  keeps each one's lifeforce with the team, a plain number.
 
 The editor (the main menu's Editor, or `--maps`) opens on the map it last had, else the one
 games start on. Its top bar's **Menu** goes back to the main menu, to the **Content** (every

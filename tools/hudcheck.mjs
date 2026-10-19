@@ -273,6 +273,7 @@ try {
     const second = (await board())[1];
     await press('uiTeamCard_1', 700);
     check('  a card clicked: its details, not pinned', (await data('hudboarddetail')) === second && (await data('hudmain')) === main, `${await data('hudboarddetail')} (${second})`);
+    check('    its lifeforce: all of the gauge, never knocked out', (await data('hudboardlife')) === '100/100', await data('hudboardlife'));
     check('    the cards turned into thumbnails', (await data('uiTeamThumb_0')) !== '' && (await data('uiTeamBack')) !== '', await data('uiTeamThumb_0'));
     const moves = await browser.evaluate("Object.keys(document.body.dataset).filter((k) => k.startsWith('uiTeamMove_'))");
     if (moves.length >= 2) {
