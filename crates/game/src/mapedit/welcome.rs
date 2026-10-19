@@ -115,9 +115,9 @@ impl MapEditor {
             line(ui, "This is what Battle Frontier is made with: its maps, props, creatures, abilities and battles.");
             line(ui, "Anyone can add to the game. Make something here, then send it as a pull request on GitHub: once it's reviewed and merged, everyone plays it.");
             let keep = if cfg!(target_arch = "wasm32") {
-                "In the browser, saving downloads each file: put it in the project before you send it."
+                "In the browser, saving downloads each file: put it in the project, then publish it from the desktop app."
             } else {
-                "What you save goes into the project's folders, and stays on your computer until you send it."
+                "What you save goes into the project's folders, and stays on your computer until you publish it: Publish, in the top bar, sends it as a pull request once you've signed in with GitHub."
             };
             ui.label(RichText::new(keep).size(13.0).color(MUTED));
             ui.add_space(4.0);

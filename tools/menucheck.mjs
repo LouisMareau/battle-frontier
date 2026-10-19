@@ -5,7 +5,7 @@
 // in the corner (growing when hovered): its welcome (once a run, never again once asked), its
 // Menu (the main menu, the content, the test battles) and where new games start: "Start new
 // games here", then picked on the map (a cell clicked, then dragged from the way the player
-// faces), marked there, turned, and in the World view.
+// faces), marked there, turned, and in the World view; Publish and Sign in, the desktop's.
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -273,6 +273,16 @@ try {
   await sleep(800);
   check('  marked in the World view', /^\d+,\d+$/.test(await data('worldstart')), await data('worldstart'));
   await shot('11-start-world');
+
+  // 9. Publish is the desktop's (the browser can't read the project's folder): Sign in and
+  // Publish in the top bar, neither opening anything here
+  const [sx] = await at('uiSignIn');
+  const [px] = await at('uiPublish');
+  check('Sign in and Publish in the top bar', sx > 0 && px > sx, `${sx} ${px}`);
+  await press('uiSignIn');
+  await press('uiPublish');
+  check('  in the browser neither opens a window, nobody signed in', (await data('signing')) === '' && (await data('publish')) === '' && (await data('signedin')) === '',
+    `${await data('signing')}|${await data('publish')}|${await data('signedin')}`);
 
   if (browser.errors.length) {
     failed++;

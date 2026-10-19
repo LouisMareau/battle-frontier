@@ -21,6 +21,7 @@ mod events;
 mod floors;
 mod models;
 mod post;
+mod publish;
 mod ramps;
 mod requests;
 mod rooms;
@@ -206,6 +207,8 @@ pub struct MapEditor {
     floorer: floors::Floorer,
     /// where new games start, being picked on the map (the map panel's New game)
     start_pick: welcome::StartPick,
+    /// signed in with GitHub, and what's published as a pull request (the top bar's Publish)
+    publisher: publish::Publisher,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -459,6 +462,7 @@ impl MapEditor {
             ramp: ramps::RampTool::default(),
             floorer: floors::Floorer::default(),
             start_pick: Default::default(),
+            publisher: Default::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -1372,6 +1376,7 @@ impl MapEditor {
                 if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
                     self.redo();
                 }
+                self.publish_buttons(ui);
                 ui.separator();
                 self.time_slider(ui);
                 let lamps = ui.selectable_label(self.lamps, "Lamps").on_hover_text("The lamps lit whatever the time (they light up by night on their own)");
@@ -1506,6 +1511,7 @@ impl MapEditor {
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
         self.welcome_modal(&ctx);
+        self.publish_window(&ctx);
         self.dock.keep(now);
         self.end_frame(&ctx, audio, now);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));

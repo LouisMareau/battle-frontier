@@ -36,6 +36,11 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "GainNode", "Gamepad", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Navigator", "Performance", "Storage", "Url", "Window"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# Publish: GitHub's API over HTTPS (ureq and rustls underneath), the files' blobs in base64,
+# their ids as git names them
+base64 = "0.22"
+ehttp = "0.7"
+sha1_smol = "1"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }
 # the Requests window's pictures: PNG, JPG and WebP
 image = { workspace = true, features = ["jpeg", "webp"] }

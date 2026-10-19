@@ -587,6 +587,30 @@ it takes, with its model details), a creature's default pose (T-pose or as-is), 
 to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
 100), notes, and "This design is mine or licensed" (off by default: the model of someone else's
 design goes to `temporary/`, never `content/`). A creature's **Draw the bones…** opens one of its
+**Publish** (in the top bar; the desktop only) sends what's been made to the game's repository
+as a pull request, for its maintainers to look at: only those who can write to the repository
+merge one, so nothing gets into the game unreviewed. **Sign in** comes first (Publish waits for
+it), with a GitHub account: a code typed on github.com/login/device, or a token pasted (classic,
+with the `public_repo` scope). The sign-in is kept in the user's own settings folder
+(`%APPDATA%\BattleFrontier\github.json`; `~/.config/BattleFrontier/` elsewhere), never in the
+project, until **Sign out**. Publish lists every file of `content/` changed since the project's
+copy was taken (the commit its git checkout is on, read from `.git`; else main, and then
+removed files are left unticked, as they may be new there), in groups (maps and their events,
+props, creatures, models...), each ticked to send or not; then a title, a description, and a
+tick that it's your own work or yours to send (the Developer Certificate of Origin: the commit
+is signed off as you, as the checks ask of every commit). Sent: the names check first
+(`tools/check-names.py`, when Python is there), then your fork (made when you can't write to
+the repository, and brought up to date), the files, a tree on the copy's, a commit on its
+commit, a branch `publish/<title>-<time>`, and the pull request against main, its link shown
+(`data-signedin`, `data-signing` and `data-publish` for the checks). The browser's buttons say
+it's the desktop's: the browser can't read the project's folder. Signing in by code needs the
+repository's own OAuth App, set up once by its owner: on GitHub, Settings, Developer settings,
+OAuth Apps, New OAuth App (any homepage and callback address), "Enable Device Flow" ticked, and
+its Client ID in `CLIENT_ID` (`crates/game/src/mapedit/publish.rs`; `GITHUB_CLIENT_ID`
+overrides it); until then a token pasted signs in. For merging to stay the maintainers', keep
+the repository's collaborators few (a branch rule on main asking for a review stops anyone
+merging their own unreviewed).
+
 pictures large to draw its bones over it, a colour per part (leg, arm, torso, head, ear, horn,
 tail, wing, and misc for a piece you name yourself): a click adds each joint, chained from the
 root out, and a right-click ends the line. Claude works out which part of the creature each
