@@ -93,7 +93,7 @@ node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, t
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
 node tools/layoutcheck.mjs             # the editor's panels: as they first come, floated and docked again, closed and opened, pinged, the toggles' names folded, all kept after a reload; what's selected (props, the buildings, the map) fitting the Inspector
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
-python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; the user's bones
+python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; the user's bones
 cargo test -p engine-game -- --ignored shot   # the desktop-only windows drawn on the GPU, no window opened (build/shots/requests-bones.png; SHOT_PICTURE: the picture)
 node tools/worldcheck.mjs              # the World view: a piece dragged into place, the world saved, a walk across a seam into a chunked map
 cargo run -p engine-content --bin content -- chunk MAP    # a map stored as chunk files (unchunk: rows again)
@@ -575,7 +575,10 @@ the renders of its model and the prop it became ("Use it" puts it in the Place t
 these comments**, a run that starts from the model the last one made (its script, its lines,
 what it said) and changes what you say, keeping the rest; the comments are kept with the
 request, and the runs after it are told them too. A tree's cells are its trunk's foot (what
-stands below a character's height), not its crown's. The
+stands below a character's height), not its crown's. A picture with several drawings of one
+kind of asset (trees, bushes, rocks, plants) makes as many: tick "Several of them: one asset
+per drawing" and Start has each drawing made a request of its own (its crop, its name and
+height, the request's settings); **Make them all** then has them made one after another. The
 window resizes every way. Claude Code's command line must be logged in once: a request that failed for that has a "Log in to
 Claude Code…" button, which opens it in a terminal (type `/login`). The recipe is
 `tools/blender/requests.md`: a script per request builds the model from shapes in Blender,

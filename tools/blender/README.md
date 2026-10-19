@@ -136,6 +136,10 @@ panel's **Make it again with these comments** runs `run_claude.py ID --again`: C
 from what the last run made (its `model.py`, its lines and renders, what it said back) and
 changes what the user's comments say, keeping the rest; the comments are kept in
 `request.json` (`comments`, then `earlier` once made, which the runs after it are told too).
+A picture with several drawings of the same kind of asset (trees, bushes, rocks) makes as many
+assets: with **"Several of them: one asset per drawing"** ticked, Start has Claude make each
+drawing a request of its own (`model_requests.py split`: its crop, its name and height, the
+request's settings), and **Make them all** has those made one after another.
 `test_run_claude.py` checks the runs against a stand-in for Claude, both halves of a checked
 one and one made again included.
 

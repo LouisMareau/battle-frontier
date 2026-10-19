@@ -8,7 +8,8 @@ started, then plays one ending each time: it finishes the request, quits without
 isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or draws the
 lines and the front and the side and stops there (a request that checks its lines first,
 which a run with --go-on then finishes); a request made once is made again with the user's
-comments on it (--again). Then the bones the user has drawn over the pictures: in the
+comments on it (--again); a request whose picture has several drawings is split, each one a
+request of its own. Then the bones the user has drawn over the pictures: in the
 record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
 Exits 1 when a check fails.
 """
@@ -80,6 +81,11 @@ if mode == "lines":
         (here / "profiles.png").write_bytes(b"stand-in")
         mr.update(os.getcwd(), rid, lines=["profiles.png"])
     last = "Lines ready: the shine on its back is the drawing's; how long its tail is, a guess."
+if mode == "split":
+    # two drawings side by side on its picture, each made a request of its own
+    mr.split(os.getcwd(), rid, "front.png", [0, 0, 100, 100], "Tall pine", 9.0, "the darker one")
+    mr.split(os.getcwd(), rid, "front.png", [100, 20, 200, 100], "Low bush", 2.0)
+    last = "Split into Tall pine (9 cells) and Low bush (2 cells)."
 say({{"type": "result", "subtype": "success", "is_error": False, "num_turns": 3, "duration_ms": 61000, "total_cost_usd": 0.42, "result": last,
       "permission_denials": [{{"tool_name": "Bash", "tool_input": {{"command": "git status"}}}}]}})
 '''
@@ -280,7 +286,7 @@ check("  its prompt: from what the last run made, what it said back, the comment
       and "run_request.py test_again --finish" in asked and "made again from what the last run made" in ran, asked[:3000])
 check("  and not the lines drawn again from nothing, nor a stop", "draw the design's lines over each picture" not in asked and "stop there" not in asked
       and "This run makes it again from the last run's model, with the user's comments: the trunk thicker" in ran)
-check("  in the record's layout: the comments for the next run last", list(mr.FIELDS)[-3:] == ["reply", "comments", "earlier"])
+check("  in the record's layout: the comments for the next run after the reply", list(mr.FIELDS)[-6:-3] == ["reply", "comments", "earlier"])
 fresh("test_again_note", status="done", prop="test_prop", comments="the old comment")
 (mr.folder(SCRATCH, "test_again_note") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
 code, out, rec, log = run("test_again_note", "finish", "--again", "--note", "the leaves lighter")
@@ -290,6 +296,46 @@ fresh("test_again_none", status="done", prop="test_prop")
 code, out, rec, log = run("test_again_none", "finish", "--again", "--note", "the trunk thicker")
 check("made again with no model.py yet: failed before Claude starts", rec["status"] == "failed" and "nothing to make again from: no model.py yet" in rec["progress"]["step"]
       and "Claude Code: " not in log, rec["progress"]["step"])
+# 9d. several drawings on its picture ("Several of them"): the first run makes each a request of its
+# own, with the request's settings, its own name, height, picture and notes; the request done
+try:
+    from PIL import Image as _Image
+except ImportError:
+    _Image = None
+if _Image is not None:
+    fresh("test_split", several=True, height=9.0, images=["front.png"], notes="tall trees", style="accurate", details="the bark", mine=True)
+    pic = _Image.new("RGB", (200, 100), (240, 240, 240))
+    pic.paste((40, 90, 40), (20, 10, 80, 95))
+    pic.paste((90, 140, 60), (120, 50, 180, 95))
+    pic.save(mr.folder(SCRATCH, "test_split") / "front.png")
+    asked = " ".join(rc.prompt(mr.load(SCRATCH, "test_split")).split())
+    code, out, rec, log = run("test_split", "split")
+    kids = [mr.load(SCRATCH, c) for c in rec["children"]]
+    check("several drawings: split, each a request of its own, the request done", code == 0 and rec["status"] == "done"
+          and rec["children"] == ["test_split_tall_pine", "test_split_low_bush"] and rec["progress"]["step"] == "split into 2 requests"
+          and rec["reply"].startswith("Split into Tall pine"), f"{code} {rec['status']} {rec['children']} {rec['progress']['step']}")
+    pine = kids[0] if kids else mr.normal({})
+    with _Image.open(mr.folder(SCRATCH, pine["id"]) / pine["images"][0]) if kids else _Image.new("RGB", (1, 1)) as crop:
+        size = crop.size
+    check("  each with its drawing for a picture, its name and height, the request's settings, its notes and where it was", kids
+          and pine["images"] == ["tall_pine.png"] and size == (100, 100) and pine["height"] == 9.0 and kids[1]["height"] == 2.0
+          and pine["parent"] == "test_split" and pine["style"] == "accurate" and pine["details"] == "the bark" and pine["mine"] is True
+          and pine["kind"] == "prop" and pine["status"] == "waiting" and not pine["several"]
+          and pine["notes"].startswith("tall trees the darker one Tall pine is one of the drawings on Test Split's picture (private/requests/test_split/front.png"),
+          json.dumps({k: pine[k] for k in ("images", "height", "parent", "notes")}) + f" {size}")
+    check("  its prompt: find each drawing, a request each through split, no lines nor model", "Several of them" in asked
+          and "python tools/blender/model_requests.py split test_split PICTURE X0 Y0 X1 Y1" in asked and "the request's 9.0 is the tallest's" in asked
+          and "no lines, no model" in asked and "draw the design's lines over each picture" not in asked, asked[:2500])
+    check("  each of its requests made as any other, the whole recipe", rc.part_of(pine) == "all" and "Several of them" not in rc.prompt(pine))
+    code, out, rec, log = run("test_split", "split")
+    check("  started again once split: nothing run, the request as it was", rec["status"] == "done" and len(rec["children"]) == 2
+          and "Split already, into 2 requests" in log and log.count("Claude Code: ") == 1, rec["status"])
+    fresh("test_split_none", several=True, images=["front.png"])
+    pic.save(mr.folder(SCRATCH, "test_split_none") / "front.png")
+    code, out, rec, log = run("test_split_none", "quit")
+    check("  a split run that makes none: failed, and why", rec["status"] == "failed" and "without splitting it" in rec["progress"]["step"], rec["progress"]["step"])
+    check("  in the record's layout: several, parent and children last", list(mr.FIELDS)[-3:] == ["several", "parent", "children"])
+
 # 9c. a picture written over while a viewer shows it (Windows' Photos keeps what it shows mapped,
 # letting it be renamed but not written): the old one moved aside, the new one in its place
 if os.name == "nt":

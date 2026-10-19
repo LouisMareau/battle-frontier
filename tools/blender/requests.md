@@ -45,7 +45,10 @@ Rules that hold all the way:
   "prop": "",
   "reply": "",
   "comments": "",
-  "earlier": []
+  "earlier": [],
+  "several": false,
+  "parent": "",
+  "children": []
 }
 ```
 
@@ -87,6 +90,10 @@ are.)
   of that model for the next run, what to look for and what to change; `earlier`: the comments
   the runs that made it again were given, oldest first (below, "Made again, with the user's
   comments").
+- `several` (the window's **"Several of them: one asset per drawing"**): the pictures hold
+  several drawings of the same kind of asset (trees, bushes, rocks, plants, grass); the first
+  run splits it, each drawing a request of its own, listed in `children` (each one's `parent`
+  this request), and the request is done once split (below, "Several of them").
 
 The window and the files are written the same way (`content::to_text`'s layout), and either
 side reads the file again before writing it, so the editor and a session can both change a
@@ -204,6 +211,29 @@ box empties (unless the user has written others meanwhile); a run that fails or 
 leaves them in the box, to try again. A request with no `model.py`, or nothing said, fails at
 once, saying so.
 
+### Several of them
+
+An artwork with several drawings of the same kind of asset (five trees, a row of bushes, a
+sheet of rocks) makes several assets: tick **"Several of them: one asset per drawing"** before
+Start. That run doesn't model: Claude finds each drawing (all of it), names it after what it is,
+works out how tall it stands (the request's height is the tallest's, the others' by how they
+compare with it in the picture) and what's only its, and makes it a request of its own:
+
+```bash
+python tools/blender/model_requests.py split ID PICTURE X0 Y0 X1 Y1 --name "Tall pine" --height 9 [--notes "the darker one"]
+```
+
+The box (in the picture's pixels, or fractions of it) cropped is the new request's picture;
+it gets the request's settings (kind, style and details, pose, shapes, mine, the lines' check)
+and notes, its own notes, and where on the picture it was, the whole picture named for the
+style they share; its id is the request's followed by its name's. The request is done once
+split ("split into N requests"), its panel listing them under **Its requests**, with
+**Make them all**: each one not made yet is run in turn, the next starting once the last has
+ended (one at a time, as always; one whose lines wait for the user's check is left to them).
+Each is a request as any other, made by the whole recipe: its own log, its renders, **Make it
+again**, and a **Show it** back to the request it came from. Started again once split, the
+request runs nothing.
+
 Claude Code must be logged in for this, once (the desktop app's own login isn't the command
 line's): until then a run fails at once with "Claude Code isn't logged in", naming the
 program's path (it's often not on the PATH: `~/.local/bin/claude.exe`), and the request's
@@ -211,8 +241,8 @@ panel has a **Log in to Claude Code…** button that opens it in a terminal, in 
 type `/login` there, then Start again. `python tools/blender/test_run_claude.py` checks the whole of
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
 that crashes, one not logged in, one gone silent, one cancelled, one that stops after the
-lines for the user's check, one that goes on from them with the user's note, and one made
-again with the user's comments.
+lines for the user's check, one that goes on from them with the user's note, one made again
+with the user's comments, and one split into a request per drawing.
 
 ## The recipe
 

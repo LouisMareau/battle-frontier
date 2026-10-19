@@ -237,6 +237,14 @@ pub(super) struct ModelRequest {
     pub comments: String,
     /// the comments the runs that made it again were given, oldest first (made: kept so)
     pub earlier: Vec<String>,
+    /// the pictures hold several drawings of the same kind of asset (trees, bushes, rocks):
+    /// Start splits it, each drawing made a request of its own (`children`), and "Make them
+    /// all" has those made one after another
+    pub several: bool,
+    /// the request this one was split from (it's one of its drawings)
+    pub parent: String,
+    /// the requests it was split into, in the drawings' order
+    pub children: Vec<String>,
 }
 
 impl Default for ModelRequest {
@@ -263,6 +271,9 @@ impl Default for ModelRequest {
             reply: String::new(),
             comments: String::new(),
             earlier: vec![],
+            several: false,
+            parent: String::new(),
+            children: vec![],
         }
     }
 }
@@ -905,6 +916,8 @@ mod desk {
         children: Vec<std::process::Child>,
         /// what the user says is off in a request's lines, by id, for its next run
         pub lines_notes: HashMap<String, String>,
+        /// the requests to make one after another ("Make them all"), the next first
+        pub queue: Vec<String>,
         /// the Bones window: the user drawing the body's bones over a picture
         pub bones: Sketch,
         /// the runs that would have started (the tests start none)
@@ -1192,6 +1205,37 @@ mod desk {
             }
         }
 
+        /// "Make them all": the requests one was split into that aren't made yet, one after
+        /// another (the next once the last has ended, done or failed; one whose lines wait for
+        /// the user's check is left to them).
+        pub(in super::super) fn make_all(&mut self, id: &str) -> String {
+            let Some(parent) = self.list.iter().find(|r| r.id == id) else { return format!("{id} isn't there any more") };
+            let name = parent.name.clone();
+            let todo: Vec<String> = parent.children.iter().filter(|c| self.list.iter().any(|r| &r.id == *c && matches!(r.status, Status::Waiting | Status::Failed) && !r.lines_ready())).cloned().collect();
+            if todo.is_empty() {
+                return format!("{name}: its requests are all made (or being made)");
+            }
+            let n = todo.len();
+            self.queue = todo;
+            let first = self.next_in_queue();
+            format!("{name}: {n} to make, one after another{}", first.map(|s| format!(". {s}")).unwrap_or_default())
+        }
+
+        /// The next request in the queue started, when nothing is being made.
+        fn next_in_queue(&mut self) -> Option<String> {
+            if self.busy().is_some() {
+                return None;
+            }
+            while !self.queue.is_empty() {
+                let id = self.queue.remove(0);
+                let ready = self.list.iter().any(|r| r.id == id && matches!(r.status, Status::Waiting | Status::Failed) && !r.lines_ready());
+                if ready {
+                    return Some(self.start_run(&id, How::Whole));
+                }
+            }
+            None
+        }
+
         /// run_claude.py started on its own, reaped by `watch` as it ends (the tests keep what
         /// would have run instead).
         fn launch(&mut self, args: &[String]) -> Result<(), String> {
@@ -1293,16 +1337,22 @@ mod desk {
                     seen = snapshot(&root);
                 }
             }
-            if self.loaded && seen == self.seen {
-                return said;
+            if !(self.loaded && seen == self.seen) {
+                let before: HashMap<_, _> = self.seen.iter().cloned().collect();
+                for (file, t) in &seen {
+                    if before.get(file) != Some(t) {
+                        self.thumbs.forget(file);
+                    }
+                }
+                self.reload();
             }
-            let before: HashMap<_, _> = self.seen.iter().cloned().collect();
-            for (file, t) in &seen {
-                if before.get(file) != Some(t) {
-                    self.thumbs.forget(file);
+            // making them all: the next, once the last has ended (and its start was seen, which
+            // can be a look after its files changed)
+            if !self.queue.is_empty() {
+                if let Some(s) = self.next_in_queue() {
+                    said = Some(s);
                 }
             }
-            self.reload();
             said
         }
 
@@ -1455,6 +1505,10 @@ mod desk {
         /// A request's run button: Start (Start again, Make it again) or Cancel, and what was
         /// asked for. One run at a time.
         fn run_button(&self, ui: &mut egui::Ui, r: &ModelRequest, short: bool) -> Option<Run> {
+            if !r.children.is_empty() {
+                hint(ui, &format!("split into {}", r.children.len()));
+                return None;
+            }
             let starting = self.starting.as_ref().is_some_and(|(id, _)| *id == r.id);
             if r.status == Status::InProgress || starting {
                 let cancelling = self.cancelling.as_ref().is_some_and(|(id, _)| *id == r.id);
@@ -1470,6 +1524,7 @@ mod desk {
                 _ => "Start",
             };
             let about = match (r.lines_ready(), r.check_lines) {
+                _ if r.several && r.parent.is_empty() => "Claude Code finds each drawing on the pictures and makes it a request of its own; Make them all then has them made one after another",
                 _ if r.status == Status::Done => "Claude Code makes it once more, from the pictures; to change the model it made instead, say what in \"Make it again\" below",
                 (true, true) => "Claude Code starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again",
                 (true, false) => "Claude Code starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time",
@@ -1571,6 +1626,8 @@ mod desk {
         /// say, a run asked for.
         fn pane(&mut self, ui: &mut egui::Ui, content: &Content, name_focused: &mut bool) -> (Option<String>, Option<String>, Option<Run>) {
             let (mut use_prop, mut said, mut asked) = (None, None, None);
+            // another request to show (a split one's, the one it was split from)
+            let mut show: Option<String> = None;
             let Some(i) = self.selected.as_ref().and_then(|id| self.list.iter().position(|r| &r.id == id)) else {
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
@@ -1691,6 +1748,27 @@ mod desk {
                 );
                 mark("uiRequestCheckLines", &check);
                 ui.end_row();
+                if r.children.is_empty() && r.parent.is_empty() {
+                    ui.label("");
+                    let several = ui.checkbox(&mut r.several, "Several of them: one asset per drawing").on_hover_text(
+                        "The pictures hold several drawings of the same kind of asset (trees, bushes, rocks, plants): Start finds each one and makes it a request of its own, with these settings; Make them all then has them made one after another",
+                    );
+                    mark("uiRequestSeveral", &several);
+                    ui.end_row();
+                }
+                if !r.parent.is_empty() {
+                    ui.label("From");
+                    ui.horizontal(|ui| {
+                        let name = self.list.iter().find(|q| q.id == r.parent).map(|q| q.name.clone()).unwrap_or_else(|| r.parent.clone());
+                        ui.label(RichText::new(format!("one of {name}'s drawings")).size(12.0));
+                        let up = ui.small_button("Show it").on_hover_text("The request it was split from");
+                        mark("uiRequestParent", &up);
+                        if up.clicked() {
+                            show = Some(r.parent.clone());
+                        }
+                    });
+                    ui.end_row();
+                }
                 ui.label("Status");
                 ui.horizontal(|ui| {
                     chip(ui, &r);
@@ -1700,6 +1778,39 @@ mod desk {
                 });
                 ui.end_row();
             });
+            if !r.children.is_empty() {
+                // split: its requests, each made by its own run
+                section(ui, &format!("Its requests ({})", r.children.len()));
+                hint(ui, "One per drawing on its pictures, each with these settings and its own picture, name and height: made one after another, each a request as any other (its log, Make it again).");
+                for c in &r.children {
+                    let Some(q) = self.list.iter().find(|q| &q.id == c) else { continue };
+                    ui.horizontal(|ui| {
+                        chip(ui, q);
+                        ui.label(RichText::new(format!("{} · {} cells", q.name, q.height)).size(12.0));
+                        let open = ui.small_button("Show").on_hover_text("Its own panel: its picture, its log, its model");
+                        mark(&format!("uiRequestChild_{c}"), &open);
+                        if open.clicked() {
+                            show = Some(c.clone());
+                        }
+                    });
+                }
+                let busy = self.busy();
+                let left = r.children.iter().filter(|c| self.list.iter().any(|q| &q.id == *c && matches!(q.status, Status::Waiting | Status::Failed) && !q.lines_ready())).count();
+                let all = ui
+                    .add_enabled(busy.is_none() && left > 0, egui::Button::new(RichText::new(format!("Make them all ({left})")).strong()))
+                    .on_hover_text("Claude Code makes each one not made yet, one after another: the next starts once the last has ended")
+                    .on_disabled_hover_text(match busy {
+                        Some(b) => format!("One at a time: {b} is being made"),
+                        None => "All made (or waiting for your check of their lines)".into(),
+                    });
+                mark("uiRequestMakeAll", &all);
+                if all.clicked() {
+                    asked = Some(Run::MakeAll(r.id.clone()));
+                }
+                if !self.queue.is_empty() {
+                    hint(ui, &format!("{} more to make after this one", self.queue.len()));
+                }
+            }
             if r.status == Status::InProgress {
                 section(ui, "Being modelled");
                 let shown = bar(ui, &r, 330.0, 18.0);
@@ -1869,6 +1980,10 @@ mod desk {
                 if let Err(e) = self.keep(&before, r) {
                     said = Some(e);
                 }
+            }
+            if let Some(id) = show {
+                self.selected = Some(id);
+                self.deleting = false;
             }
             (use_prop, said, asked)
         }
@@ -2188,6 +2303,8 @@ mod desk {
         /// "Make it again with these comments": from the model the last run made, changed as
         /// the user's comments say
         Again(String),
+        /// "Make them all": the requests a request was split into, one after another
+        MakeAll(String),
         Cancel(String),
     }
 
@@ -2293,6 +2410,7 @@ mod desk {
                     Some(Run::Start(id)) => said = Some(d.start_run(&id, How::Whole)),
                     Some(Run::GoOn(id)) => said = Some(d.start_run(&id, How::GoOn)),
                     Some(Run::Again(id)) => said = Some(d.start_run(&id, How::Again)),
+                    Some(Run::MakeAll(id)) => said = Some(d.make_all(&id)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     None => {}
                 }
@@ -2401,7 +2519,10 @@ mod tests {
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"mine\": true,\n  \"check_lines\": false,\n  \"status\""), "the lines' check after mine, as model_requests.py has it: {text}");
-        assert!(text.ends_with("  \"reply\": \"\",\n  \"comments\": \"\",\n  \"earlier\": []\n}\n"), "the comments for the next run last, as model_requests.py has them: {text}");
+        assert!(
+            text.ends_with("  \"reply\": \"\",\n  \"comments\": \"\",\n  \"earlier\": [],\n  \"several\": false,\n  \"parent\": \"\",\n  \"children\": []\n}\n"),
+            "the comments for the next run after the reply, then several of them, as model_requests.py has them: {text}"
+        );
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
@@ -2917,6 +3038,67 @@ mod tests {
         assert!(req.said.take().unwrap().contains("makes tall_tree again from its last model"));
         // the status row's Make it again stays a whole run, from the pictures
         assert_eq!(read(&root, "tall_tree").unwrap().earlier, ["fewer branches low down"], "the comments told before kept");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn several_drawings_are_split_then_made_one_after_another() {
+        let root = scratch("several");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Shrubs.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("shrubs".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiRequestMakeAll").is_none(), "nothing split yet");
+        // "Several of them", ticked: kept in its request.json
+        click(&ctx, &mut req, "uiRequestSeveral");
+        assert!(read(&root, "shrubs").unwrap().several, "the box ticked");
+        // Start: run_claude.py on it (which splits it)
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestStart_shrubs");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "shrubs"]]);
+        // the run makes a request of each drawing, and the request is done once split
+        let began = now_secs();
+        for (id, name) in [("shrubs_tall_one", "Tall one"), ("shrubs_low_one", "Low one")] {
+            save(&root, &ModelRequest { id: id.into(), name: name.into(), kind: Kind::Prop, parent: "shrubs".into(), images: vec!["drawing.png".into()], ..Default::default() }).unwrap();
+        }
+        let mut split = read(&root, "shrubs").unwrap();
+        split.status = Status::Done;
+        split.progress = Progress { step: "split into 2 requests".into(), done: 1.0, started: began, minutes: 2.0 };
+        split.children = vec!["shrubs_tall_one".into(), "shrubs_low_one".into()];
+        save(&root, &split).unwrap();
+        req.watch(1.0e9);
+        req.watch(1.5e9);
+        assert!(req.desk().busy().is_none(), "the split run seen to start and end");
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestStart_shrubs").is_none(), "split: no Start of its own, its requests have theirs");
+        assert!(marked("uiRequestChild_shrubs_tall_one").is_some() && marked("uiRequestChild_shrubs_low_one").is_some(), "its requests listed");
+        // Make them all: the first one now, the next once it has ended
+        click(&ctx, &mut req, "uiRequestMakeAll");
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "shrubs_tall_one"]);
+        assert_eq!(req.desk().queue, ["shrubs_low_one"]);
+        let mut first = read(&root, "shrubs_tall_one").unwrap();
+        first.status = Status::Done;
+        first.progress = Progress { step: "done".into(), done: 1.0, started: now_secs(), minutes: 9.0 };
+        save(&root, &first).unwrap();
+        req.watch(2.0e9);
+        req.watch(2.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "shrubs_low_one"], "the next one, once the first was made");
+        assert!(req.desk().queue.is_empty());
+        // one of them shows where it came from
+        req.desk().selected = Some("shrubs_low_one".into());
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestParent");
+        assert_eq!(req.desk().selected.as_deref(), Some("shrubs"));
         std::fs::remove_dir_all(&root).ok();
     }
 

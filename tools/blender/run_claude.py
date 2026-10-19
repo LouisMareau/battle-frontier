@@ -4,6 +4,11 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
     python tools/blender/run_claude.py ID --again [--note "what to change"]
 
+A request whose pictures hold several drawings of the same kind of asset ("several": trees,
+bushes, rocks...) is split by its first run: Claude finds each drawing and makes it a request
+of its own (model_requests.py split), which the editor's "Make them all" then has made one
+after another; the request itself is done once split.
+
 Claude Code (`claude`: CLAUDE names the program, else the PATH, else ~/.local/bin) gets the
 recipe (requests.md) for that one request and only the tools it needs, set in the request's
 claude-settings.json: reading the project, writing in the request's folder, Blender through
@@ -200,6 +205,27 @@ AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its 
   the lines set goes into lines.json first (the pictures' lines, and the front and the side
   with them; run python tools/blender/model_requests.py lines {id} again);
 """
+# a request whose pictures hold several drawings of the same kind of asset: split first
+SPLIT = """- its pictures hold several drawings of the same kind of asset (the request says "several of
+  them": one asset per drawing), each to be made a request of its own, modelled one after
+  another: find each drawing of it (all of each: a tree's crown and its trunk's foot, a bush
+  and the stems it stands on), and give each a short name saying what it is ("Tall pine",
+  "Round bush", "Flat rock"), how tall it stands in cells (the request's {height} is the
+  tallest's; each other by how it compares with that one in the picture, as they stand in
+  it), and what's only its (its colours, a marking, a part the others don't have);
+- for each, in the pictures' order (left to right, then top to bottom):
+  python tools/blender/model_requests.py split {id} PICTURE X0 Y0 X1 Y1 --name "NAME" --height H --notes "what's only its"
+  the box a little bigger than the drawing, all of it in and as little of the next one as can
+  be, in the picture's pixels (zoom with no box gives its size); then look at the picture it
+  writes for the new request, to be sure the whole drawing is in it (split it again, a better
+  box, if not: the request made wrong is said so in your reply);
+- that's all: no lines, no model (each new request is made by a run of its own). The same
+  drawing twice is one request; a drawing of something else (a figure, a building, a word)
+  none;
+"""
+SPLIT_RUN = (HEAD + "This one request is split first (tools/blender/requests.md, \"Several of them\"; it's started already):\n"
+             + READ + SPLIT + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's name and height, and\n"
+                                                    "anything on the pictures you left out, and why."))
 AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made again from what the last run made,\n"
              "with the user's comments on it (requests.md, \"Made again, with the user's comments\"; it's started\n"
              "already):\n" + READ + AGAIN
@@ -293,8 +319,15 @@ def settings_lines(record):
 def part_of(record, go_on=False, again=False):
     """Which part of the recipe a run does: "all" of it; "lines", up to the front and the side,
     for a request that checks its lines first; "model", from the model on, once they're checked;
-    "again", the model the last run made, made again with the user's comments on it."""
-    return "again" if again else "model" if go_on else "lines" if record["check_lines"] else "all"
+    "again", the model the last run made, made again with the user's comments on it; "split",
+    a request whose pictures hold several of the same kind of asset, each made a request."""
+    if again:
+        return "again"
+    if go_on:
+        return "model"
+    if record["several"] and not record["parent"]:
+        return "split"
+    return "lines" if record["check_lines"] else "all"
 
 
 def indented(text):
@@ -330,7 +363,7 @@ def prompt(record, go_on=False, note="", again=False):
     told = [c.strip() for c in record["earlier"] if str(c).strip()]
     earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
-    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_RUN}[part_of(record, go_on, again)]
+    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_RUN, "split": SPLIT_RUN}[part_of(record, go_on, again)]
     return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said)
@@ -468,6 +501,9 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
     if again and not note:
         return mr.fail(root, rid, "nothing to change: say what in the comments first")["status"]
+    if part == "split" and record["children"]:
+        say(f"Split already, into {len(record['children'])} requests: nothing to run (the editor's Make them all makes them)")
+        return record["status"]
     claude = find_claude()
     if not claude:
         return mr.fail(root, rid, "Claude Code not found: install it, or set CLAUDE to the claude program")["status"]
@@ -491,6 +527,8 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
     elif part == "again":
         say(f"This run makes it again from the last run's model, with the user's comments: {note}")
+    elif part == "split":
+        say("This run splits the request: each drawing on its pictures made a request of its own (\"Several of them\")")
     if part not in ("model", "again") and note.strip():
         say(f"What the user says is off in the lines there: {note.strip()}")
     drawn = rl.user_bones(record)
@@ -561,6 +599,15 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         return mr.fail(root, rid, f"no word from Claude for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
     record = mr.load(root, rid)
     result = state["result"] or {}
+    last = str(result.get("result") or "").strip()
+    if part == "split" and record["children"] and proc.returncode == 0 and not result.get("is_error"):
+        # split: done, its requests to make
+        p = dict(record["progress"])
+        took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
+        p.update(step=f"split into {len(record['children'])} requests", done=1.0, minutes=float(round(took, 1)))
+        mr.update(root, rid, status="done", progress=p, **({"reply": last} if last else {}))
+        say(f"Split into {len(record['children'])} requests: {', '.join(record['children'])}")
+        return "done"
     if record["status"] == "done":
         say(f"Done: the prop {record['prop']}")
         if again:
@@ -571,7 +618,6 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
                 fields["comments"] = ""
             mr.update(root, rid, **fields)
         return "done"
-    last = str(result.get("result") or "").strip()
     if last:
         # what it says back (for a check, what it guessed in the lines): the window shows it
         mr.update(root, rid, reply=last)
@@ -585,6 +631,8 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         return mr.wait_for_check(root, rid)["status"]
     elif part == "lines":
         reason = "Claude ended without drawing the front and the side (profiles.png)"
+    elif part == "split":
+        reason = "Claude ended without splitting it (no request made of a drawing)"
     else:
         reason = "Claude ended without adding the model"
     return mr.fail(root, rid, reason)["status"]

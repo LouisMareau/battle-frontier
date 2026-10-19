@@ -70,6 +70,12 @@ FIELDS = {
     # again with these comments"), and what the runs made again before were told, oldest first
     "comments": "",
     "earlier": [],
+    # the pictures hold several drawings of the same kind of asset (trees, bushes, rocks): the
+    # first run splits it, each drawing a request of its own (`children`, each one's `parent`
+    # this one), made one after another
+    "several": False,
+    "parent": "",
+    "children": [],
 }
 KINDS = ("creature", "prop")
 STYLES = ("smooth", "low_poly", "accurate")
@@ -262,7 +268,11 @@ def estimate(record, part="all"):
     """Minutes a request takes to model, by default: a session's whole time on it (reading the
     pictures, the script, the tries and renders, the rig, adding it); with `part` "lines" only
     up to the front and the side (a run that stops for the user's check), "model" the rest,
-    "again" a model made again from the last one, with the user's comments (about as long)."""
+    "again" a model made again from the last one, with the user's comments (about as long),
+    "split" the drawings found and made requests of their own (a few minutes, whatever the
+    style)."""
+    if part == "split":
+        return 3.0
     # what the first runs took: a creature about 10 minutes, a small one 2
     minutes = 12.0 if record["kind"] == "creature" else 8.0
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
@@ -381,6 +391,33 @@ def new(root, name, pictures, **fields):
         images.append(out)
     record = dict(FIELDS, id=rid, name=name, images=images, **fields)
     return save(root, normal(record))
+
+
+def split(root, rid, picture, box, name, height=None, notes=""):
+    """One of the drawings on a request's picture (one whose pictures hold several of the same
+    kind of asset: `several`) made a request of its own: that box of the picture its picture
+    (in pixels, or fractions of the picture when all four are at most 1), named, `height`
+    cells tall (else the request's), with the request's settings and notes, `notes` of its own
+    and where on the picture it was; its `parent` the request, whose `children` gets it.
+    Returns the new request."""
+    Image = _pillow("split")
+    parent = load(root, rid)
+    img = _picture(root, rid, picture, Image)
+    x0, y0, x1, y1 = _box(img.size, box)
+    cid = free_id(root, f"{rid}_{slug(name)}")
+    d = folder(root, cid)
+    d.mkdir(parents=True)
+    out = f"{slug(name) or 'drawing'}.png"
+    img.crop((x0, y0, x1, y1)).convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB").save(d / out)
+    whence = (f"{name} is one of the drawings on {parent['name']}'s picture (private/requests/{rid}/{picture}, from ({x0}, {y0}) to "
+              f"({x1}, {y1})): model this one only; the whole picture shows the style it shares with the others.")
+    kept = {k: parent[k] for k in ("kind", "style", "details", "pose", "shapes", "mine", "check_lines")}
+    record = dict(FIELDS, id=cid, name=name, images=[out], parent=rid, height=float(height) if height else parent["height"],
+                  notes=" ".join(t for t in (parent["notes"].strip(), notes.strip(), whence) if t), **kept)
+    save(root, normal(record))
+    update(root, rid, children=load(root, rid)["children"] + [cid])
+    log(root, rid, f"Split off {cid}: {name}, {record['height']} cells, from {picture} ({x0}, {y0}) to ({x1}, {y1})")
+    return load(root, cid)
 
 
 # ---------------------------------------------------------------- a closer look at a picture
@@ -619,6 +656,15 @@ def main(argv):
             print(e)
             return 1
         print(said)
+    elif verb == "split":
+        height = option("--height")
+        name = option("--name")
+        notes = option("--notes", "")
+        if not name or len(argv) < 6:
+            print("split ID PICTURE X0 Y0 X1 Y1 --name NAME [--height H] [--notes \"what's only its\"]")
+            return 1
+        r = split(root, argv[0], argv[1], [float(v) for v in argv[2:6]], name, height, notes)
+        print(f"{r['id']}: a new request, {r['name']}, {r['height']} cells, its picture {r['images'][0]} (private/requests/{r['id']}/)")
     elif verb == "lines":
         import request_lines as rl
         try:
