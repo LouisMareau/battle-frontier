@@ -2,6 +2,7 @@
 Requests window starts with its Start button (and stops with Cancel), or by hand:
 
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
+    python tools/blender/run_claude.py ID --again [--note "what to change"]
 
 Claude Code (`claude`: CLAUDE names the program, else the PATH, else ~/.local/bin) gets the
 recipe (requests.md) for that one request and only the tools it needs, set in the request's
@@ -23,6 +24,12 @@ Claude stop once it has drawn the lines and the front and the side (profiles.png
 ends with the request waiting for the user's check ("lines ready: check them"). --go-on (the
 editor's "The lines look right: go on") runs again from the model, on those lines; --note is
 what the user says is off in them, which Claude fixes first (going on, or starting again).
+
+A request made once can be made again with the user's comments on it (the editor's "Make it
+again with these comments": request.json's "comments", or --note): --again has Claude start
+from what the last run made (its model.py, its lines, its renders, what it said back) and
+change what the comments say, keeping the rest. Once it's done, the comments join "earlier",
+which the runs made again after that are told too.
 """
 import json
 import os
@@ -177,6 +184,28 @@ LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from
                                                            "lines you're unsure of."))
 GO_ON_RUN = (HEAD + "Follow tools/blender/requests.md for this one request from its step 6, the model (it's started\n"
              "already):\n" + READ + CHECKED + MODEL + RULES.replace("{end}", MADE))
+# a request made once, made again with the user's comments on it ({said}), from what the last
+# run made ({reply}: what it said back; {earlier}: what the runs made again before were told)
+AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its parts listed at its top,
+  with the design and the drawing sorted as comments; design.py too when there is one, which
+  model.py runs first) on lines.json (drawn over the pictures in lines_PICTURE.png, the front
+  and the side in profiles.png). Its renders are preview_*.png and compare.png, and it's in the
+  game as the prop {prop}. What it said back:
+{reply}
+  Read model.py, and look at the renders and the drawings, before changing anything;
+{earlier}- the user has looked at that model, and says for this run:
+{said}
+  Make those changes, and what follows from them, keeping the rest as the last run made it:
+  start from its model.py, never over from nothing. A change to the shapes or the proportions
+  the lines set goes into lines.json first (the pictures' lines, and the front and the side
+  with them; run python tools/blender/model_requests.py lines {id} again);
+"""
+AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made again from what the last run made,\n"
+             "with the user's comments on it (requests.md, \"Made again, with the user's comments\"; it's started\n"
+             "already):\n" + READ + AGAIN
+             + MODEL.replace("- write private/requests/{id}/model.py with", "- change private/requests/{id}/model.py, the last run's, with", 1)
+             + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
+                                      "you left as it was."))
 
 
 def find_claude():
@@ -261,18 +290,26 @@ def settings_lines(record):
     return "\n".join(out)
 
 
-def part_of(record, go_on=False):
+def part_of(record, go_on=False, again=False):
     """Which part of the recipe a run does: "all" of it; "lines", up to the front and the side,
-    for a request that checks its lines first; "model", from the model on, once they're checked."""
-    return "model" if go_on else "lines" if record["check_lines"] else "all"
+    for a request that checks its lines first; "model", from the model on, once they're checked;
+    "again", the model the last run made, made again with the user's comments on it."""
+    return "again" if again else "model" if go_on else "lines" if record["check_lines"] else "all"
 
 
-def prompt(record, go_on=False, note=""):
+def indented(text):
+    """A text of the user's (or the last run's) in the prompt, its lines indented under the
+    one that says whose it is."""
+    return "\n".join("    " + line.rstrip() for line in text.strip().splitlines())
+
+
+def prompt(record, go_on=False, note="", again=False):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
-    user says is off in the lines (`note`, from the window's check) fixed first."""
+    user says is off in the lines (`note`, from the window's check) fixed first; made again
+    (`again`), what the user says of the last run's model (`note`, else the record's comments)."""
     rid = record["id"]
-    note = note.strip()
-    said = "\n".join("    " + line.rstrip() for line in note.splitlines())
+    note = (note.strip() or record["comments"].strip()) if again else note.strip()
+    said = indented(note)
     if note:
         checked = (f"What the user says is off in them:\n{said}\n"
                    "  Fix that in lines.json first (the pictures' lines, and the front and the side with them),\n"
@@ -289,9 +326,14 @@ def prompt(record, go_on=False, note=""):
     # the rig on the bones carried into the front and the side
     rig = (" on the user's bones (kit.rig(kit.parts(), chains) with chains = job.chains(): the front's and the side's \"bone\" "
            "lines as chains in cells, the body's first)") if drawn else ""
-    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN}[part_of(record, go_on)]
+    # made again: what the runs made again before were told (made: keep them so)
+    told = [c.strip() for c in record["earlier"] if str(c).strip()]
+    earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
+               + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
+    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_RUN}[part_of(record, go_on, again)]
     return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
-                           settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig)
+                           settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
+                           prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said)
 
 
 def bones_drawn(drawn):
@@ -402,16 +444,19 @@ def stop_tree(proc):
             proc.kill()
 
 
-def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
-    the lines the user checked, `note` saying what's off in them."""
+    the lines the user checked, `note` saying what's off in them. `again`: the model the last
+    run made, made again as the user's comments say (`note`, else the record's)."""
     record = mr.load(root, rid)
     here = mr.folder(root, rid)
     stop = here / "stop"
     if stop.exists():
         stop.unlink()
     began = time.time()
-    part = part_of(record, go_on)
+    part = part_of(record, go_on, again)
+    if again:
+        note = note.strip() or record["comments"].strip()
 
     def say(text):
         mr.log(root, rid, text)
@@ -419,6 +464,10 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
     say("———————— a run starts ————————")
     if go_on and not (here / "lines.json").is_file():
         return mr.fail(root, rid, "nothing to go on from: no lines.json yet (Start draws the lines first)")["status"]
+    if again and not (here / "model.py").is_file():
+        return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
+    if again and not note:
+        return mr.fail(root, rid, "nothing to change: say what in the comments first")["status"]
     claude = find_claude()
     if not claude:
         return mr.fail(root, rid, "Claude Code not found: install it, or set CLAUDE to the claude program")["status"]
@@ -432,7 +481,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    text = prompt(record, go_on, note)
+    text = prompt(record, go_on, note, again)
     mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
@@ -440,7 +489,9 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
         say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
     elif part == "model":
         say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
-    if part != "model" and note.strip():
+    elif part == "again":
+        say(f"This run makes it again from the last run's model, with the user's comments: {note}")
+    if part not in ("model", "again") and note.strip():
         say(f"What the user says is off in the lines there: {note.strip()}")
     drawn = rl.user_bones(record)
     if drawn:
@@ -512,6 +563,13 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note=""):
     result = state["result"] or {}
     if record["status"] == "done":
         say(f"Done: the prop {record['prop']}")
+        if again:
+            # the comments made: told to the runs made again after this one; the field emptied
+            # unless the user has written others meanwhile
+            fields = {"earlier": record["earlier"] + [note]}
+            if record["comments"].strip() in ("", note):
+                fields["comments"] = ""
+            mr.update(root, rid, **fields)
         return "done"
     last = str(result.get("result") or "").strip()
     if last:
@@ -546,7 +604,7 @@ def main(argv):
     if "--note" in argv:
         note = argv[argv.index("--note") + 1]
     root = mr.find_root(Path.cwd())
-    status = run(root, rid, model, quiet, "--go-on" in argv, note)
+    status = run(root, rid, model, quiet, "--go-on" in argv, note, "--again" in argv)
     print(f"{rid}: {status}" + (f", {mr.LINES_READY}" if status == "waiting" and mr.lines_ready(mr.load(root, rid)) else ""))
     return 0 if status in ("done", "waiting") else 1
 

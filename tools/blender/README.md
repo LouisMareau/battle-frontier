@@ -42,7 +42,9 @@ it blocks the way, and for windows the sill height. The add-on:
   as Blender's own glTF exporter writes them (untick "Apply modifiers" to keep shape keys),
   and its lights; never a camera (the game has one camera, its own),
 - measures it: its footprint in cells (doors and windows fit openings as wide as their
-  footprint) and its height,
+  footprint; a tree's is its foot's, what stands below a character's height, its trunk and not
+  its crown, which spreads over the cells round it, walked under) and its height, and stands it
+  on the middle of that footprint,
 - writes `content/data/props/<id>.json` laid out exactly as `content format` does, keeping
   what an existing record already had (its stand-in shapes, for instance), with:
   - its **light**, from the first spot or point light selected: 1000 W in Blender is an
@@ -76,7 +78,9 @@ The same as the engine's, so nothing needs converting:
   to fill a ramp's length). It stays where it was made, and keeps its footprint, whatever
   pokes out past its cell (a pool at its foot, mud spilling over its top);
 - its front faces the front view (-Y in Blender, +Z in glTF and in the engine);
-- colours: materials' base colour, vertex colours and base colour textures are all kept;
+- colours: materials' base colour, vertex colours and base colour textures are all kept (a
+  mesh painted only for the wind goes out with a white colour layer first: Blender starts a new
+  layer as a copy of the active one, which would tint the model by the wind's paint);
 - the wind: what it moves is painted for it in Vertex Paint, on a colour layer named
   "wind": its R how far a point sways (0 at its root, 1 at the tips), its G how much it
   flutters (leaves, petals, fur, a cloth's edge), its B its phase (different values on
@@ -127,8 +131,13 @@ lines first"** ticked (`check_lines`), the run stops once the lines and the fron
 are drawn and the request waits for the user ("lines ready: check them"); the window shows the
 lines with a note for what's off and **The lines look right: go on**, which runs
 `run_claude.py ID --go-on [--note "..."]`: the lines kept, the note's fixes made first, then
-on from the model (requests.md, "Checking the lines first"). `test_run_claude.py` checks the
-runs against a stand-in for Claude, both halves of a checked one included.
+on from the model (requests.md, "Checking the lines first"). Once a run has made the model, the
+panel's **Make it again with these comments** runs `run_claude.py ID --again`: Claude starts
+from what the last run made (its `model.py`, its lines and renders, what it said back) and
+changes what the user's comments say, keeping the rest; the comments are kept in
+`request.json` (`comments`, then `earlier` once made, which the runs after it are told too).
+`test_run_claude.py` checks the runs against a stand-in for Claude, both halves of a checked
+one and one made again included.
 
 ## Without the add-on
 

@@ -607,7 +607,10 @@ def wind_ready(meshes):
                     del holder["bf_wind"]
             continue
         if len(layers) == 1:
-            layers.new(name="Col")
+            # white: a new layer starts as a copy of the one active (the wind's paint, which
+            # would tint the whole model by it)
+            white = layers.new(name="Col")
+            white.data.foreach_set("color", [1.0] * (len(white.data) * 4))
             added.append(o)
         at = [layer.name for layer in layers].index(WIND)
         if at != 1:
@@ -656,7 +659,11 @@ def paint_wind(o, along, sway=1.0, flutter=0.0, seed=1, keep=None):
     vertex's index), else every one is painted."""
     me = o.data
     layers = colour_layers(me)
-    layer = layers.get(WIND) or layers.new(name=WIND)
+    layer = layers.get(WIND)
+    if layer is None:
+        # still to start with (a new layer starts as a copy of the colours)
+        layer = layers.new(name=WIND)
+        layer.data.foreach_set("color", [0.0, 0.0, 0.0, 1.0] * len(layer.data))
     before = [0.0] * (len(me.loops) * 4)
     layer.data.foreach_get("color", before)
     part = _islands(me)
@@ -873,14 +880,68 @@ class BF_OT_show_bounds(bpy.types.Operator):
         lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
         hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
         size = hi - lo
-        footprint = [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))]
+        # a tree's cells: its foot's (Add to the project measures it so)
+        tree = any(o.get("bf_category") == "tree" for o in [context.active_object, *meshes] if o is not None)
+        base = foot(meshes, character_height(project_root(search=False) or ".")) if tree else None
+        (flo, fhi) = base or ((lo.x, lo.y), (hi.x, hi.y))
+        footprint = cells_of(flo, fhi)
         name = (context.active_object or meshes[0]).name
-        make_bounds(f"{name} bounds", footprint, size.z, context.collection, centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
-        self.report({"INFO"}, f"{footprint[0]} x {footprint[1]} cells, {size.z:.2f} high")
+        make_bounds(f"{name} bounds", footprint, size.z, context.collection, centre=((flo[0] + fhi[0]) / 2, (flo[1] + fhi[1]) / 2, lo.z))
+        self.report({"INFO"}, f"{footprint[0]} x {footprint[1]} cells{' (its foot)' if base else ''}, {size.z:.2f} high")
         return {"FINISHED"}
 
 
 ASSET_TYPES = {"MESH", "EMPTY", "CURVE", "ARMATURE", "LIGHT", "SPEAKER"}
+
+
+def character_height(root):
+    """How tall the game's characters stand (content/data/settings/world.json), 1.5 cells
+    when it doesn't say."""
+    try:
+        world = json.loads((Path(root) / "content" / "data" / "settings" / "world.json").read_text(encoding="utf-8"))
+        return float(world.get("character_height", 1.5))
+    except (OSError, ValueError, TypeError, AttributeError):
+        return 1.5
+
+
+def foot(meshes, up):
+    """Where a tree stands: the least and most x and y of what of `meshes` (in the world, as
+    they are now) is no higher than `up` over their lowest point (a character's height: its
+    trunk's foot; the crown spreading above, walked under, left out), each edge crossing that
+    height cut there. None for no mesh."""
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    shapes = []
+    for o in meshes:
+        ev = o.evaluated_get(depsgraph)
+        me = ev.to_mesh()
+        try:
+            m = ev.matrix_world
+            shapes.append(([m @ v.co for v in me.vertices], [tuple(e.vertices) for e in me.edges]))
+        finally:
+            ev.to_mesh_clear()
+    zs = [p.z for pts, _ in shapes for p in pts]
+    if not zs:
+        return None
+    top = min(zs) + up
+    xs, ys = [], []
+    for pts, edges in shapes:
+        for p in pts:
+            if p.z <= top:
+                xs.append(p.x)
+                ys.append(p.y)
+        for a, b in edges:
+            a, b = pts[a], pts[b]
+            if (a.z - top) * (b.z - top) < 0:
+                t = (top - a.z) / (b.z - a.z)
+                xs.append(a.x + (b.x - a.x) * t)
+                ys.append(a.y + (b.y - a.y) * t)
+    return (min(xs), min(ys)), (max(xs), max(ys))
+
+
+def cells_of(lo, hi):
+    """The cells a size covers along x and y (the engine's x and z), a little short of a whole
+    one rounding down."""
+    return [max(1, math.ceil(hi[0] - lo[0] - 0.05)), max(1, math.ceil(hi[1] - lo[1] - 0.05))]
 
 
 def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_modifiers=True):
@@ -916,6 +977,9 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
         record.pop("ramp", None)
     along = (facts.get("category") or record.get("category")) == "ramp" or bool(record.get("ramp"))
     recentre = recentre and not along
+    # a tree stands on its trunk: its cells are its foot's, up to a character's height, the
+    # crown spreading over the cells round it, walked under
+    tree = (facts.get("category") or record.get("category")) == "tree" and not along
     # its size, in the world, at rest: the model is written at rest (a rig's animation poses
     # it), so the pose it's in now doesn't count
     posed = [m for o in meshes for m in o.modifiers if m.type == "ARMATURE" and m.show_viewport]
@@ -923,12 +987,15 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
         m.show_viewport = False
     context.view_layer.update()
     corners = [o.matrix_world @ Vector(c) for o in meshes for c in o.bound_box]
+    base = foot(meshes, character_height(root)) if tree else None
     for m in posed:
         m.show_viewport = True
     context.view_layer.update()
     lo = Vector((min(c.x for c in corners), min(c.y for c in corners), min(c.z for c in corners)))
     hi = Vector((max(c.x for c in corners), max(c.y for c in corners), max(c.z for c in corners)))
-    offset = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)) if recentre else Vector((0, 0, 0))
+    # the middle of what it stands on: its footprint's (a tree's foot, else all of it)
+    (flo, fhi) = base or ((lo.x, lo.y), (hi.x, hi.y))
+    offset = Vector(((flo[0] + fhi[0]) / 2, (flo[1] + fhi[1]) / 2, lo.z)) if recentre else Vector((0, 0, 0))
     tops = [o for o in objects if o.parent not in objects]
     for o in tops:
         o.location -= offset
@@ -956,8 +1023,8 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
         context.view_layer.objects.active = active
         context.view_layer.update()
     size = hi - lo
-    # cells it covers along the engine's x and z (Blender's x and y)
-    footprint = [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))]
+    # cells it covers along the engine's x and z (Blender's x and y); a tree, its foot's
+    footprint = cells_of(flo, fhi)
     if along:
         footprint = record.get("footprint") or [footprint[0], 1]
         record.setdefault("ramp", {"along": "stretch", "rise": 1.0})
@@ -984,7 +1051,7 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     record_path.parent.mkdir(parents=True, exist_ok=True)
     record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
     tag(meshes, record)
-    centre = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not recentre else (offset.x, offset.y, offset.z)
+    centre = ((flo[0] + fhi[0]) / 2, (flo[1] + fhi[1]) / 2, lo.z) if not recentre else (offset.x, offset.y, offset.z)
     make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection, centre=(0.0, 0.0, 0.0) if along else centre)
     extras = ", with its light" if lights else ""
     extras += ", with its sound" if record.get("sound") and speakers else ""

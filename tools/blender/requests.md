@@ -43,7 +43,9 @@ Rules that hold all the way:
   "lines": [],
   "previews": [],
   "prop": "",
-  "reply": ""
+  "reply": "",
+  "comments": "",
+  "earlier": []
 }
 ```
 
@@ -81,6 +83,10 @@ are.)
   model, in the folder; the window shows them as they come.
 - `previews`: the renders of the model, in the folder; `prop`: the prop it became; `reply`:
   what the modeller says back (what it guessed, what to look at).
+- `comments` (the window's **Make it again** box, once a run has made it): what the user says
+  of that model for the next run, what to look for and what to change; `earlier`: the comments
+  the runs that made it again were given, oldest first (below, "Made again, with the user's
+  comments").
 
 The window and the files are written the same way (`content::to_text`'s layout), and either
 side reads the file again before writing it, so the editor and a session can both change a
@@ -117,8 +123,9 @@ joint or line, Clear empties the picture. Each line is kept in the request's `bo
 and the run reads the pictures by them (below, "The user's bones").
 
 Each request's row in the window's list, and the request's own panel, has a **Start** button
-(Start again for a failed one, Make it again for a done one) and, while it's being made, a
-**Cancel** button; one request is made at a time. **Claude:** at the top picks the model
+(Start again for a failed one, Make it again for a done one: the whole recipe again, from the
+pictures; to change the model a run made instead, below, "Made again, with the user's
+comments") and, while it's being made, a **Cancel** button; one request is made at a time. **Claude:** at the top picks the model
 (Claude Code's default, or opus, sonnet, haiku). Start runs
 
 ```bash
@@ -175,6 +182,28 @@ pictures instead, the note going with it: the lines there are checked against th
 fixed, and with the box still ticked it stops for the check again. The bar runs on the lines'
 part of the estimate (about two fifths), then on the model's.
 
+### Made again, with the user's comments
+
+Once a run has made a request's model, its panel has **Make it again** under what Claude says:
+a box for what to look for and what to change (kept in `request.json` as it's typed, its
+`comments`) and **Make it again with these comments**, which runs
+
+```bash
+python tools/blender/run_claude.py ID --again [--note "the trunk thicker at its foot"]
+```
+
+(`--note` over the record's `comments`). Claude starts from what the last run made, never over
+from nothing: it reads `model.py` (and `design.py` when there is one), looks at the renders and
+the drawings, is told what that run said back (`reply`), what the runs that made it again before
+were told (`earlier`: those changes are made, kept so) and the user's comments, and makes those
+changes and what follows from them, keeping the rest. A change to the shapes or the
+proportions the lines set goes into `lines.json` first (`lines` again). Then it renders,
+compares and adds it again (steps 7 to 11, `--finish` as the same prop), and ends saying what it
+changed for each comment and what it left. Once it's done, the comments join `earlier` and the
+box empties (unless the user has written others meanwhile); a run that fails or is cancelled
+leaves them in the box, to try again. A request with no `model.py`, or nothing said, fails at
+once, saying so.
+
 Claude Code must be logged in for this, once (the desktop app's own login isn't the command
 line's): until then a run fails at once with "Claude Code isn't logged in", naming the
 program's path (it's often not on the PATH: `~/.local/bin/claude.exe`), and the request's
@@ -182,7 +211,8 @@ panel has a **Log in to Claude Code…** button that opens it in a terminal, in 
 type `/login` there, then Start again. `python tools/blender/test_run_claude.py` checks the whole of
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
 that crashes, one not logged in, one gone silent, one cancelled, one that stops after the
-lines for the user's check and one that goes on from them with the user's note.
+lines for the user's check, one that goes on from them with the user's note, and one made
+again with the user's comments.
 
 ## The recipe
 
@@ -285,7 +315,9 @@ here). Everything runs from the project folder.
    a bone is outside the part).
 10. **Finish it**: `python tools/blender/run_request.py ID --finish`. The model is added with
    the add-on's `write_prop` (to `temporary/`, or `content/` when `mine`), as the prop
-   named by the request's id (numbered when another prop has it); the engine's own reading
+   named by the request's id (numbered when another prop has it; `finish(..., category="tree")`
+   for a tree: its cells are its foot's, what stands below a character's height, the crown
+   spreading over the cells round it, walked under, and it's stood on its trunk's middle); the engine's own reading
    of the file is printed (triangles, size, its light, its rig's joints and "idle"); the
    request is done, with its renders, the prop, the reply and the time it took. Put the
    reply in `model.py` (`finish(..., reply=...)`): what was guessed, what to look at.

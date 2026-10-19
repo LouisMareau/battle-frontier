@@ -216,6 +216,20 @@ def glb_doc(path):
     return json.loads(data[20:20 + length])
 
 
+def glb_values(path, accessor):
+    """An accessor's values in a .glb, as numbers (0 to 1 for normalized ones)."""
+    data = path.read_bytes()
+    length = struct.unpack_from("<I", data, 12)[0]
+    doc, binary = json.loads(data[20:20 + length]), data[20 + length + 8:]
+    a = doc["accessors"][accessor]
+    view = doc["bufferViews"][a["bufferView"]]
+    kind, size, top = {5126: ("f", 4, 1.0), 5123: ("H", 2, 65535.0), 5121: ("B", 1, 255.0)}[a["componentType"]]
+    n = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}[a["type"]]
+    stride, start = view.get("byteStride", size * n), view.get("byteOffset", 0) + a.get("byteOffset", 0)
+    top = top if a.get("normalized") else 1.0
+    return [tuple(c / top for c in struct.unpack_from("<" + kind * n, binary, start + i * stride)) for i in range(a["count"])]
+
+
 doc = glb_doc(glb) if glb.is_file() else {}
 names = [n.get("name", "") for n in doc.get("nodes", [])]
 check("the model leaves its bounds behind", names and not any("bounds" in n for n in names), str(names))
@@ -536,6 +550,10 @@ marked = [n for n in shrub.get("nodes", []) if "bf_wind" in json.dumps(n.get("ex
 check("added: its colours first, its wind paint second, marked so", r == {"FINISHED"} and prims and all("COLOR_0" in p["attributes"] and "COLOR_1" in p["attributes"] for p in prims) and marked,
       f"{[sorted(p['attributes']) for p in prims]}, {len(marked)} marked")
 check("  the meshes as they were: their one \"wind\" layer", [o.data.vertex_colors.keys() for o in (stem, leaves)] == [["wind"], ["wind"]], f"{[o.data.vertex_colors.keys() for o in (stem, leaves)]}")
+# (a new colour layer starts as a copy of the one active, here the wind's paint: never left so)
+whites = [c for p in prims if "COLOR_0" in p["attributes"] for c in glb_values(shrub_glb, p["attributes"]["COLOR_0"])]
+check("  its colours white, as it has none of its own (not a copy of its wind paint)", whites and min(min(c) for c in whites) > 0.999,
+      f"{len(whites)} corners, the darkest {min((min(c) for c in whites), default=None)}")
 run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(shrub_glb)], cwd=str(project), capture_output=True, text=True)
 check("  the engine reads its wind paint", "painted for the wind" in run.stdout, (run.stdout.strip() or run.stderr.strip())[-300:])
 clear()
@@ -546,6 +564,25 @@ check("  back from its .glb, its paint the \"wind\" layer again", r == {"FINISHE
 if back and all("wind" in o.data.vertex_colors for o in back):
     tops = [max(c[0] for c in wind_of(o, o.data.polygons)) for o in back]
     check("    as it was painted", max(tops) > 0.98, f"{tops}")
+clear()
+
+# 5f. a tree: its cells are its foot's, up to a character's height, the crown spreading over the cells
+# round it (walked under) left out; it stands on its trunk's middle, the crown where it was beside it
+Matrix = __import__("mathutils").Matrix
+trunk = solid("tree trunk", lambda bm: bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.4, radius2=0.25, depth=6.0, matrix=Matrix.Translation((0, 0, 3.0))),
+              colour=(0.35, 0.2, 0.1, 1), location=(3.0, 1.0, 0.0))
+crown = solid("tree crown", lambda bm: bmesh.ops.create_uvsphere(bm, u_segments=12, v_segments=8, radius=2.5), colour=(0.2, 0.5, 0.2, 1), location=(4.0, 1.0, 6.0))
+for o in bpy.context.view_layer.objects:
+    o.select_set(o in (trunk, crown))
+bpy.context.view_layer.objects.active = trunk
+r = bpy.ops.battle_frontier.add_to_project(asset_id="test_tree", asset_name="Test tree", category="tree")
+tree_path = scratch / "content" / "data" / "props" / "test_tree.json"
+tree = json.loads(tree_path.read_text(encoding="utf-8")) if tree_path.is_file() else {}
+check("a tree: its cells its trunk's foot, not its crown's; its whole height", r == {"FINISHED"} and tree.get("footprint") == [1, 1] and abs(tree.get("height", 0) - 8.5) < 0.05,
+      f"{tree.get('footprint')} {tree.get('height')}")
+tree_doc = glb_doc(scratch / "content" / "assets" / "models" / "test_tree.glb") if r == {"FINISHED"} else {}
+at = {n.get("name"): [round(v, 2) + 0.0 for v in n.get("translation", [0, 0, 0])] for n in tree_doc.get("nodes", [])}
+check("  standing on its trunk's middle, the crown where it was beside it", at.get("tree trunk") == [0.0, 0.0, 0.0] and at.get("tree crown") == [1.0, 6.0, 0.0], f"{at}")
 clear()
 
 # 5d. a creature in parts, as a modeller makes it for a rigger (requests.md, "Parts"): each part

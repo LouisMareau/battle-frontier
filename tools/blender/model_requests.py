@@ -38,6 +38,7 @@ each line timed, the computer's own clock) is written here too: run_claude.py an
 editor's buttons go through `log`.
 """
 import json
+import os
 import re
 import shutil
 import sys
@@ -65,6 +66,10 @@ FIELDS = {
     "previews": [],
     "prop": "",
     "reply": "",
+    # what the user says of the model the last run made, for the next one (the editor's "Make it
+    # again with these comments"), and what the runs made again before were told, oldest first
+    "comments": "",
+    "earlier": [],
 }
 KINDS = ("creature", "prop")
 STYLES = ("smooth", "low_poly", "accurate")
@@ -205,6 +210,33 @@ def waiting(root):
     return [r for r in every(root) if r["status"] == "waiting"]
 
 
+def free(path):
+    """A picture's name made free for the one about to be written there: what had it is moved
+    aside first, hidden (.held_N_NAME), and taken away, unless a program still shows it (Windows'
+    Photos keeps the picture it shows open, and nothing can write over it then; a moved one
+    goes once it's let go, the next time a picture is written here). Returns the path."""
+    path = Path(path)
+    for old in path.parent.glob(".held_*"):
+        try:
+            old.unlink()
+        except OSError:
+            pass  # still shown
+    if path.is_file():
+        n = 1
+        while path.with_name(f".held_{n}_{path.name}").exists():
+            n += 1
+        held = path.with_name(f".held_{n}_{path.name}")
+        try:
+            os.replace(path, held)
+        except OSError:
+            return path  # it can't be moved either: the write says why
+        try:
+            held.unlink()
+        except OSError:
+            pass
+    return path
+
+
 # ---------------------------------------------------------------- the log: log.txt, each line timed
 
 def stamp():
@@ -229,13 +261,14 @@ def log(root, rid, text):
 def estimate(record, part="all"):
     """Minutes a request takes to model, by default: a session's whole time on it (reading the
     pictures, the script, the tries and renders, the rig, adding it); with `part` "lines" only
-    up to the front and the side (a run that stops for the user's check), "model" the rest."""
+    up to the front and the side (a run that stops for the user's check), "model" the rest,
+    "again" a model made again from the last one, with the user's comments (about as long)."""
     # what the first runs took: a creature about 10 minutes, a small one 2
     minutes = 12.0 if record["kind"] == "creature" else 8.0
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
-    minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART}.get(part, 1.0)
+    minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART, "again": 1.0 - LINES_PART}.get(part, 1.0)
     return float(max(1, round(minutes)))
 
 

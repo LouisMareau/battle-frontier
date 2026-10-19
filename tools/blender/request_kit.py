@@ -1210,7 +1210,8 @@ def _view(scene, cam, lo, hi, direction, ortho):
 
 
 def _render(scene, path):
-    scene.render.filepath = str(path)
+    # (written over even while a viewer shows the last one)
+    scene.render.filepath = str(mr.free(path))
     bpy.ops.render.render(write_still=True)
 
 
@@ -1385,7 +1386,7 @@ def _sheet(path, rows, height, gap=12):
             x += w + gap
     img = bpy.data.images.new(Path(path).stem, width, tall, alpha=True)
     img.pixels.foreach_set(sheet.ravel())
-    img.filepath_raw = str(path)
+    img.filepath_raw = str(mr.free(path))
     img.file_format = "PNG"
     img.save()
     bpy.data.images.remove(img)

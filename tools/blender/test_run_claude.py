@@ -7,7 +7,8 @@ The stand-in (written into the scratch project, CLAUDE points at it) checks how 
 started, then plays one ending each time: it finishes the request, quits without it, crashes,
 isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or draws the
 lines and the front and the side and stops there (a request that checks its lines first,
-which a run with --go-on then finishes). Then the bones the user has drawn over the pictures: in the
+which a run with --go-on then finishes); a request made once is made again with the user's
+comments on it (--again). Then the bones the user has drawn over the pictures: in the
 record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
 Exits 1 when a check fails.
 """
@@ -260,6 +261,76 @@ waited = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "wait"
 check("a session by hand: wait ID --check leaves it for the user's check", mr.lines_ready(mr.load(SCRATCH, "test_by_hand")) and "lines ready" in waited.stdout, waited.stdout + waited.stderr)
 made = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "new", "Checked one", "--check-lines"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")
 check("  and new --check-lines asks for it", mr.load(SCRATCH, "checked_one")["check_lines"] is True, made.stdout + made.stderr)
+
+# 9b. made once, made again with the user's comments on it (the window's "Make it again with these
+# comments"): from what the last run made, the comments it was given kept for the runs after it
+fresh("test_again", status="done", prop="test_prop", reply="A redwood, mostly trunk.\nIts bark painted.", comments="the trunk thicker\nthe leaves lighter",
+      earlier=["fewer branches low down"])
+(mr.folder(SCRATCH, "test_again") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
+# (the prompt as the run makes it: the log has it, each line indented under its time)
+asked = rc.prompt(mr.load(SCRATCH, "test_again"), again=True)
+code, out, rec, log = run("test_again", "finish", "--again")
+ran = log.split("a run starts")[-1]
+check("made again with the user's comments: done, the comments told to the runs after it, the field emptied", code == 0 and rec["status"] == "done"
+      and rec["earlier"] == ["fewer branches low down", "the trunk thicker\nthe leaves lighter"] and rec["comments"] == "", f"{code} {rec['status']} {rec['earlier']} {rec['comments']!r}")
+check("  its prompt: from what the last run made, what it said back, the comments, those told before", "made again from what the last run made" in asked
+      and "Made again, with the user's comments" in asked and "    A redwood, mostly trunk.\n    Its bark painted.\n" in asked and "it's in the\n  game as the prop test_prop" in asked
+      and "says for this run:\n    the trunk thicker\n    the leaves lighter\n" in asked and "1. fewer branches low down" in asked
+      and "never over from nothing" in asked and "change private/requests/test_again/model.py, the last run's" in asked
+      and "run_request.py test_again --finish" in asked and "made again from what the last run made" in ran, asked[:3000])
+check("  and not the lines drawn again from nothing, nor a stop", "draw the design's lines over each picture" not in asked and "stop there" not in asked
+      and "This run makes it again from the last run's model, with the user's comments: the trunk thicker" in ran)
+check("  in the record's layout: the comments for the next run last", list(mr.FIELDS)[-3:] == ["reply", "comments", "earlier"])
+fresh("test_again_note", status="done", prop="test_prop", comments="the old comment")
+(mr.folder(SCRATCH, "test_again_note") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
+code, out, rec, log = run("test_again_note", "finish", "--again", "--note", "the leaves lighter")
+check("  the window's --note over the record's comments; ones written meanwhile left be", "with the user's comments: the leaves lighter" in log
+      and "the old comment" not in log and rec["earlier"] == ["the leaves lighter"] and rec["comments"] == "the old comment", f"{rec['earlier']} {rec['comments']!r}")
+fresh("test_again_none", status="done", prop="test_prop")
+code, out, rec, log = run("test_again_none", "finish", "--again", "--note", "the trunk thicker")
+check("made again with no model.py yet: failed before Claude starts", rec["status"] == "failed" and "nothing to make again from: no model.py yet" in rec["progress"]["step"]
+      and "Claude Code: " not in log, rec["progress"]["step"])
+# 9c. a picture written over while a viewer shows it (Windows' Photos keeps what it shows mapped,
+# letting it be renamed but not written): the old one moved aside, the new one in its place
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateFileW.restype = k32.CreateFileMappingW.restype = wintypes.HANDLE
+    k32.CreateFileW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE]
+    k32.CreateFileMappingW.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, wintypes.LPCWSTR]
+    k32.MapViewOfFile.restype = wintypes.LPVOID
+    k32.MapViewOfFile.argtypes = [wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD, wintypes.DWORD, ctypes.c_size_t]
+    k32.UnmapViewOfFile.argtypes = [wintypes.LPCVOID]
+    k32.CloseHandle.argtypes = [wintypes.HANDLE]
+    d = mr.folder(SCRATCH, "test_again")
+    shown = d / "preview_front.png"
+    shown.write_bytes(b"the last render")
+    # opened as Photos opens it: shared for reading, writing and deleting, then mapped
+    handle = k32.CreateFileW(str(shown), 0x80000000, 0x7, None, 3, 0x80, None)
+    mapping = k32.CreateFileMappingW(handle, None, 0x02, 0, 0, None)
+    view = k32.MapViewOfFile(mapping, 0x4, 0, 0, 0)
+    try:
+        open(shown, "wb").close()
+        held = False
+    except OSError:
+        held = True
+    with open(mr.free(shown), "wb") as f:
+        f.write(b"the new render")
+    # (the old one gone from the folder at once, its pixels the viewer's until it lets go, or
+    # hidden there till then where the file system can't do that)
+    check("a picture a viewer shows, written over: the new one in its place, the old moved aside", held and shown.read_bytes() == b"the new render"
+          and all(p.name == ".held_1_preview_front.png" for p in d.glob(".held_*")), f"held {held}, {[p.name for p in d.glob('.held_*')]}")
+    k32.UnmapViewOfFile(view)
+    k32.CloseHandle(mapping)
+    k32.CloseHandle(handle)
+    mr.free(d / "compare.png")
+    check("  and taken away once it's let go, the next time a picture is written there", not list(d.glob(".held_*")), str(list(d.glob(".held_*"))))
+fresh("test_again_quiet", status="done", prop="test_prop")
+(mr.folder(SCRATCH, "test_again_quiet") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
+code, out, rec, log = run("test_again_quiet", "finish", "--again")
+check("made again with nothing said: failed before Claude starts", rec["status"] == "failed" and "nothing to change: say what in the comments first" in rec["progress"]["step"]
+      and "Claude Code: " not in log, rec["progress"]["step"])
 
 # 10. the bones the user has drawn (the editor's Bones window): kept in the record as the editor writes
 # them, and a run reads the pictures by them and rigs the creature on them

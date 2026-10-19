@@ -232,6 +232,11 @@ pub(super) struct ModelRequest {
     pub prop: String,
     /// what the modeller says back: what it guessed, what to look at
     pub reply: String,
+    /// what the user says of the model the last run made, for the next run: what to look for,
+    /// what to change ("Make it again with these comments": a run from that model)
+    pub comments: String,
+    /// the comments the runs that made it again were given, oldest first (made: kept so)
+    pub earlier: Vec<String>,
 }
 
 impl Default for ModelRequest {
@@ -256,6 +261,8 @@ impl Default for ModelRequest {
             previews: vec![],
             prop: String::new(),
             reply: String::new(),
+            comments: String::new(),
+            earlier: vec![],
         }
     }
 }
@@ -1141,18 +1148,25 @@ mod desk {
         }
 
         /// Start: Claude Code on the request, on its own (run_claude.py, which keeps the log
-        /// and the status); `go_on` ("The lines look right: go on"): from the model, on the
-        /// lines the user checked. What the user says is off in the lines goes with it. The
-        /// console opens on it.
-        pub(in super::super) fn start_run(&mut self, id: &str, go_on: bool) -> String {
+        /// and the status); `GoOn` ("The lines look right: go on"): from the model, on the
+        /// lines the user checked, what the user says is off in them going with it; `Again`
+        /// ("Make it again with these comments"): from the model the last run made, the
+        /// user's comments on it going with it. The console opens on it.
+        pub(in super::super) fn start_run(&mut self, id: &str, how: How) -> String {
             if let Some(other) = self.busy() {
                 return format!("One at a time: {other} is being made");
             }
             let mut args = vec!["tools/blender/run_claude.py".to_string(), id.to_string()];
-            if go_on {
-                args.push("--go-on".into());
+            match how {
+                How::GoOn => args.push("--go-on".into()),
+                How::Again => args.push("--again".into()),
+                How::Whole => {}
             }
-            let note = self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default();
+            let note = if how == How::Again {
+                self.list.iter().find(|r| r.id == id).map(|r| r.comments.trim().to_string()).unwrap_or_default()
+            } else {
+                self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default()
+            };
             if !note.is_empty() {
                 args.extend(["--note".into(), note]);
             }
@@ -1161,15 +1175,17 @@ mod desk {
             }
             match self.launch(&args) {
                 Ok(()) => {
-                    self.lines_notes.remove(id);
+                    if how != How::Again {
+                        self.lines_notes.remove(id);
+                    }
                     self.starting = Some((id.to_string(), now_secs()));
                     self.selected = Some(id.to_string());
                     self.console_open = true;
                     self.failed_silent.remove(id);
-                    if go_on {
-                        format!("Claude Code goes on with {id} from its lines: the console shows everything it does")
-                    } else {
-                        format!("Claude Code is starting on {id}: the console shows everything it does")
+                    match how {
+                        How::GoOn => format!("Claude Code goes on with {id} from its lines: the console shows everything it does"),
+                        How::Again => format!("Claude Code makes {id} again from its last model, with your comments: the console shows everything it does"),
+                        How::Whole => format!("Claude Code is starting on {id}: the console shows everything it does"),
                     }
                 }
                 Err(e) => format!("Not started: {e}"),
@@ -1454,6 +1470,7 @@ mod desk {
                 _ => "Start",
             };
             let about = match (r.lines_ready(), r.check_lines) {
+                _ if r.status == Status::Done => "Claude Code makes it once more, from the pictures; to change the model it made instead, say what in \"Make it again\" below",
                 (true, true) => "Claude Code starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again",
                 (true, false) => "Claude Code starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time",
                 (false, true) => "Claude Code draws its lines over the pictures and the front and the side from them, then stops for you to check them; the console shows everything it does",
@@ -1778,6 +1795,40 @@ mod desk {
             if !r.reply.is_empty() && !r.lines_ready() {
                 section(ui, "What Claude says");
                 ui.label(RichText::new(&r.reply).size(12.0));
+            }
+            // made once: what to look for and change in the next run, which starts from it
+            if !r.prop.is_empty() && r.status != Status::InProgress && !r.lines_ready() {
+                section(ui, "Make it again");
+                hint(ui, "What to look for and what to change: the next run starts from this one (its model.py, its lines, what it said) and changes that, keeping the rest.");
+                if !r.earlier.is_empty() {
+                    ui.collapsing(format!("Told before ({})", r.earlier.len()), |ui| {
+                        for (k, c) in r.earlier.iter().enumerate() {
+                            ui.label(RichText::new(format!("{}. {c}", k + 1)).size(11.5));
+                        }
+                    })
+                    .header_response
+                    .on_hover_text("The comments the runs that made it again were given: the next run keeps those changes");
+                }
+                let field = ui.add(
+                    egui::TextEdit::multiline(&mut r.comments)
+                        .desired_rows(3)
+                        .desired_width(420.0)
+                        .hint_text("The trunk thicker at its foot, fewer branches low down, the leaves a lighter green"),
+                );
+                mark("uiRequestComments", &field);
+                let busy = self.busy();
+                let said_what = !r.comments.trim().is_empty();
+                let again = ui
+                    .add_enabled(busy.is_none() && said_what, egui::Button::new(RichText::new("Make it again with these comments").strong()))
+                    .on_hover_text("Claude Code starts from the model the last run made and changes what you say, keeping the rest")
+                    .on_disabled_hover_text(match busy {
+                        Some(b) => format!("One at a time: {b} is being made"),
+                        None => "Say what to look for or change first".into(),
+                    });
+                mark("uiRequestAgain", &again);
+                if again.clicked() {
+                    asked = Some(Run::Again(r.id.clone()));
+                }
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
@@ -2134,7 +2185,20 @@ mod desk {
         Start(String),
         /// "The lines look right: go on": from the model, on the lines the user checked
         GoOn(String),
+        /// "Make it again with these comments": from the model the last run made, changed as
+        /// the user's comments say
+        Again(String),
         Cancel(String),
+    }
+
+    /// How a run goes: the whole recipe from the pictures (Start), on from the model on the
+    /// lines the user checked (GoOn), or the last run's model made again with the user's
+    /// comments on it (Again).
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in super::super) enum How {
+        Whole,
+        GoOn,
+        Again,
     }
 
     impl Requests {
@@ -2226,8 +2290,9 @@ mod desk {
                         });
                     });
                 match asked {
-                    Some(Run::Start(id)) => said = Some(d.start_run(&id, false)),
-                    Some(Run::GoOn(id)) => said = Some(d.start_run(&id, true)),
+                    Some(Run::Start(id)) => said = Some(d.start_run(&id, How::Whole)),
+                    Some(Run::GoOn(id)) => said = Some(d.start_run(&id, How::GoOn)),
+                    Some(Run::Again(id)) => said = Some(d.start_run(&id, How::Again)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     None => {}
                 }
@@ -2336,6 +2401,7 @@ mod tests {
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"mine\": true,\n  \"check_lines\": false,\n  \"status\""), "the lines' check after mine, as model_requests.py has it: {text}");
+        assert!(text.ends_with("  \"reply\": \"\",\n  \"comments\": \"\",\n  \"earlier\": []\n}\n"), "the comments for the next run last, as model_requests.py has them: {text}");
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
@@ -2807,6 +2873,61 @@ mod tests {
         click(&ctx, &mut req, "uiRequestGoOn");
         assert_eq!(req.desk().launched.len(), 2);
         std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_request_made_once_is_made_again_with_the_users_comments() {
+        let root = scratch("again");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Tall tree.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("tall_tree".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiRequestComments").is_none(), "nothing made yet: nothing to make again");
+        // the run made it
+        let mut made = read(&root, "tall_tree").unwrap();
+        made.status = Status::Done;
+        made.prop = "tall_tree".into();
+        made.reply = "A redwood, mostly trunk.".into();
+        made.earlier = vec!["fewer branches low down".into()];
+        save(&root, &made).unwrap();
+        req.watch(1.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        // its section is down the panel, under the model and what Claude says
+        wheel(&ctx, &mut req, marked("uiRequestName").unwrap(), 10.0);
+        // with nothing said, the button waits
+        click(&ctx, &mut req, "uiRequestAgain");
+        assert!(req.desk().launched.is_empty(), "nothing said: nothing started");
+        // what to change, kept in its request.json as it's typed
+        click(&ctx, &mut req, "uiRequestComments");
+        frame_with(&ctx, &mut req, vec![egui::Event::Text("the trunk thicker".into())]);
+        assert_eq!(read(&root, "tall_tree").unwrap().comments, "the trunk thicker");
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestAgain");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "tall_tree", "--again", "--note", "the trunk thicker"]]);
+        assert_eq!(req.desk().busy().as_deref(), Some("tall_tree"), "being started: one at a time");
+        assert!(req.said.take().unwrap().contains("makes tall_tree again from its last model"));
+        // the status row's Make it again stays a whole run, from the pictures
+        assert_eq!(read(&root, "tall_tree").unwrap().earlier, ["fewer branches low down"], "the comments told before kept");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The wheel turned over a point: what's under it scrolled down by `pages` (and the frames
+    /// it takes to get there).
+    fn wheel(ctx: &egui::Context, req: &mut Requests, at: egui::Pos2, pages: f32) {
+        let turn = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Page, delta: egui::vec2(0.0, -pages), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE };
+        frame_with(ctx, req, vec![egui::Event::PointerMoved(at), turn]);
+        for _ in 0..40 {
+            frame_with(ctx, req, vec![]);
+        }
     }
 
     /// A click (or a right-click) at a point of the screen, as a pointer makes it.

@@ -617,7 +617,7 @@ def _user_bones_drawn(root, rid, record, data):
         img = Image.open(d / pic)
         out = f"bones_{Path(pic).stem}.png"
         # what lines.json says, once it says it of each line (else they'd be named wrong)
-        draw_bones(img, lines_, said if isinstance(said, list) and len(said) == len(lines_) else None).save(d / out)
+        draw_bones(img, lines_, said if isinstance(said, list) and len(said) == len(lines_) else None).save(mr.free(d / out))
         said_lines.append(f"{out}: the user's {len(lines_)} bone line{'' if len(lines_) == 1 else 's'} on {pic} ({img.width} x {img.height} pixels), "
                           "each from its root (a hip, a shoulder, the neck, a tail's base) along its joints:")
         for i, (name, b) in enumerate(zip(bone_names(lines_), lines_)):
@@ -693,7 +693,7 @@ def lines(root, rid):
         # where they part, tinted under the lines; the caption's squares say which is which
         drawing = draw_picture(img, box, k, part["lines"], colours, under=(_tint(found, drawn), at) if o else None)
         _caption(drawing, _short(f"the outline on {pic}" if line else pic, o, "the silhouette", f"can't be scored: {why}" if line else why, (PAST, SHORT)),
-                 below=True).save(out)
+                 below=True).save(mr.free(out))
         cam = part.get("camera")
         seen = f"camera turn {cam.get('turn', 0):g}, tilt {cam.get('tilt', 0):g}" if cam else "no camera"
         if o:
@@ -711,7 +711,8 @@ def lines(root, rid):
         missing += bones_missing
     sheet = draw_profiles(data, float(record["height"]), colours)
     if sheet is not None:
-        sheet.save(d / "profiles.png")
+        # (written over even while a viewer shows the last one)
+        sheet.save(mr.free(d / "profiles.png"))
         for view in VIEWS:
             if data.get(view, {}).get("lines"):
                 lines_, across, s = in_cells(data[view], float(record["height"]))
@@ -890,7 +891,7 @@ def _add_row(sheet_path, files, gap=12):
     for t in tiles:
         out.paste(t, (x, H))
         x += t.width + gap
-    out.save(sheet_path)
+    out.save(mr.free(sheet_path))
 
 
 def on_renders(root, rid, since=0.0):
@@ -918,7 +919,7 @@ def on_renders(root, rid, since=0.0):
         out = Image.alpha_composite(img, layer.resize(img.size, Image.LANCZOS)).convert("RGB")
         text = f"{what}: {_overlap_text(o)}" if o else f"{what} (no outline to measure)"
         _caption(out, _short(label, o))
-        out.save(d / out_name)
+        out.save(mr.free(d / out_name))
         made.append(d / out_name)
         said.append(f"{out_name}: {text}")
 
