@@ -77,7 +77,8 @@ FIELDS = {
     "parent": "",
     "children": [],
 }
-KINDS = ("creature", "prop")
+# a creature (rigged), a prop, or a set of floor tiles (laid by wave function collapse)
+KINDS = ("creature", "prop", "floor")
 STYLES = ("smooth", "low_poly", "accurate")
 POSES = ("t_pose", "as_is")
 # "unlimited" shapes stop at about this many
@@ -278,7 +279,7 @@ def estimate(record, part="all"):
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
-    minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART, "again": 1.0 - LINES_PART}.get(part, 1.0)
+    minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART, "again": 1.0 - LINES_PART}.get(part, 1.0)  # ("floor": the whole run)
     return float(max(1, round(minutes)))
 
 

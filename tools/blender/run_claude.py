@@ -60,7 +60,7 @@ SHOWN = 30
 HEAD = """You are modelling one request of the Battle Frontier map editor, unattended: nobody can
 answer a question, so decide for yourself, and say what you guessed in the reply.
 
-The request: "{name}", a {kind} {height} cells tall, in private/requests/{id}/ (its request.json
+The request: "{name}", {what}, in private/requests/{id}/ (its request.json
 and its pictures). Notes from the user: {notes}
 {settings}
 
@@ -226,12 +226,56 @@ SPLIT = """- its pictures hold several drawings of the same kind of asset (the r
 SPLIT_RUN = (HEAD + "This one request is split first (tools/blender/requests.md, \"Several of them\"; it's started already):\n"
              + READ + SPLIT + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's name and height, and\n"
                                                     "anything on the pictures you left out, and why."))
+# a set of floor tiles: the pattern on the pictures broken into cells, each a tile whose edges
+# say what goes on into the next, laid by wave function collapse
+FLOOR = """- the pictures show a floor, a pavement or a tiling (or a part of one): make it a set of floor
+  tiles, which the game lays by wave function collapse (requests.md, "A set of floor tiles").
+  Each tile is a cell (a metre a side): a slab 0.04 to 0.06 thick, modelled on the origin
+  (Blender's X and Y from -0.5 to 0.5, standing on Z 0), its top what's seen. Each of its four
+  edges says what it is, a word (north +Y, east +X, south, west): two tiles side by side fit
+  where the edge between them is the same word on both. First work out how the pattern breaks
+  into cells: the few tiles that make most of it (plain stones, planks, a field of marble:
+  edges like "joint", weighted to be laid the most); what goes over two cells or more (the
+  halves or quarters of a big slab, meeting along a word of their own); a border (its outer
+  edges "rim": a set with rims lays them all round a floor, and round its holes) and its
+  corners; a medallion, an inlay or a motif (its pieces' inner edges words of their own, so
+  they only meet each other); which may be turned. Write the list at the top of model.py:
+  each tile, its edges north east south west, its weight, whether it turns, what it shows;
+- build each in model.py with tools/blender/request_kit.py: kit.box and kit.slab for the
+  stones, planks and joints, kit.part with remesh=False to join them crisp (its colours, and
+  its paint volumes for veins, inlays and markings), kit.editing for bevels and worn edges, or
+  for what's too fine to model a material whose Base Color is an image painted from the
+  picture; the colours measured with
+  python tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1; its pattern
+  running right to the edges where the next tile carries it on, then
+  kit.floor_tile(job, "Name", [objects], [north, east, south, west], weight=, turns=) for each;
+- lay it out: files = kit.layout(job) lays the set on 8 x 6 cells by the game's rules and
+  renders it from above (layout.png) and slanting (layout_side.png), printing every edge that
+  doesn't fit (none should); then kit.compare(job, files);
+- render it: python tools/blender/run_request.py {id}, and look at layout.png and compare.png
+  beside the pictures: the pattern, its proportions, the colours, the joints, how it runs on
+  across cells; change model.py and render again until it reads as the picture's floor
+  (usually three to six tries);
+- add it to the project: kit.finish_floor_set(job, files, reply=...) at the end of model.py,
+  then python tools/blender/run_request.py {id} --finish (each tile a prop of category "floor",
+  of the set named after the request);
+- check: cargo run -q -p engine-content --bin content -- check
+"""
+FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
+             "it's a set of floor tiles (\"A set of floor tiles\"):\n" + READ + "{noted}" + FLOOR + RULES.replace("{end}", MADE))
 AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made again from what the last run made,\n"
              "with the user's comments on it (requests.md, \"Made again, with the user's comments\"; it's started\n"
              "already):\n" + READ + AGAIN
              + MODEL.replace("- write private/requests/{id}/model.py with", "- change private/requests/{id}/model.py, the last run's, with", 1)
              + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
                                       "you left as it was."))
+# a set of floor tiles made again: the same, its tiles changed in the last run's model.py
+AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
+                   "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
+                   "and \"A set of floor tiles\"; it's started already):\n" + READ + AGAIN
+                   + FLOOR.replace("- build each in model.py with", "- change the last run's model.py: each tile built with", 1)
+                   + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
+                                            "you left as it was."))
 
 
 def find_claude():
@@ -288,6 +332,14 @@ LINES = {
     "accurate": ("Lines: every part, marking and detail, each where the pictures put it, over the pictures and in the front and "
                  "the side too: the model is only as close as these are."),
 }
+# a set of floor tiles: laid on many cells, so each tile light
+FLOOR_STYLES = {
+    "smooth": "Style: smooth: softly rounded edges, smooth shaded; each tile light, as a floor is laid on many cells (about 400 triangles a tile).",
+    "low_poly": "Style: low-poly: few faces, flat shaded (about 100 triangles a tile).",
+    "accurate": ("Style: accurate: the pattern as close to the pictures as it can be: every stone, plank, joint, vein and inlay where the "
+                 "pictures put it, the colours measured off them (none of the drawing's light or shade), an image texture painted from the "
+                 "picture for what's too fine to model; each tile still light, as a floor is laid on many cells (about 1500 triangles a tile)."),
+}
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -299,15 +351,22 @@ POSES = {
 
 
 def settings_lines(record):
-    """What the request's settings ask of the model, a line each."""
-    out = [STYLES.get(record["style"], STYLES["smooth"])]
+    """What the request's settings ask of the model, a line each (a set of floor tiles': of each
+    tile, and no lines: it draws none)."""
+    floor = record["kind"] == "floor"
+    styles = FLOOR_STYLES if floor else STYLES
+    out = [styles.get(record["style"], styles["smooth"])]
     if record["style"] == "accurate" and record["details"].strip():
         out.append("Model details from the user: " + record["details"].strip())
-    out.append(LINES.get(record["style"], LINES["smooth"]))
+    if not floor:
+        out.append(LINES.get(record["style"], LINES["smooth"]))
     if record["kind"] == "creature":
         out.append(POSES.get(record["pose"], POSES["t_pose"]))
     shapes = record["shapes"]
-    if shapes["unlimited"]:
+    if floor:
+        out.append(f"Shapes: each tile as many as its design needs, up to about {mr.SHAPES_CAP} for the most detailed." if shapes["unlimited"] else
+                   f"Shapes: {shapes['min']} to {shapes['max']} shapes for the most detailed tile (boxes, slabs, cylinders, each counts as one), a plain one only a few.")
+    elif shapes["unlimited"]:
         out.append(f"Shapes: as many as the design needs, up to about {mr.SHAPES_CAP}. Before writing model.py, think it through: list the parts "
                    "the design is made of and the shape for each; a long, careful script is fine, and so is taking your time.")
     else:
@@ -327,6 +386,8 @@ def part_of(record, go_on=False, again=False):
         return "model"
     if record["several"] and not record["parent"]:
         return "split"
+    if record["kind"] == "floor":
+        return "floor"
     return "lines" if record["check_lines"] else "all"
 
 
@@ -363,8 +424,11 @@ def prompt(record, go_on=False, note="", again=False):
     told = [c.strip() for c in record["earlier"] if str(c).strip()]
     earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
-    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_RUN, "split": SPLIT_RUN}[part_of(record, go_on, again)]
-    return template.format(id=rid, name=record["name"], kind=record["kind"], height=record["height"], notes=record["notes"].strip() or "(none)",
+    part = part_of(record, go_on, again)
+    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_FLOOR_RUN if record["kind"] == "floor" else AGAIN_RUN,
+                "split": SPLIT_RUN, "floor": FLOOR_RUN}[part]
+    what = "a set of floor tiles, each a cell, laid to fit by wave function collapse" if record["kind"] == "floor" else f"a {record['kind']} {record['height']} cells tall"
+    return template.format(id=rid, name=record["name"], what=what, height=record["height"], notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said)
 

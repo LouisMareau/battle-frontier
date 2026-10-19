@@ -88,6 +88,8 @@ pub(super) enum Kind {
     #[default]
     Creature,
     Prop,
+    /// a set of floor tiles, each a cell, laid to fit by wave function collapse (`world::floors`)
+    Floor,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -366,7 +368,7 @@ impl Requests {
         crate::platform::set_hook("requests", if self.open { "note" } else { "" });
         st.open = self.open;
         super::dock::show(ui, st, super::dock::Pane::Requests, "Model requests", |ui| {
-            ui.label("Drop pictures of a creature or a prop here, and Claude makes a base 3D model of it in Blender.");
+            ui.label("Drop pictures of a creature, a prop or a floor here, and Claude makes a base 3D model of it in Blender.");
             ui.add_space(4.0);
             super::warn(ui, "Requests need the desktop app: they're kept in private/requests/ on your computer, which the browser can't write to.");
             super::hint(ui, "cargo run -p engine-game --release -- --requests opens the map editor with this window.");
@@ -1688,11 +1690,17 @@ mod desk {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.kind, Kind::Creature, "creature").on_hover_text("Rigged: a spine, a head, limbs and a tail, and an idle animation");
                     ui.selectable_value(&mut r.kind, Kind::Prop, "prop");
+                    let floor = ui.selectable_value(&mut r.kind, Kind::Floor, "floor set").on_hover_text(
+                        "A set of floor tiles, each a cell, laid to fit (by wave function collapse): a pavement, old ruins, marble, a wood tiling. Laid in buildings (the Build tool's Flooring) and out of doors (the Ground tool's Floors tab)",
+                    );
+                    mark("uiRequestKindFloor", &floor);
                 });
                 ui.end_row();
-                ui.label("Height");
-                ui.add(egui::DragValue::new(&mut r.height).speed(0.05).range(0.1..=40.0).suffix(" cells").max_decimals(2)).on_hover_text("How tall it stands (a cell is a metre; the player is about 1.5)");
-                ui.end_row();
+                if r.kind != Kind::Floor {
+                    ui.label("Height");
+                    ui.add(egui::DragValue::new(&mut r.height).speed(0.05).range(0.1..=40.0).suffix(" cells").max_decimals(2)).on_hover_text("How tall it stands (a cell is a metre; the player is about 1.5)");
+                    ui.end_row();
+                }
                 ui.label("Style");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.style, Style::Smooth, "smooth").on_hover_text("Rounded, smooth shaded");
@@ -1742,12 +1750,15 @@ mod desk {
                 );
                 mark("uiRequestMine", &mine);
                 ui.end_row();
-                ui.label("");
-                let check = ui.checkbox(&mut r.check_lines, "Let me check the lines first").on_hover_text(
-                    "Claude stops once it has drawn its lines over the pictures and the front and the side from them: you look, say what's off, and it goes on to the model (the long part) from there",
-                );
-                mark("uiRequestCheckLines", &check);
-                ui.end_row();
+                // (a set of floor tiles draws no lines: it's seen from above, laid out)
+                if r.kind != Kind::Floor {
+                    ui.label("");
+                    let check = ui.checkbox(&mut r.check_lines, "Let me check the lines first").on_hover_text(
+                        "Claude stops once it has drawn its lines over the pictures and the front and the side from them: you look, say what's off, and it goes on to the model (the long part) from there",
+                    );
+                    mark("uiRequestCheckLines", &check);
+                    ui.end_row();
+                }
                 if r.children.is_empty() && r.parent.is_empty() {
                     ui.label("");
                     let several = ui.checkbox(&mut r.several, "Several of them: one asset per drawing").on_hover_text(
@@ -1883,7 +1894,36 @@ mod desk {
                     }
                 });
             }
-            if !r.prop.is_empty() {
+            // a set of floor tiles: its tiles (the request's prop its first)
+            let set = if r.kind == Kind::Floor { world::floors::set_of(content, &r.prop) } else { None };
+            if let Some(set) = set {
+                let tiles = content.floor_sets().remove(set).unwrap_or_default();
+                ui.horizontal(|ui| {
+                    ui.label("Became the set");
+                    ui.label(RichText::new(set).monospace());
+                    hint(ui, &format!("{} tile{}", tiles.len(), if tiles.len() == 1 { "" } else { "s" }));
+                    if let Some(e) = content.props.entry(&r.prop) {
+                        badge(ui, e.space);
+                        if e.space == Space::Content && !r.mine {
+                            warn(ui, "in content/, but the design isn't marked as yours");
+                        }
+                    }
+                    let pick = ui.button("Use it").on_hover_text("The Ground tool's Floors tab lays it out of doors; in a building, the Build tool's Flooring");
+                    mark("uiRequestUse", &pick);
+                    if pick.clicked() {
+                        use_prop = Some(r.prop.clone());
+                    }
+                });
+                ui.collapsing(format!("Its tiles ({})", tiles.len()), |ui| {
+                    for p in &tiles {
+                        let Some(f) = &p.floor else { continue };
+                        let weight = if f.weight != 1.0 { format!(", weight {}", f.weight) } else { String::new() };
+                        ui.label(RichText::new(format!("{}: {} (north east south west){weight}{}", p.id, f.edges.join(" "), if f.turns { ", turns" } else { "" })).size(11.5));
+                    }
+                })
+                .header_response
+                .on_hover_text("Each tile and its edges' words: two tiles side by side fit where the edge between them is the same word on both");
+            } else if !r.prop.is_empty() {
                 ui.horizontal(|ui| {
                     ui.label("Became the prop");
                     ui.label(RichText::new(&r.prop).monospace());
@@ -2215,10 +2255,11 @@ mod desk {
     }
 
     /// What it is, in a line: "creature · 1.2 cells · smooth · mine · lines checked first".
-    fn about(r: &ModelRequest) -> String {
+    pub(super) fn about(r: &ModelRequest) -> String {
         let kind = match r.kind {
             Kind::Creature => "creature",
             Kind::Prop => "prop",
+            Kind::Floor => "floor set",
         };
         let style = match r.style {
             Style::Smooth => "smooth",
@@ -2226,6 +2267,10 @@ mod desk {
             Style::Accurate => "accurate",
         };
         let mine = if r.mine { " · mine" } else { "" };
+        if r.kind == Kind::Floor {
+            // a cell each, drawn no lines
+            return format!("{kind} · {style}{mine}");
+        }
         let check = if r.check_lines { " · lines checked first" } else { "" };
         format!("{kind} · {} cells · {style}{mine}{check}", r.height)
     }
@@ -2529,6 +2574,13 @@ mod tests {
         // a short record by hand: the rest are the defaults
         let short: ModelRequest = serde_json::from_str(r#"{ "id": "x", "name": "X", "kind": "prop" }"#).unwrap();
         assert_eq!((short.kind, short.height, short.style, short.status, short.mine), (Kind::Prop, 1.0, Style::Smooth, Status::Waiting, false));
+        // a set of floor tiles, its kind as model_requests.py writes it: no height, no lines said
+        let floor: ModelRequest = serde_json::from_str(r#"{ "id": "ruins", "name": "Ruins pavement", "kind": "floor", "check_lines": true }"#).unwrap();
+        assert_eq!(floor.kind, Kind::Floor);
+        assert!(content::to_text(&floor).contains("  \"kind\": \"floor\",
+"));
+        assert_eq!(about(&floor), "floor set · smooth");
+        assert_eq!(about(&short), "prop · 1 cells · smooth");
         assert!(!short.check_lines && !short.lines_ready(), "no check unless asked");
         let ready: ModelRequest = serde_json::from_str(r#"{ "check_lines": true, "status": "waiting", "progress": { "step": "lines ready: check them" } }"#).unwrap();
         assert!(ready.check_lines && ready.lines_ready());

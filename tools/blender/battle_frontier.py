@@ -1039,6 +1039,9 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
         "unstackable": bool(facts.get("unstackable", record.get("unstackable", False))),
         "model": model_rel,
     })
+    if facts.get("floor"):
+        # a tile of a set of floor tiles: its set and its edges (`content::FloorTile`)
+        record["floor"] = facts["floor"]
     # its light and its sound, from the prop's origin (a record's own stay when there's none)
     if lights:
         record["light"] = light_record(lights[0], offset, record.get("light"))

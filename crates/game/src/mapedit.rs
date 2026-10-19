@@ -1469,9 +1469,17 @@ impl MapEditor {
         requests.open = self.requests.open;
         self.dock.set(dock::Pane::Requests, requests);
         if let Some(id) = used {
-            self.use_prop(&id);
-            self.tool = Tool::Place;
-            self.status = format!("{id}: the Place tool puts it down");
+            if let Some(set) = world::floors::set_of(&self.content, &id).map(str::to_string) {
+                // a set of floor tiles: the Ground tool's Floors tab lays it
+                self.tool = Tool::Ground;
+                (self.ramp.on, self.floorer.on, self.ramp.drag) = (false, true, None);
+                self.floorer.brush = format!("{}{set}", floors::SET);
+                self.status = format!("{}: the Floors tab lays it out of doors (in a building, the Build tool's Flooring)", floors::set_name(&set));
+            } else {
+                self.use_prop(&id);
+                self.tool = Tool::Place;
+                self.status = format!("{id}: the Place tool puts it down");
+            }
         }
         if let Some(said) = self.requests.said.take() {
             self.status = said;

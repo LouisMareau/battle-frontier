@@ -64,10 +64,17 @@ class Job:
         argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else []
         self.finishing = "--finish" in argv
         self.record = mr.load(self.root, self.id)
+        # a set of floor tiles' tiles, as floor_tile makes them
+        self.tiles = []
 
     @property
     def creature(self):
         return self.record["kind"] == "creature"
+
+    @property
+    def floor(self):
+        """A set of floor tiles (requests.md, "A set of floor tiles")."""
+        return self.record["kind"] == "floor"
 
     @property
     def smooth(self):
@@ -1262,15 +1269,8 @@ def _mapping(cam, size, centre, direction, points):
 VIEWS = (("front", (0, -1, 0), True), ("side", (1, 0, 0), True), ("three_quarter", (0.62, -0.78, 0.38), False))
 
 
-def previews(job, objects, size=640):
-    """Workbench renders into the request's folder: front and side (straight on, like a
-    turnaround sheet) and three-quarter; with a rig, preview_idle.png too: four moments of the
-    idle side by side. With lines.json, the model seen from each picture's camera too
-    (seen_<picture>.png), and views.json: how each straight-on render sees the world, for
-    request_lines.py to lay the lines on them (run_request.py does after Blender). Returns the
-    files (the three views), for `compare` and `finish`."""
-    job.step("rendering the previews", 0.5)
-    scene = bpy.context.scene
+def _workbench(scene, size):
+    """The renders' look: Workbench, the materials' colours, evenly lit, `size` pixels square."""
     scene.render.engine = "BLENDER_WORKBENCH"
     shading = scene.display.shading
     shading.light = "STUDIO"
@@ -1289,6 +1289,18 @@ def previews(job, objects, size=640):
     scene.render.resolution_percentage = 100
     scene.render.image_settings.file_format = "PNG"
     scene.render.image_settings.color_mode = "RGB"
+
+
+def previews(job, objects, size=640):
+    """Workbench renders into the request's folder: front and side (straight on, like a
+    turnaround sheet) and three-quarter; with a rig, preview_idle.png too: four moments of the
+    idle side by side. With lines.json, the model seen from each picture's camera too
+    (seen_<picture>.png), and views.json: how each straight-on render sees the world, for
+    request_lines.py to lay the lines on them (run_request.py does after Blender). Returns the
+    files (the three views), for `compare` and `finish`."""
+    job.step("rendering the previews", 0.5)
+    scene = bpy.context.scene
+    _workbench(scene, size)
     meshes = [o for o in objects if o.type == "MESH"]
     # the three views at rest; the rig is posed again after (the export samples the pose)
     arms = [o for o in objects if o.type == "ARMATURE"]
@@ -1400,6 +1412,123 @@ def compare(job, files, height=300):
     _sheet(path, [job.pictures(), [job.dir / f for f in files]], height)
     print(f"compare: {path}", flush=True)
     return path
+
+
+# ---------------------------------------------------------------- a set of floor tiles
+
+def floor_tile(job, name, objects, edges, weight=1.0, turns=False):
+    """One tile of the set of floor tiles a request makes (its kind "floor"): `objects`, its
+    meshes, modelled a cell wide standing on the origin (X and Y from -0.5 to 0.5, Z from 0: a
+    slab 0.04 to 0.06 thick, its top what's seen), and its four edges' words going round from
+    the north (+Y), then east (+X), south and west (requests.md, "A set of floor tiles"); how
+    often it's picked among those that fit (`weight`), whether it may be laid turned (`turns`).
+    Kept on the job for `layout` and `finish_floor_set`."""
+    edges = [str(e) for e in edges]
+    if len(edges) != 4 or not all(e.strip() for e in edges):
+        raise ValueError(f"{name}: four edges, each a word (north, east, south, west)")
+    if weight <= 0:
+        raise ValueError(f"{name}: a weight more than 0")
+    job.tiles.append({"name": name, "objects": list(objects), "edges": edges, "weight": float(weight), "turns": bool(turns)})
+    print(f"tile {name}: edges {' '.join(edges)} (north east south west), weight {weight}{', turns' if turns else ''}", flush=True)
+    return job.tiles[-1]
+
+
+def layout(job, cells=(8, 6), size=900, seed=1):
+    """The set laid on `cells` (across, along) by wave function collapse, by the game's rules
+    (floor_wfc.py): each tile's meshes copied onto its cells, turned, and rendered from above
+    (layout.png) and slanting (layout_side.png), then taken away; what doesn't fit is printed
+    (nothing: every two side by side agree). Returns the files, for `compare` and
+    `finish_floor_set`."""
+    import floor_wfc as fw
+    job.step("laying the set out", 0.5)
+    tiles = [(t["name"], t["edges"], t["weight"], t["turns"]) for t in job.tiles]
+    if not tiles:
+        raise ValueError("no tiles to lay: make each with kit.floor_tile(job, ...) first")
+    w, h = cells
+    laid = fw.lay(tiles, [(x, z) for z in range(h) for x in range(w)], seed)
+    wrong = fw.agree(tiles, laid)
+    for line in wrong[:12]:
+        print(f"layout: {line}", flush=True)
+    used = sorted({name for name, _ in laid.values()})
+    print(f"layout: {w} x {h} cells, {len(wrong)} edges that don't fit; tiles used: {', '.join(used)}", flush=True)
+    by = {t["name"]: t for t in job.tiles}
+    originals = [o for t in job.tiles for o in t["objects"]]
+    hidden = [(o, o.hide_render) for o in originals]
+    for o, _ in hidden:
+        o.hide_render = True
+    copies = []
+    for (x, z), (name, turn) in laid.items():
+        # a cell's place (the engine's z south is Blender's -Y), turned clockwise seen from above
+        at = Matrix.Translation((x - w / 2 + 0.5, -(z - h / 2 + 0.5), 0.0)) @ Matrix.Rotation(-math.pi / 2 * turn, 4, "Z")
+        for o in by[name]["objects"]:
+            c = o.copy()
+            bpy.context.collection.objects.link(c)
+            c.matrix_world = at @ o.matrix_world
+            c.hide_render = False
+            copies.append(c)
+    scene = bpy.context.scene
+    _workbench(scene, size)
+    cam = bpy.data.objects.new("layout camera", bpy.data.cameras.new("layout camera"))
+    bpy.context.collection.objects.link(cam)
+    scene.camera = cam
+    cam.data.type = "ORTHO"
+    cam.data.ortho_scale = max(w, h) * 1.04
+    cam.location = (0.0, 0.0, 20.0)
+    cam.rotation_euler = (0.0, 0.0, 0.0)
+    cam.data.clip_start, cam.data.clip_end = 0.01, 100
+    _render(scene, job.dir / "layout.png")
+    lo, hi = bounds(copies)
+    _view(scene, cam, lo, hi, (0.0, -0.82, 0.57), False)
+    _render(scene, job.dir / "layout_side.png")
+    for c in copies:
+        bpy.data.objects.remove(c, do_unlink=True)
+    bpy.data.objects.remove(cam, do_unlink=True)
+    for o, was in hidden:
+        o.hide_render = was
+    return ["layout.png", "layout_side.png"]
+
+
+def finish_floor_set(job, files, reply=None):
+    """With `-- --finish`: each tile into the project as a "floor" prop of the set (named after
+    the request: its id), through the add-on's write_prop where it was modelled (never moved: a
+    half slab stays a half), into temporary/ unless the design is the user's (content/); a tile
+    an earlier run made that this one doesn't goes; the request done, the set's first tile its
+    prop, with the renders and `reply`. Without it, only says how. Returns the props."""
+    if not job.finishing:
+        print("Laid out only: look at layout.png and compare.png; run again with `-- --finish` to add the set to the project.", flush=True)
+        return None
+    if not job.tiles:
+        raise ValueError("no tiles to add: make each with kit.floor_tile(job, ...) first")
+    job.step("adding it to the project", 0.95)
+    record = mr.load(job.root, job.id)
+    space = "content" if record["mine"] else "temporary"
+    made = []
+    for t in job.tiles:
+        pid = f"{job.id}_{mr.slug(t['name']) or 'tile'}"
+        floor = {"set": job.id, "edges": t["edges"], "weight": t["weight"]}
+        if t["turns"]:
+            floor["turns"] = True
+        facts = {"name": f"{record['name']}: {t['name']}", "category": "floor", "blocks": False, "unstackable": False, "floor": floor}
+        glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in t["objects"] if not bf.is_bounds(o)], facts, recentre=False)
+        made.append(pid)
+        print(f"Done: {pid} ({Path(glb).relative_to(job.root)}, {Path(path).relative_to(job.root)})" + (f"; {'; '.join(notes)}" if notes else ""), flush=True)
+    # what an earlier run made of the set and this one didn't
+    props = job.root / space / "data" / "props"
+    for f in props.glob(f"{job.id}_*.json"):
+        try:
+            rec = json.loads(f.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        if rec.get("floor", {}).get("set") == job.id and rec.get("id") not in made:
+            f.unlink()
+            model = job.root / space / "assets" / str(rec.get("model") or "")
+            if rec.get("model") and model.is_file():
+                model.unlink()
+            print(f"Gone: {rec.get('id')}, a tile of the set an earlier run made", flush=True)
+    check = engine_check(job.root, job.root / space / "assets" / "models" / f"{made[0]}.glb")
+    mr.finish(job.root, job.id, made[0], files, reply)
+    print(f"The set {job.id}: {len(made)} tiles ({', '.join(made)}); the engine reads its first: {check}", flush=True)
+    return made
 
 
 # ---------------------------------------------------------------- into the project
