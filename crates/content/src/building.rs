@@ -85,9 +85,13 @@ pub struct CellTile {
     pub cell: [i32; 2],
     /// a "floor" prop
     pub tile: String,
-    /// quarter turns clockwise (seen from above), for a tile of a set that may be turned
+    /// quarter turns clockwise (seen from above)
     #[serde(skip_serializing_if = "is_default")]
     pub turn: u8,
+    /// a set's tile put there by hand (a mosaic, a design of one's own): it stays as it was put,
+    /// whatever the set's laying does round it (which fits it)
+    #[serde(skip_serializing_if = "is_default")]
+    pub by_hand: bool,
 }
 
 /// The railing style a hole had before holes chose theirs.
@@ -158,8 +162,17 @@ impl Floor {
         self.holes.retain(|h| h.cell != [x, z]);
         self.tiles.retain(|t| t.cell != [x, z]);
         if !tile.is_empty() && (tile != self.tile || !turn.is_multiple_of(4)) {
-            self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4 });
+            self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, by_hand: false });
         }
+    }
+
+    /// A set's `tile` put on a cell by hand, `turn` quarter turns round: kept as it is put,
+    /// whatever the set's laying does (even the floor's own tile: there it's this one, this
+    /// way round); a hole there is closed.
+    pub fn place(&mut self, x: i32, z: i32, tile: &str, turn: u8) {
+        self.holes.retain(|h| h.cell != [x, z]);
+        self.tiles.retain(|t| t.cell != [x, z]);
+        self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, by_hand: true });
     }
 
     /// Is this cell left open down to the floor below?

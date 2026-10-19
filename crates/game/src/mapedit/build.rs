@@ -14,6 +14,7 @@ use egui::RichText;
 use glam::Vec3;
 use render::scene::{Shape, ShapeKind};
 
+use super::floors::{brush_set, flooring_of, floorings, laid_hook, set_tiles, tile_of, turn_button, SET};
 use super::{hint, pick, section, warn, MapEditor};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -43,41 +44,6 @@ impl Clicks {
 
 /// The flooring brush that opens a cell: a hole down to the floor below.
 const HOLE: &str = "#hole";
-
-/// A flooring that's a set of floor tiles, laid to fit (`world::floors`): this, then the set.
-const SET: &str = "#set:";
-
-/// A set's name as the panel says it ("old_ruins" → "Old ruins").
-fn set_name(set: &str) -> String {
-    let words = set.replace('_', " ");
-    let mut chars = words.chars();
-    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
-}
-
-/// The floorings to pick from: each "floor" prop of no set, and each set once (with its first
-/// tile's colour): (id, name, colour), a set's id SET and its name.
-fn floorings(ed: &MapEditor) -> Vec<(String, String, String)> {
-    let mut out: Vec<(String, String, String)> = ed.content.props.iter().filter(|p| p.category == "floor" && p.floor.is_none()).map(|p| (p.id.clone(), p.name.clone(), p.color(0).to_string())).collect();
-    for (set, tiles) in ed.content.floor_sets() {
-        let color = tiles.first().map(|p| p.color(0).to_string()).unwrap_or_else(|| "#888888".into());
-        out.push((format!("{SET}{set}"), format!("{}: a set of {}, laid to fit", set_name(&set), tiles.len()), color));
-    }
-    out
-}
-
-/// What a floor's own tile is among the floorings: its set, when it's a tile of one.
-fn flooring_of(content: &content::Content, tile: &str) -> String {
-    world::floors::set_of(content, tile).map(|set| format!("{SET}{set}")).unwrap_or_else(|| tile.to_string())
-}
-
-/// The tile a flooring picked makes a floor's own: a set's first (a floor of a set's tile is
-/// laid with the set).
-fn tile_of(content: &content::Content, flooring: &str) -> String {
-    match flooring.strip_prefix(SET) {
-        Some(set) => content.floor_sets().get(set).and_then(|t| t.first()).map(|p| p.id.clone()).unwrap_or_default(),
-        None => flooring.to_string(),
-    }
-}
 
 /// A floor's cells that have flooring: not the stairs' way up, nor its holes.
 fn floored(b: &Building, f: usize, content: &content::Content) -> Vec<(i32, i32)> {
@@ -146,6 +112,8 @@ pub(super) struct Draft {
     /// it ends), and how many times "Lay it again" was asked (its seed)
     pub stroke_cells: Vec<(i32, i32)>,
     pub relaid: u64,
+    /// Flooring: the turn a tile put by hand gets
+    pub tile_turn: u8,
 }
 
 fn first_of(ed: &MapEditor, category: &str) -> Option<String> {
@@ -287,6 +255,7 @@ impl MapEditor {
             painting: false,
             stroke_cells: vec![],
             relaid: 0,
+            tile_turn: 0,
             step: if editing.is_some() { Step::Design } else { Step::Footprint },
             editing,
             cells,
@@ -661,13 +630,17 @@ impl MapEditor {
             }
             None => None,
         };
+        let by_hand = world::floors::set_of(&content, &d.tile_brush).is_some();
         let floor = &mut d.b.floors[f];
-        let state = |floor: &content::Floor| (floor.tile_at(x, z).to_string(), floor.laid(x, z).map(|t| t.turn), floor.hole(x, z).map(|h| h.railing.clone()));
+        let state = |floor: &content::Floor| (floor.tile_at(x, z).to_string(), floor.laid(x, z).map(|t| (t.turn, t.by_hand)), floor.hole(x, z).map(|h| h.railing.clone()));
         let before = state(floor);
         if let Some(l) = set_tile {
             floor.set_laid(x, z, &l.tile, l.turn);
         } else if d.tile_brush.starts_with(SET) {
             return Ok(false);
+        } else if by_hand {
+            // a set's tile put by hand: as it's turned, kept whatever the set's laying does
+            floor.place(x, z, &d.tile_brush, d.tile_turn);
         } else if d.tile_brush == HOLE {
             if f == 0 {
                 return Err("The ground floor has nothing under it: holes go in the floors above".into());
@@ -678,7 +651,7 @@ impl MapEditor {
             // a hole painted again takes the railing picked
             floor.set_hole(x, z, Some(&d.railing_brush));
         } else {
-            floor.set_tile(x, z, &d.tile_brush);
+            floor.set_laid(x, z, &d.tile_brush, d.tile_turn);
         }
         Ok(before != state(floor))
     }
@@ -1074,12 +1047,27 @@ impl MapEditor {
                     d.tile_brush.clear();
                 }
                 // one a line (the panel is narrow): every flooring, the floor's own, a hole
+                let open = brush_set(&content, &d.tile_brush).map(str::to_string);
                 for (id, name, color) in &tiles {
                     let mark = id.strip_prefix(SET).map(|set| format!("uiTileSet_{set}")).unwrap_or_else(|| format!("uiTileBrush_{id}"));
                     let r = brush(ui, &mut d.tile_brush, id, name, Some(color.as_str()), &mark);
                     if id.starts_with(SET) {
                         r.on_hover_text("Each cell painted takes one of the set's tiles, the one that fits the cells round it (wave function collapse): a pattern running on across them");
                     }
+                    // a set picked: its tiles too, each to put by hand (a mosaic, a symmetric
+                    // design of one's own)
+                    if let Some(set) = id.strip_prefix(SET).filter(|s| open.as_deref() == Some(*s)) {
+                        ui.indent(("tile-set", set), |ui| {
+                            for (tile, tname, tcolor) in set_tiles(&content, set) {
+                                brush(ui, &mut d.tile_brush, &tile, &format!("{tname} · by hand"), Some(tcolor.as_str()), &format!("uiTileBrush_{tile}"))
+                                    .on_hover_text("Put just where you click, as it's turned, whatever the set's laying does round it (which fits it)");
+                            }
+                        });
+                    }
+                }
+                // a tile put by hand (a set's, or any): its turn
+                if !d.tile_brush.is_empty() && d.tile_brush != HOLE && !d.tile_brush.starts_with(SET) {
+                    turn_button(ui, &mut d.tile_turn, "uiTileTurn");
                 }
                 let own = flooring_of(&content, &d.b.floors[d.floor].tile);
                 let (own_name, own_color) = tiles.iter().find(|t| t.0 == own).map(|t| (t.1.clone(), t.2.clone())).unwrap_or((own, "#888888".into()));
@@ -1102,8 +1090,9 @@ impl MapEditor {
                 }
                 // a set: its cells on this floor laid again, all together, another way
                 if let Some(set) = d.tile_brush.strip_prefix(SET).map(str::to_string) {
-                    let cells: Vec<(i32, i32)> = d.b.floors[d.floor].tiles.iter().filter(|t| world::floors::set_of(&content, &t.tile) == Some(set.as_str())).map(|t| (t.cell[0], t.cell[1])).collect();
-                    let again = ui.add_enabled(!cells.is_empty(), egui::Button::new("Lay it again").small()).on_hover_text("This floor's cells of the set laid again another way, still fitting each other and what's round them");
+                    // (those put by hand stay)
+                    let cells: Vec<(i32, i32)> = d.b.floors[d.floor].tiles.iter().filter(|t| !t.by_hand && world::floors::set_of(&content, &t.tile) == Some(set.as_str())).map(|t| (t.cell[0], t.cell[1])).collect();
+                    let again = ui.add_enabled(!cells.is_empty(), egui::Button::new("Lay it again").small()).on_hover_text("This floor's cells of the set laid again another way, still fitting each other and what's round them (and those put by hand, which stay)");
                     super::mark("uiTileRelay", &again);
                     if again.clicked() {
                         relay = Some(cells);
@@ -1166,9 +1155,8 @@ impl MapEditor {
         crate::platform::set_hook("railingbrush", &d.railing_brush);
         crate::platform::set_hook("wallface", if d.inner_face { "inside" } else { "outside" });
         crate::platform::set_hook("tilebrush", &d.tile_brush);
-        let mut laid: Vec<String> = fl.tiles.iter().map(|t| format!("{},{}:{}:{}", t.cell[0], t.cell[1], t.tile, t.turn)).collect();
-        laid.sort();
-        crate::platform::set_hook("buildlaid", &laid.join(";"));
+        crate::platform::set_hook("buildlaid", &laid_hook(&fl.tiles));
+        crate::platform::set_hook("tileturn", &d.tile_turn.to_string());
         crate::platform::set_hook("wallbrush", &d.wall_brush);
         crate::platform::set_hook("hovercell", &d.hover_cell.map(|(x, z)| format!("{x},{z}")).unwrap_or_default());
         if let Some(cells) = relay {

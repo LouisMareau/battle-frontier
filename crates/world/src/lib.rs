@@ -100,6 +100,8 @@ pub struct WorldMap {
     pub buildings: Vec<Building>,
     /// rows of cells along the top of a step, going down a level (`ramps`)
     pub ramps: Vec<Ramp>,
+    /// cells laid with flooring out of doors: each one's tile and turn (`floors`)
+    pub floors: Vec<content::CellTile>,
     /// 0: none, else 1 + the index in `zones`
     pub zone: Vec<u8>,
     pub zones: Vec<Zone>,
@@ -132,6 +134,7 @@ impl WorldMap {
             props: vec![],
             buildings: vec![],
             ramps: vec![],
+            floors: vec![],
             zone: vec![0; width * height],
             zones: vec![],
             links: vec![],
@@ -165,6 +168,7 @@ impl WorldMap {
             props: m.props.clone(),
             buildings: m.buildings.clone(),
             ramps: m.ramps.clone(),
+            floors: m.floors.clone(),
             zone: cells.zone,
             zones: m.zones.clone(),
             links: m.links.clone(),
@@ -202,6 +206,7 @@ impl WorldMap {
             props: self.props.clone(),
             buildings: self.buildings.clone(),
             ramps: self.ramps.clone(),
+            floors: self.floors.clone(),
             zones: self.zones.clone(),
             links: self.links.clone(),
             actors: self.actors.clone(),
@@ -272,6 +277,23 @@ impl WorldMap {
         // a ramp the map no longer holds goes
         self.ramps.retain(|r| r.at[0] + r.size[0] as i32 <= width as i32 && r.at[1] + r.size[1] as i32 <= height as i32);
         self.props.retain(|p| p.at[0] < width as f64 && p.at[1] < height as f64);
+        self.floors.retain(|t| t.cell[0] < width as i32 && t.cell[1] < height as i32);
+    }
+
+    /// A cell's flooring out of doors, if it's laid with one.
+    pub fn floor_at(&self, x: i32, z: i32) -> Option<&content::CellTile> {
+        self.floors.iter().find(|t| t.cell == [x, z])
+    }
+
+    /// A cell laid with `tile` turned `turn` quarter turns (put there `by_hand`: kept as it is,
+    /// whatever a set's laying does round it), or with none: true when that changed it.
+    pub fn set_floor(&mut self, x: i32, z: i32, laid: Option<(&str, u8)>, by_hand: bool) -> bool {
+        let before = self.floor_at(x, z).map(|t| (t.tile.clone(), t.turn, t.by_hand));
+        self.floors.retain(|t| t.cell != [x, z]);
+        if let Some((tile, turn)) = laid {
+            self.floors.push(content::CellTile { cell: [x, z], tile: tile.to_string(), turn: turn % 4, by_hand });
+        }
+        before != laid.map(|(t, r)| (t.to_string(), r % 4, by_hand))
     }
 
     /// A tree area's letter that's free.
@@ -578,6 +600,23 @@ pub fn load_map(root: &std::path::Path, content: &Content, id: &str) -> Result<W
 mod tests {
     use super::*;
     use content::{Floor, Opening};
+
+    #[test]
+    fn flooring_out_of_doors_is_one_tile_a_cell_kept_in_the_record() {
+        let mut m = WorldMap::new("t", "Test", 6, 4, "grass");
+        assert!(m.set_floor(1, 1, Some(("stone", 1)), false));
+        assert!(!m.set_floor(1, 1, Some(("stone", 5)), false), "the same tile the same way round: no change");
+        assert!(m.set_floor(1, 1, Some(("stone", 2)), false), "turned another way");
+        assert!(m.set_floor(1, 1, Some(("stone", 2)), true) && m.floor_at(1, 1).unwrap().by_hand, "put there by hand now");
+        assert!(m.set_floor(5, 3, Some(("stone", 0)), false));
+        assert_eq!(m.floors.len(), 2, "one to a cell");
+        assert_eq!(m.floor_at(1, 1).map(|t| (t.tile.as_str(), t.turn)), Some(("stone", 2)));
+        let back = WorldMap::from_record(&m.to_record());
+        assert_eq!(back.floors, m.floors, "kept in the record");
+        m.resize(4, 4, "grass");
+        assert_eq!(m.floors.len(), 1, "what the map no longer holds goes");
+        assert!(m.set_floor(1, 1, None, false) && m.floors.is_empty());
+    }
 
     #[test]
     fn walls_block_and_doors_let_you_in() {

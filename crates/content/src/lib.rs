@@ -794,6 +794,20 @@ impl Content {
                 out.push(format!("{at}: building \"{}\" on level {}", b.id, b.level));
             }
         }
+        // the flooring out of doors: floor tiles, on the map's cells, one to a cell
+        let mut floored = std::collections::BTreeSet::new();
+        for t in &m.floors {
+            let [x, z] = t.cell;
+            if x < 0 || z < 0 || x >= m.width as i32 || z >= m.height as i32 {
+                out.push(format!("{at}: flooring at {x}, {z}, off the map"));
+            }
+            if !floored.insert((x, z)) {
+                out.push(format!("{at}: two floorings at {x}, {z}: one to a cell"));
+            }
+            if !self.props.get(&t.tile).is_some_and(|p| p.category == "floor") {
+                out.push(format!("{at}: flooring at {x}, {z}: \"{}\" isn't a flooring (a prop of category \"floor\")", t.tile));
+            }
+        }
         // the ramps: none over another or a building (on their cells: `check_ramps`)
         for r in &m.ramps {
             let name = format!("the ramp at {}, {}", r.at[0], r.at[1]);

@@ -1095,6 +1095,17 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
             out.append_put(scene, &put);
         }
     }
+    // the cells laid with flooring out of doors, each on its ground, turned (never on a ramp's
+    // slope)
+    for t in map.floors.iter().filter(|t| in_region(region, t.cell[0], t.cell[1])) {
+        let [x, z] = t.cell;
+        let (Some(prop), Some(level)) = (content.props.get(&t.tile), map.level_at(x, z)) else { continue };
+        if map.ramp_at(x, z).is_some() {
+            continue;
+        }
+        let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
+        out.append(scene, placement(Vec3::new(x as f32 + 0.5, level as f32 * level_height + 0.005, z as f32 + 0.5), t.turn as f32 * 90.0, 1.0));
+    }
     out
 }
 

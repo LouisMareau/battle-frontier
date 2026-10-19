@@ -17,6 +17,7 @@ mod assets;
 mod build;
 mod dock;
 mod events;
+mod floors;
 mod models;
 mod post;
 mod ramps;
@@ -200,6 +201,8 @@ pub struct MapEditor {
     set_level: bool,
     /// the Ground tool's ramps
     ramp: ramps::RampTool,
+    /// the Ground tool's Floors tab: flooring out of doors
+    floorer: floors::Floorer,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -449,6 +452,7 @@ impl MapEditor {
             terrain,
             set_level: true,
             ramp: ramps::RampTool::default(),
+            floorer: floors::Floorer::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -1718,17 +1722,28 @@ impl MapEditor {
 
     fn ground_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            for (ramps, name, about, key) in [(false, "Paint", "Paint terrain and levels", "uiGroundPaint"), (true, "Ramps", "Ramps down a level, along the top of a step in the ground", "uiGroundRamps")] {
-                let r = ui.selectable_label(self.ramp.on == ramps, name).on_hover_text(about);
+            let tab = if self.ramp.on { 1 } else if self.floorer.on { 2 } else { 0 };
+            let tabs = [
+                (0, "Paint", "Paint terrain and levels", "uiGroundPaint"),
+                (1, "Ramps", "Ramps down a level, along the top of a step in the ground", "uiGroundRamps"),
+                (2, "Floors", "Flooring on the ground: a pavement, a plaza (a set of tiles laid to fit)", "uiGroundFloors"),
+            ];
+            for (k, name, about, key) in tabs {
+                let r = ui.selectable_label(tab == k, name).on_hover_text(about);
                 mark(key, &r);
                 if r.clicked() {
-                    self.ramp.on = ramps;
+                    self.ramp.on = k == 1;
+                    self.floorer.on = k == 2;
                     self.ramp.drag = None;
                 }
             }
         });
         if self.ramp.on {
             self.ramp_panel(ui);
+            return;
+        }
+        if self.floorer.on {
+            self.floor_panel(ui);
             return;
         }
         section(ui, "Terrain");
@@ -2234,6 +2249,9 @@ impl MapEditor {
             }
         }
         if primary_released {
+            if self.floorer.painting {
+                self.floor_stroke_ends();
+            }
             if self.stroke && self.stroke_ground {
                 self.need_ground = true;
             }
@@ -2256,6 +2274,10 @@ impl MapEditor {
                 }
                 if self.ramp.on {
                     self.ramp_input(response.hovered(), primary_pressed, primary_released);
+                    return;
+                }
+                if self.floorer.on {
+                    self.floor_input(response.hovered(), primary_pressed, primary_down);
                     return;
                 }
                 // a stroke starts on the map (not on a map around it), on the cell under the
@@ -2474,6 +2496,7 @@ impl MapEditor {
         let rect_at = |x: f32, y: f32, z: f32, w: f32, d: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: d }, center: Vec3::new(x, y, z), color, additive: false };
         match self.tool {
             Tool::Ground if self.ramp.on => self.ramp_shapes(&mut shapes),
+            Tool::Ground if self.floorer.on => self.floor_shapes(&mut shapes),
             Tool::Ground | Tool::Trees => {
                 // on the cell under the pointer, on its own ground
                 if let Some((x, z)) = self.ground_hit {

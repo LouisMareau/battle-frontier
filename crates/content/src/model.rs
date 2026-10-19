@@ -1302,6 +1302,10 @@ pub struct Map {
     /// rows of cells along the top of a step whose ground goes down a level (see `Ramp`)
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub ramps: Vec<crate::ramp::Ramp>,
+    /// cells laid with flooring out of doors (a pavement, a plaza): each one's tile and turn,
+    /// a set's laid to fit (`world::floors`), on the cell's ground
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub floors: Vec<crate::building::CellTile>,
     /// the zone each cell belongs to (its `mark`), '.' for none
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zone_cells: Vec<String>,
