@@ -1082,6 +1082,11 @@ fn ink(p: vec2<i32>) -> vec2<f32> {
         }
     }
     var amount = clamp(width + 0.5 - nearest, 0.0, 1.0);
+    // in the pixelation's big pixels an edge is inked whole or not at all: its softening (a
+    // pixel wide) would be all there is of a line a pixel wide, grey instead of ink
+    if (g.retro_a.x > 0.5) {
+        amount = select(0.0, 1.0, nearest <= width + 0.01);
+    }
     if (me.toon && g.toon_e.x <= 1.0) {
         for (var k = 0; k < 2; k = k + 1) {
             let o = look_at(p + dirs[k]);
