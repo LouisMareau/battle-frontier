@@ -930,7 +930,14 @@ impl FloorTile {
     /// Its edge on a side (0 north, 1 east, 2 south, 3 west) laid `turn` quarter turns
     /// clockwise: what was on the side `turn` steps back round.
     pub fn edge(&self, turn: u8, side: usize) -> &str {
-        &self.edges[(side + 4 - turn as usize % 4) % 4]
+        self.edge_as(turn, false, side)
+    }
+
+    /// Its edge on a side laid `turn` quarter turns clockwise, mirrored first when `flip` (its
+    /// east and west swapped, then turned): a tile put by hand as a symmetric design's other half.
+    pub fn edge_as(&self, turn: u8, flip: bool, side: usize) -> &str {
+        let s = (side + 4 - turn as usize % 4) % 4;
+        &self.edges[if flip { (4 - s) % 4 } else { s }]
     }
 
     pub fn problems(&self) -> Vec<String> {

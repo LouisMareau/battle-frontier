@@ -9,7 +9,9 @@ three quarters, clockwise seen from above). Two tiles side by side fit when the 
 them is the same word on both. Past the cells laid only what may end there faces out: rims
 when a tile has an edge "rim" (and they face nothing else), else the words a tile has on all
 four edges, else anything. The cell with the fewest ways left is decided first, by weight;
-on a dead end it starts again from the next seed; past eight tries, what fits best.
+on a dead end it starts again from the next seed; past eight tries, what fits best. A tile put
+by hand may lie mirrored (its east and west swapped, then turned): (name, turn, True) among
+the cells laid already; the laying itself never mirrors.
 """
 import random
 
@@ -17,10 +19,12 @@ SIDES = [(0, -1), (1, 0), (0, 1), (-1, 0)]
 RIM = "rim"
 
 
-def edge(edges, turn, side):
+def edge(edges, turn, side, flip=False):
     """A tile's edge on a side (0 north, 1 east, 2 south, 3 west) laid `turn` quarter turns
-    clockwise: what was on the side `turn` steps back round."""
-    return edges[(side + 4 - turn % 4) % 4]
+    clockwise: what was on the side `turn` steps back round; mirrored first when `flip` (its
+    east and west swapped)."""
+    s = (side + 4 - turn % 4) % 4
+    return edges[(4 - s) % 4 if flip else s]
 
 
 def ways(tiles):
@@ -36,7 +40,8 @@ def ways(tiles):
 
 def lay(tiles, cells, seed=1, fixed=None):
     """`cells` ((x, z) pairs) laid with the tiles: {cell: (name, turn)}. `fixed`: cells laid
-    already {cell: (name, turn)} of these tiles, binding those next to them."""
+    already {cell: (name, turn) or (name, turn, mirrored)} of these tiles, binding those next
+    to them."""
     fixed = fixed or {}
     ws = ways(tiles)
     by_name = {t[0]: t for t in tiles}
@@ -56,8 +61,8 @@ def lay(tiles, cells, seed=1, fixed=None):
             if n in index:
                 row.append(("cell", index[n]))
             elif n in fixed and fixed[n][0] in by_name:
-                name, turn = fixed[n]
-                row.append(("words", [edge(by_name[name][1], turn, (s + 2) % 4)]))
+                name, turn, *mirrored = fixed[n]
+                row.append(("words", [edge(by_name[name][1], turn, (s + 2) % 4, bool(mirrored and mirrored[0]))]))
             else:
                 row.append(("words", outside) if outside else None)
         binds.append(row)
@@ -149,12 +154,12 @@ def agree(tiles, laid):
     rims = any(RIM in w[2] for w in ws)
     fillers = {w[2][0] for w in ws if len(set(w[2])) == 1}
     out = []
-    for (x, z), (name, turn) in laid.items():
+    for (x, z), (name, turn, *mirrored) in laid.items():
         for s, (dx, dz) in enumerate(SIDES):
-            mine = edge(by_name[name][1], turn, s)
+            mine = edge(by_name[name][1], turn, s, bool(mirrored and mirrored[0]))
             n = laid.get((x + dx, z + dz))
             if n is not None:
-                theirs = edge(by_name[n[0]][1], n[1], (s + 2) % 4)
+                theirs = edge(by_name[n[0]][1], n[1], (s + 2) % 4, bool(len(n) > 2 and n[2]))
                 if mine != theirs:
                     out.append(f"{x},{z} {name}/{turn} meets {x + dx},{z + dz} {n[0]}/{n[1]}: {mine} against {theirs}")
             elif rims and mine != RIM:

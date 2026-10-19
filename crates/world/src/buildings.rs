@@ -11,7 +11,7 @@
 use content::{segment_ends, side_turn, Anchor, Building, Content};
 use glam::{Mat4, Vec3};
 
-use crate::mesh::{placement, prop_scene, Mesh, Models, Scene};
+use crate::mesh::{placement, prop_scene, tile_placement, Mesh, Models, Scene};
 use crate::{floors, railings};
 use crate::{color, WorldMap};
 
@@ -386,7 +386,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                 let from = m.vertices.len();
                 m.quad([Vec3::new(x0, foot, z0), Vec3::new(x0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0)], tile.under);
                 toon_from(&mut m, from, tile.toon);
-                put(&mut m, &mut textured, &tile.scene, placement(Vec3::new(x0 + 0.5, foot, z0 + 0.5), l.turn as f32 * 90.0, 1.0));
+                put(&mut m, &mut textured, &tile.scene, tile_placement(Vec3::new(x0 + 0.5, foot, z0 + 0.5), l.turn, l.flip));
             }
         }
         // the holes' railings: along their edges where the floor goes on (not where another

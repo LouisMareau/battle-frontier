@@ -445,7 +445,7 @@ impl Feed<'_> {
         // the flooring out of doors, on its cells' ground, with its records
         for t in &self.map.floors {
             let h = by.entry(square(t.cell[0], t.cell[1])).or_default();
-            (t.cell, &t.tile, t.turn, self.map.level_at(t.cell[0], t.cell[1]), self.map.ramp_at(t.cell[0], t.cell[1]).is_some()).hash(h);
+            (t.cell, &t.tile, t.turn, t.flip, self.map.level_at(t.cell[0], t.cell[1]), self.map.ramp_at(t.cell[0], t.cell[1]).is_some()).hash(h);
             records.get(t.tile.as_str()).hash(h);
         }
         for (s, h) in by.iter_mut() {

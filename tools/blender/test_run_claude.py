@@ -355,6 +355,12 @@ check("  flagstones laid on every cell, every two side by side agreeing, only jo
 # (a half's long edge against another's: agree() says so; a half turned round is the other half)
 check("  long slabs among them, each whole", names.count("long_a") + names.count("long_b") > 0, f"{names.count('long_a')} {names.count('long_b')}")
 check("  the same seed the same floor, another seed another", fw.lay(stones, cells, seed=3) == laid and fw.lay(stones, cells, seed=4) != laid)
+check("  mirrored (by hand), east and west swapped, then turned", [fw.edge(nesw, 0, s, True) for s in range(4)] == ["n", "w", "s", "e"]
+      and [fw.edge(nesw, 1, s, True) for s in range(4)] == ["e", "n", "w", "s"])
+mirrored = fw.lay(stones, cells, seed=3, fixed={(9, 3): ("long_a", 0, True)})
+check("  a half laid mirrored by hand binding the cell beside it: the other half against its long edge, west now",
+      fw.edge(dict(t[:2] for t in stones)[mirrored[(8, 3)][0]], mirrored[(8, 3)][1], 1) == "long" and fw.agree(stones, {**mirrored, (9, 3): ("long_a", 0, True)}) == [],
+      mirrored[(8, 3)])
 bound = fw.lay(stones, cells, seed=3, fixed={(9, 3): ("long_b", 0)})
 check("  a cell laid already beside them binding them: a long slab's other half against its long edge",
       fw.edge(dict(t[:2] for t in stones)[bound[(8, 3)][0]], bound[(8, 3)][1], 1) == "long" and fw.agree(stones, {**bound, (9, 3): ("long_b", 0)}) == [],

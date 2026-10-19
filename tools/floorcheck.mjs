@@ -4,9 +4,14 @@
 // slab over two cells, either way): every two cells side by side agree on the edge between
 // them (no long slab's half without its other half); "Lay it again" lays them another way,
 // still fitting; a slab put by hand, turned, stays as it was put when the rest is laid again
-// round it (which fits it); then out of doors, the Ground tool's Floors tab laying the flagstones on the
-// grass, every two cells agreeing again, one taken away; downloaded, the map has each cell's
-// tile and its turn, the house's and the ground's.
+// round it (which fits it); a long slab's half put by hand mirrored left to right across the
+// house's middle (its copy mirrored, the set laid again round both, still fitting); then out of
+// doors, the Ground tool's Floors tab laying the flagstones on the grass, every two cells
+// agreeing again, one taken away; a half put by hand with quarter turns round a corner picked
+// on the map (four, each turned on), then mirrored both ways (four, mirrored where the
+// symmetry mirrors them), those taken away all round from one of them and the click undone in
+// one step; downloaded, the map has each cell's tile, its turn and whether it's mirrored, the
+// house's and the ground's.
 // Screenshots to screenshots/floor-*.png. Exits 1 when something fails.
 //     node tools/floorcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -64,15 +69,20 @@ const shot = async (name) => {
   await sleep(500);
   await browser.screenshot(join(shots, `floor-${name}.png`));
 };
-// "x,z:tile:turn;..." (the `buildlaid` hook) as cells, and whether every two side by side agree
+// "x,z:tile:turn[:flip][:hand];..." (the `buildlaid` hook) as cells, and whether every two
+// side by side agree (a mirrored tile's east and west swapped, then turned)
 const SIDES = [[0, -1], [1, 0], [0, 1], [-1, 0]];
 const parse = (laid) => Object.fromEntries(laid.split(';').filter(Boolean).map((e) => {
-  const [cell, tile, turn, hand] = e.split(':');
-  return [cell, { tile, turn: Number(turn), hand: hand === 'hand' }];
+  const [cell, tile, turn, ...rest] = e.split(':');
+  return [cell, { tile, turn: Number(turn), flip: rest.includes('flip'), hand: rest.includes('hand') }];
 }));
-const saved = (tiles) => Object.fromEntries((tiles ?? []).map((t) => [`${t.cell[0]},${t.cell[1]}`, { tile: t.tile, turn: t.turn ?? 0, hand: !!t.by_hand }]));
+const saved = (tiles) => Object.fromEntries((tiles ?? []).map((t) => [`${t.cell[0]},${t.cell[1]}`, { tile: t.tile, turn: t.turn ?? 0, flip: !!t.flip, hand: !!t.by_hand }]));
 const same = (a, b) => JSON.stringify(Object.keys(a).sort().map((c) => [c, a[c]])) === JSON.stringify(Object.keys(b).sort().map((c) => [c, b[c]]));
-const edge = (l, side) => tiles[l.tile]?.edges[(side + 4 - l.turn) % 4];
+const edge = (l, side) => {
+  const s = (side + 4 - l.turn) % 4;
+  return tiles[l.tile]?.edges[l.flip ? (4 - s) % 4 : s];
+};
+const lies = (l, tile, turn, flip) => !!l && l.tile === tile && l.turn === turn && l.flip === flip && l.hand;
 const mismatches = (cells) => {
   const out = [];
   for (const [cell, l] of Object.entries(cells)) {
@@ -153,6 +163,29 @@ try {
   check('  the rest laid again round it, fitting it; it stays', round['1,1']?.tile === 'flagstones_slab' && round['1,1'].turn === 1 && round['1,1'].hand && wrongRound.length === 0,
     wrongRound.join('; ') || JSON.stringify(round['1,1']));
 
+  // 3c. a long slab's half put by hand mirrored left to right across the house's middle (x 2
+  // from its corner, between its second and third cells): its copy at the other end, mirrored;
+  // the set laid again round both, fitting each (the halves' other halves beside them)
+  await press('uiTileBrush_flagstones_long_a');
+  for (let i = 0; i < 3; i++) await press('uiTileTurn');
+  await press('uiTileSym_mirror_x');
+  check('  mirrored left to right round the floor\'s middle', (await data('tilesym')) === 'mirror_x' && (await data('tilecentre')) === '4,3' && (await data('tileturn')) === '0',
+    `${await data('tilesym')} ${await data('tilecentre')} ${await data('tileturn')}`);
+  await browser.click(...(await at(8.5, 0, 6.5)));
+  await sleep(300);
+  let sym = parse(await data('buildlaid'));
+  check('  a half put by hand, its copy mirrored at the other end', lies(sym['0,0'], 'flagstones_long_a', 0, false) && lies(sym['3,0'], 'flagstones_long_a', 0, true),
+    `${JSON.stringify(sym['0,0'])} ${JSON.stringify(sym['3,0'])}`);
+  await press('uiTileSym_none');
+  await press('uiTileSet_flagstones');
+  await press('uiTileRelay');
+  await sleep(400);
+  sym = parse(await data('buildlaid'));
+  const wrongSym = mismatches(sym);
+  check('  the set laid again round them, fitting both (each half against another)', lies(sym['3,0'], 'flagstones_long_a', 0, true) && edge(sym['2,0'], 1) === 'long' && edge(sym['1,0'], 3) === 'long' && wrongSym.length === 0,
+    wrongSym.join('; ') || `${JSON.stringify(sym['1,0'])} ${JSON.stringify(sym['2,0'])}`);
+  await shot('2b-mirrored');
+
   // 4. confirmed, downloaded: each cell's tile and its turn
   await press('uiConfirm');
   check('confirmed', (await data('build')) === '', await data('build'));
@@ -197,12 +230,57 @@ try {
   await sleep(300);
   const after = parse(await data('floorlaid'));
   check('  one cell taken away', Object.keys(after).length === 11 && !after['2,10'], `${Object.keys(after).length} cells`);
+
+  // 6. a half put by hand with quarter turns round a corner picked on the map (14, 6): four,
+  // each a quarter further on; then mirrored both ways round it, mirrored first: four more,
+  // mirrored where the symmetry mirrors them; taken away all round from one of them, and back
+  // in one step with an undo
+  await cmd('view:14,6,14,0,62');
+  await browser.click(700, 889);
+  // (the set's tiles are listed once the set is picked)
+  await press('uiFloorSet_flagstones');
+  await press('uiFloorBrush_flagstones_long_a');
+  for (let i = 0; i < 3; i++) await press('uiFloorTurn');
+  await press('uiFloorSym_turn4');
+  check('quarter turns: no centre yet, the next click picks it', (await data('floorsym')) === 'turn4' && (await data('floorcentre')) === '' && (await data('floorturn')) === '0',
+    `${await data('floorsym')} "${await data('floorcentre')}" ${await data('floorturn')}`);
+  const before = await data('floorlaid');
+  await browser.click(...(await at(14.04, 0, 5.97)));
+  await sleep(300);
+  check('  a corner picked, nothing laid by that click', (await data('floorcentre')) === '28,12' && (await data('floorlaid')) === before, await data('floorcentre'));
+  await browser.click(...(await at(13.5, 0, 4.5)));
+  await sleep(300);
+  let four = parse(await data('floorlaid'));
+  check('  one click, four halves round it, each a quarter on', lies(four['13,4'], 'flagstones_long_a', 0, false) && lies(four['15,5'], 'flagstones_long_a', 1, false)
+    && lies(four['14,7'], 'flagstones_long_a', 2, false) && lies(four['12,6'], 'flagstones_long_a', 3, false),
+    ['13,4', '15,5', '14,7', '12,6'].map((c) => `${c} ${JSON.stringify(four[c])}`).join(' '));
+  await press('uiFloorFlip');
+  await press('uiFloorSym_mirror_both');
+  await browser.click(...(await at(11.5, 0, 3.5)));
+  await sleep(300);
+  four = parse(await data('floorlaid'));
+  check('  mirrored both ways, put mirrored: four more, mirrored where the symmetry mirrors them', (await data('floorflip')) === '1'
+    && lies(four['11,3'], 'flagstones_long_a', 0, true) && lies(four['16,3'], 'flagstones_long_a', 0, false)
+    && lies(four['11,8'], 'flagstones_long_a', 2, false) && lies(four['16,8'], 'flagstones_long_a', 2, true),
+    ['11,3', '16,3', '11,8', '16,8'].map((c) => `${c} ${JSON.stringify(four[c])}`).join(' '));
+  await shot('5-symmetry');
+  const mirrored = await data('floorlaid');
+  await press('uiFloorNone');
+  await browser.click(...(await at(16.5, 0, 8.5)));
+  await sleep(300);
+  const taken = parse(await data('floorlaid'));
+  check('  taken away from one: from all four, the quarter turns' + "'" + ' kept', ['11,3', '16,3', '11,8', '16,8'].every((c) => !taken[c]) && ['13,4', '15,5', '14,7', '12,6'].every((c) => taken[c]),
+    Object.keys(taken).join(' '));
+  await browser.key('z', { ctrl: true });
+  await sleep(500);
+  check('  undone in one step: all four back', (await data('floorlaid')) === mirrored, (await data('floorlaid')).slice(0, 200));
+  const after6 = parse(await data('floorlaid'));
   await press('uiSave');
   await sleep(1500);
   const record = JSON.parse(readFileSync(join(downloads, 'floor_test.json'), 'utf8'));
-  check('downloaded: each cell its tile, its turn, whether put by hand', same(saved(record.buildings?.[0]?.floors?.[0]?.tiles), round),
+  check('downloaded: each cell its tile, its turn, whether mirrored, whether put by hand', same(saved(record.buildings?.[0]?.floors?.[0]?.tiles), sym),
     JSON.stringify(record.buildings?.[0]?.floors?.[0]?.tiles ?? null).slice(0, 300));
-  check('  and the ground out of doors', same(saved(record.floors), after), JSON.stringify(record.floors ?? null).slice(0, 300));
+  check('  and the ground out of doors', same(saved(record.floors), after6), JSON.stringify(record.floors ?? null).slice(0, 300));
   if (browser.errors.length) {
     failed++;
     console.log('PAGE ERRORS:\n' + browser.errors.join('\n'));

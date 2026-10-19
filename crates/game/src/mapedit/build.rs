@@ -14,7 +14,7 @@ use egui::RichText;
 use glam::Vec3;
 use render::scene::{Shape, ShapeKind};
 
-use super::floors::{brush_set, flooring_of, floorings, laid_hook, set_tiles, tile_of, turn_button, SET};
+use super::floors::{brush_set, centre_at, flip_button, flooring_of, floorings, laid_hook, set_tiles, tile_of, turn_button, Mirroring, SET};
 use super::{hint, pick, section, warn, MapEditor};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -53,6 +53,15 @@ fn floored(b: &Building, f: usize, content: &content::Content) -> Vec<(i32, i32)
 }
 
 /// A seed of the building's, its floor's and `salt`'s: the same tiles every time.
+/// A building's middle, in half cells from its `at` (the centre a symmetry puts tiles round
+/// when none is picked): the middle of the box round its cells.
+fn floor_middle(b: &Building) -> Option<(i32, i32)> {
+    let cells = b.cells();
+    let (x0, x1) = (cells.iter().map(|c| c.0).min()?, cells.iter().map(|c| c.0).max()?);
+    let (z0, z1) = (cells.iter().map(|c| c.1).min()?, cells.iter().map(|c| c.1).max()?);
+    Some((x0 + x1 + 1, z0 + z1 + 1))
+}
+
 fn seed_of(b: &Building, f: usize, salt: u64) -> u64 {
     b.id.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3)) ^ (f as u64).wrapping_mul(0x9e37_79b9) ^ salt.wrapping_mul(0x2545_f491_4f6c_dd1d)
 }
@@ -112,8 +121,11 @@ pub(super) struct Draft {
     /// it ends), and how many times "Lay it again" was asked (its seed)
     pub stroke_cells: Vec<(i32, i32)>,
     pub relaid: u64,
-    /// Flooring: the turn a tile put by hand gets
+    /// Flooring: the turn a tile put by hand gets, and whether it's mirrored first
     pub tile_turn: u8,
+    pub tile_flip: bool,
+    /// Flooring: what's put by hand put again round a centre (none picked: the floor's middle)
+    pub tile_mirror: Mirroring,
 }
 
 fn first_of(ed: &MapEditor, category: &str) -> Option<String> {
@@ -256,6 +268,8 @@ impl MapEditor {
             stroke_cells: vec![],
             relaid: 0,
             tile_turn: 0,
+            tile_flip: false,
+            tile_mirror: Mirroring::default(),
             step: if editing.is_some() { Step::Design } else { Step::Footprint },
             editing,
             cells,
@@ -544,6 +558,14 @@ impl MapEditor {
                         let d = self.draft.as_mut().unwrap();
                         let rel = ((p.x - d.b.at[0] as f32).floor() as i32, (p.z - d.b.at[1] as f32).floor() as i32);
                         d.hover_cell = d.b.has(rel.0, rel.1).then_some(rel);
+                        // picking the symmetry's centre: this click sets it, and lays nothing
+                        if d.tile_mirror.picking {
+                            if pressed && over_view {
+                                d.tile_mirror.centre = Some(centre_at(p.x - d.b.at[0] as f32, p.z - d.b.at[1] as f32));
+                                d.tile_mirror.picking = false;
+                            }
+                            return;
+                        }
                         if pressed && over_view {
                             d.painting = true;
                         }
@@ -604,10 +626,33 @@ impl MapEditor {
         }
     }
 
-    /// The flooring brush laid on a cell (from `at`) of the floor being designed: Ok(true)
-    /// when it changed. A hole only above the ground floor and where nothing stands; the
-    /// stairs' way up stays open.
+    /// The flooring brush laid on a cell (from `at`) of the floor being designed, and put by
+    /// hand (anything but a set laid to fit) again where the symmetry takes it: Ok(true) when
+    /// any changed; what the cell itself couldn't take, Err (the copies' are passed over).
     fn lay(&mut self, x: i32, z: i32) -> Result<bool, String> {
+        let Some(d) = &self.draft else { return Ok(false) };
+        if d.tile_brush.starts_with(SET) {
+            return self.lay_cell(x, z, 0, false);
+        }
+        let places = d.tile_mirror.places(floor_middle(&d.b), (x, z), d.tile_turn, d.tile_flip);
+        let mut changed = false;
+        for (k, ((cx, cz), turn, flip)) in places.into_iter().enumerate() {
+            if !self.draft.as_ref().is_some_and(|d| d.b.has(cx, cz)) {
+                continue;
+            }
+            match self.lay_cell(cx, cz, turn, flip) {
+                Ok(c) => changed |= c,
+                Err(why) if k == 0 => return Err(why),
+                Err(_) => {}
+            }
+        }
+        Ok(changed)
+    }
+
+    /// The flooring brush laid on one cell, a tile put by hand lying `turn` quarter turns,
+    /// mirrored first or not: Ok(true) when it changed. A hole only above the ground floor and
+    /// where nothing stands; the stairs' way up stays open.
+    fn lay_cell(&mut self, x: i32, z: i32, turn: u8, flip: bool) -> Result<bool, String> {
         let content = self.content.clone();
         let stairs = |id: &str| content.props.get(id).filter(|p| p.category == "stairs").map(|p| p.footprint);
         let standing: Vec<String> = {
@@ -632,7 +677,7 @@ impl MapEditor {
         };
         let by_hand = world::floors::set_of(&content, &d.tile_brush).is_some();
         let floor = &mut d.b.floors[f];
-        let state = |floor: &content::Floor| (floor.tile_at(x, z).to_string(), floor.laid(x, z).map(|t| (t.turn, t.by_hand)), floor.hole(x, z).map(|h| h.railing.clone()));
+        let state = |floor: &content::Floor| (floor.tile_at(x, z).to_string(), floor.laid(x, z).map(|t| (t.turn, t.flip, t.by_hand)), floor.hole(x, z).map(|h| h.railing.clone()));
         let before = state(floor);
         if let Some(l) = set_tile {
             floor.set_laid(x, z, &l.tile, l.turn);
@@ -640,7 +685,7 @@ impl MapEditor {
             return Ok(false);
         } else if by_hand {
             // a set's tile put by hand: as it's turned, kept whatever the set's laying does
-            floor.place(x, z, &d.tile_brush, d.tile_turn);
+            floor.place(x, z, &d.tile_brush, turn, flip);
         } else if d.tile_brush == HOLE {
             if f == 0 {
                 return Err("The ground floor has nothing under it: holes go in the floors above".into());
@@ -651,7 +696,7 @@ impl MapEditor {
             // a hole painted again takes the railing picked
             floor.set_hole(x, z, Some(&d.railing_brush));
         } else {
-            floor.set_laid(x, z, &d.tile_brush, d.tile_turn);
+            floor.set_laid_as(x, z, &d.tile_brush, turn, flip);
         }
         Ok(before != state(floor))
     }
@@ -742,9 +787,23 @@ impl MapEditor {
                         for h in d.b.floors[d.floor].holes.iter().filter(|_| d.floor > 0) {
                             overlays.push(rect(ox + h.cell[0] as f32 + 0.5, y - 0.02, oz + h.cell[1] as f32 + 0.5, 0.9, 0.9, [0.1, 0.12, 0.3, 0.35]));
                         }
-                        if let Some((x, z)) = d.hover_cell {
+                        if let Some((x, z)) = d.hover_cell.filter(|_| !d.tile_mirror.picking) {
                             let c = if d.tile_brush == HOLE { [1.0, 0.55, 0.3, 0.5] } else { [1.0, 1.0, 1.0, 0.45] };
                             overlays.push(rect(ox + x as f32 + 0.5, y, oz + z as f32 + 0.5, 0.96, 0.96, c));
+                        }
+                        // with a symmetry: where the tile under the pointer is put again (on this
+                        // floor), its centre and its lines; picking the centre: where it would go
+                        if !d.tile_brush.starts_with(SET) {
+                            let middle = floor_middle(&d.b);
+                            let under: Vec<(i32, i32)> = d.hover_cell.filter(|_| !d.tile_mirror.picking).into_iter().collect();
+                            let reach = d.b.cells.len().max(d.b.cells.first().map_or(0, |r| r.len())).max(1) as f32;
+                            d.tile_mirror.shapes(middle, &under, reach, Vec3::new(ox, y - 0.07, oz), &|x, z| d.b.has(x, z).then_some(y - 0.07), overlays);
+                            if d.tile_mirror.picking {
+                                if let Some(p) = self.plane_hit {
+                                    let c = centre_at(p.x - ox, p.z - oz);
+                                    overlays.push(Shape { kind: ShapeKind::Ring { inner: 0.1, outer: 0.22 }, center: Vec3::new(ox + c.0 as f32 / 2.0, y + 0.01, oz + c.1 as f32 / 2.0), color: [1.0, 0.82, 0.3, 0.6], additive: false });
+                                }
+                            }
                         }
                     }
                     Clicks::Walls => {
@@ -1065,9 +1124,19 @@ impl MapEditor {
                         });
                     }
                 }
-                // a tile put by hand (a set's, or any): its turn
+                // a tile put by hand (a set's, or any): its turn, mirrored or not
                 if !d.tile_brush.is_empty() && d.tile_brush != HOLE && !d.tile_brush.starts_with(SET) {
-                    turn_button(ui, &mut d.tile_turn, "uiTileTurn");
+                    ui.horizontal(|ui| {
+                        turn_button(ui, &mut d.tile_turn, "uiTileTurn");
+                        flip_button(ui, &mut d.tile_flip, "uiTileFlip");
+                    });
+                }
+                // put by hand (anything but a set laid to fit): again round a centre
+                if !d.tile_brush.starts_with(SET) {
+                    ui.label(RichText::new("Symmetry").size(12.0).strong()).on_hover_text(
+                        "Each tile put by hand (a hole, the floor's own) is put again where the symmetry takes it round its centre, mirrored and turned to match: a mosaic, a church floor's design. The centre is the floor's middle unless one is picked",
+                    );
+                    d.tile_mirror.panel(ui, floor_middle(&d.b), "uiTile");
                 }
                 let own = flooring_of(&content, &d.b.floors[d.floor].tile);
                 let (own_name, own_color) = tiles.iter().find(|t| t.0 == own).map(|t| (t.1.clone(), t.2.clone())).unwrap_or((own, "#888888".into()));
@@ -1157,6 +1226,9 @@ impl MapEditor {
         crate::platform::set_hook("tilebrush", &d.tile_brush);
         crate::platform::set_hook("buildlaid", &laid_hook(&fl.tiles));
         crate::platform::set_hook("tileturn", &d.tile_turn.to_string());
+        crate::platform::set_hook("tileflip", if d.tile_flip { "1" } else { "" });
+        crate::platform::set_hook("tilesym", d.tile_mirror.symmetry.key());
+        crate::platform::set_hook("tilecentre", &d.tile_mirror.centre.or(floor_middle(&d.b)).map(|c| format!("{},{}", c.0, c.1)).unwrap_or_default());
         crate::platform::set_hook("wallbrush", &d.wall_brush);
         crate::platform::set_hook("hovercell", &d.hover_cell.map(|(x, z)| format!("{x},{z}")).unwrap_or_default());
         if let Some(cells) = relay {
@@ -1234,5 +1306,17 @@ impl MapEditor {
             return true;
         }
         false
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_floors_middle_is_the_middle_of_the_box_round_its_cells() {
+        let b = Building { cells: vec!["####".into(), "####".into(), "##..".into()], ..Default::default() };
+        assert_eq!(floor_middle(&b), Some((4, 3)), "between x 1 and 2, through row 1's middle");
+        assert_eq!(floor_middle(&Building::default()), None);
     }
 }

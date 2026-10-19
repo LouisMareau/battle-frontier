@@ -104,7 +104,15 @@ impl Mesh {
             }
             self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), wind, ..*v });
         }
-        self.indices.extend(other.indices.iter().map(|i| i + base));
+        // put down mirrored (a floor tile laid flipped), its faces would be wound inside out:
+        // each triangle wound back, so it faces the way it did
+        if Mat3::from_mat4(put.m).determinant() < 0.0 {
+            for [a, b, c] in other.indices.as_chunks::<3>().0 {
+                self.indices.extend([a + base, c + base, b + base]);
+            }
+        } else {
+            self.indices.extend(other.indices.iter().map(|i| i + base));
+        }
     }
 }
 
@@ -446,6 +454,18 @@ pub fn breeze(prop: &Prop, part: usize, mesh: &mut Mesh, foot: f32) {
 /// Where a placed thing stands: at its foot, turned clockwise (seen from above), scaled.
 pub fn placement(at: Vec3, turn_degrees: f32, scale: f32) -> Mat4 {
     Mat4::from_translation(at) * Mat4::from_rotation_y(-turn_degrees.to_radians()) * Mat4::from_scale(Vec3::splat(scale))
+}
+
+/// Where a floor tile lies on its cell: `at` its middle, mirrored first when `flip` (its east
+/// and west swapped, as `FloorTile::edge_as` has its edges), then turned `turn` quarter turns
+/// clockwise.
+pub fn tile_placement(at: Vec3, turn: u8, flip: bool) -> Mat4 {
+    let m = placement(at, turn as f32 * 90.0, 1.0);
+    if flip {
+        m * Mat4::from_scale(Vec3::new(-1.0, 1.0, 1.0))
+    } else {
+        m
+    }
 }
 
 // ---------------------------------------------------------------- the ground
@@ -1104,7 +1124,7 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
             continue;
         }
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
-        out.append(scene, placement(Vec3::new(x as f32 + 0.5, level as f32 * level_height + 0.005, z as f32 + 0.5), t.turn as f32 * 90.0, 1.0));
+        out.append(scene, tile_placement(Vec3::new(x as f32 + 0.5, level as f32 * level_height + 0.005, z as f32 + 0.5), t.turn, t.flip));
     }
     out
 }
@@ -1422,6 +1442,35 @@ mod room_tests {
         let slope: Vec<&Vertex> = w.vertices.iter().filter(|v| v.normal[1] > 0.1).collect();
         assert_eq!((w.vertices.len(), w.indices.len(), slope.len()), (14, 18, 4));
         assert!(slope.iter().all(|v| (v.pos[1] - (1.0 - 2.0 * v.pos[2])).abs() < 1e-5 && (v.normal[2] - 2.0 / 5f32.sqrt()).abs() < 1e-5));
+    }
+}
+
+#[cfg(test)]
+mod tile_tests {
+    use super::*;
+
+    /// A floor tile laid mirrored: its east and west swapped (then turned), its faces still
+    /// facing up as they did.
+    #[test]
+    fn a_tile_laid_mirrored_is_mirrored_facing_the_same_way() {
+        let mut tile = Mesh::default();
+        tile.tri(Vec3::new(0.3, 0.05, -0.4), Vec3::new(-0.4, 0.05, 0.4), Vec3::new(0.4, 0.05, 0.4), [1.0; 4]);
+        let face = |m: &Mesh| {
+            let p = |i: usize| Vec3::from(m.vertices[m.indices[i] as usize].pos);
+            (p(1) - p(0)).cross(p(2) - p(0)).normalize()
+        };
+        let at = Vec3::new(5.5, 0.0, 2.5);
+        let (mut plain, mut flipped) = (Mesh::default(), Mesh::default());
+        plain.append(&tile, tile_placement(at, 0, false));
+        flipped.append(&tile, tile_placement(at, 0, true));
+        assert!((flipped.vertices[0].pos[0] - (5.5 - 0.3)).abs() < 1e-5, "its east now west: {:?}", flipped.vertices[0].pos);
+        assert!(face(&plain).dot(face(&flipped)) > 0.99, "facing the same way: {} {}", face(&plain), face(&flipped));
+        assert!((Vec3::from(flipped.vertices[0].normal) - Vec3::from(plain.vertices[0].normal)).length() < 1e-5, "its normals as they were (a flat face)");
+        // mirrored, then turned a quarter clockwise: what was east (mirrored west) faces north
+        let mut turned = Mesh::default();
+        turned.append(&tile, tile_placement(at, 1, true));
+        let p = Vec3::from(turned.vertices[0].pos) - at;
+        assert!((p.x - 0.4).abs() < 1e-5 && (p.z + 0.3).abs() < 1e-5, "{p}");
     }
 }
 

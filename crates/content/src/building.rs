@@ -88,6 +88,10 @@ pub struct CellTile {
     /// quarter turns clockwise (seen from above)
     #[serde(skip_serializing_if = "is_default")]
     pub turn: u8,
+    /// mirrored before it's turned (its east and west swapped): a symmetric design's other
+    /// half, put there by hand
+    #[serde(skip_serializing_if = "is_default")]
+    pub flip: bool,
     /// a set's tile put there by hand (a mosaic, a design of one's own): it stays as it was put,
     /// whatever the set's laying does round it (which fits it)
     #[serde(skip_serializing_if = "is_default")]
@@ -159,20 +163,26 @@ impl Floor {
     /// fit; "": the floor's own again); a hole there is closed. The floor's own tile unturned
     /// is the floor's own: nothing kept.
     pub fn set_laid(&mut self, x: i32, z: i32, tile: &str, turn: u8) {
+        self.set_laid_as(x, z, tile, turn, false);
+    }
+
+    /// `tile` laid on a cell as `set_laid` lays it, mirrored first when `flip` (the floor's own
+    /// tile mirrored is kept: it's another way round).
+    pub fn set_laid_as(&mut self, x: i32, z: i32, tile: &str, turn: u8, flip: bool) {
         self.holes.retain(|h| h.cell != [x, z]);
         self.tiles.retain(|t| t.cell != [x, z]);
-        if !tile.is_empty() && (tile != self.tile || !turn.is_multiple_of(4)) {
-            self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, by_hand: false });
+        if !tile.is_empty() && (tile != self.tile || !turn.is_multiple_of(4) || flip) {
+            self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, flip, by_hand: false });
         }
     }
 
-    /// A set's `tile` put on a cell by hand, `turn` quarter turns round: kept as it is put,
-    /// whatever the set's laying does (even the floor's own tile: there it's this one, this
-    /// way round); a hole there is closed.
-    pub fn place(&mut self, x: i32, z: i32, tile: &str, turn: u8) {
+    /// A set's `tile` put on a cell by hand, `turn` quarter turns round (mirrored first when
+    /// `flip`): kept as it is put, whatever the set's laying does (even the floor's own tile:
+    /// there it's this one, this way round); a hole there is closed.
+    pub fn place(&mut self, x: i32, z: i32, tile: &str, turn: u8, flip: bool) {
         self.holes.retain(|h| h.cell != [x, z]);
         self.tiles.retain(|t| t.cell != [x, z]);
-        self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, by_hand: true });
+        self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4, flip, by_hand: true });
     }
 
     /// Is this cell left open down to the floor below?
@@ -807,5 +817,18 @@ mod tests {
         assert_eq!(b.floors[0].wall_at(0, 0, "n", &b.wall), "stone");
         b.floors[0].set_inner(0, 0, "n", "");
         assert_eq!(b.wall_inside(0, 0, 0, "n"), "plaster");
+    }
+
+    #[test]
+    fn a_tile_laid_mirrored_is_kept_the_floors_own_too() {
+        let mut f = Floor { tile: "boards".into(), ..Default::default() };
+        f.set_laid_as(1, 1, "boards", 0, true);
+        assert!(f.laid(1, 1).is_some_and(|t| t.flip && !t.by_hand), "the floor's own mirrored: another way round, kept");
+        f.set_laid_as(1, 1, "boards", 0, false);
+        assert!(f.laid(1, 1).is_none(), "the floor's own as it is: nothing kept");
+        f.place(2, 1, "slab", 7, true);
+        assert!(f.laid(2, 1).is_some_and(|t| t.flip && t.by_hand && t.turn == 3));
+        let text = crate::to_text(&f.tiles);
+        assert!(text.contains("\"flip\": true") && !text.contains("\"flip\": false"), "in the record when mirrored only: {text}");
     }
 }
