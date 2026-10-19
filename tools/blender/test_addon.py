@@ -585,6 +585,69 @@ at = {n.get("name"): [round(v, 2) + 0.0 for v in n.get("translation", [0, 0, 0])
 check("  standing on its trunk's middle, the crown where it was beside it", at.get("tree trunk") == [0.0, 0.0, 0.0] and at.get("tree crown") == [1.0, 6.0, 0.0], f"{at}")
 clear()
 
+# 5g. a set of floor tiles (requests.md, "A set of floor tiles"): two tiles, each modelled a cell
+# wide on the origin (a flag, and a long slab's half running on into the next cell), laid out by
+# the game's rules and rendered from above and slanting, then added as floor props of the set
+# where they were modelled; made again without the half, the half the first run made goes
+import contextlib  # noqa: E402
+import io  # noqa: E402
+mr.new(scratch, "Test paving", [scratch / "critter.png"], kind="floor", notes="grey flags, long slabs in halves")
+job = kit.start(scratch / "private" / "requests" / "test_paving" / "model.py")
+check("a set of floor tiles: the job knows it", job.floor and not job.creature)
+
+
+def paving(job, half=True):
+    flag = kit.part("flag", [kit.box((0, 0, 0.025), (0.96, 0.96, 0.05), "stone")], {"stone": "#8f8a80"}, remesh=False)
+    kit.floor_tile(job, "Flag", [flag], ["joint"] * 4, weight=2.0)
+    if half:
+        # its slab runs on past its east edge, where the other half (this one turned round) goes on
+        piece = kit.part("half", [kit.box((0.15, 0, 0.025), (0.7, 0.96, 0.05), "stone")], {"stone": "#a39d90"}, remesh=False)
+        kit.floor_tile(job, "Half", [piece], ["joint", "long", "joint", "joint"], turns=True)
+
+
+paving(job)
+said = io.StringIO()
+with contextlib.redirect_stdout(said):
+    files = kit.layout(job, cells=(4, 3), size=160)
+meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+check("laid out: from above and slanting, every edge fitting, its copies gone after", files == ["layout.png", "layout_side.png"]
+      and all((job.dir / f).is_file() for f in files) and "4 x 3 cells, 0 edges that don't fit" in said.getvalue()
+      and sorted(o.name for o in meshes) == ["flag", "half"] and not any(o.hide_render for o in meshes), said.getvalue()[-300:])
+top = bpy.data.images.load(str(job.dir / "layout.png")) if (job.dir / "layout.png").is_file() else None
+shades = list(top.pixels)[0::4] if top else [0.0]
+check("  the floor in the picture from above, not the background alone", top is not None and tuple(top.size) == (160, 160) and max(shades) - min(shades) > 0.1,
+      f"{tuple(top.size) if top else None}, {min(shades):.2f} to {max(shades):.2f}")
+if top:
+    bpy.data.images.remove(top)
+job.finishing = True
+made = kit.finish_floor_set(job, files, reply="A flag, and a long slab in halves.")
+props, models = scratch / "temporary" / "data" / "props", scratch / "temporary" / "assets" / "models"
+recs = {t: json.loads((props / f"{t}.json").read_text(encoding="utf-8")) for t in (made or []) if (props / f"{t}.json").is_file()}
+flag_rec, half_rec = recs.get("test_paving_flag", {}), recs.get("test_paving_half", {})
+check("added: each tile a floor prop of the set, named after the request and the tile, in temporary/", made == ["test_paving_flag", "test_paving_half"]
+      and flag_rec.get("category") == "floor" and not flag_rec.get("blocks") and flag_rec.get("name") == "Test paving: Flag"
+      and flag_rec.get("floor") == {"set": "test_paving", "edges": ["joint"] * 4, "weight": 2.0}
+      and half_rec.get("floor") == {"set": "test_paving", "edges": ["joint", "long", "joint", "joint"], "weight": 1.0, "turns": True}
+      and (models / "test_paving_half.glb").is_file(), json.dumps(recs)[:600])
+check("  laid out as the project lays its records", all((props / f"{t}.json").read_text(encoding="utf-8") == bf.to_text(bf.ordered_prop(r)) for t, r in recs.items()))
+half_doc = glb_doc(models / "test_paving_half.glb") if (models / "test_paving_half.glb").is_file() else {}
+spans = [half_doc["accessors"][q["attributes"]["POSITION"]] for m in half_doc.get("meshes", []) for q in m["primitives"]]
+xs = (min(a["min"][0] for a in spans), max(a["max"][0] for a in spans)) if spans else (9.0, 9.0)
+moved = [n.get("translation", [0, 0, 0]) for n in half_doc.get("nodes", [])]
+check("  each where it was modelled, never moved to stand on the origin: the half on its half", abs(xs[0] + 0.2) < 0.01 and abs(xs[1] - 0.5) < 0.01
+      and all(abs(t[0]) < 1e-4 and abs(t[2]) < 1e-4 for t in moved), f"{xs} {moved}")
+rec = mr.load(scratch, "test_paving")
+check("  the request done, the set's first tile its prop, the layout its renders", rec["status"] == "done" and rec["prop"] == "test_paving_flag"
+      and rec["previews"] == files and rec["reply"] == "A flag, and a long slab in halves.", json.dumps({k: rec[k] for k in ("status", "prop", "previews")}))
+clear()
+job = kit.start(scratch / "private" / "requests" / "test_paving" / "model.py")
+job.finishing = True
+paving(job, half=False)
+kit.finish_floor_set(job, [], reply="Flags only.")
+check("made again without the half: the half the first run made goes, its model too; the flag stays", (props / "test_paving_flag.json").is_file()
+      and not (props / "test_paving_half.json").exists() and not (models / "test_paving_half.glb").exists())
+clear()
+
 # 5d. a creature in parts, as a modeller makes it for a rigger (requests.md, "Parts"): each part
 # its own mesh, the jaw on its bone (the mouth closes), the tongue on its own chain, the eyes,
 # legs and tail; the idle and a roar in the file, every part on one skin

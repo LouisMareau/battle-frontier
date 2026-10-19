@@ -140,8 +140,14 @@ A picture with several drawings of the same kind of asset (trees, bushes, rocks)
 assets: with **"Several of them: one asset per drawing"** ticked, Start has Claude make each
 drawing a request of its own (`model_requests.py split`: its crop, its name and height, the
 request's settings), and **Make them all** has those made one after another.
+A **floor set** (`"kind": "floor"`) makes a set of floor tiles instead (requests.md, "A set
+of floor tiles"): the pattern broken into cells, each tile's four edges words that say what
+fits beside it, each modelled a cell wide (`kit.floor_tile`), laid out by the game's rules
+and rendered from above (`kit.layout`, `floor_wfc.py`), and added as `floor` props of the set
+(`kit.finish_floor_set`), which the Build tool's Flooring and the Ground tool's Floors tab lay
+by wave function collapse.
 `test_run_claude.py` checks the runs against a stand-in for Claude, both halves of a checked
-one and one made again included.
+one and one made again included, and a floor set's laying and its recipe.
 
 ## Without the add-on
 
@@ -168,4 +174,6 @@ the requests' kit there: one mesh with its regions and eyes, a rig with every ve
 weighted, the idle, the renders, the prop in `temporary/` (or `content/` for a design of the
 user's), the request done, and the engine reading the rig and the idle; its fur painted for
 the wind (the strands swaying to their tips, the body still), and a shrub painted from its
-height going out and coming back with its "wind" layer.
+height going out and coming back with its "wind" layer; and a set of floor tiles laid out by
+the game's rules, added as floor props of the set where they were modelled, a tile the next
+run doesn't make taken away.

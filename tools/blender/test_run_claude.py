@@ -9,7 +9,8 @@ isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or 
 lines and the front and the side and stops there (a request that checks its lines first,
 which a run with --go-on then finishes); a request made once is made again with the user's
 comments on it (--again); a request whose picture has several drawings is split, each one a
-request of its own. Then the bones the user has drawn over the pictures: in the
+request of its own; a set of floor tiles: laid by the engine's rules (floor_wfc.py), and its
+run's own recipe. Then the bones the user has drawn over the pictures: in the
 record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
 Exits 1 when a check fails.
 """
@@ -335,6 +336,51 @@ if _Image is not None:
     code, out, rec, log = run("test_split_none", "quit")
     check("  a split run that makes none: failed, and why", rec["status"] == "failed" and "without splitting it" in rec["progress"]["step"], rec["progress"]["step"])
     check("  in the record's layout: several, parent and children last", list(mr.FIELDS)[-3:] == ["several", "parent", "children"])
+
+# 9e. a set of floor tiles (requests.md, "A set of floor tiles"): laid as the engine lays them
+# (floor_wfc.py, its rules in plain Python), every two cells side by side agreeing; its run the
+# floor recipe, the lines' check or not
+import floor_wfc as fw  # noqa: E402
+nesw = ["n", "e", "s", "w"]
+check("floor tiles: an edge as its tile lies turned, clockwise seen from above", fw.edge(nesw, 0, 0) == "n" and fw.edge(nesw, 1, 1) == "n"
+      and fw.edge(nesw, 1, 0) == "w" and fw.edge(nesw, 2, 0) == "s" and fw.edge(nesw, 3, 3) == "n",
+      [fw.edge(nesw, t, s) for t in range(4) for s in range(4)])
+stones = [("small", ["joint"] * 4, 2.0, False), ("slab", ["joint"] * 4, 1.0, False),
+          ("long_a", ["joint", "long", "joint", "joint"], 1.0, True), ("long_b", ["joint", "joint", "joint", "long"], 1.0, True)]
+cells = [(x, z) for z in range(7) for x in range(9)]
+laid = fw.lay(stones, cells, seed=3)
+names = [n for n, _ in laid.values()]
+check("  flagstones laid on every cell, every two side by side agreeing, only joints facing out", sorted(laid) == sorted(cells) and fw.agree(stones, laid) == [],
+      fw.agree(stones, laid)[:3])
+# (a half's long edge against another's: agree() says so; a half turned round is the other half)
+check("  long slabs among them, each whole", names.count("long_a") + names.count("long_b") > 0, f"{names.count('long_a')} {names.count('long_b')}")
+check("  the same seed the same floor, another seed another", fw.lay(stones, cells, seed=3) == laid and fw.lay(stones, cells, seed=4) != laid)
+bound = fw.lay(stones, cells, seed=3, fixed={(9, 3): ("long_b", 0)})
+check("  a cell laid already beside them binding them: a long slab's other half against its long edge",
+      fw.edge(dict(t[:2] for t in stones)[bound[(8, 3)][0]], bound[(8, 3)][1], 1) == "long" and fw.agree(stones, {**bound, (9, 3): ("long_b", 0)}) == [],
+      bound[(8, 3)])
+marble = [("field", ["m"] * 4, 4.0, False), ("edge", ["rim", "b", "m", "b"], 1.0, True), ("corner", ["rim", "rim", "b", "b"], 1.0, True)]
+square = [(x, z) for z in range(5) for x in range(6)]
+framed = fw.lay(marble, square, seed=1)
+middles = [c for c, (n, _) in framed.items() if n == "field"]
+check("  a set with rims: a border all round, its corners, the field inside", fw.agree(marble, framed) == []
+      and sorted(middles) == sorted((x, z) for z in range(1, 4) for x in range(1, 5)) and [framed[c][0] for c in ((0, 0), (5, 0), (0, 4), (5, 4))] == ["corner"] * 4,
+      fw.agree(marble, framed)[:3])
+fresh("test_floor", kind="floor", images=["floor.png"], check_lines=True, notes="old ruins, moss in the joints", style="smooth")
+floor = mr.load(SCRATCH, "test_floor")
+asked = " ".join(rc.prompt(floor).split())
+check("a set of floor tiles: its own recipe, the lines' check or not, each tile light", rc.part_of(floor) == "floor"
+      and '"Test Floor", a set of floor tiles, each a cell, laid to fit by wave function collapse' in asked
+      and "kit.floor_tile(job" in asked and "files = kit.layout(job)" in asked and "kit.finish_floor_set(job, files" in asked
+      and "draw the design's lines over each picture" not in asked and "Lines:" not in asked
+      and "about 400 triangles a tile" in asked and "for the most detailed tile" in asked and "moss in the joints" in asked, asked[:2500])
+check("  as many shapes as it needs: each tile's", "each tile as many as its design needs" in rc.settings_lines(mr.normal(dict(floor, shapes={"min": 1, "max": 9, "unlimited": True}))))
+mr.update(SCRATCH, "test_floor", status="done", prop="test_floor_slab", reply="Four tiles.", comments="the joints darker")
+again = " ".join(rc.prompt(mr.load(SCRATCH, "test_floor"), again=True).split())
+check("  made again: the last run's model.py changed, a set of floor tiles still, with the comments", rc.part_of(floor, again=True) == "again"
+      and "a set of floor tiles, made again" in again and "the joints darker" in again and "change the last run's model.py: each tile built with" in again
+      and "kit.finish_floor_set(job, files" in again, again[:2500])
+check("  a prop's run is a prop's still", rc.part_of(mr.normal({"kind": "prop"})) == "all" and "a prop 1.0 cells tall" in rc.prompt(mr.normal({"id": "x", "name": "X", "kind": "prop"})))
 
 # 9c. a picture written over while a viewer shows it (Windows' Photos keeps what it shows mapped,
 # letting it be renamed but not written): the old one moved aside, the new one in its place

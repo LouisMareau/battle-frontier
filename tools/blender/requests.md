@@ -1,14 +1,15 @@
 # Model requests: the recipe
 
-The map editor's **Requests** window (desktop) takes pictures of a creature or a prop dropped
-on it. Each request is a folder `private/requests/<id>/`: its `request.json` and the pictures.
+The map editor's **Requests** window (desktop) takes pictures of a creature, a prop or a floor
+dropped on it. Each request is a folder `private/requests/<id>/`: its `request.json` and the pictures.
 Its **Start** button has Claude Code follow this recipe for that request by itself
 (`run_claude.py`, below), the window's console showing everything it does; and when the user
 says **"make the waiting requests"** to a Claude session, the session follows it for each
 waiting one. Either way the request is modelled in Blender in parts, as a modeller makes a
 model for a rigger (each part its own mesh, blocked in from shapes and refined, a material per
 colour region; for a creature a rig every part follows, its jaw and tongue on bones of their
-own), and added to the project as a prop.
+own), and added to the project as a prop (a floor as a set of floor tiles: "A set of floor
+tiles", below).
 
 Rules that hold all the way:
 
@@ -55,8 +56,10 @@ Rules that hold all the way:
 (`shapes` and `progress` are laid out over several lines in the file, as the project's records
 are.)
 
-- `kind`: `creature` (rigged, with an idle animation) or `prop`; `height` in cells (a cell is
-  a metre; the player is about 1.5); `style`: `smooth`, `low_poly` or `accurate` (as close to
+- `kind`: `creature` (rigged, with an idle animation), `prop`, or `floor` (the window's
+  **floor set**: a set of floor tiles, each a cell, laid to fit; below, "A set of floor
+  tiles"; its `height` and `check_lines` go unused); `height` in cells (a cell is a metre; the
+  player is about 1.5); `style`: `smooth`, `low_poly` or `accurate` (as close to
   the pictures as it can be, whatever it takes: see "Accurate" below), and with it `details`,
   the user's word on how to build it.
 - `pose` (creatures): `t_pose`, the rest pose a rigger wants whatever the pictures show (two
@@ -242,7 +245,9 @@ type `/login` there, then Start again. `python tools/blender/test_run_claude.py`
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
 that crashes, one not logged in, one gone silent, one cancelled, one that stops after the
 lines for the user's check, one that goes on from them with the user's note, one made again
-with the user's comments, and one split into a request per drawing.
+with the user's comments, and one split into a request per drawing; and a set of floor tiles,
+laid by the engine's rules (`floor_wfc.py`: every two cells side by side agreeing, rims all
+round, the same seed the same floor), its run the floor recipe.
 
 ## The recipe
 
@@ -673,6 +678,53 @@ most fitting tool for each part rather than the quickest:
 It may take a long time, and that's fine; the editor's bar runs on a longer estimate, and the
 run keeps going while Claude writes a long script.
 
+## A set of floor tiles
+
+A request of kind `floor` (the window's **floor set**) makes no single prop but a set of floor
+tiles, which the game lays by wave function collapse (`world::floors`) wherever flooring goes:
+a building's floors (the Build tool's Flooring) and the ground out of doors (the Ground tool's
+Floors tab). Its pictures show a floor, a pavement or a tiling (old ruins, flagstones, marble,
+an intricate wood floor) or a part of one. Its run reads the pictures (step 3) and then, with
+no lines (a floor is seen from above, laid out):
+
+- **How the pattern breaks into cells.** Each tile is a cell, a metre a side, and each of its
+  four edges says what it is, a word, going round from the north (Blender's +Y), then east
+  (+X), south and west: two tiles side by side fit where the edge between them is the same
+  word on both. The few tiles that make most of the floor (plain stones, planks, a field of
+  marble) have one word all round (`joint`) and the most weight; what goes over two cells or
+  more (the halves or quarters of a big slab) meets along a word of its own (`long`), its
+  other edges the common one; a border's tiles have their outer edges `rim` (a set with rims
+  lays them all round a floor and round its holes, and never faces a rim toward another
+  tile; without rims, only a word some tile has on all four edges faces out); a medallion's
+  or an inlay's pieces have inner edges of words of their own, so they only meet each other.
+  A tile that `turns` may be laid a quarter, a half or three quarters turned (clockwise seen
+  from above), its weight shared among its turns. The list goes at the top of `model.py`:
+  each tile, its edges, its weight, whether it turns, what it shows.
+- **Each tile modelled where it lies:** a slab 0.04 to 0.06 thick on the origin (X and Y from
+  -0.5 to 0.5, standing on Z 0), its top what's seen, its pattern running right to the edges
+  where the next tile carries it on; light, as a floor is laid on many cells (about 400
+  triangles a tile smooth, 100 low-poly, 1500 accurate; the request's shapes are its most
+  detailed tile's). Then `kit.floor_tile(job, "Name", [objects], [north, east, south, west],
+  weight=, turns=)` for each.
+- **Laid out:** `files = kit.layout(job)` lays the set on 8 x 6 cells by the game's rules
+  (`floor_wfc.py`: the engine's, in plain Python) and renders it from above (`layout.png`)
+  and slanting (`layout_side.png`), printing each edge that doesn't fit (none should);
+  `kit.compare(job, files)` sets them beside the pictures. Rendered (`run_request.py ID`)
+  and changed until it reads as the picture's floor.
+- **Into the project:** `kit.finish_floor_set(job, files, reply=...)`, then `--finish`: each
+  tile a prop `ID_TILE` (named after the request and the tile, category `floor`, never in
+  the way), kept where it was modelled (never moved to stand on the origin: a half slab stays
+  on its half), its record's `floor` block the set and the tile's edges
+  (`{"set": "ID", "edges": ["joint", "long", "joint", "joint"], "weight": 1.0, "turns": true}`);
+  a tile of the set an earlier run made and this one didn't is taken away (its record and
+  its model); the request's `prop` is the set's first tile. Its panel then says **Became the
+  set**, with the tiles and their edges, and **Use it** opens the Ground tool's Floors tab
+  with the set to lay.
+
+Made again with the user's comments, it starts from the last run's `model.py` like any request
+("Made again, with the user's comments"); a sheet of several floors splits like any request
+("Several of them"), each one a set of its own.
+
 ## The kit: `request_kit.py`
 
 `model.py` starts with:
@@ -687,7 +739,7 @@ import request_kit as kit  # noqa: E402
 job = kit.start(__file__)   # the request, the scene emptied, the request in progress
 ```
 
-`job.record` is the request; `job.creature`, `job.smooth`, `job.height`, `job.pictures()`.
+`job.record` is the request; `job.creature`, `job.floor` (a set of floor tiles), `job.smooth`, `job.height`, `job.pictures()`.
 Positions are in Blender units (one is a cell), Z up, the front toward -Y; rotations in
 degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 
@@ -727,6 +779,10 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `job.chains()` | the user's bones carried into the front and the side (`bone CHAIN` lines) as the rig's chains, in cells, the body's first (above, "The user's bones") |
 | `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
 | `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done |
+| A set of floor tiles | |
+| `floor_tile(job, name, objects, [north, east, south, west], weight=1.0, turns=False)` | one tile of a `floor` request's set: its meshes, modelled a cell wide on the origin, and its edges' words; kept on the job (`job.tiles`) |
+| `layout(job, cells=(8, 6))` | the set laid by the game's rules (`floor_wfc.py`), rendered from above and slanting (`layout.png`, `layout_side.png`), each edge that doesn't fit printed; returns the files |
+| `finish_floor_set(job, files, reply=)` | with `-- --finish`: each tile a `floor` prop of the set, where it was modelled; a tile an earlier run made and this one didn't taken away; the request done |
 
 The steps set the editor's bar by themselves: reading the pictures (5%), building (15%),
 rendering (50%), comparing (60%), adding it (95%), done. The bar shows those, or the time
@@ -829,3 +885,6 @@ done, and the engine reading the rig and the idle. Then a lizard in parts: each 
 crisp ones keeping their shapes' regions, the jaw and the teeth and the eyes on one bone each,
 the tongue on its own chain, the legs and the tail on theirs, the jaw opening without the head
 moving, the idle and a roar in the file, every part on one skin, and the engine reading them.
+And a set of floor tiles: a flag and a long slab's half, laid out and rendered from above and
+slanting with every edge fitting, added as floor props of the set where they were modelled
+(the half on its half), and made again without the half, which goes.
