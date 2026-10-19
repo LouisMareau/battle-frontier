@@ -18,9 +18,67 @@ pub mod spawn;
 pub mod templates;
 pub mod trees;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::hash::{BuildHasherDefault, Hasher};
 
 use content::{side_step, Actor, Ambience, Building, Cells, Chunk, Content, Event, Map, Placed, Ramp, SpawnLink, TreeArea, Zone};
+
+/// Whether two runs of cells are the same: a big map's rows are looked over after each edit
+/// for what changed, so eight bytes at a time.
+pub fn same<T: bytemuck::Pod>(a: &[T], b: &[T]) -> bool {
+    let (a, b): (&[u8], &[u8]) = (bytemuck::cast_slice(a), bytemuck::cast_slice(b));
+    let ((ca, ra), (cb, rb)) = (a.as_chunks::<8>(), b.as_chunks::<8>());
+    ca.len() == cb.len() && ra == rb && ca.iter().zip(cb).all(|(x, y)| u64::from_ne_bytes(*x) == u64::from_ne_bytes(*y))
+}
+
+/// A quick hasher (FxHash's mix), for the digests of a big map's cells and props and for
+/// looking up a prop's record for each of them: SipHash's care (against keys picked to
+/// collide) isn't needed there.
+#[derive(Clone, Copy, Default)]
+pub struct Quick(pub u64);
+
+impl Quick {
+    fn mix(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for Quick {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            self.mix(u64::from_le_bytes(b));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.mix(n as u64);
+    }
+
+    fn write_u16(&mut self, n: u16) {
+        self.mix(n as u64);
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.mix(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.mix(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.mix(n as u64);
+    }
+}
+
+/// A map looked up with `Quick`.
+pub type QuickMap<K, V> = HashMap<K, V, BuildHasherDefault<Quick>>;
 
 /// A map, decoded. Cells are row by row, north first: index = z * width + x.
 #[derive(Clone, Debug)]

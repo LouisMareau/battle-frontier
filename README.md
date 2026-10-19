@@ -185,8 +185,9 @@ editor reads either form and saves the one the map asks for ("Chunk files" in th
 or in the New map box); `content chunk MAP` and `unchunk MAP` convert; `content check` reads
 every chunk file. On the GPU a map is held square by square whatever its storage: the squares
 within reach of the camera are built (a few per frame, nearest first) and the far ones dropped,
-and an edit rebuilds only the squares it touched, so a 320 × 240 map edits and draws like a
-small one.
+and an edit rebuilds only the squares it touched and works out again only what it can reach,
+so even a 2000 × 1500 map takes any stroke or undo in under 26 ms a frame (Performance, big
+maps).
 
 - **Terrains** are painted per cell; the border between two is drawn by the ground shader
   (the four nearest cells vote with noise and priority), so edges come out organic and
@@ -610,7 +611,7 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 |---|---|
 | `crates/content` (`content`) | The content model (`model.rs`: records, maps as rows or as chunk files, worlds and their seams; buildings and their checks in `building.rs`; ramps and their rules in `ramp.rs`), loading spaces from disk or bundles, the game's own over temporary records, validation of every reference, bundles. The `content` tool: `check`, `bundle`. |
 | `crates/core` (`rules`) | The battle rules, no rendering, no platform code: `battle.rs` (rounds by Speed, actions, damage, locks, battle sizes), `moves.rs` (upgrade tracks, Focus/Chain/Storm, MP cost, level texts), `mon.rs`, `ai.rs`, `config.rs` (every tuning number), `dex.rs` (the content made fast to look up: indexes, type chart and roles, ability effects). A port of the prototype's `src/engine/*.js`; `tests/battle.rs` is its `tests/battle.test.js`. |
-| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`: each tree keeping its crown's room, each spot its own dice), which cells block, where walls are and who can step where (up and down ramps too), ramps' ground (`ramps.rs`: the slope down a level, the unevenness, the rock), buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`; cut away above a floor, the walls facing the camera there down to a stub), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts; every vertex's wind: sway, flutter, phase, height above its foot), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
+| `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`: each tree keeping its crown's room, each spot its own dice, placed again after an edit only where it can move them: `Woods`), which cells block, where walls are and who can step where (up and down ramps too), ramps' ground (`ramps.rs`: the slope down a level, the unevenness, the rock), buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`; cut away above a floor, the walls facing the camera there down to a stub), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts; every vertex's wind: sway, flutter, phase, height above its foot), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance, cast from the clouds' height and changing shape), the wind (what's painted for it swaying in the vertex shaders, shadows too; its gusts', swaying's and the water's motions added up frame by frame), the water (inland ripples and the sea's waves, foam, the swash up a beach, from the shore's field: `shore.rs`, worked out again round a change only), trees and props seen through round the walker (a dithered cone from the eye), the post-processing (`Retro`: the pixelation, the scene drawn small, its pixels whole squares of the screen's, as dense as asked and bigger or smaller with the camera's zoom, in 15-bit colour; an old handheld's LCD, its colours and the gaps between its pixels) and a small blurred copy of the picture for frosted glass (`frost_view`, which the game hands egui) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/dock.rs` the panels docked or floating, their toggles and the layout kept, `mapedit/post.rs` the Post-processing window, `mapedit/ramps.rs` the Ground tool's ramps, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `layout.rs` (the HUD's layout groups, frosted buttons, the ring from one to the next), `play_hud.rs` (the overworld's HUD: the Team, its list, its board of cards and a creature's details, Settings, Exit), `team.rs` (who of the team fought in the last battles, the main, the order the team goes into a battle, the board's order, lifeforce), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs and their categories), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
 | `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `rampcheck.mjs` (ramps made, refused, walked, saved; stairs and a slide laid along them), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs` (the overworld: the story, the cottage walked into, its walls facing the camera down, another as the camera turns), `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `layoutcheck.mjs` (the editor's panels docked, floating, pinged and kept), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list and board of cards, the pixelation and the LCD), `watercheck.mjs` (the wind and the water: foam on the downwind shore, the sea rougher onshore, what sways, the clouds' shadows going with the wind, the Wind section), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
@@ -651,6 +652,11 @@ What keeps it fast:
   cut into 16 x 16 cell pieces with their bounds; a piece out of the camera's sight isn't drawn,
   nor one out of the sun's in the shadow pass. A big map costs what's in reach, not its size,
   and an edit rebuilds the squares it touched: on a 320 x 240 map a prop placed costs 6 ms.
+- An edit works out again only what it can reach, however big the map: the trees round it
+  (`trees::Woods`), the ground's squares and the cells' texture round the cells it changed
+  (only that box sent), the props' squares where the list changed, a building's digest when it
+  changed, the lights and sounds when what gives them off did. An undo step's copy of the map
+  is made in memory grown at once.
 - Nearest first, and props without cut-outs on a shader with no `discard`: the GPU drops what's
   hidden before shading it. The ground (the costliest shader) is drawn last, under the rest.
 - The ground shader skips the border votes wherever a cell and its neighbours have one
@@ -687,23 +693,32 @@ a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whol
 379 fps, and a prop placed on it costs 6 ms (`only=editing`).
 
 Big maps (2026-10-19, RTX 3080, real-size trees; the editing scene paints a stroke of eight
-cells of each kind and undoes):
+cells of each kind and undoes; the last column is the build before edits cost what they
+touch, measured the same day):
 
-| `perf.mjs tile=N creatures=0`, 1400 x 900 | 1000 x 750 (`tile=25`: 12,000 props) | 2000 x 1500 (`tile=50`: 47,000 props, a million cells of woods) |
-|---|---|---|
-| The whole map in view | 137 fps | 110 fps |
-| Walking | 257 fps | 134 fps |
-| A prop placed: worst frame | 15 ms | 28 ms |
-| A stroke of terrain, of water | 14 ms, 13 ms | 24 ms, 27 ms |
-| A stroke a level up, of a wood's cells | 34 ms, 18 ms | 94 ms, 57 ms |
-| An undo | 31 ms | 96 ms |
+| `perf.mjs tile=N creatures=0`, 1400 x 900 | 1000 x 750 (`tile=25`: 12,000 props) | 2000 x 1500 (`tile=50`: 47,000 props, a million cells of woods) | 2000 x 1500, before |
+|---|---|---|---|
+| The whole map in view | 166 fps | 84 fps | 83 fps |
+| Walking | 309 fps | 158 fps | 101 fps |
+| A prop placed: worst frame | 11 ms | 25 ms | 34 ms |
+| A stroke of terrain, of water | 10 ms, 10 ms | 19 ms, 17 ms | 24 ms, 27 ms |
+| A stroke a level up, of a wood's cells | 14 ms, 15 ms | 17 ms, 19 ms | 99 ms, 59 ms |
+| An undo | 15 ms | 19 ms | 98 ms |
 
-What costs on the biggest: placing a wood's trees again over the whole area (35 ms for a
-million cells), and the buildings' digests on an undo (23 ms for 5,000). The shore's field is
-worked out again only round where the water or the levels changed, the props' lights and
-sounds are kept until they change, the squares' digests use a quick hash, and the tools' marks
-over cells cover only what the camera sees (`streamcost` says what a change's frame spent on
-what).
+An edit costs what it touches, not the map's size. The trees are placed again only where it
+can move them (`world::trees::Woods`: the spots on the cells that changed are tried again,
+then, in the order of placing, those near a tree that came or went, until nothing more
+changes: the same trees as placing them all, which took 35 ms for a million cells of woods).
+What changed in the cells is found by looking the map over row by row, eight bytes at a time:
+the ground's squares are hashed again round it and the cells' texture sent only there (the
+shore's field worked out again round it). The props' squares are hashed again where the list
+changed (what stayed the same at its start and its end is passed over), a building's digest
+only when it changed (Debug-formatting all 5,000 took 23 ms an undo), and the lights and
+sounds are placed again only when what gives them off changed. An undo step's copy of the map
+is made after what undo lets go is freed, in memory grown at once: made a piece at a time, a
+big map's copy grew the browser's memory in thousands of small steps (25 ms more). The tools'
+marks over cells cover only what the camera sees. `streamcost` says what a change's costliest
+frame of the last two seconds spent its time on, step by step (`rest`: the rest of the frame).
 
 ## Not yet
 

@@ -123,21 +123,25 @@ const WINDOW: usize = SHORE_FAR as usize + 6;
 /// level changed, as far as the field can change round them (x0, z0, x1, z1, out), and the
 /// field's texels there, worked out from the cells round it as far again (as the whole map's
 /// would be). None when nothing the field is made from changed; the whole map when `old`
-/// isn't the same size.
-pub fn shore_window(old: &[u8], new: &[u8], width: usize, height: usize, kinds: &[u8]) -> Option<([usize; 4], Vec<[f32; 4]>)> {
+/// isn't the same size. Only the cells in `look` (x0, z0, x1, z1, out) can have changed.
+pub fn shore_window(old: &[u8], new: &[u8], width: usize, height: usize, kinds: &[u8], look: [usize; 4]) -> Option<([usize; 4], Vec<[f32; 4]>)> {
     if old.len() != new.len() || new.len() != width * height * 4 {
         return Some(([0, 0, width, height], shore_texels(new, width, height, kinds)));
     }
     let wet = |c: &[u8]| kinds.get(c[0] as usize).is_some_and(|&k| k > 0);
     let mut changed: Option<[usize; 4]> = None;
-    for (i, (a, b)) in old.as_chunks::<4>().0.iter().zip(new.as_chunks::<4>().0).enumerate() {
-        let (wa, wb) = (wet(a), wet(b));
-        if wa != wb || a[1] != b[1] || (wb && a[0] != b[0]) {
-            let (x, z) = (i % width, i / width);
-            changed = Some(match changed {
-                None => [x, z, x + 1, z + 1],
-                Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + 1), r[3].max(z + 1)],
-            });
+    for z in look[1]..look[3].min(height) {
+        let row = z * width;
+        let (from, to) = ((row + look[0]) * 4, (row + look[2].min(width)) * 4);
+        for (k, (a, b)) in old[from..to].as_chunks::<4>().0.iter().zip(new[from..to].as_chunks::<4>().0).enumerate() {
+            let (wa, wb) = (wet(a), wet(b));
+            if wa != wb || a[1] != b[1] || (wb && a[0] != b[0]) {
+                let x = look[0] + k;
+                changed = Some(match changed {
+                    None => [x, z, x + 1, z + 1],
+                    Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + 1), r[3].max(z + 1)],
+                });
+            }
         }
     }
     let grow = |r: [usize; 4], by: usize| [r[0].saturating_sub(by), r[1].saturating_sub(by), (r[2] + by).min(width), (r[3] + by).min(height)];
@@ -328,7 +332,7 @@ mod tests {
         }
         let new = cells_of(&dug, &level);
         let kinds = [0, 1];
-        let (r, texels) = shore_window(&old, &new, w, h, &kinds).expect("a change");
+        let (r, texels) = shore_window(&old, &new, w, h, &kinds, [0, 0, w, h]).expect("a change");
         assert_eq!(r, [40usize.saturating_sub(WINDOW), 120 - WINDOW, (47 + WINDOW).min(w), (124 + WINDOW).min(h)]);
         let (whole, before) = (shore_texels(&new, w, h, &kinds), shore_texels(&old, w, h, &kinds));
         for z in 0..h {
@@ -345,7 +349,9 @@ mod tests {
         // grass painted on grass far from water: nothing
         let mut grass = new.clone();
         grass[(10 * w + 200) * 4] = 0;
-        assert!(shore_window(&new, &grass, w, h, &kinds).is_none());
+        assert!(shore_window(&new, &grass, w, h, &kinds, [0, 0, w, h]).is_none());
+        // and looked for only where the cells changed: the same
+        assert_eq!(shore_window(&old, &new, w, h, &kinds, [40, 120, 47, 124]), Some((r, texels)));
     }
 
     #[test]

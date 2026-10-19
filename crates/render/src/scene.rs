@@ -1455,19 +1455,24 @@ impl SceneRenderer {
     }
 
     /// Repaints a world map's cells only (the same size): what painting terrain changes; the
-    /// shore's field with them round where the water or the levels changed.
-    pub fn set_world_cells(&mut self, queue: &wgpu::Queue, map: &str, cells: &[u8]) {
+    /// shore's field with them round where the water or the levels changed. Only the texels
+    /// in `rect` (x0, z0, x1, z1, out) changed: those are sent and looked at.
+    pub fn set_world_cells(&mut self, queue: &wgpu::Queue, map: &str, cells: &[u8], rect: [u32; 4]) {
         let Some(w) = self.worlds.get_mut(map) else { return };
-        if cells.len() as u32 != w.size[0] * w.size[1] * 4 {
+        let [x0, z0, x1, z1] = [rect[0].min(w.size[0]), rect[1].min(w.size[1]), rect[2].min(w.size[0]), rect[3].min(w.size[1])];
+        if cells.len() as u32 != w.size[0] * w.size[1] * 4 || x1 <= x0 || z1 <= z0 {
             return;
         }
+        let row = w.size[0] as usize * 4;
+        let (from, to) = (z0 as usize * row + x0 as usize * 4, (z1 as usize - 1) * row + x1 as usize * 4);
         queue.write_texture(
-            wgpu::TexelCopyTextureInfo { texture: &w.cells, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-            cells,
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w.size[0] * 4), rows_per_image: Some(w.size[1]) },
-            wgpu::Extent3d { width: w.size[0], height: w.size[1], depth_or_array_layers: 1 },
+            wgpu::TexelCopyTextureInfo { texture: &w.cells, mip_level: 0, origin: wgpu::Origin3d { x: x0, y: z0, z: 0 }, aspect: wgpu::TextureAspect::All },
+            &cells[from..to],
+            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w.size[0] * 4), rows_per_image: Some(z1 - z0) },
+            wgpu::Extent3d { width: x1 - x0, height: z1 - z0, depth_or_array_layers: 1 },
         );
-        if let Some((r, texels)) = crate::shore::shore_window(&w.shore_cells, cells, w.size[0] as usize, w.size[1] as usize, &w.water) {
+        let look = [x0 as usize, z0 as usize, x1 as usize, z1 as usize];
+        if let Some((r, texels)) = crate::shore::shore_window(&w.shore_cells, cells, w.size[0] as usize, w.size[1] as usize, &w.water, look) {
             let (width, height) = ((r[2] - r[0]) as u32, (r[3] - r[1]) as u32);
             queue.write_texture(
                 wgpu::TexelCopyTextureInfo { texture: &w.shore, mip_level: 0, origin: wgpu::Origin3d { x: r[0] as u32, y: r[1] as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
@@ -1476,8 +1481,15 @@ impl SceneRenderer {
                 wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
             );
         }
-        w.shore_cells.clear();
-        w.shore_cells.extend_from_slice(cells);
+        if w.shore_cells.len() == cells.len() {
+            for z in z0 as usize..z1 as usize {
+                let (a, b) = (z * row + x0 as usize * 4, z * row + x1 as usize * 4);
+                w.shore_cells[a..b].copy_from_slice(&cells[a..b]);
+            }
+        } else {
+            w.shore_cells.clear();
+            w.shore_cells.extend_from_slice(cells);
+        }
     }
 
     /// Where a world map sits in the scene (after `set_world_ground`).

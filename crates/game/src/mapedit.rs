@@ -81,6 +81,18 @@ const SEE_THROUGH: f32 = 4.0;
 /// How many cells' worth of the map the undo steps may hold in all (each step is a copy).
 const UNDO_CELLS: usize = 40_000_000;
 
+/// Room made for a copy of a map before it's made: the memory grown at once by about what
+/// it takes. Made a piece at a time, a big map's copy (its thousands of buildings' and props'
+/// pieces) grows the browser's memory in thousands of small steps, each a trip to the system:
+/// 25 ms more on a 2000 x 1500 map. Already there (what undo let go): nothing grows.
+fn make_room(map: &WorldMap) {
+    let pieces = map.props.len() * (std::mem::size_of::<content::Placed>() + 32) + map.buildings.len() * 2048 + map.links.len() * 256;
+    let mut room: Vec<u8> = vec![];
+    // (no room: the copy finds what it can)
+    let _ = room.try_reserve_exact(map.width * map.height * 5 + pieces);
+    std::hint::black_box(&room);
+}
+
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
 const OWN: Color32 = Color32::from_rgb(110, 210, 130);
 
@@ -796,6 +808,9 @@ impl MapEditor {
     }
 
     fn everything_changed(&mut self) {
+        // (the cells' texture too: what an undo takes back was still drawn till the next
+        // stroke)
+        self.need_cells = true;
         self.need_ground = true;
         self.need_props = true;
         self.need_trees = true;
@@ -804,15 +819,18 @@ impl MapEditor {
 
     /// Before a change: what Ctrl+Z goes back to.
     fn checkpoint(&mut self) {
-        self.undo.push(self.map.clone());
+        let t = crate::platform::now_ms();
         // as many steps back as fit in about 40 million cells' worth (80 at most): a map
-        // 2048 a side keeps 9 of them
+        // 2048 a side keeps 9 of them; those let go go first, the copy taking their memory
         let keep = (UNDO_CELLS / (self.map.width * self.map.height).max(1)).clamp(4, 80);
-        while self.undo.len() > keep {
+        self.redo.clear();
+        while self.undo.len() >= keep {
             self.undo.remove(0);
         }
-        self.redo.clear();
+        make_room(&self.map);
+        self.undo.push(self.map.clone());
         self.dirty = true;
+        stream::cost("checkpoint", t);
     }
 
     /// After undo or redo: what was selected stays selected if it's still there.
@@ -1173,6 +1191,7 @@ impl MapEditor {
     /// What every frame does first, editing or playing: walking, the creatures, the actors,
     /// the story, the GPU, a map on its way.
     fn begin_frame(&mut self, ctx: &egui::Context, rs: Option<&eframe::egui_wgpu::RenderState>, now: f64) {
+        stream::frame_begins();
         self.now = now;
         self.walk(ctx, now);
         self.tick(now);
@@ -1204,6 +1223,7 @@ impl MapEditor {
         crate::platform::set_hook("map", &self.map.id);
         crate::platform::set_hook("loading", if self.loading.is_some() { "1" } else { "0" });
         crate::platform::set_hook("status", &self.status);
+        stream::frame_ends();
     }
 
     /// The game's overworld: the map walked, full window, no editing (the app's HUD over it:
@@ -2328,8 +2348,12 @@ impl MapEditor {
                     if let Some(hit) = Self::plane(origin, dir, level as f32 * self.level_height) {
                         let at = [(hit.x - grab.x).round() as i32, (hit.z - grab.y).round() as i32];
                         if at != self.map.buildings[i].at {
-                            let before = self.map.clone();
-                            if self.move_building(i, at) && !self.stroke {
+                            // (what undo goes back to: the map before the drag's first step)
+                            let before = (!self.stroke).then(|| {
+                                make_room(&self.map);
+                                self.map.clone()
+                            });
+                            if let (true, Some(before)) = (self.move_building(i, at), before) {
                                 self.undo.push(before);
                                 self.redo.clear();
                                 self.dirty = true;
@@ -2399,7 +2423,12 @@ impl MapEditor {
         let mut glows = vec![];
         // the map's own: the nearest of them (a big map has thousands)
         let target = self.cam.target;
-        let placed = self.placed_lights.get_or_insert_with(|| world::lights::lights(&self.map, &self.content, lh));
+        let placed = self.placed_lights.get_or_insert_with(|| {
+            let t = crate::platform::now_ms();
+            let lights = world::lights::lights(&self.map, &self.content, lh);
+            stream::cost("lights", t);
+            lights
+        });
         let mut near: Vec<(f32, &world::lights::PlacedLight)> = placed.iter().filter(|l| !l.light.night || on > 0.0).map(|l| (l.pos.distance(target), l)).collect();
         if near.len() > MAX_LIGHTS {
             near.select_nth_unstable_by(MAX_LIGHTS, |a, b| a.0.total_cmp(&b.0));

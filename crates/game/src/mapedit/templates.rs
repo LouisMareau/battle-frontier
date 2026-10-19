@@ -289,6 +289,7 @@ impl MapEditor {
         match ghost {
             Some(Ghost::Template { id, corner, .. }) => {
                 let Some(t) = self.content.templates.get(&id).cloned() else { return };
+                super::make_room(&self.map);
                 let before = self.map.clone();
                 match stamp(&mut self.map, &t, corner, self.max_level) {
                     Ok(s) => {

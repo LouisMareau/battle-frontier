@@ -8,18 +8,20 @@
 //! built from; a prop's model arriving (or read again) counts as a change to every square
 //! that uses the prop, so a square built before the file came is built again with it. A
 //! map's edges look past it into the maps next to it: no cliff at a seam on one level,
-//! terrain borders running across.
+//! terrain borders running across. The trees are placed again where a change can move them
+//! (`world::trees::Woods`), the buildings' digests worked out again for those that changed.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 
-use content::{Building, Content, CHUNK};
+use content::{Building, Content, Placed, CHUNK};
 use glam::{Mat4, Vec3};
 use render::scene::{Place, SceneRenderer, WorldGround, CLIFFS, WHITE};
 use world::buildings::{building, Cut, Sides};
 use world::mesh::{self, placement, prop_scene, Beyond, Models, Scene};
-use world::trees::{trees, Tree};
-use world::WorldMap;
+use world::trees::{Tree, Woods};
+use world::{same, Quick, QuickMap, WorldMap};
 
 use super::{build, gpu, models, MapEditor};
 
@@ -40,8 +42,36 @@ pub(super) struct GpuState {
     built: BTreeMap<&'static str, BTreeSet<(i32, i32)>>,
     /// per layer and square, a digest of what it's made from
     sources: BTreeMap<&'static str, BTreeMap<(i32, i32), u64>>,
-    /// the trees, as last laid out
-    trees: Vec<Tree>,
+    /// the cells' terrains and levels as last looked at for what changed (`cells_changed`),
+    /// the cells changed since that the texture hasn't caught up with, and the squares whose
+    /// ground digest hasn't
+    seen_terrain: Vec<u16>,
+    seen_level: Vec<u8>,
+    texels_due: Vec<(i32, i32)>,
+    ground_due: BTreeSet<(i32, i32)>,
+    /// the cells' texture as sent, and the focus marked on it
+    texture: Vec<u8>,
+    focus: Vec<(i32, i32)>,
+    /// each square's digest of its cells and the two rows round them (its ramps left out)
+    ground_cells: BTreeMap<(i32, i32), u64>,
+    /// the props as last looked at for what changed, and each square's digest of its props
+    /// (their records left out) with the props they are
+    props_seen: Vec<Placed>,
+    prop_squares: BTreeMap<(i32, i32), (u64, Vec<String>)>,
+    /// the trees as placed, and by square
+    woods: Woods,
+    groves: BTreeMap<(i32, i32), Grove>,
+    /// each building's digest by its id, with the building it's for, and the props' records'
+    /// digests they were worked out with
+    building_digests: HashMap<String, (Building, u64)>,
+    records: HashMap<String, u64>,
+    /// what the props' lights and sounds were last placed from (`stream` says when they're
+    /// to be placed again): the props' records, the buildings, the ramps and the ground on
+    /// them
+    lit_records: u64,
+    lit_buildings: u64,
+    lit_ramps: Vec<content::Ramp>,
+    ramp_ground_changed: bool,
     /// the props layer's vertices, by square (a hook for the checks: it grows when a model
     /// comes late)
     props_vertices: BTreeMap<(i32, i32), usize>,
@@ -54,6 +84,77 @@ impl GpuState {
     pub fn held(&self, map: &WorldMap) -> (usize, usize) {
         (self.built.get("ground").map(|b| b.len()).unwrap_or(0), squares_of(map).len())
     }
+}
+
+/// A square's trees, with a digest of them (their props' records left out) and the props
+/// they are.
+struct Grove {
+    trees: Vec<Tree>,
+    digest: u64,
+    props: Vec<String>,
+}
+
+impl Grove {
+    fn new(trees: Vec<Tree>) -> Grove {
+        let mut h = Quick::default();
+        let mut props: Vec<String> = vec![];
+        for t in &trees {
+            t.prop.hash(&mut h);
+            (t.pos[0].to_bits(), t.pos[1].to_bits(), t.pos[2].to_bits(), t.scale.to_bits(), t.turn.to_bits()).hash(&mut h);
+            if !props.contains(&t.prop) {
+                props.push(t.prop.clone());
+            }
+        }
+        Grove { trees, digest: h.finish(), props }
+    }
+}
+
+/// What the steps of the map editor's frame cost (the `streamcost` hook).
+struct Costs {
+    /// the steps so far, with what each cost (in milliseconds)
+    steps: Vec<(&'static str, f64)>,
+    /// when the frame began
+    began: f64,
+    /// the costliest frame lately: what it cost, and when
+    worst: f64,
+    when: f64,
+}
+
+thread_local! {
+    static COSTS: RefCell<Costs> = const { RefCell::new(Costs { steps: vec![], began: 0.0, worst: 0.0, when: 0.0 }) };
+}
+
+/// The map editor's frame begins (what its steps cost: `cost`).
+pub(super) fn frame_begins() {
+    COSTS.with(|c| {
+        let mut c = c.borrow_mut();
+        c.steps.clear();
+        c.began = crate::platform::now_ms();
+    });
+}
+
+/// A step of the frame done, begun at `since`: what it cost. The time it ended.
+pub(super) fn cost(what: &'static str, since: f64) -> f64 {
+    let now = crate::platform::now_ms();
+    COSTS.with(|c| c.borrow_mut().steps.push((what, now - since)));
+    now
+}
+
+/// The frame done: its steps (and the rest of it) kept in the `streamcost` hook when it's
+/// the costliest of the last two seconds, what a change cost at its worst.
+pub(super) fn frame_ends() {
+    let now = crate::platform::now_ms();
+    COSTS.with(|c| {
+        let c = &mut *c.borrow_mut();
+        let total = now - c.began;
+        if total > 1.0 && (total >= c.worst || now - c.when > 2000.0) && c.steps.iter().any(|s| s.1 > 1.0) {
+            (c.worst, c.when) = (total, now);
+            let rest = total - c.steps.iter().map(|s| s.1).sum::<f64>();
+            let text: Vec<String> = c.steps.iter().chain([&("rest", rest)]).filter(|s| s.1 >= 0.1).map(|(w, t)| format!("{w} {t:.1}")).collect();
+            crate::platform::set_hook("streamcost", &text.join(", "));
+        }
+        c.steps.clear();
+    });
 }
 
 /// What changed on a map since its squares were last looked at.
@@ -130,52 +231,7 @@ fn squares_of(map: &WorldMap) -> Vec<(i32, i32)> {
 /// Each prop record's digest, its model's generation in it: a square whose props, trees or
 /// buildings use one that changed (made toon, given another model, its model's file come or
 /// read again) is built again.
-/// A quick hasher for the squares' digests, which read every cell of the map: SipHash's care
-/// (against keys picked to collide) isn't needed here. FxHash's mix.
-#[derive(Default)]
-struct Quick(u64);
-
-impl Quick {
-    fn mix(&mut self, v: u64) {
-        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
-    }
-}
-
-impl Hasher for Quick {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for chunk in bytes.chunks(8) {
-            let mut b = [0u8; 8];
-            b[..chunk.len()].copy_from_slice(chunk);
-            self.mix(u64::from_le_bytes(b));
-        }
-    }
-
-    fn write_u8(&mut self, n: u8) {
-        self.mix(n as u64);
-    }
-
-    fn write_u16(&mut self, n: u16) {
-        self.mix(n as u64);
-    }
-
-    fn write_u32(&mut self, n: u32) {
-        self.mix(n as u64);
-    }
-
-    fn write_u64(&mut self, n: u64) {
-        self.mix(n);
-    }
-
-    fn write_usize(&mut self, n: usize) {
-        self.mix(n as u64);
-    }
-}
-
-fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> HashMap<&'a str, u64> {
+fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> QuickMap<&'a str, u64> {
     content
         .props
         .iter()
@@ -188,16 +244,28 @@ fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> 
         .collect()
 }
 
+/// A building's digest: its record and the records of the props it's made of.
+fn building_digest(b: &Building, records: &QuickMap<&str, u64>) -> u64 {
+    let mut h = Quick::default();
+    format!("{b:?}").hash(&mut h);
+    let floors = b.floors.iter().flat_map(|f| std::iter::once(&f.tile).chain(f.openings.iter().map(|o| &o.prop)).chain(f.props.iter().map(|p| &p.prop)));
+    let rest = b.pillars.iter().map(|p| &p.prop).chain(b.anchors.iter().map(|a| &a.prop)).chain(b.outside.iter().map(|p| &p.prop));
+    for id in [&b.wall, &b.roof].into_iter().chain(floors).chain(rest) {
+        records.get(id.as_str()).hash(&mut h);
+    }
+    h.finish()
+}
+
 /// Whether a ramp covers any of a region's cells, or comes within `pad` cells of them.
 fn overlaps(r: &content::Ramp, region: [i32; 4], pad: i32) -> bool {
     r.at[0] - pad < region[2] && r.at[1] - pad < region[3] && r.at[0] + r.size[0] as i32 + pad > region[0] && r.at[1] + r.size[1] as i32 + pad > region[1]
 }
 
-/// The cells texture's blue channel: 255 on the cells in the focus.
-fn mark_focus(map: &WorldMap, cells: &mut [u8], focus: Option<&[(i32, i32)]>) {
-    for &(x, z) in focus.unwrap_or(&[]) {
+/// The cells texture's blue channel: 255 on the cells in the focus (0 to take it off).
+fn mark_focus(map: &WorldMap, cells: &mut [u8], focus: &[(i32, i32)], on: u8) {
+    for &(x, z) in focus {
         if let Some(b) = mesh::cell_texel(map, x, z).and_then(|t| cells.get_mut(t * 4 + 2)) {
-            *b = 255;
+            *b = on;
         }
     }
 }
@@ -240,29 +308,83 @@ impl Feed<'_> {
         self.gpu.built.get(layer).map(|b| b.contains(&s)).unwrap_or(false)
     }
 
-    /// The ground: each square's levels and terrains, and two cells around it (the cliff
-    /// faces come down onto the ground across, which comes up to them), past the edge the
-    /// next maps'.
-    fn ground_digests(&self) -> BTreeMap<(i32, i32), u64> {
-        let m = self.map;
-        squares_of(m)
-            .into_iter()
-            .map(|s| {
-                let r = region(s);
-                let mut h = Quick::default();
-                for z in r[1] - 2..(r[3] + 2).min(m.height as i32 + 2) {
-                    for x in r[0] - 2..(r[2] + 2).min(m.width as i32 + 2) {
-                        match m.index(x, z) {
-                            Some(i) => (m.level[i], m.terrain[i]).hash(&mut h),
-                            None => (self.beyond.level(x, z), self.beyond.terrain(x, z)).hash(&mut h),
-                        }
+    /// Looks over the cells for those whose terrain or level changed since: they're due to
+    /// the texture (`texels_due`) and to the ground digests of the squares that read them
+    /// (`ground_due`). Another map, or another size: every square.
+    fn cells_changed(&mut self) {
+        let (m, gpu) = (self.map, &mut *self.gpu);
+        if gpu.seen_terrain.len() != m.terrain.len() || gpu.seen_level.len() != m.level.len() {
+            gpu.seen_terrain = m.terrain.clone();
+            gpu.seen_level = m.level.clone();
+            gpu.ground_due.extend(squares_of(m));
+            return;
+        }
+        let w = m.width;
+        for z in 0..m.height {
+            let row = z * w..(z + 1) * w;
+            if same(&gpu.seen_terrain[row.clone()], &m.terrain[row.clone()]) && same(&gpu.seen_level[row.clone()], &m.level[row.clone()]) {
+                continue;
+            }
+            for i in row.clone().filter(|&i| gpu.seen_terrain[i] != m.terrain[i] || gpu.seen_level[i] != m.level[i]) {
+                let (x, z) = ((i % w) as i32, z as i32);
+                gpu.texels_due.push((x, z));
+                gpu.ramp_ground_changed |= m.ramps.iter().any(|r| r.has(x, z));
+                // the squares whose digests read it: its own and those two cells round it
+                for sz in square(x, z - 2).1..=square(x, z + 2).1 {
+                    for sx in square(x - 2, z).0..=square(x + 2, z).0 {
+                        gpu.ground_due.insert((sx, sz));
                     }
                 }
-                // the ramps on it and round it (their walls come down onto the ground across),
-                // and whether something lies along each (its ground straight under it)
-                for ramp in m.ramps.iter().filter(|q| overlaps(q, r, 3)) {
-                    format!("{ramp:?}").hash(&mut h);
-                    m.ramp_cover(ramp, self.content).is_some().hash(&mut h);
+            }
+            gpu.seen_terrain[row.clone()].copy_from_slice(&m.terrain[row.clone()]);
+            gpu.seen_level[row.clone()].copy_from_slice(&m.level[row]);
+        }
+    }
+
+    /// The ground: each square's levels and terrains, and two cells around it (the cliff
+    /// faces come down onto the ground across, which comes up to them), past the edge the
+    /// next maps'. Worked out again for the squares whose cells changed (`cells_changed`),
+    /// or at the edge when the maps around did.
+    fn ground_digests(&mut self, edges: bool) -> BTreeMap<(i32, i32), u64> {
+        let (m, gpu) = (self.map, &mut *self.gpu);
+        let squares = squares_of(m);
+        let n = CHUNK as i32;
+        let (gx, gz) = ((m.width as i32 + n - 1) / n, (m.height as i32 + n - 1) / n);
+        let mut due = std::mem::take(&mut gpu.ground_due);
+        if edges {
+            due.extend(squares.iter().filter(|s| s.0 == 0 || s.1 == 0 || s.0 == gx - 1 || s.1 == gz - 1));
+        }
+        for s in due.into_iter().filter(|s| (0..gx).contains(&s.0) && (0..gz).contains(&s.1)) {
+            let r = region(s);
+            let mut h = Quick::default();
+            for z in r[1] - 2..(r[3] + 2).min(m.height as i32 + 2) {
+                for x in r[0] - 2..(r[2] + 2).min(m.width as i32 + 2) {
+                    match m.index(x, z) {
+                        Some(i) => (m.level[i], m.terrain[i]).hash(&mut h),
+                        None => (self.beyond.level(x, z), self.beyond.terrain(x, z)).hash(&mut h),
+                    }
+                }
+            }
+            gpu.ground_cells.insert(s, h.finish());
+        }
+        // the ramps on it and round it (their walls come down onto the ground across), and
+        // whether something lies along each (its ground straight under it)
+        let ramps: Vec<(&content::Ramp, u64)> = m
+            .ramps
+            .iter()
+            .map(|ramp| {
+                let mut h = Quick::default();
+                format!("{ramp:?}").hash(&mut h);
+                m.ramp_cover(ramp, self.content).is_some().hash(&mut h);
+                (ramp, h.finish())
+            })
+            .collect();
+        squares
+            .into_iter()
+            .map(|s| {
+                let mut h = Quick(gpu.ground_cells.get(&s).copied().unwrap_or(0));
+                for (_, d) in ramps.iter().filter(|(q, _)| overlaps(q, region(s), 3)) {
+                    d.hash(&mut h);
                 }
                 (s, h.finish())
             })
@@ -270,15 +392,49 @@ impl Feed<'_> {
     }
 
     /// The props and the actors standing on each square (on a ramp's slope: the ramps there
-    /// too).
-    fn prop_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
-        let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
-        for p in &self.map.props {
-            let h = by.entry(square(p.at[0].floor() as i32, p.at[1].floor() as i32)).or_default();
-            p.prop.hash(h);
-            records.get(p.prop.as_str()).hash(h);
-            (p.at[0].to_bits(), p.at[1].to_bits(), p.level, p.turn.to_bits(), p.scale.to_bits(), p.offset[0].to_bits(), p.offset[1].to_bits()).hash(h);
+    /// too). A square's props are hashed again only when they changed: the list is looked
+    /// over for what stayed the same at its start and at its end since, and the squares of
+    /// the props between (as they were and as they are) are hashed again.
+    fn prop_digests(&mut self, records: &QuickMap<&str, u64>) -> (BTreeMap<(i32, i32), u64>, bool) {
+        let (m, gpu) = (self.map, &mut *self.gpu);
+        let at = |p: &Placed| square(p.at[0].floor() as i32, p.at[1].floor() as i32);
+        let (old, new) = (&gpu.props_seen, &m.props);
+        let head = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+        let tail = old[head..].iter().rev().zip(new[head..].iter().rev()).take_while(|(a, b)| a == b).count();
+        let (gone, came) = (head..old.len() - tail, head..new.len() - tail);
+        let due: BTreeSet<(i32, i32)> = old[gone.clone()].iter().chain(&new[came.clone()]).map(at).collect();
+        let changed = !due.is_empty();
+        if changed {
+            gpu.props_seen.splice(gone, new[came].iter().cloned());
+            let mut by: BTreeMap<(i32, i32), (Quick, Vec<String>)> = due.into_iter().map(|s| (s, (Quick::default(), vec![]))).collect();
+            for p in &m.props {
+                let Some((h, ids)) = by.get_mut(&at(p)) else { continue };
+                p.prop.hash(h);
+                (p.at[0].to_bits(), p.at[1].to_bits(), p.level, p.turn.to_bits(), p.scale.to_bits(), p.offset[0].to_bits(), p.offset[1].to_bits()).hash(h);
+                if !ids.contains(&p.prop) {
+                    ids.push(p.prop.clone());
+                }
+            }
+            for (s, (h, ids)) in by {
+                if ids.is_empty() {
+                    gpu.prop_squares.remove(&s);
+                } else {
+                    gpu.prop_squares.insert(s, (h.finish(), ids));
+                }
+            }
         }
+        // with their records
+        let mut by: BTreeMap<(i32, i32), Quick> = gpu
+            .prop_squares
+            .iter()
+            .map(|(s, (d, ids))| {
+                let mut h = Quick(*d);
+                for id in ids {
+                    records.get(id.as_str()).hash(&mut h);
+                }
+                (*s, h)
+            })
+            .collect();
         if self.actors {
             for a in &self.map.actors {
                 let h = by.entry(square(a.at[0], a.at[1])).or_default();
@@ -291,23 +447,31 @@ impl Feed<'_> {
                 format!("{ramp:?}").hash(h);
             }
         }
-        by.into_iter().map(|(s, h)| (s, h.finish())).collect()
+        (by.into_iter().map(|(s, h)| (s, h.finish())).collect(), changed)
     }
 
-    fn tree_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
-        let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
-        for t in &self.gpu.trees {
-            let h = by.entry(square(t.pos[0].floor() as i32, t.pos[2].floor() as i32)).or_default();
-            t.prop.hash(h);
-            records.get(t.prop.as_str()).hash(h);
-            (t.pos[0].to_bits(), t.pos[1].to_bits(), t.pos[2].to_bits(), t.scale.to_bits(), t.turn.to_bits()).hash(h);
-        }
-        by.into_iter().map(|(s, h)| (s, h.finish())).collect()
+    /// The trees of each square (`groves`), with their props' records.
+    fn tree_digests(&self, records: &QuickMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
+        let digest = |g: &Grove| {
+            let mut h = Quick(g.digest);
+            for p in &g.props {
+                records.get(p.as_str()).hash(&mut h);
+            }
+            h.finish()
+        };
+        self.gpu.groves.iter().map(|(s, g)| (*s, digest(g))).collect()
     }
 
     /// The buildings by the square of their corner, with how each is shown: cut above the
-    /// walker's floor, left out while it's edited (the draft takes its place).
-    fn building_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
+    /// walker's floor, left out while it's edited (the draft takes its place). A building's
+    /// own digest is kept while it and the props' records stay the same.
+    fn building_digests(&mut self, records: &QuickMap<&str, u64>) -> (BTreeMap<(i32, i32), u64>, bool) {
+        let gpu = &mut *self.gpu;
+        let mut all = Quick::default();
+        if gpu.records.len() != records.len() || records.iter().any(|(id, d)| gpu.records.get(*id) != Some(d)) {
+            gpu.records = records.iter().map(|(id, d)| (id.to_string(), *d)).collect();
+            gpu.building_digests.clear();
+        }
         let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
         for (i, b) in self.map.buildings.iter().enumerate() {
             let h = by.entry(square(b.at[0], b.at[1])).or_default();
@@ -315,20 +479,29 @@ impl Feed<'_> {
                 "editing".hash(h);
                 continue;
             }
-            let cut = self.cuts.get(i).copied().flatten();
-            format!("{b:?} {cut:?}").hash(h);
-            // the props it's made of
-            let floors = b.floors.iter().flat_map(|f| std::iter::once(&f.tile).chain(f.openings.iter().map(|o| &o.prop)).chain(f.props.iter().map(|p| &p.prop)));
-            let rest = b.pillars.iter().map(|p| &p.prop).chain(b.anchors.iter().map(|a| &a.prop)).chain(b.outside.iter().map(|p| &p.prop));
-            for id in [&b.wall, &b.roof].into_iter().chain(floors).chain(rest) {
-                records.get(id.as_str()).hash(h);
-            }
+            let own = match gpu.building_digests.get(&b.id) {
+                Some((kept, d)) if kept == b => *d,
+                _ => {
+                    let d = building_digest(b, records);
+                    gpu.building_digests.insert(b.id.clone(), (b.clone(), d));
+                    d
+                }
+            };
+            own.hash(h);
+            own.hash(&mut all);
+            self.cuts.get(i).copied().flatten().map(|c| (c.top, c.low)).hash(h);
+        }
+        let changed = std::mem::replace(&mut gpu.lit_buildings, all.finish()) != all.finish();
+        // (the buildings gone: forgotten)
+        if gpu.building_digests.len() > 2 * self.map.buildings.len() + 16 {
+            let ids: BTreeSet<&str> = self.map.buildings.iter().map(|b| b.id.as_str()).collect();
+            gpu.building_digests.retain(|id, _| ids.contains(id.as_str()));
         }
         if let Some((b, floor)) = self.draft {
             let h = by.entry(square(b.at[0], b.at[1])).or_default();
             format!("draft {b:?} floor {floor}").hash(h);
         }
-        by.into_iter().map(|(s, h)| (s, h.finish())).collect()
+        (by.into_iter().map(|(s, h)| (s, h.finish())).collect(), changed)
     }
 
     /// Builds one square of one layer and sends it.
@@ -356,7 +529,7 @@ impl Feed<'_> {
                 self.gpu.props_vertices.insert(s, scene.plain.vertices.len() + scene.textured.values().map(|m| m.vertices.len()).sum::<usize>());
             }
             "trees" => {
-                let scene = mesh::trees_from(&self.gpu.trees, self.content, self.models, reg);
+                let scene = self.gpu.groves.get(&s).map(|g| mesh::trees_from(&g.trees, self.content, self.models, reg)).unwrap_or_default();
                 r.set_chunk(device, id, "trees", s, &models::batches(&scene));
             }
             "far" => {
@@ -383,71 +556,131 @@ impl Feed<'_> {
 
 /// Streams one map: its ground's texture, the squares that changed or came within reach (in
 /// full, nearest first, while the frame's budget lasts from `start`), the stand-ins of the
-/// rest.
-pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState, f: &mut Feed, mut need: Needs, start: f64) {
+/// rest. Whether what gives off light and sound changed (the props, their records, the
+/// buildings, the ramps and the ground on them).
+pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState, f: &mut Feed, mut need: Needs, start: f64) -> bool {
     let (w, h) = (f.map.width, f.map.height);
     // the ground's texture and palette: a new map, a resized one, one terrain more; the
     // cells again when painted, or when the maps around it changed (the ring)
     let edges = f.gpu.around != f.around_version;
     // what each step of a change costs (the `streamcost` hook: how big maps hold up)
-    let mut costs: Vec<(&str, f64)> = vec![];
     let mut tick = crate::platform::now_ms();
-    let mut cost = |what: &'static str, costs: &mut Vec<(&str, f64)>| {
-        let now = crate::platform::now_ms();
-        costs.push((what, now - tick));
-        tick = now;
-    };
     let key = (f.id.to_string(), w, h, f.map.terrains.clone());
-    if f.gpu.ground.as_ref() != Some(&key) {
+    let focus = f.focus.unwrap_or(&[]).to_vec();
+    let whole = f.gpu.ground.as_ref() != Some(&key);
+    if f.gpu.ground.as_ref().map(|g| (g.0.as_str(), g.1, g.2) != (f.id, w, h)).unwrap_or(true) {
+        // another map, or another size: nothing held is right any more
+        *f.gpu = GpuState { around: f.gpu.around, ..Default::default() };
+        need = Needs::all();
+    }
+    // the ground's squares again (props too can change the ground: what lies along a ramp
+    // makes it straight); what changed in the cells looked for once, for them and the texture
+    let ground = need.ground || edges || (need.props && !f.map.ramps.is_empty());
+    if whole || need.cells || edges || ground {
+        f.cells_changed();
+        tick = cost("cellschanged", tick);
+    }
+    if whole {
         let (palette, palette_width) = mesh::palette(f.content);
         let mut cells = mesh::cells_texture(f.map, f.content, f.beyond);
-        mark_focus(f.map, &mut cells, f.focus);
+        mark_focus(f.map, &mut cells, &focus, 255);
         let size = [w as u32 + 2, h as u32 + 2];
         r.set_world_ground(&rs.device, &rs.queue, f.id, &WorldGround { cells: &cells, size, palette: &palette, palette_width, level_height: f.level_height });
-        if f.gpu.ground.as_ref().map(|g| (g.0.as_str(), g.1, g.2) != (f.id, w, h)).unwrap_or(true) {
-            // another map, or another size: nothing held is right any more
-            f.gpu.built.clear();
-            f.gpu.sources.clear();
-            need = Needs::all();
-        }
+        (f.gpu.texture, f.gpu.focus) = (cells, focus);
+        f.gpu.texels_due.clear();
         f.gpu.ground = Some(key);
+        tick = cost("texture", tick);
     } else if need.cells || edges {
-        let mut cells = mesh::cells_texture(f.map, f.content, f.beyond);
-        mark_focus(f.map, &mut cells, f.focus);
-        cost("cells", &mut costs);
-        r.set_world_cells(&rs.queue, f.id, &cells);
-        cost("upload", &mut costs);
+        // the texels of the cells that changed (and on the map's edge, of the ring round it
+        // showing them again), of the ring when the maps around changed, and where the focus
+        // was and is
+        let (wi, hi) = (w as i32, h as i32);
+        let mut texels: Vec<(i32, i32)> = vec![];
+        for (x, z) in std::mem::take(&mut f.gpu.texels_due) {
+            if x == 0 || z == 0 || x == wi - 1 || z == hi - 1 {
+                texels.extend((-1..=1).flat_map(|dz| (-1..=1).map(move |dx| (x + dx, z + dz))));
+            } else {
+                texels.push((x, z));
+            }
+        }
+        if edges {
+            texels.extend((-1..=wi).flat_map(|x| [(x, -1), (x, hi)]).chain((0..hi).flat_map(|z| [(-1, z), (wi, z)])));
+        }
+        mesh::cells_texels(f.map, f.content, f.beyond, &mut f.gpu.texture, texels.iter().copied());
+        if focus != f.gpu.focus {
+            mark_focus(f.map, &mut f.gpu.texture, &f.gpu.focus, 0);
+            mark_focus(f.map, &mut f.gpu.texture, &focus, 255);
+            texels.extend(f.gpu.focus.iter().chain(&focus));
+            f.gpu.focus = focus;
+        }
+        tick = cost("cells", tick);
+        // sent: the box round them, in the texture's texels (the ring's first)
+        if let Some([x0, z0, x1, z1]) = texels.iter().fold(None, |b: Option<[i32; 4]>, &(x, z)| {
+            let (x, z) = ((x + 1).clamp(0, wi + 1), (z + 1).clamp(0, hi + 1));
+            Some(b.map_or([x, z, x + 1, z + 1], |b| [b[0].min(x), b[1].min(z), b[2].max(x + 1), b[3].max(z + 1)]))
+        }) {
+            r.set_world_cells(&rs.queue, f.id, &f.gpu.texture, [x0 as u32, z0 as u32, x1 as u32, z1 as u32]);
+        }
+        tick = cost("upload", tick);
     }
     f.gpu.around = f.around_version;
-    // what changed, square by square (props too can change the ground: what lies along a
-    // ramp makes it straight)
-    if need.ground || edges || (need.props && !f.map.ramps.is_empty()) {
-        let d = f.ground_digests();
+    // what changed, square by square
+    let mut lit = false;
+    if ground {
+        let d = f.ground_digests(edges);
         f.refresh("ground", d);
-        cost("ground", &mut costs);
+        if f.gpu.lit_ramps != f.map.ramps || std::mem::take(&mut f.gpu.ramp_ground_changed) {
+            f.gpu.lit_ramps = f.map.ramps.clone();
+            lit = true;
+        }
+        tick = cost("ground", tick);
     }
     if need.props || need.trees || need.buildings {
         let records = record_digests(f.content, f.model_versions);
+        let all = records.iter().fold(0, |a, e| {
+            let mut h = Quick::default();
+            e.hash(&mut h);
+            a ^ h.finish()
+        });
+        lit |= std::mem::replace(&mut f.gpu.lit_records, all) != all;
         if need.trees {
-            f.gpu.trees = trees(f.map, f.content, f.level_height);
-            cost("trees", &mut costs);
+            // the trees placed again where they can have moved, and those squares' again
+            match f.gpu.woods.update(f.map, f.content, f.level_height) {
+                None => {
+                    let mut by: BTreeMap<(i32, i32), Vec<Tree>> = BTreeMap::new();
+                    for t in f.gpu.woods.trees() {
+                        by.entry(square(t.pos[0].floor() as i32, t.pos[2].floor() as i32)).or_default().push(t);
+                    }
+                    f.gpu.groves = by.into_iter().map(|(s, trees)| (s, Grove::new(trees))).collect();
+                }
+                Some(cells) => {
+                    for s in cells.into_iter().map(|(x, z)| square(x, z)).collect::<BTreeSet<_>>() {
+                        let trees = f.gpu.woods.trees_in(region(s));
+                        if trees.is_empty() {
+                            f.gpu.groves.remove(&s);
+                        } else {
+                            f.gpu.groves.insert(s, Grove::new(trees));
+                        }
+                    }
+                }
+            }
+            tick = cost("trees", tick);
             let d = f.tree_digests(&records);
             f.refresh("trees", d);
-            cost("treedigests", &mut costs);
+            tick = cost("treedigests", tick);
         }
         if need.props {
-            let d = f.prop_digests(&records);
+            let (d, changed) = f.prop_digests(&records);
             f.refresh("props", d);
-            cost("props", &mut costs);
+            lit |= changed;
+            tick = cost("props", tick);
         }
         if need.buildings {
-            let d = f.building_digests(&records);
+            let (d, changed) = f.building_digests(&records);
             f.refresh("buildings", d);
-            cost("buildings", &mut costs);
+            lit |= changed;
+            cost("buildings", tick);
         }
-    }
-    if costs.iter().any(|c| c.1 > 1.0) {
-        crate::platform::set_hook("streamcost", &costs.iter().map(|(w, t)| format!("{w} {t:.1}")).collect::<Vec<_>>().join(", "));
     }
     let (wanted, keep) = f.wanted();
     let near: BTreeSet<(i32, i32)> = wanted.iter().copied().collect();
@@ -468,6 +701,8 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
     }
     // the squares in reach, nearest first and in full, as many as the frame's budget allows
     let over = || crate::platform::now_ms() - start > BUDGET_MS;
+    let began = crate::platform::now_ms();
+    let mut built = false;
     'build: for &s in &wanted {
         for layer in LAYERS {
             if f.built(layer, s) {
@@ -475,6 +710,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
             }
             f.build_square(r, &rs.device, layer, s);
             f.gpu.built.entry(layer).or_default().insert(s);
+            built = true;
             if layer == "ground" {
                 // the full ground took the stand-in's place
                 r.set_chunk(&rs.device, f.id, FAR, s, &[]);
@@ -494,11 +730,16 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         for (_, s) in far {
             f.build_square(r, &rs.device, FAR, s);
             f.gpu.built.entry(FAR).or_default().insert(s);
+            built = true;
             if over() {
                 break;
             }
         }
     }
+    if built {
+        cost("squares", began);
+    }
+    lit
 }
 
 impl MapEditor {
@@ -522,15 +763,6 @@ impl MapEditor {
         // the open map
         let need = Needs { ground: self.need_ground, cells: self.need_cells, props: self.need_props, trees: self.need_trees, buildings: self.need_buildings };
         (self.need_ground, self.need_cells, self.need_props, self.need_trees, self.need_buildings) = (false, false, false, false, false);
-        // the props' and buildings' lights and sounds again, when they (or the ground under
-        // them) changed
-        if need.props || need.buildings || need.ground {
-            self.placed_lights = None;
-            self.placed_sounds = None;
-        }
-        if self.placed_sounds.is_none() {
-            self.placed_sounds = Some(world::sounds::sounds(&self.map, &self.content, self.level_height));
-        }
         if need.ground || need.cells {
             // its edge, as the maps around see it
             self.note_edge();
@@ -561,7 +793,17 @@ impl MapEditor {
             focus: focus.as_deref(),
             around_version: self.around.version,
         };
-        stream(r, rs, &mut feed, need, start);
+        // the props' and buildings' lights and sounds again, when they (or the ground under
+        // them on a ramp) changed
+        if stream(r, rs, &mut feed, need, start) {
+            self.placed_lights = None;
+            self.placed_sounds = None;
+        }
+        if self.placed_sounds.is_none() {
+            let t = crate::platform::now_ms();
+            self.placed_sounds = Some(world::sounds::sounds(&self.map, &self.content, self.level_height));
+            cost("sounds", t);
+        }
         r.set_world_place(&self.map.id, Place { offset: Vec3::ZERO, grid: [origin[0] as f32, origin[1] as f32], dim: 0.0 });
         self.focus_sent = focus;
         // the maps around it, with what's left of the frame's budget

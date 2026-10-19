@@ -2,12 +2,12 @@
 //! like their lights, and the ambience (`Ambience` on the map): everywhere, or within an
 //! area and fading past its edge.
 
-use content::{Ambience, Content, Sound};
+use content::{Ambience, Content, Prop, Sound};
 use glam::{Mat4, Vec3};
 
 use crate::buildings::anchor_placement;
 use crate::mesh::placement;
-use crate::WorldMap;
+use crate::{QuickMap, WorldMap};
 
 /// A sound where its prop stands.
 #[derive(Clone, Debug, PartialEq)]
@@ -28,10 +28,12 @@ fn put(out: &mut Vec<PlacedSound>, key: String, prop: &str, sound: &Sound, m: Ma
 /// Every prop's sound on the map, where its prop stands.
 pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<PlacedSound> {
     let mut out = vec![];
-    let sound = |id: &str| content.props.get(id).and_then(|p| p.sound.as_ref().map(|s| (s, p.scalable())));
+    // the props giving off a sound, looked up quickly for each of a big map's props
+    let heard: QuickMap<&str, (&Sound, &Prop)> = content.props.iter().filter_map(|p| p.sound.as_ref().map(|s| (p.id.as_str(), (s, p)))).collect();
+    let sound = |id: &str| heard.get(id).map(|(s, p)| (*s, p.scalable()));
     // (along a ramp, from the middle of what's laid on it, once)
     for (i, p) in map.props.iter().enumerate() {
-        let Some((s, prop)) = content.props.get(&p.prop).and_then(|q| q.sound.as_ref().map(|s| (s, q))) else { continue };
+        let Some(&(s, prop)) = heard.get(p.prop.as_str()) else { continue };
         let puts = map.puts(p, prop, level_height);
         let Some(at) = puts.get(puts.len() / 2) else { continue };
         let pos = at.point(Vec3::new(s.at[0] as f32, s.at[1] as f32, s.at[2] as f32));

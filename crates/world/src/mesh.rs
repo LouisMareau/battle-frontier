@@ -531,24 +531,47 @@ pub fn terrain_index(content: &Content, id: &str) -> u8 {
 pub fn cells_texture(map: &WorldMap, content: &Content, beyond: &dyn Beyond) -> Vec<u8> {
     let columns: Vec<u8> = map.terrains.iter().map(|id| terrain_index(content, id)).collect();
     let (w, h) = (map.width as i32, map.height as i32);
-    let own = |x: i32, z: i32| {
-        let i = map.index(x.clamp(0, w - 1), z.clamp(0, h - 1)).unwrap_or(0);
-        (columns.get(map.terrain[i] as usize).copied().unwrap_or(255), map.level[i])
-    };
     let mut cells = Vec::with_capacity(((w + 2) * (h + 2) * 4) as usize);
     for z in -1..=h {
         for x in -1..=w {
-            let (t, l) = match map.index(x, z) {
-                Some(_) => own(x, z),
-                None => match (beyond.terrain(x, z), beyond.level(x, z)) {
-                    (Some(t), Some(l)) => (t, l),
-                    _ => own(x, z),
-                },
-            };
+            let (t, l) = texel(map, &columns, beyond, x, z);
             cells.extend_from_slice(&[t, l, 0, 255]);
         }
     }
     cells
+}
+
+/// A texel of the cells' texture: the terrain's column in the palette (`columns`, by the
+/// map's terrain) and the level of the cell there, on the ring the next map's (else its own
+/// edge's again).
+fn texel(map: &WorldMap, columns: &[u8], beyond: &dyn Beyond, x: i32, z: i32) -> (u8, u8) {
+    let (w, h) = (map.width as i32, map.height as i32);
+    let own = |x: i32, z: i32| {
+        let i = map.index(x.clamp(0, w - 1), z.clamp(0, h - 1)).unwrap_or(0);
+        (columns.get(map.terrain[i] as usize).copied().unwrap_or(255), map.level[i])
+    };
+    match map.index(x, z) {
+        Some(_) => own(x, z),
+        None => match (beyond.terrain(x, z), beyond.level(x, z)) {
+            (Some(t), Some(l)) => (t, l),
+            _ => own(x, z),
+        },
+    }
+}
+
+/// Some of the cells' texture's texels written again (x from -1 to the width, z from -1 to
+/// the height: the ring too), as `cells_texture` has them; what marks the focus left as it
+/// was.
+pub fn cells_texels(map: &WorldMap, content: &Content, beyond: &dyn Beyond, cells: &mut [u8], at: impl IntoIterator<Item = (i32, i32)>) {
+    let columns: Vec<u8> = map.terrains.iter().map(|id| terrain_index(content, id)).collect();
+    let (w, h) = (map.width as i32, map.height as i32);
+    for (x, z) in at.into_iter().filter(|&(x, z)| x >= -1 && z >= -1 && x <= w && z <= h) {
+        let i = (((z + 1) * (w + 2) + x + 1) * 4) as usize;
+        if let Some(t) = cells.get_mut(i..i + 2) {
+            let (c, l) = texel(map, &columns, beyond, x, z);
+            t.copy_from_slice(&[c, l]);
+        }
+    }
 }
 
 /// Where a map cell is in `cells_texture`'s texels.

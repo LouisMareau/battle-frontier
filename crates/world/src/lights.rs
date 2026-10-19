@@ -3,12 +3,12 @@
 //! prop. A lamp post and a wall lamp are props with a `light`; a frame takes the nearest
 //! of them (`render::scene::MAX_LIGHTS`), so a creature carrying a light fits the same way.
 
-use content::{Content, Light};
+use content::{Content, Light, Prop};
 use glam::{Mat4, Vec3};
 
 use crate::buildings::anchor_placement;
 use crate::mesh::{placement, Put};
-use crate::WorldMap;
+use crate::{QuickMap, WorldMap};
 
 /// A light where its prop stands: in the world, pointing its way.
 #[derive(Clone, Debug, PartialEq)]
@@ -42,10 +42,12 @@ pub fn carried(light: &Light, feet: Vec3, forward: Vec3) -> PlacedLight {
 /// Every light on the map, where its prop stands.
 pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<PlacedLight> {
     let mut out = vec![];
-    let light = |id: &str| content.props.get(id).and_then(|p| p.light.as_ref().map(|l| (l, p.scalable())));
+    // the props giving off light, looked up quickly for each of a big map's props
+    let lit: QuickMap<&str, (&Light, &Prop)> = content.props.iter().filter_map(|p| p.light.as_ref().map(|l| (p.id.as_str(), (l, p)))).collect();
+    let light = |id: &str| lit.get(id).map(|(l, p)| (*l, p.scalable()));
     // (along a ramp, one on each copy laid on it)
     for p in &map.props {
-        let Some((l, prop)) = content.props.get(&p.prop).and_then(|q| q.light.as_ref().map(|l| (l, q))) else { continue };
+        let Some(&(l, prop)) = lit.get(p.prop.as_str()) else { continue };
         for at in map.puts(p, prop, level_height) {
             lay(&mut out, l, &at);
         }
