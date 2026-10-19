@@ -300,6 +300,9 @@ pub struct GameApp {
     input: Input,
     stats: Stats,
     icons: HashMap<String, egui::TextureHandle>,
+    /// the team's front pictures, for their cards (View all): the texture, the part with the
+    /// creature in it (in the texture's 0 to 1), and that part's size in pixels
+    pictures: HashMap<String, (egui::TextureHandle, egui::Rect, egui::Vec2)>,
     /// FX flipbooks that couldn't be read (not asked for again)
     fx_failed: std::collections::HashSet<String>,
     /// FX meshes were sent to the scene last frame (cleared when they're gone)
@@ -421,7 +424,7 @@ impl GameApp {
         egui_extras::install_image_loaders(&cc.egui_ctx);
         GameApp {
             files, content: None, dex: None, party: vec![], fielded: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
-            stats: Stats::default(), icons: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
+            stats: Stats::default(), icons: HashMap::new(), pictures: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
             draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
             title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
             hud: Default::default(), frost: None,
@@ -802,33 +805,81 @@ impl GameApp {
     }
 
     /// The team's pictures, for the HUD: each creature's icon asked for, made a texture once
-    /// it's in.
+    /// it's in, and its front picture for its card (the part with the creature in it framed).
     fn team_icons(&mut self, ctx: &egui::Context) {
         let Some(dex) = self.dex.clone() else { return };
         for s in &self.party {
-            if self.icons.contains_key(&s.species) {
-                continue;
+            let Some(sp) = dex.try_sp(&s.species).map(|i| &dex.species[i]) else { continue };
+            if let (false, Some(path)) = (self.icons.contains_key(&s.species), sp.icon.as_ref()) {
+                if let Load::Ready(b) = self.files.get(path) {
+                    if let Ok((rgba, w, h)) = decode(&b) {
+                        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                        self.icons.insert(s.species.clone(), ctx.load_texture(format!("icon-{}", s.species), img, egui::TextureOptions::NEAREST));
+                    }
+                }
             }
-            let Some(path) = dex.try_sp(&s.species).and_then(|i| dex.species[i].icon.clone()) else { continue };
-            if let Load::Ready(b) = self.files.get(&path) {
-                if let Ok((rgba, w, h)) = decode(&b) {
-                    let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
-                    self.icons.insert(s.species.clone(), ctx.load_texture(format!("icon-{}", s.species), img, egui::TextureOptions::NEAREST));
+            if let (false, Some(path)) = (self.pictures.contains_key(&s.species), sp.front.as_ref()) {
+                if let Load::Ready(b) = self.files.get(path) {
+                    if let Ok((rgba, w, h)) = decode(&b) {
+                        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], &rgba);
+                        let texture = ctx.load_texture(format!("front-{}", s.species), img, egui::TextureOptions::NEAREST);
+                        // its visible pixels (all of it when they aren't known)
+                        let [x0, y0, x1, y1] = sp.front_box;
+                        let (lo, hi) = if x1 > x0 && y1 > y0 { (egui::pos2(x0 as f32, y0 as f32), egui::pos2(x1 as f32, y1 as f32)) } else { (egui::Pos2::ZERO, egui::pos2(w as f32, h as f32)) };
+                        let uv = egui::Rect::from_min_max(egui::pos2(lo.x / w as f32, lo.y / h as f32), egui::pos2(hi.x / w as f32, hi.y / h as f32));
+                        self.pictures.insert(s.species.clone(), (texture, uv, hi - lo));
+                    }
                 }
             }
         }
     }
 
-    /// The team as the HUD shows it: each creature's id, name, level and icon, in its order.
-    fn team_members(party: &[MonSpec], content: Option<&Content>, icons: &HashMap<String, egui::TextureHandle>) -> Vec<crate::play_hud::Member> {
-        party
+    /// The team as the HUD shows it: each creature's id, name (its own, else its kind's),
+    /// level and icon, in its order, and its card for the board (View all): its kind, number,
+    /// picture, types, status, HP, MP, Exp and base stats. Out of battle it's as it is between
+    /// battles now: whole (each battle starts it so, none of it kept after), and where its level's
+    /// Exp begins (none is earned yet).
+    fn team_members(&self) -> Vec<crate::play_hud::Member> {
+        use crate::play_hud::{Card, Member, TypeTag};
+        let cfg = self.config();
+        let content = self.content.as_deref();
+        self.party
             .iter()
-            .zip(crate::team::ids(party))
-            .map(|(s, id)| crate::play_hud::Member {
-                id,
-                name: content.and_then(|c| c.creatures.get(&s.species)).map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone()),
-                level: s.level,
-                icon: icons.get(&s.species).map(|t| t.id()),
+            .zip(crate::team::ids(&self.party))
+            .map(|(s, id)| {
+                let creature = content.and_then(|c| c.creatures.get(&s.species));
+                let kind = creature.map(|c| c.name.clone()).unwrap_or_else(|| s.species.clone());
+                let name = s.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| kind.clone());
+                let sp = self.dex.as_ref().and_then(|d| d.try_sp(&s.species).map(|i| &d.species[i]));
+                let hp = sp.map_or(0, |sp| rules::mon::calc_stats(sp.base, s.level, s.ivs.unwrap_or([20; 6]), sp.base[0] == 1).hp);
+                let max_mp = rules::mon::max_mp(s.level, &cfg);
+                let growth = content.zip(creature).and_then(|(c, cr)| c.growth_rates.get(&cr.growth_rate));
+                let exp_at = |level: u32| growth.and_then(|g| g.exp.get(level as usize).copied());
+                let from = exp_at(s.level as u32).unwrap_or(0);
+                let types = creature
+                    .map(|cr| {
+                        cr.types
+                            .iter()
+                            .filter_map(|t| content?.types.get(t))
+                            .filter(|t| !t.hidden)
+                            .map(|t| TypeTag { name: t.name.clone(), color: Color32::from_hex(&t.color).unwrap_or(Color32::GRAY), order: t.order })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                // the dex has them hp, atk, def, spe, spa, spd; the card HP, Atk, Def, SpA, SpD, Spe
+                let b = sp.map_or([0; 6], |sp| sp.base);
+                let card = Card {
+                    kind,
+                    number: sp.map_or(0, |sp| sp.number),
+                    picture: self.pictures.get(&s.species).map(|(t, uv, px)| (t.id(), *uv, *px)),
+                    types,
+                    status: None,
+                    hp: (hp, hp),
+                    mp: (s.mp.unwrap_or(max_mp).clamp(0, max_mp), max_mp),
+                    exp: (from, from, exp_at(s.level as u32 + 1)),
+                    base: [b[0], b[1], b[2], b[4], b[5], b[3]],
+                };
+                Member { id, name, level: s.level, icon: self.icons.get(&s.species).map(|t| t.id()), card }
             })
             .collect()
     }
@@ -1322,9 +1373,13 @@ impl eframe::App for GameApp {
         let hours = self.hours();
         let retro = self.options.graphics.retro();
         let mut options_changed = false;
-        if matches!(self.screen, Screen::Overworld(_)) {
+        // the team, for the overworld's HUD (its pictures asked for, its cards made)
+        let team = if matches!(self.screen, Screen::Overworld(_)) {
             self.team_icons(&ctx);
-        }
+            self.team_members()
+        } else {
+            vec![]
+        };
         match &mut self.screen {
             Screen::Boot | Screen::Loading(_) => {
                 egui::CentralPanel::default().frame(egui::Frame::new().fill(Color32::from_rgb(12, 17, 28))).show(ui, |ui| {
@@ -1372,7 +1427,6 @@ impl eframe::App for GameApp {
                 let request = ed.take_request();
                 // the HUD over it: the map's name and the keys, the Team, Settings, Exit
                 crate::layout::set_frost(self.frost.map(|(id, _)| (id, ctx.content_rect())));
-                let team = Self::team_members(&self.party, self.content.as_deref(), &self.icons);
                 let map_name = ed.map_name().to_string();
                 let busy = ed.story_busy();
                 let out = self.hud.ui(&ctx, &map_name, busy, &team, &mut ed.team, &mut self.options, &self.input, &mut options_changed);

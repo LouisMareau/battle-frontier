@@ -44,6 +44,7 @@ pub fn pool(e: &Encounter, p: Period) -> Vec<(String, u8)> {
 pub fn spec(m: &Member, move_level: u8) -> MonSpec {
     MonSpec {
         species: m.creature.clone(),
+        name: Some(m.name.trim().to_string()).filter(|n| !n.is_empty()),
         level: m.level,
         moves: m.moves.clone(),
         move_levels: if m.move_levels.is_empty() { vec![move_level; 4] } else { m.move_levels.clone() },

@@ -470,10 +470,16 @@ pub struct Region {
     pub map: String,
 }
 
+/// How long a creature's own name may be, in letters.
+pub const NAME_MAX: usize = 16;
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Member {
     pub creature: String,
+    /// its own name, if it was given one (empty: its kind's), `NAME_MAX` letters at most
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
     pub level: u8,
     /// empty: the learnset's last four at that level
     #[serde(skip_serializing_if = "Vec::is_empty")]

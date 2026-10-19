@@ -3,6 +3,9 @@
 // buttons); the Team's list (opening beside the Team, closing with the Team again, a click
 // anywhere else, Settings, View all), always a main (the team's first in a new game), pinned
 // first, staying when clicked again, the creatures that fought most in the last battles next;
+// View all's board of cards (the list's five first; sorted in its dropdown, reversed, only
+// some types in theirs, All and None at its top, the main first all the same; a card clicked
+// pinned), with the controller too;
 // the story keeping them; Exit back to the menu; a controller working all of it (Start, the
 // d-pad, A, B). And the pixelation from the Options (a category of them closing and opening):
 // the world in big square pixels, as dense as asked, bigger as the camera comes closer and
@@ -46,7 +49,7 @@ const STAND_INS = `(() => {
   Object.defineProperty(Navigator.prototype, 'getGamepads', { value: function () { return slots.slice(); }, configurable: true, writable: true });
 })();`;
 const XBOX = 'Xbox Wireless Controller (STANDARD GAMEPAD Vendor: 045e Product: 0b13)';
-const B = { south: 0, east: 1, start: 9, up: 12, down: 13, left: 14, right: 15 };
+const B = { south: 0, east: 1, lb: 4, rb: 5, start: 9, up: 12, down: 13, left: 14, right: 15 };
 
 const W = 1400;
 const H = 900;
@@ -203,14 +206,59 @@ try {
     await shot('4-main');
     await press('uiTeam_0');
     check('  clicked again: still the main', (await data('hudmain')) === all[2] && (await data('hudteamshown')).split(',')[0] === all[2], await data('hudteamshown'));
-    const main = (await data('hudteamshown')).split(',')[1];
+    let main = (await data('hudteamshown')).split(',')[1];
     await press('uiTeam_1');
     check('  another pinned', (await data('hudmain')) === main, `${await data('hudmain')} (${main})`);
 
-    // 5. View all: the window opens, the list closes
+    // 5. View all: the window opens, the list closes; a board of cards, every creature, the
+    // list's five first; by level the highest first, reversed the lowest, by a type only
+    // those (the main first all the same); a card clicked pinned as the main, first
+    const listed = (await data('hudteamshown')).split(',');
     await press('uiTeamAll', 400);
     check('View all: its window, the list closed', (await open('hudteamwindow')) && !(await open('hudteam')));
+    const board = async () => (await data('hudboard')).split(',').filter(Boolean);
+    const levels = async () => (await data('hudboardlevels')).split(',').filter(Boolean).map(Number);
+    const first = await board();
+    check("  every creature, the first row the list's five", first.length === all.length && first.slice(0, 5).join() === listed.slice(0, 5).join(), `${first} (${listed})`);
     await shot('5-view-all');
+    await press('uiTeamSort');
+    check("  the sort's dropdown open", (await data('hudboardpopup')) === 'sort', await data('hudboardpopup'));
+    await shot('5a-sort');
+    await press('uiTeamSort_Level');
+    check('    a sort picked: it closes', (await data('hudboardpopup')) === '', await data('hudboardpopup'));
+    const cards = await board();
+    let lv = (await levels()).slice(1);
+    check('  by level: the main first, then the highest', (await data('hudboardsort')) === 'Level' && cards[0] === main && lv.every((l, i) => i === 0 || l <= lv[i - 1]), `${cards} ${lv}`);
+    await press('uiTeamReverse');
+    lv = (await levels()).slice(1);
+    check('    reversed: the main first, then the lowest', (await data('hudboardsort')) === 'Level reversed' && (await board())[0] === main && lv.every((l, i) => i === 0 || l >= lv[i - 1]), `${await board()} ${lv}`);
+    await press('uiTeamReverse');
+    await press('uiTeamSort');
+    await press('uiTeamSort_Mostused');
+    check('    most used: as when it opened', (await board()).join() === first.join(), `${await board()} (${first})`);
+    // the types' dropdown: None, the main alone; one type checked, those; All, every one;
+    // Esc closes the dropdown, not the board
+    await press('uiTeamTypes');
+    check("  the types' dropdown open", (await data('hudboardpopup')) === 'types', await data('hudboardpopup'));
+    const everyType = await data('hudboardtypes');
+    await press('uiTeamTypes_None');
+    check('    None: the main alone', (await board()).join() === main && (await data('hudboardtypes')) === '', `${await board()}`);
+    const types = await browser.evaluate("Object.keys(document.body.dataset).filter((k) => k.startsWith('uiTeamType_'))");
+    if (types.length) {
+      await press(types[0]);
+      const only = await board();
+      check(`    one type checked (${types[0].slice(11)}): those, the main first, the dropdown still open`, only[0] === main && only.length <= all.length && (await data('hudboardtypes')) !== '' && (await data('hudboardpopup')) === 'types', `${only}`);
+      await shot('5b-one-type');
+    }
+    await press('uiTeamTypes_All');
+    check('    All: every one again', (await board()).length === all.length && (await data('hudboardtypes')) === everyType, `${await board()}`);
+    await browser.key('Escape');
+    await sleep(300);
+    check('    Esc: the dropdown closed, the board still open', (await data('hudboardpopup')) === '' && (await open('hudteamwindow')), `${await data('hudboardpopup')} ${await data('hudteamwindow')}`);
+    const lastCard = (await board())[all.length - 1];
+    await press(`uiTeamCard_${all.length - 1}`);
+    check('  a card clicked: pinned as the main, first', (await data('hudmain')) === lastCard && (await board())[0] === lastCard, `${await data('hudmain')} (${lastCard}) ${await board()}`);
+    main = lastCard;
     await press('uiTeamWindowClose');
     check('  Close: gone', !(await open('hudteamwindow')));
 
@@ -260,6 +308,48 @@ try {
   await shot('6-pad');
   await tap(B.east);
   check('  B: the list closed, the ring on the Team', !(await open('hudteam')) && (await data('hudring')) === 'uiHudTeam', `${await data('hudteam')} ${await data('hudring')}`);
+  if (all.length >= 2) {
+    // the board with the controller: A on the Team, right along the list to View all, A: the
+    // board, the ring on its first card (that A pins nothing); right: the next card; RB: by
+    // level; LB: back; B: closed, the ring back on the Team
+    await tap(B.south);
+    await sleep(400);
+    for (let i = 0; i < Math.min(5, all.length); i++) await tap(B.right);
+    check('  A, right along the list: View all', (await data('hudring')) === 'uiTeamAll', await data('hudring'));
+    const before = await data('hudmain');
+    await tap(B.south);
+    await sleep(400);
+    check('  A: the board, the ring on its first card, nothing pinned', (await open('hudteamwindow')) && (await data('hudboardring')) === 'uiTeamCard_0' && (await data('hudmain')) === before, `${await data('hudboardring')} ${await data('hudmain')}`);
+    await tap(B.right);
+    check('    right: the next card', (await data('hudboardring')) === 'uiTeamCard_1', await data('hudboardring'));
+    await tap(B.rb);
+    check('    RB: by level', (await data('hudboardsort')) === 'Level', await data('hudboardsort'));
+    await tap(B.lb);
+    check('    LB: most used again', (await data('hudboardsort')) === 'Most used', await data('hudboardsort'));
+    // up to the controls, along to the types' dropdown; A: open, the ring on All; right, A:
+    // None (the main alone); left, A: All; B: the dropdown closed, the board still open
+    await tap(B.up);
+    const xOf = async (name) => Number((await data(name)).split(',')[0]);
+    const typesX = await xOf('uiTeamTypes');
+    for (let i = 0; i < 6 && (await data('hudboardring')) !== 'uiTeamTypes'; i++) {
+      await tap((await xOf(await data('hudboardring'))) < typesX ? B.right : B.left);
+    }
+    check("    up, along: the types' dropdown", (await data('hudboardring')) === 'uiTeamTypes', await data('hudboardring'));
+    await tap(B.south);
+    await sleep(300);
+    check('    A: it opens, the ring on All', (await data('hudboardpopup')) === 'types' && (await data('hudboardring')) === 'uiTeamTypes_All', `${await data('hudboardpopup')} ${await data('hudboardring')}`);
+    await tap(B.right);
+    await tap(B.south);
+    check('    right, A: None, the main alone', (await data('hudboard')).split(',').length === 1, await data('hudboard'));
+    await tap(B.left);
+    await tap(B.south);
+    check('    left, A: All, every one', (await data('hudboard')).split(',').length === all.length, await data('hudboard'));
+    await tap(B.east);
+    check('    B: the dropdown closed, the board still open, the ring on its button', (await data('hudboardpopup')) === '' && (await open('hudteamwindow')) && (await data('hudboardring')) === 'uiTeamTypes', `${await data('hudboardpopup')} ${await data('hudboardring')}`);
+    await shot('6b-board-pad');
+    await tap(B.east);
+    check('    B: closed, the ring back on the Team', !(await open('hudteamwindow')) && (await data('hudring')) === 'uiHudTeam', `${await data('hudteamwindow')} ${await data('hudring')}`);
+  }
   await tap(B.up);
   await tap(B.right);
   check('  up, right: Exit', (await data('hudring')) === 'uiHudExit', await data('hudring'));

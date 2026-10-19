@@ -506,6 +506,9 @@ impl Content {
             if !self.creatures.contains(&m.creature) {
                 out.push(format!("{at}: creature \"{}\", no such creature", m.creature));
             }
+            if m.name.chars().count() > model::NAME_MAX {
+                out.push(format!("{at}: name \"{}\": {} letters at most", m.name, model::NAME_MAX));
+            }
             for mv in &m.moves {
                 if !self.moves.contains(mv) {
                     out.push(format!("{at}: move \"{mv}\", no such move"));

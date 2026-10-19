@@ -43,6 +43,8 @@ pub struct Mon {
 #[derive(Clone, Debug, Default)]
 pub struct MonSpec {
     pub species: String,
+    /// its own name, if it was given one (else its kind's)
+    pub name: Option<String>,
     pub level: u8,
     /// move ids; empty = the learnset's last four
     pub moves: Vec<String>,
@@ -136,7 +138,7 @@ pub fn create_mon(dex: &Dex, spec: &MonSpec, rng: Option<&mut Rng>, cfg: &Config
     let mp = max_mp(spec.level, cfg);
     Mon {
         species,
-        name: sp.name.clone(),
+        name: spec.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| sp.name.clone()),
         level: spec.level,
         ivs,
         stats,

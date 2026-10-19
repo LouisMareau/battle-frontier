@@ -1,6 +1,8 @@
 //! The player's team as the overworld's Team button shows it: the creatures they fought with
 //! most in their last battles first, and before all of them the one they pinned as their main.
 //! There's always a main (while there's a team), and it's the one sent out first in a battle.
+//! The board of cards (View all) has them all, the main first, then as the list has them, or
+//! as the player sorts and filters them.
 //! The story keeps who fought in each of the last battles, and the main (`SaveGame.team`).
 
 use std::collections::HashMap;
@@ -15,8 +17,38 @@ mod fixture;
 
 /// How many of the last battles count.
 pub const RECENT: usize = 10;
-/// How many creatures the Team's list shows.
+/// How many creatures the Team's list shows (the board's first row is them too).
 pub const SHOWN: usize = 5;
+
+/// How the board of cards (View all) is put in order, after the main (always first).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Sort {
+    /// as the Team's list has them: who fought in the most of the last battles first
+    #[default]
+    MostUsed,
+    /// the highest first
+    Level,
+    /// from A
+    Name,
+    /// the most first
+    Hp,
+    /// their number in the creature index, from the first
+    Number,
+}
+
+impl Sort {
+    pub const ALL: [Sort; 5] = [Sort::MostUsed, Sort::Level, Sort::Name, Sort::Hp, Sort::Number];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Sort::MostUsed => "Most used",
+            Sort::Level => "Level",
+            Sort::Name => "Name",
+            Sort::Hp => "HP",
+            Sort::Number => "No.",
+        }
+    }
+}
 
 /// What the story keeps of the team: who fought in each of the last battles (the latest last,
 /// `RECENT` at most), and the main.
@@ -111,6 +143,19 @@ impl TeamLog {
         main.into_iter().chain(self.ranked(ids, main)).take(n).collect()
     }
 
+    /// The board of cards' order (places in `ids`): the main first, always (whatever the
+    /// filter says), then the ones `keep` keeps in `order`'s order (ties, and an order that
+    /// says nothing, as the Team's list has them); `reverse`: those the other way round.
+    pub fn board(&self, ids: &[String], keep: impl Fn(usize) -> bool, order: impl Fn(usize, usize) -> std::cmp::Ordering, reverse: bool) -> Vec<usize> {
+        let main = self.main_of(ids);
+        let mut rest: Vec<usize> = self.ranked(ids, main).into_iter().filter(|&i| keep(i)).collect();
+        rest.sort_by(|&a, &b| order(a, b));
+        if reverse {
+            rest.reverse();
+        }
+        main.into_iter().chain(rest).collect()
+    }
+
     /// The team (their places in `ids`) but `except`, the ones that fought in the most of the
     /// last battles first (the more recently, the sooner; then the team's order).
     fn ranked(&self, ids: &[String], except: Option<usize>) -> Vec<usize> {
@@ -190,6 +235,31 @@ mod tests {
         let mut none = TeamLog::default();
         none.settle(&[]);
         assert!(none.main.is_none() && none.battle_order(&[]).is_empty());
+    }
+
+    /// The board: the main first, then as the list has them (its first row the list's five);
+    /// sorted, the order asked for, ties as the list has them; reversed; filtered, the main
+    /// kept first all the same.
+    #[test]
+    fn the_board_has_the_main_first_whatever_the_order() {
+        let ids: Vec<String> = ["a", "b", "c", "d", "e", "f", "g"].iter().map(|s| s.to_string()).collect();
+        let levels = [5, 30, 12, 30, 8, 50, 1];
+        let mut log = TeamLog::default();
+        for fought in [vec!["f"], vec!["f", "c"], vec!["c"], vec!["g"]] {
+            log.record(fought.into_iter().map(String::from).collect());
+        }
+        log.pin("b");
+        let same = |_: usize, _: usize| std::cmp::Ordering::Equal;
+        let board = log.board(&ids, |_| true, same, false);
+        assert_eq!(board[..SHOWN], log.most_used(&ids, SHOWN)[..], "the first row: the list's five");
+        assert_eq!(board, [1, 2, 5, 6, 0, 3, 4]);
+        // by level, the highest first (d and b tie at 30: b is the main anyway)
+        let by_level = |a: usize, b: usize| levels[b].cmp(&levels[a]);
+        assert_eq!(log.board(&ids, |_| true, by_level, false), [1, 5, 3, 2, 4, 0, 6]);
+        assert_eq!(log.board(&ids, |_| true, by_level, true), [1, 6, 0, 4, 2, 3, 5], "the main first, the rest the other way round");
+        // only the levels over 10: the main all the same
+        assert_eq!(log.board(&ids, |i| levels[i] > 10 && i != 1, by_level, false), [1, 5, 3, 2]);
+        assert!(TeamLog::default().board(&[], |_| true, same, false).is_empty());
     }
 
     #[test]
