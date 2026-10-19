@@ -25,7 +25,12 @@ impl MapEditor {
         let listener = self.listener(now);
         let mut out = vec![];
         let lh = self.level_height;
-        for s in world::sounds::sounds(&self.map, &self.content, lh) {
+        // (the props' and buildings' own, kept by `sync` until they change)
+        let placed = match &self.placed_sounds {
+            Some(s) => std::borrow::Cow::Borrowed(s),
+            None => std::borrow::Cow::Owned(world::sounds::sounds(&self.map, &self.content, lh)),
+        };
+        for s in placed.iter().cloned() {
             let Some(e) = self.content.props.entry(&s.prop) else { continue };
             out.push(Want { key: s.key, file: e.space.asset(&s.sound.file), pos: Some(s.pos), volume: s.sound.volume as f32, range: s.sound.range as f32 });
         }

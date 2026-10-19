@@ -11,7 +11,7 @@
 //! terrain borders running across.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::hash::{DefaultHasher, Hash, Hasher};
+use std::hash::{Hash, Hasher};
 
 use content::{Building, Content, CHUNK};
 use glam::{Mat4, Vec3};
@@ -130,12 +130,57 @@ fn squares_of(map: &WorldMap) -> Vec<(i32, i32)> {
 /// Each prop record's digest, its model's generation in it: a square whose props, trees or
 /// buildings use one that changed (made toon, given another model, its model's file come or
 /// read again) is built again.
+/// A quick hasher for the squares' digests, which read every cell of the map: SipHash's care
+/// (against keys picked to collide) isn't needed here. FxHash's mix.
+#[derive(Default)]
+struct Quick(u64);
+
+impl Quick {
+    fn mix(&mut self, v: u64) {
+        self.0 = (self.0.rotate_left(5) ^ v).wrapping_mul(0x517c_c1b7_2722_0a95);
+    }
+}
+
+impl Hasher for Quick {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for chunk in bytes.chunks(8) {
+            let mut b = [0u8; 8];
+            b[..chunk.len()].copy_from_slice(chunk);
+            self.mix(u64::from_le_bytes(b));
+        }
+    }
+
+    fn write_u8(&mut self, n: u8) {
+        self.mix(n as u64);
+    }
+
+    fn write_u16(&mut self, n: u16) {
+        self.mix(n as u64);
+    }
+
+    fn write_u32(&mut self, n: u32) {
+        self.mix(n as u64);
+    }
+
+    fn write_u64(&mut self, n: u64) {
+        self.mix(n);
+    }
+
+    fn write_usize(&mut self, n: usize) {
+        self.mix(n as u64);
+    }
+}
+
 fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> HashMap<&'a str, u64> {
     content
         .props
         .iter()
         .map(|p| {
-            let mut h = DefaultHasher::new();
+            let mut h = Quick::default();
             format!("{p:?}").hash(&mut h);
             versions.get(&p.id).hash(&mut h);
             (p.id.as_str(), h.finish())
@@ -204,7 +249,7 @@ impl Feed<'_> {
             .into_iter()
             .map(|s| {
                 let r = region(s);
-                let mut h = DefaultHasher::new();
+                let mut h = Quick::default();
                 for z in r[1] - 2..(r[3] + 2).min(m.height as i32 + 2) {
                     for x in r[0] - 2..(r[2] + 2).min(m.width as i32 + 2) {
                         match m.index(x, z) {
@@ -225,7 +270,7 @@ impl Feed<'_> {
     /// The props and the actors standing on each square (on a ramp's slope: the ramps there
     /// too).
     fn prop_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
-        let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
+        let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
         for p in &self.map.props {
             let h = by.entry(square(p.at[0].floor() as i32, p.at[1].floor() as i32)).or_default();
             p.prop.hash(h);
@@ -248,7 +293,7 @@ impl Feed<'_> {
     }
 
     fn tree_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
-        let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
+        let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
         for t in &self.gpu.trees {
             let h = by.entry(square(t.pos[0].floor() as i32, t.pos[2].floor() as i32)).or_default();
             t.prop.hash(h);
@@ -261,7 +306,7 @@ impl Feed<'_> {
     /// The buildings by the square of their corner, with how each is shown: cut above the
     /// walker's floor, left out while it's edited (the draft takes its place).
     fn building_digests(&self, records: &HashMap<&str, u64>) -> BTreeMap<(i32, i32), u64> {
-        let mut by: BTreeMap<(i32, i32), DefaultHasher> = BTreeMap::new();
+        let mut by: BTreeMap<(i32, i32), Quick> = BTreeMap::new();
         for (i, b) in self.map.buildings.iter().enumerate() {
             let h = by.entry(square(b.at[0], b.at[1])).or_default();
             if Some(i) == self.editing {
@@ -342,6 +387,14 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
     // the ground's texture and palette: a new map, a resized one, one terrain more; the
     // cells again when painted, or when the maps around it changed (the ring)
     let edges = f.gpu.around != f.around_version;
+    // what each step of a change costs (the `streamcost` hook: how big maps hold up)
+    let mut costs: Vec<(&str, f64)> = vec![];
+    let mut tick = crate::platform::now_ms();
+    let mut cost = |what: &'static str, costs: &mut Vec<(&str, f64)>| {
+        let now = crate::platform::now_ms();
+        costs.push((what, now - tick));
+        tick = now;
+    };
     let key = (f.id.to_string(), w, h, f.map.terrains.clone());
     if f.gpu.ground.as_ref() != Some(&key) {
         let (palette, palette_width) = mesh::palette(f.content);
@@ -359,29 +412,39 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
     } else if need.cells || edges {
         let mut cells = mesh::cells_texture(f.map, f.content, f.beyond);
         mark_focus(f.map, &mut cells, f.focus);
+        cost("cells", &mut costs);
         r.set_world_cells(&rs.queue, f.id, &cells);
+        cost("upload", &mut costs);
     }
     f.gpu.around = f.around_version;
     // what changed, square by square
     if need.ground || edges {
         let d = f.ground_digests();
         f.refresh("ground", d);
+        cost("ground", &mut costs);
     }
     if need.props || need.trees || need.buildings {
         let records = record_digests(f.content, f.model_versions);
         if need.trees {
-            f.gpu.trees = trees(f.map, f.level_height);
+            f.gpu.trees = trees(f.map, f.content, f.level_height);
+            cost("trees", &mut costs);
             let d = f.tree_digests(&records);
             f.refresh("trees", d);
+            cost("treedigests", &mut costs);
         }
         if need.props {
             let d = f.prop_digests(&records);
             f.refresh("props", d);
+            cost("props", &mut costs);
         }
         if need.buildings {
             let d = f.building_digests(&records);
             f.refresh("buildings", d);
+            cost("buildings", &mut costs);
         }
+    }
+    if costs.iter().any(|c| c.1 > 1.0) {
+        crate::platform::set_hook("streamcost", &costs.iter().map(|(w, t)| format!("{w} {t:.1}")).collect::<Vec<_>>().join(", "));
     }
     let (wanted, keep) = f.wanted();
     let near: BTreeSet<(i32, i32)> = wanted.iter().copied().collect();
@@ -456,6 +519,15 @@ impl MapEditor {
         // the open map
         let need = Needs { ground: self.need_ground, cells: self.need_cells, props: self.need_props, trees: self.need_trees, buildings: self.need_buildings };
         (self.need_ground, self.need_cells, self.need_props, self.need_trees, self.need_buildings) = (false, false, false, false, false);
+        // the props' and buildings' lights and sounds again, when they (or the ground under
+        // them) changed
+        if need.props || need.buildings || need.ground {
+            self.placed_lights = None;
+            self.placed_sounds = None;
+        }
+        if self.placed_sounds.is_none() {
+            self.placed_sounds = Some(world::sounds::sounds(&self.map, &self.content, self.level_height));
+        }
         if need.ground || need.cells {
             // its edge, as the maps around see it
             self.note_edge();

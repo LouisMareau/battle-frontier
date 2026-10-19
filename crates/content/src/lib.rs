@@ -672,6 +672,12 @@ impl Content {
                 }
             }
         };
+        if m.width > MAP_MAX || m.height > MAP_MAX || m.width == 0 || m.height == 0 {
+            out.push(format!("{at}: {} x {} cells: 1 to {MAP_MAX} a side", m.width, m.height));
+        }
+        if !m.chunked() && (m.width > ROWS_MAX || m.height > ROWS_MAX) {
+            out.push(format!("{at}: {} x {} cells in rows: past {ROWS_MAX} a side, a map keeps its cells in chunk files (\"chunk\": {CHUNK}; `content chunk {}`)", m.width, m.height, m.id));
+        }
         if m.chunked() {
             // the cells are in chunk files (checked from disk: `disk::check_chunks`)
             if !(8..=512).contains(&m.chunk) {

@@ -1344,6 +1344,12 @@ impl Default for Ambience {
 /// Chunk files: how many cells a side.
 pub const CHUNK: u16 = 64;
 
+/// How many cells a side a map can be at most (a few kilometres: a cell is about a metre).
+pub const MAP_MAX: u16 = 2048;
+/// Past this many cells a side, a map keeps its cells in chunk files (rows of characters
+/// that long are no use to read or to merge).
+pub const ROWS_MAX: u16 = 256;
+
 /// One square of a chunked map's cells (`data/maps/<map>/<cx>_<cz>.json`): rows of
 /// numbers, north first, as many as the square has within the map. `terrain` indexes the
 /// map's `terrains`; `areas` and `zones` are 0 for none, else 1 + the index in the map's

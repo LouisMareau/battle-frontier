@@ -50,6 +50,9 @@ struct Globals {
     wind: vec4<f32>,
     wind_b: vec4<f32>,
     wind_c: vec4<f32>,
+    // what's kept in sight through the trees and props in front of it (the walker): xyz where,
+    // w the see-through cone's radius there (cells; 0: none)
+    see_through: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -288,27 +291,76 @@ fn light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>, toon: f32) -
     return sunlit(normal, light_pos, world);
 }
 
-@fragment
-fn fs_map(i: MapOut) -> Solid {
-    let c = textureSample(tex, samp, i.uv) * i.color;
-    if (c.a < 0.5) {
-        discard;
-    }
+// a point of the map lit, its colour `c` (its texture's times its vertex's)
+fn shade_map(i: MapOut, c: vec4<f32>) -> Solid {
     var o: Solid;
     o.color = vec4<f32>(fog(focus_dim(c.rgb * (1.0 - place.grid.z) * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, i.toon);
     return o;
 }
 
+@fragment
+fn fs_map(i: MapOut) -> Solid {
+    let c = textureSample(tex, samp, i.uv) * i.color;
+    if (c.a < 0.5) {
+        discard;
+    }
+    return shade_map(i, c);
+}
+
 // the same without cut-outs (vertex colours on white): with no discard, the GPU can skip
 // what's hidden before shading it
 @fragment
 fn fs_map_opaque(i: MapOut) -> Solid {
+    return shade_map(i, textureSample(tex, samp, i.uv) * i.color);
+}
+
+// the 4 x 4 ordered dither's step at a pixel, 0 to 1 (Bayer's matrix, from its bits)
+fn dither(frag: vec2<f32>) -> f32 {
+    let x = u32(frag.x) & 3u;
+    let y = u32(frag.y) & 3u;
+    let v = x ^ y;
+    let b = ((v & 1u) << 3u) | ((y & 1u) << 2u) | (v & 2u) | ((y & 2u) >> 1u);
+    return (f32(b) + 0.5) / 16.0;
+}
+
+// whether a point of what stands in front of the walker goes, so they stay in sight: in a
+// cone from the eye to them (`see_through.w` wide round them), more of it gone the nearer the
+// cone's middle, dithered, never quite all; nothing past them, nor right in front of them
+fn seen_through(world: vec3<f32>, frag: vec2<f32>) -> bool {
+    let r = g.see_through.w;
+    if (r <= 0.0) {
+        return false;
+    }
+    let eye = g.camera.xyz;
+    let axis = g.see_through.xyz - eye;
+    let t = dot(world - eye, axis) / max(dot(axis, axis), 0.0001);
+    if (t <= 0.0 || t >= 0.96) {
+        return false;
+    }
+    let reach = r * t;
+    let k = 1.0 - smoothstep(reach * 0.5, reach, distance(world, eye + axis * t));
+    return k * 0.85 > dither(frag);
+}
+
+// trees and props, with the walker kept in sight through them
+@fragment
+fn fs_map_through(i: MapOut) -> Solid {
     let c = textureSample(tex, samp, i.uv) * i.color;
-    var o: Solid;
-    o.color = vec4<f32>(fog(focus_dim(c.rgb * (1.0 - place.grid.z) * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
-    o.look = look(i.world, i.normal, i.toon);
-    return o;
+    if (c.a < 0.5 || seen_through(i.world, i.clip.xy)) {
+        discard;
+    }
+    return shade_map(i, c);
+}
+
+@fragment
+fn fs_map_opaque_through(i: MapOut) -> Solid {
+    // (sampled first: a texture is read in uniform control flow)
+    let c = textureSample(tex, samp, i.uv) * i.color;
+    if (seen_through(i.world, i.clip.xy)) {
+        discard;
+    }
+    return shade_map(i, c);
 }
 
 // a fading mesh: its depth alone first (its nearest surfaces, so each pixel blends once)

@@ -243,9 +243,10 @@ try {
     const p = await browser.pixels();
     await sleep(900);
     const q = await browser.pixels();
-    await cmd('view:18,6,10,0,40');
+    // (the round tree, real size: its crown, 7 cells up, the camera back far enough to see it)
+    await cmd('view:18,6,26,0,40');
     await sleep(1500);
-    const t = await screen(18.5, 4.5);
+    const t = await screen(18.5, 4.5, 7);
     const s = await browser.pixels();
     await sleep(900);
     const u = await browser.pixels();

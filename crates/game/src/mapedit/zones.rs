@@ -360,8 +360,9 @@ impl MapEditor {
         let rect = |x: f32, y: f32, z: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: 1.0, depth: 1.0 }, center: Vec3::new(x, y, z), color, additive: false };
         let in_tool = self.tool == super::Tool::Zones;
         if in_tool || self.debug {
-            for z in 0..self.map.height as i32 {
-                for x in 0..self.map.width as i32 {
+            let [x0, z0, x1, z1] = self.near_box();
+            for z in z0..z1 {
+                for x in x0..x1 {
                     let i = self.map.index(x, z).unwrap();
                     let y = self.map.level[i] as f32 * lh + 0.06;
                     let zi = self.map.zone[i];

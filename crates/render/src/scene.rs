@@ -205,6 +205,9 @@ struct Globals {
     wind: [f32; 4],
     wind_b: [f32; 4],
     wind_c: [f32; 4],
+    /// what's kept in sight through the trees and props in front of it: xyz where, w the
+    /// see-through cone's radius there (0: none)
+    see_through: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -408,6 +411,9 @@ pub struct Frame {
     pub frost: bool,
     /// the wind: what's painted for it sways, the water ripples and rolls, the clouds drift
     pub wind: Wind,
+    /// what's kept in sight through the trees and props in front of it (the walker): where,
+    /// and how wide the see-through cone is round it (cells); none: nothing is
+    pub see_through: Option<(Vec3, f32)>,
 }
 
 /// The wind as the frame has it: the way it blows on the ground (x, z, a unit long), how
@@ -616,6 +622,9 @@ struct WorldGpu {
     /// water (the palette's columns: 0 none, 1 inland, 2 oceanic)
     shore: wgpu::Texture,
     water: Vec<u8>,
+    /// the cells the shore's field was last worked out from (`shore::shore_window` finds what
+    /// changed)
+    shore_cells: Vec<u8>,
     size: [u32; 2],
     bind: wgpu::BindGroup,
     level_height: f32,
@@ -721,6 +730,9 @@ pub struct SceneRenderer {
     stats: DrawStats,
     map_pipeline: wgpu::RenderPipeline,
     opaque_pipeline: wgpu::RenderPipeline,
+    /// the same for trees and props, with the walker kept in sight through them
+    through_pipeline: wgpu::RenderPipeline,
+    opaque_through_pipeline: wgpu::RenderPipeline,
     map_shadow_pipeline: wgpu::RenderPipeline,
     sprite_pipeline: wgpu::RenderPipeline,
     sprite_shadow_pipeline: wgpu::RenderPipeline,
@@ -1041,6 +1053,8 @@ impl SceneRenderer {
         let alpha = Some(wgpu::BlendState::ALPHA_BLENDING);
         let map_pipeline = pipeline("map", &main_layout, "vs_map", "fs_map", &map_buffers, solid(true), Some(depth(true)));
         let opaque_pipeline = pipeline("opaque", &main_layout, "vs_map", "fs_map_opaque", &map_buffers, solid(true), Some(depth(true)));
+        let through_pipeline = pipeline("see-through", &main_layout, "vs_map", "fs_map_through", &map_buffers, solid(true), Some(depth(true)));
+        let opaque_through_pipeline = pipeline("opaque see-through", &main_layout, "vs_map", "fs_map_opaque_through", &map_buffers, solid(true), Some(depth(true)));
         let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, vec![], Some(shadow_depth.clone()));
         let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
         let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
@@ -1064,7 +1078,7 @@ impl SceneRenderer {
             globals, globals_layout, globals_bind, places, places_cap, texture_layout, post_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
             nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
-            map_pipeline, opaque_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
+            map_pipeline, opaque_pipeline, through_pipeline, opaque_through_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
             frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0, wind_clock: WindClock::default(),
             ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![],
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
@@ -1437,13 +1451,13 @@ impl SceneRenderer {
             Some(w) => (BTreeMap::new(), BTreeMap::new(), w.place),
             None => (BTreeMap::new(), BTreeMap::new(), Place::default()),
         };
-        self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, shore, water, size: g.size, bind, level_height: g.level_height, place });
+        self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, shore, water, shore_cells: g.cells.to_vec(), size: g.size, bind, level_height: g.level_height, place });
     }
 
-    /// Repaints a world map's cells only (the same size): what painting terrain changes (the
-    /// shore's field with them).
+    /// Repaints a world map's cells only (the same size): what painting terrain changes; the
+    /// shore's field with them round where the water or the levels changed.
     pub fn set_world_cells(&mut self, queue: &wgpu::Queue, map: &str, cells: &[u8]) {
-        let Some(w) = self.worlds.get(map) else { return };
+        let Some(w) = self.worlds.get_mut(map) else { return };
         if cells.len() as u32 != w.size[0] * w.size[1] * 4 {
             return;
         }
@@ -1453,8 +1467,17 @@ impl SceneRenderer {
             wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(w.size[0] * 4), rows_per_image: Some(w.size[1]) },
             wgpu::Extent3d { width: w.size[0], height: w.size[1], depth_or_array_layers: 1 },
         );
-        let shore = Self::shore_of(cells, w.size, &w.water);
-        Self::write_field(queue, &w.shore, &shore, w.size);
+        if let Some((r, texels)) = crate::shore::shore_window(&w.shore_cells, cells, w.size[0] as usize, w.size[1] as usize, &w.water) {
+            let (width, height) = ((r[2] - r[0]) as u32, (r[3] - r[1]) as u32);
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &w.shore, mip_level: 0, origin: wgpu::Origin3d { x: r[0] as u32, y: r[1] as u32, z: 0 }, aspect: wgpu::TextureAspect::All },
+                bytemuck::cast_slice(&texels),
+                wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(width * 16), rows_per_image: Some(height) },
+                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            );
+        }
+        w.shore_cells.clear();
+        w.shore_cells.extend_from_slice(cells);
     }
 
     /// Where a world map sits in the scene (after `set_world_ground`).
@@ -1638,6 +1661,7 @@ impl SceneRenderer {
             },
             wind_b: [clock.gusts.x, clock.gusts.y, clock.sway as f32, clock.flutter as f32],
             wind_c: [clock.ripple as f32, clock.lap as f32, 0.0, 0.0],
+            see_through: frame.see_through.map_or([0.0; 4], |(p, r)| [p.x, p.y, p.z, r.max(0.0)]),
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -1882,32 +1906,41 @@ impl SceneRenderer {
         }
         if !self.worlds.is_empty() || !self.extra.is_empty() {
             // what's in sight, nearest first: what's behind is then hidden before it's shaded
-            let mut seen: Vec<(f32, u32, &str, &GpuMesh)> = vec![];
+            let mut seen: Vec<(f32, u32, &str, &GpuMesh, bool)> = vec![];
+            let through = frame.see_through.is_some();
             let items = self
                 .worlds
                 .values()
                 .enumerate()
                 .flat_map(|(k, w)| {
                     let (at, off) = (slot(k), w.place.offset);
-                    w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(|(_, l)| l.values()).flatten().map(move |(key, m)| (at, off, key.as_str(), m))
+                    w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(move |(name, l)| {
+                        let clear = through && matches!(name.as_str(), "trees" | "props");
+                        l.values().flatten().map(move |(key, m)| (at, off, key.as_str(), m, clear))
+                    })
                 })
-                .chain(self.extra.iter().map(|(key, m)| (0u32, Vec3::ZERO, key.as_str(), m)));
-            for (at, off, key, m) in items {
+                .chain(self.extra.iter().map(|(key, m)| (0u32, Vec3::ZERO, key.as_str(), m, false)));
+            for (at, off, key, m, clear) in items {
                 if eye.sees(m.lo + off, m.hi + off) {
-                    seen.push((((m.lo + m.hi) * 0.5 + off).distance_squared(frame.camera_pos), at, key, m));
+                    seen.push((((m.lo + m.hi) * 0.5 + off).distance_squared(frame.camera_pos), at, key, m, clear));
                 } else {
                     stats.culled += 1;
                 }
             }
             seen.sort_by(|a, b| a.0.total_cmp(&b.0));
             let mut bound: Option<&str> = None;
-            let mut cutout: Option<bool> = None;
+            let mut cutout: Option<(bool, bool)> = None;
             let mut placed: Option<u32> = None;
-            for (_, at, key, m) in seen {
+            for (_, at, key, m, clear) in seen {
                 let cuts = key != WHITE;
-                if cutout != Some(cuts) {
-                    pass.set_pipeline(if cuts { &self.map_pipeline } else { &self.opaque_pipeline });
-                    cutout = Some(cuts);
+                if cutout != Some((cuts, clear)) {
+                    pass.set_pipeline(match (cuts, clear) {
+                        (true, false) => &self.map_pipeline,
+                        (false, false) => &self.opaque_pipeline,
+                        (true, true) => &self.through_pipeline,
+                        (false, true) => &self.opaque_through_pipeline,
+                    });
+                    cutout = Some((cuts, clear));
                 }
                 if placed != Some(at) {
                     pass.set_bind_group(0, &self.globals_bind, &[at]);
@@ -2199,6 +2232,7 @@ mod tests {
             retro: Retro::default(),
             frost: false,
             wind: Wind { way: Vec2::new(1.0, 0.0), strength: 0.6, gusts: 0.5 },
+            see_through: None,
         }
     }
 

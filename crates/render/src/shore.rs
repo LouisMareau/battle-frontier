@@ -114,6 +114,50 @@ pub fn shore_texels(cells: &[u8], width: usize, height: usize, kinds: &[u8]) -> 
         .collect()
 }
 
+/// How far round a change in the cells the field can change: as far as it reaches, and the
+/// way's smoothing and the land's look round for its water.
+const WINDOW: usize = SHORE_FAR as usize + 6;
+
+/// What changed in a world map's shore field from one of its cells' textures to the next
+/// (`old`, `new`; as `shore_texels` has them): the rectangle round the cells whose water or
+/// level changed, as far as the field can change round them (x0, z0, x1, z1, out), and the
+/// field's texels there, worked out from the cells round it as far again (as the whole map's
+/// would be). None when nothing the field is made from changed; the whole map when `old`
+/// isn't the same size.
+pub fn shore_window(old: &[u8], new: &[u8], width: usize, height: usize, kinds: &[u8]) -> Option<([usize; 4], Vec<[f32; 4]>)> {
+    if old.len() != new.len() || new.len() != width * height * 4 {
+        return Some(([0, 0, width, height], shore_texels(new, width, height, kinds)));
+    }
+    let wet = |c: &[u8]| kinds.get(c[0] as usize).is_some_and(|&k| k > 0);
+    let mut changed: Option<[usize; 4]> = None;
+    for (i, (a, b)) in old.as_chunks::<4>().0.iter().zip(new.as_chunks::<4>().0).enumerate() {
+        let (wa, wb) = (wet(a), wet(b));
+        if wa != wb || a[1] != b[1] || (wb && a[0] != b[0]) {
+            let (x, z) = (i % width, i / width);
+            changed = Some(match changed {
+                None => [x, z, x + 1, z + 1],
+                Some(r) => [r[0].min(x), r[1].min(z), r[2].max(x + 1), r[3].max(z + 1)],
+            });
+        }
+    }
+    let grow = |r: [usize; 4], by: usize| [r[0].saturating_sub(by), r[1].saturating_sub(by), (r[2] + by).min(width), (r[3] + by).min(height)];
+    let write = grow(changed?, WINDOW);
+    let read = grow(write, SHORE_FAR as usize + 8);
+    let (rw, rh) = (read[2] - read[0], read[3] - read[1]);
+    let mut cells = Vec::with_capacity(rw * rh * 4);
+    for z in read[1]..read[3] {
+        cells.extend_from_slice(&new[(z * width + read[0]) * 4..(z * width + read[2]) * 4]);
+    }
+    let field = shore_texels(&cells, rw, rh, kinds);
+    let ww = write[2] - write[0];
+    let mut out = Vec::with_capacity(ww * (write[3] - write[1]));
+    for z in write[1]..write[3] {
+        let row = (z - read[1]) * rw + (write[0] - read[0]);
+        out.extend_from_slice(&field[row..row + ww]);
+    }
+    Some((write, out))
+}
+
 /// Every cell's squared distance (in cells) to the nearest cell where `on` is, exactly: the
 /// distance transform done along the rows, then down the columns (Felzenszwalb and
 /// Huttenlocher's lower envelope of parabolas).
@@ -264,6 +308,44 @@ mod tests {
         assert_eq!((water(2), water(3)), (2.0, 2.0), "the beach next to it knows it");
         assert_eq!(water(4), 0.0, "a step up: not on its level");
         assert_eq!(water(6), 0.0, "too far off");
+    }
+
+    /// A change worked out round it alone comes out as the whole map's would, and the field
+    /// past the window doesn't change.
+    #[test]
+    fn a_change_is_worked_out_round_it_as_the_whole_map_would_be() {
+        let (w, h) = (230, 170);
+        // a lake, a river and a step up (level 1) east of x 150; a pond dug in the middle later
+        let lake = |x: usize, z: usize| ((x as f32 - 60.0).powi(2) + (z as f32 - 50.0).powi(2)).sqrt() < 25.0 || (x > 100 && x < 106);
+        let terrain: Vec<u8> = (0..w * h).map(|i| lake(i % w, i / w) as u8).collect();
+        let level: Vec<u8> = (0..w * h).map(|i| (i % w > 150) as u8).collect();
+        let old = cells_of(&terrain, &level);
+        let mut dug = terrain.clone();
+        for z in 120..124 {
+            for x in 40..47 {
+                dug[z * w + x] = 1;
+            }
+        }
+        let new = cells_of(&dug, &level);
+        let kinds = [0, 1];
+        let (r, texels) = shore_window(&old, &new, w, h, &kinds).expect("a change");
+        assert_eq!(r, [40usize.saturating_sub(WINDOW), 120 - WINDOW, (47 + WINDOW).min(w), (124 + WINDOW).min(h)]);
+        let (whole, before) = (shore_texels(&new, w, h, &kinds), shore_texels(&old, w, h, &kinds));
+        for z in 0..h {
+            for x in 0..w {
+                let i = z * w + x;
+                if x >= r[0] && x < r[2] && z >= r[1] && z < r[3] {
+                    let t = texels[(z - r[1]) * (r[2] - r[0]) + x - r[0]];
+                    assert!(t.iter().zip(whole[i]).all(|(a, b)| (a - b).abs() < 1e-4), "{x},{z}: {t:?} for {:?}", whole[i]);
+                } else {
+                    assert_eq!(whole[i], before[i], "{x},{z} changed past the window");
+                }
+            }
+        }
+        // grass painted on grass far from water: nothing
+        let mut grass = new.clone();
+        grass[(10 * w + 200) * 4] = 0;
+        assert!(shore_window(&new, &grass, w, h, &kinds).is_none());
     }
 
     #[test]

@@ -6,6 +6,7 @@
 // could do, not the screen's rate: 120 means room for a 120 Hz screen.
 //
 //     trunk build --release && node tools/perf.mjs [map=test_meadow] [tile=1] [seconds=4] [size=1400x900] [only=NAME]
+// The editing scene places props, then paints strokes (terrain, water, a level, a wood) and undoes.
 // tile=N plays a map made of N x N copies of `map` (props, buildings and all), to see how
 // the drawing holds up on big maps; it's added to the served bundle, nothing is written. shot=1
 // also saves the whole-map view to screenshots/perf-whole-map[-xN].png; creatures=0 keeps the
@@ -163,6 +164,51 @@ try {
     edits.push(row);
     console.log(JSON.stringify(row));
     await browser.key('z', { ctrl: true });
+    // strokes over eight cells (terrain, water, a level up, a wood's cells) and an undo: the
+    // worst frame of each (the worst gap, read while it goes on and a second after), and what
+    // the costliest frame spent its time on (the `streamcost` hook)
+    const point = async (x, y, z) => {
+      await cmd(`point:${x},${y},${z}`);
+      await sleep(150);
+      return (await data('point')).split(',').map(Number);
+    };
+    const across = async (y, dz = 0) => {
+      const pts = [];
+      for (let k = 0; k < 8; k++) pts.push(await point(cx - 4 + k, y, cz + dz));
+      return pts;
+    };
+    const worst = async (scene, act) => {
+      await sleep(1200);
+      let gap = 0;
+      const watch = setInterval(async () => {
+        gap = Math.max(gap, Number(await data('maxgap')));
+      }, 100);
+      await act();
+      await sleep(1300);
+      clearInterval(watch);
+      const row = { scene, worstGapMs: gap, costs: await data('streamcost') };
+      edits.push(row);
+      console.log(JSON.stringify(row));
+    };
+    await browser.key('2');
+    await sleep(300);
+    const paint = async (terrain, y) => {
+      await press(`uiTerrain_${terrain}`);
+      await sleep(300);
+      await browser.drag(await across(y));
+    };
+    await worst('editing: a stroke of terrain', () => paint('dirt', 0));
+    await worst('editing: a stroke of water', () => paint('water', 0));
+    await worst('editing: an undo', async () => {
+      await browser.click(700, 889);
+      await browser.key('z', { ctrl: true });
+    });
+    await browser.key('PageUp');
+    await worst('editing: a stroke a level up', () => paint('grass', 2));
+    await browser.key('PageDown');
+    await browser.key('4');
+    await sleep(300);
+    await worst("editing: a stroke of a wood's cells", async () => browser.drag(await across(0, 3)));
     await browser.key('1');
   }
   await cmd(`view:${cx},${cz},22,30,45`); // walking: the camera close, as when playing

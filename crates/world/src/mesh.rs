@@ -962,7 +962,7 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
 
 /// The tree areas' trees.
 pub fn tree_mesh(map: &WorldMap, content: &Content, level_height: f32, models: &Models) -> Scene {
-    trees_from(&trees(map, level_height), content, models, whole(map))
+    trees_from(&trees(map, content, level_height), content, models, whole(map))
 }
 
 /// The trees (placed by `trees::trees`) whose foot stands in a region.
@@ -995,6 +995,13 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
     }
     let level = |x: i32, z: i32| map.level_at(x.min(w - 1), z.min(h - 1)).unwrap_or(0) as f32 * level_height;
     let canopy = color("#2d6a38");
+    // the woods' canopy: about two thirds of the way up their tallest trees
+    let crowns = map
+        .tree_areas
+        .iter()
+        .flat_map(|a| a.trees.iter().filter_map(|id| content.props.get(id)).map(move |p| p.height * (a.height[0] + a.height[1]) / 2.0))
+        .fold(0.0f64, f64::max);
+    let above = if crowns > 0.0 { crowns as f32 * 0.65 } else { 1.7 };
     let mut z = z0;
     while z < z1 {
         let zb = (z + FAR_STEP).min(z1);
@@ -1017,7 +1024,7 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
                 }
             }
             if n > 0 && forest * 2 >= n {
-                let y = sum / n as f32 * level_height + 1.7;
+                let y = sum / n as f32 * level_height + above;
                 plain.quad([Vec3::new(x as f32, y, z as f32), Vec3::new(x as f32, y, zb as f32), Vec3::new(xb as f32, y, zb as f32), Vec3::new(xb as f32, y, z as f32)], canopy);
             }
             x = xb;

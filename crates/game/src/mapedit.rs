@@ -68,9 +68,18 @@ pub const SAVE_NAME: &str = "story";
 
 use crate::stage::lighting_at;
 
-/// The overworld camera's usual distance from the walker (the wheel takes it from 6 to 40): the
-/// pixelation's pixels are as dense as the Options say there, bigger closer, smaller further.
-const PLAY_DISTANCE: f32 = 16.0;
+/// The overworld camera's usual distance from the walker (the wheel takes it from 10 to 60),
+/// and how far it looks down (degrees): back and high enough to see over real-size trees.
+const PLAY_DISTANCE: f32 = 28.0;
+const PLAY_PITCH: f32 = 58.0;
+/// At this distance the pixelation's pixels are as dense as the Options say, bigger closer,
+/// smaller further (so they stay the same size on the world's things).
+const PIXEL_DISTANCE: f32 = 16.0;
+/// How wide the see-through cone through the trees and props in front of the walker is round
+/// them, in cells.
+const SEE_THROUGH: f32 = 4.0;
+/// How many cells' worth of the map the undo steps may hold in all (each step is a copy).
+const UNDO_CELLS: usize = 40_000_000;
 
 const TEMP: Color32 = Color32::from_rgb(240, 170, 60);
 const OWN: Color32 = Color32::from_rgb(110, 210, 130);
@@ -207,6 +216,10 @@ pub struct MapEditor {
     need_buildings: bool,
     /// the open map on the GPU, square by square
     gpu: stream::GpuState,
+    /// the lights and the sounds of the map's props and buildings, kept until they change
+    /// (a big map has thousands)
+    placed_lights: Option<Vec<world::lights::PlacedLight>>,
+    placed_sounds: Option<Vec<world::sounds::PlacedSound>>,
     /// the maps around it in its world, drawn where they lie
     around: around::Around,
     /// the rigged models' moving parts on the GPU: whether they were sent toon
@@ -444,6 +457,8 @@ impl MapEditor {
             need_trees: true,
             need_buildings: true,
             gpu: Default::default(),
+            placed_lights: None,
+            placed_sounds: None,
             around: Default::default(),
             skinned_sent: Default::default(),
             loading: None,
@@ -566,7 +581,7 @@ impl MapEditor {
     /// The overworld's view: close, over the walker's shoulder.
     fn play_camera(&mut self) {
         self.cam.distance = PLAY_DISTANCE;
-        self.cam.pitch = 50.0;
+        self.cam.pitch = PLAY_PITCH;
         self.cam.yaw = 0.0;
         if let Some(w) = &self.walker {
             self.cam.target = w.pos(self.now);
@@ -790,7 +805,10 @@ impl MapEditor {
     /// Before a change: what Ctrl+Z goes back to.
     fn checkpoint(&mut self) {
         self.undo.push(self.map.clone());
-        if self.undo.len() > 80 {
+        // as many steps back as fit in about 40 million cells' worth (80 at most): a map
+        // 2048 a side keeps 9 of them
+        let keep = (UNDO_CELLS / (self.map.width * self.map.height).max(1)).clamp(4, 80);
+        while self.undo.len() > keep {
             self.undo.remove(0);
         }
         self.redo.clear();
@@ -1233,7 +1251,7 @@ impl MapEditor {
     fn play_input(&mut self, ui: &egui::Ui, response: &egui::Response) {
         let (scroll, delta) = ui.input(|i| (i.smooth_scroll_delta.y, i.pointer.delta()));
         if response.hovered() && scroll != 0.0 {
-            self.cam.distance = (self.cam.distance * (-scroll * 0.0015).exp()).clamp(6.0, 40.0);
+            self.cam.distance = (self.cam.distance * (-scroll * 0.0015).exp()).clamp(10.0, 60.0);
         }
         if response.dragged_by(PointerButton::Middle) {
             self.cam.yaw = (self.cam.yaw - delta.x * 0.3).rem_euclid(360.0);
@@ -1605,16 +1623,21 @@ impl MapEditor {
             });
             ui.horizontal(|ui| {
                 ui.label("Size");
-                ui.add(egui::DragValue::new(&mut nm.width).range(4..=256));
+                ui.add(egui::DragValue::new(&mut nm.width).range(4..=content::MAP_MAX));
                 ui.label("×");
-                ui.add(egui::DragValue::new(&mut nm.height).range(4..=256));
+                ui.add(egui::DragValue::new(&mut nm.height).range(4..=content::MAP_MAX));
             });
+            // past ROWS_MAX a side, chunk files it is
+            let big = nm.width > content::ROWS_MAX || nm.height > content::ROWS_MAX;
+            nm.chunked |= big;
             egui::ComboBox::from_id_salt("new-terrain").selected_text(nm.terrain.clone()).show_ui(ui, |ui| {
                 for t in self.content.terrains.iter() {
                     ui.selectable_value(&mut nm.terrain, t.id.clone(), &t.name);
                 }
             });
-            ui.checkbox(&mut nm.chunked, "Chunk files").on_hover_text(format!("Stored as {CHUNK} x {CHUNK} squares in data/maps/<id>/, for big maps: an edit touches few files"));
+            ui.add_enabled(!big, egui::Checkbox::new(&mut nm.chunked, "Chunk files"))
+                .on_hover_text(format!("Stored as {CHUNK} x {CHUNK} squares in data/maps/<id>/, for big maps: an edit touches few files"))
+                .on_disabled_hover_text(format!("Past {} cells a side, a map is kept in chunk files", content::ROWS_MAX));
             let taken = self.content.maps.contains(&nm.id);
             if taken {
                 warn(ui, "That id is taken.");
@@ -1766,13 +1789,13 @@ impl MapEditor {
                     }
                 }
             }
-            ui.add(egui::Slider::new(&mut a.spacing, 0.6..=3.0).text("spacing").suffix(" cells"));
+            ui.add(egui::Slider::new(&mut a.spacing, 0.6..=3.0).text("spacing").suffix(" cells")).on_hover_text("The least distance between two trunks inside it; trees keep the room their crowns take too");
             let (mut lo, mut hi) = (a.height[0], a.height[1]);
             ui.add(egui::Slider::new(&mut lo, 0.5..=1.6).text("smallest"));
             ui.add(egui::Slider::new(&mut hi, 0.5..=1.6).text("tallest"));
             a.height = [lo.min(hi), hi.max(lo)];
             ui.add(egui::Slider::new(&mut a.density, 0.0..=1.0).text("density"));
-            ui.checkbox(&mut a.solid_edge, "A tree in every edge cell");
+            ui.checkbox(&mut a.solid_edge, "Trees all along the edge").on_hover_text("As close as their crowns let them, so the edge reads as a wall");
             ui.horizontal(|ui| {
                 ui.label("Seed");
                 ui.add(egui::DragValue::new(&mut a.seed));
@@ -1917,20 +1940,31 @@ impl MapEditor {
         });
         ui.horizontal(|ui| {
             ui.label("Size");
-            ui.add(egui::DragValue::new(&mut self.width_edit).range(4..=256));
+            ui.add(egui::DragValue::new(&mut self.width_edit).range(4..=content::MAP_MAX));
             ui.label("×");
-            ui.add(egui::DragValue::new(&mut self.height_edit).range(4..=256));
+            ui.add(egui::DragValue::new(&mut self.height_edit).range(4..=content::MAP_MAX));
             let same = self.width_edit as usize == self.map.width && self.height_edit as usize == self.map.height;
             if ui.add_enabled(!same, egui::Button::new("Apply").small()).on_hover_text("New cells get the terrain picked in Ground").clicked() {
                 self.checkpoint();
                 let fill = self.terrain.clone();
                 self.map.resize(self.width_edit as usize, self.height_edit as usize, &fill);
+                // past ROWS_MAX a side, chunk files it is
+                if self.map.chunk == 0 && (self.map.width > content::ROWS_MAX as usize || self.map.height > content::ROWS_MAX as usize) {
+                    self.map.chunk = CHUNK;
+                    self.status = format!("Past {} cells a side, the map is kept in chunk files now", content::ROWS_MAX);
+                }
                 self.everything_changed();
             }
         });
         section(ui, "Storage");
+        let big = self.map.width > content::ROWS_MAX as usize || self.map.height > content::ROWS_MAX as usize;
         let mut chunked = self.map.chunk > 0;
-        if ui.checkbox(&mut chunked, format!("Chunk files ({CHUNK} × {CHUNK})")).on_hover_text("The cells in data/maps/<id>/<x>_<z>.json squares, with numbers for levels and no limit on terrains: an edit touches few files. Off: rows of characters in the record.").changed() {
+        if ui
+            .add_enabled(!big || !chunked, egui::Checkbox::new(&mut chunked, format!("Chunk files ({CHUNK} × {CHUNK})")))
+            .on_hover_text("The cells in data/maps/<id>/<x>_<z>.json squares, with numbers for levels and no limit on terrains: an edit touches few files. Off: rows of characters in the record.")
+            .on_disabled_hover_text(format!("Past {} cells a side, a map is kept in chunk files", content::ROWS_MAX))
+            .changed()
+        {
             self.map.chunk = if chunked { CHUNK } else { 0 };
             self.dirty = true;
         }
@@ -2322,7 +2356,15 @@ impl MapEditor {
         // first; each glows where it sits
         let on = if self.lamps { 1.0 } else { crate::stage::lamps_at(self.hours) };
         let mut glows = vec![];
-        let mut all = world::lights::lights(&self.map, &self.content, lh);
+        // the map's own: the nearest of them (a big map has thousands)
+        let target = self.cam.target;
+        let placed = self.placed_lights.get_or_insert_with(|| world::lights::lights(&self.map, &self.content, lh));
+        let mut near: Vec<(f32, &world::lights::PlacedLight)> = placed.iter().filter(|l| !l.light.night || on > 0.0).map(|l| (l.pos.distance(target), l)).collect();
+        if near.len() > MAX_LIGHTS {
+            near.select_nth_unstable_by(MAX_LIGHTS, |a, b| a.0.total_cmp(&b.0));
+            near.truncate(MAX_LIGHTS);
+        }
+        let mut all: Vec<world::lights::PlacedLight> = near.into_iter().map(|(_, l)| l.clone()).collect();
         all.extend(self.around_lights());
         if self.creatures_on {
             all.extend(self.creature_lights());
@@ -2387,8 +2429,9 @@ impl MapEditor {
             }
         }
         if self.tool == Tool::Trees {
-            for z in 0..self.map.height as i32 {
-                for x in 0..self.map.width as i32 {
+            let [x0, z0, x1, z1] = self.near_box();
+            for z in z0..z1 {
+                for x in x0..x1 {
                     let i = self.map.index(x, z).unwrap();
                     let a = self.map.area[i];
                     if a > 0 {
@@ -2414,6 +2457,10 @@ impl MapEditor {
             let sy = rect.top() + (1.0 - y) / 2.0 * rect.height();
             crate::platform::set_hook("point", &format!("{sx:.0},{sy:.0}"));
         }
+        let see_through = self.see_through(now);
+        crate::platform::set_hook("seethrough", &see_through.map(|(p, r)| format!("{:.2},{:.2},{:.2},{r}", p.x, p.y, p.z)).unwrap_or_default());
+        let pixel_zoom = PIXEL_DISTANCE / (self.cam.distance * self.cam.zoom).max(1.0);
+        crate::platform::set_hook("pixelzoom", &format!("{pixel_zoom:.3}"));
         Frame {
             view_proj: self.view_proj,
             camera_pos: self.cam.eye(),
@@ -2431,9 +2478,24 @@ impl MapEditor {
             overlays,
             toon: crate::stage::toon_look(&self.toon_settings()),
             // the pixelation's pixels grow and shrink with the camera
-            retro: render::scene::Retro { zoom: PLAY_DISTANCE / (self.cam.distance * self.cam.zoom).max(1.0), ..self.retro },
+            retro: render::scene::Retro { zoom: pixel_zoom, ..self.retro },
             frost: self.frost,
             wind: crate::stage::wind_look(&self.wind_settings()),
+            see_through,
         }
+    }
+
+    /// The map's cells the camera can see round its target (x0, z0, x1, z1, out): what the
+    /// tools' marks over cells go over (a big map's every cell would be too many).
+    fn near_box(&self) -> [i32; 4] {
+        let reach = (self.cam.distance * self.cam.zoom * 2.0 + 24.0) as i32;
+        let (cx, cz) = (self.cam.target.x as i32, self.cam.target.z as i32);
+        [(cx - reach).max(0), (cz - reach).max(0), (cx + reach).min(self.map.width as i32), (cz + reach).min(self.map.height as i32)]
+    }
+
+    /// What the trees and props in front of it are seen through for: the walker (at their
+    /// chest), while there's one (on foot in the editor, and the overworld).
+    fn see_through(&self, now: f64) -> Option<(Vec3, f32)> {
+        self.walker.as_ref().map(|w| (w.pos(now) + Vec3::Y, SEE_THROUGH))
     }
 }

@@ -458,7 +458,7 @@ pub fn map_glb(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     }
     let props_node = glb.node("Props", None, Mat4::IDENTITY, props);
     let mut tree_nodes = vec![];
-    for (i, t) in trees(map, level_height).iter().enumerate() {
+    for (i, t) in trees(map, content, level_height).iter().enumerate() {
         let mesh = mesh_of(&mut glb, &t.prop);
         tree_nodes.push(glb.node(&format!("{} {}", t.prop, i + 1), mesh, placement(Vec3::from(t.pos), t.turn, t.scale), vec![]));
     }

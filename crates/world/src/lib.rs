@@ -303,9 +303,10 @@ impl WorldMap {
     /// water, blocking props. Cliffs are edges between cells, see `can_step`.
     pub fn blocked(&self, content: &Content) -> Vec<bool> {
         let mut out = vec![false; self.width * self.height];
+        // each of the map's terrains, walked on or not (looked up once, not for every cell)
+        let walks: Vec<bool> = self.terrains.iter().map(|id| content.terrains.get(id).map(|t| t.walk == "walk").unwrap_or(true)).collect();
         for (i, b) in out.iter_mut().enumerate() {
-            let walk = content.terrains.get(&self.terrains[self.terrain[i] as usize]).map(|t| t.walk.as_str()).unwrap_or("walk");
-            *b = self.area[i] > 0 || walk != "walk";
+            *b = self.area[i] > 0 || !walks.get(self.terrain[i] as usize).copied().unwrap_or(true);
         }
         // what stands on the ground floor of buildings, and outside them
         for b in &self.buildings {

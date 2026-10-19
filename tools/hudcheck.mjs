@@ -423,10 +423,13 @@ try {
   await press('uiOptionsDone', 800);
   await cmd('pixelation:0');
   await sleep(600);
+  // (as few as the screen's size allows, times the camera's zoom: the overworld's camera
+  // stands back, so its pixels are smaller there than at the distance they're set for)
   const fewest = Math.round(Math.sqrt((W * H) / (160 * 144)));
+  const zoom = Number(await data('pixelzoom'));
   const k = Number(await data('pixel'));
   const plain = cells(await browser.pixels(join(shots, 'hud-7-pixels.png')), k);
-  check(`  at density 0, the fewest: squares of ${k} pixels, one colour each`, k === fewest && plain.even > 0.97, `${(plain.even * 100).toFixed(1)}% (${fewest} a side)`);
+  check(`  at density 0, the fewest: squares of ${k} pixels, one colour each`, k === Math.max(1, Math.round(Math.min(Math.sqrt((W * H) / (160 * 144)) * zoom, Math.sqrt((W * H) / (160 * 144))))) && plain.even > 0.97, `${(plain.even * 100).toFixed(1)}% (${fewest} a side at zoom 1, ${zoom} here)`);
   await press('uiHudSettings', 500);
   await press('uiLcd_GBA', 800);
   check("  the GBA's LCD", (await data('retro')) === '0.00/gba', await data('retro'));
