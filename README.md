@@ -587,17 +587,6 @@ with the box ticked), kept until Save in the browser (its record and model downl
 desktop, `data/props` and `assets/models` of both spaces are watched: a record or model
 changed there (the Blender add-on's Add to project, a re-export) shows within a second.
 
-**Requests** (in the top bar; the desktop only, the browser's window says why) is where the
-pictures of a creature, a prop or a floor go for Claude to model in Blender: drop PNG, JPG or WebP files
-on the window while it's open (models dropped meanwhile still go to the asset browser, and
-pictures go to it only while it's open). The first drop starts a request named after the
-first picture; the next ones add to the selected request ("New request" starts another). A
-request has a name (its id follows it while it waits), a kind (creature, prop, or floor set:
-a set of floor tiles, each a cell, laid to fit), its height in cells (not a floor set's), a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
-it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
-to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
-100), notes, and "This design is mine or licensed" (off by default: the model of someone else's
-design goes to `temporary/`, never `content/`). A creature's **Draw the bones…** opens one of its
 **Publish** (in the top bar; the desktop only) sends what's been made to the game's repository
 as a pull request, for its maintainers to look at: only those who can write to the repository
 merge one, so nothing gets into the game unreviewed. **Sign in** comes first (Publish waits for
@@ -622,6 +611,17 @@ overrides it); until then a token pasted signs in. For merging to stay the maint
 the repository's collaborators few (a branch rule on main asking for a review stops anyone
 merging their own unreviewed).
 
+**Requests** (in the top bar; the desktop only, the browser's window says why) is where the
+pictures of a creature, a prop or a floor go for Claude to model in Blender: drop PNG, JPG or WebP files
+on the window while it's open (models dropped meanwhile still go to the asset browser, and
+pictures go to it only while it's open). The first drop starts a request named after the
+first picture; the next ones add to the selected request ("New request" starts another). A
+request has a name (its id follows it while it waits), a kind (creature, prop, or floor set:
+a set of floor tiles, each a cell, laid to fit), its height in cells (not a floor set's), a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
+it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
+to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
+100), notes, and "This design is mine or licensed" (off by default: the model of someone else's
+design goes to `temporary/`, never `content/`). A creature's **Draw the bones…** opens one of its
 pictures large to draw its bones over it, a colour per part (leg, arm, torso, head, ear, horn,
 tail, wing, and misc for a piece you name yourself): a click adds each joint, chained from the
 root out, and a right-click ends the line. Claude works out which part of the creature each
