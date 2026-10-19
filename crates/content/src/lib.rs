@@ -549,8 +549,8 @@ impl Content {
             if s.lifeforce == 0 {
                 out.push(format!("settings/{}: lifeforce 0: 1 to 255 (100: a gauge of 100)", s.id));
             }
-            if s.lifeforce_per_ko == 0 || s.lifeforce_per_ko > s.lifeforce {
-                out.push(format!("settings/{}: lifeforce_per_ko {}: 1 to the lifeforce ({})", s.id, s.lifeforce_per_ko, s.lifeforce));
+            if s.lifeforce_ko_cap == 0 || s.lifeforce_ko_cap > s.lifeforce {
+                out.push(format!("settings/{}: lifeforce_ko_cap {}: 1 to the lifeforce ({})", s.id, s.lifeforce_ko_cap, s.lifeforce));
             }
             out.extend(s.wind.problems().into_iter().map(|e| format!("settings/{}: wind: {e}", s.id)));
             let st = &s.start;

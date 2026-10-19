@@ -1552,12 +1552,13 @@ impl eframe::App for GameApp {
                         let ids = crate::team::ids(&self.party);
                         let in_battle: Vec<String> = self.fielded.iter().filter_map(|&i| ids.get(i).cloned()).collect();
                         ed.team.record(crate::team::fought(&director.battle, &in_battle));
-                        // each knocked out at the end loses lifeforce: what the world says a
-                        // knock-out costs
-                        let (max, cost) = self.content.as_ref().map(|c| c.world()).map_or((100, 25), |w| (w.lifeforce, w.lifeforce_per_ko));
-                        for (k, id) in in_battle.iter().enumerate() {
+                        // each knocked out at the end loses lifeforce: its level's worth (its own,
+                        // as its card says), up to the world's cap
+                        let (max, cap) = self.content.as_ref().map(|c| c.world()).map_or((100, 20), |w| (w.lifeforce, w.lifeforce_ko_cap));
+                        for (k, &i) in self.fielded.iter().enumerate() {
+                            let (Some(id), Some(spec)) = (ids.get(i), self.party.get(i)) else { continue };
                             if director.battle.side(Side::Player).party.get(k).is_some_and(|m| m.hp <= 0) {
-                                ed.team.knocked_out(id, max, cost);
+                                ed.team.knocked_out(id, max, crate::team::ko_cost(spec.level, cap));
                             }
                         }
                     }

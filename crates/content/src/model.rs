@@ -555,16 +555,17 @@ pub struct Settings {
     /// the wind (the Post-processing window)
     #[serde(skip_serializing_if = "is_default")]
     pub wind: Wind,
-    /// a creature's lifeforce at most, a gauge (100): a knock-out costs `lifeforce_per_ko` of
-    /// it, and with none left the creature is lost for good
+    /// a creature's lifeforce at most, a gauge (100): a knock-out costs some (its level, up
+    /// to `lifeforce_ko_cap`), and with none left the creature is lost for good
     pub lifeforce: u8,
-    /// how much lifeforce a knock-out costs (25: four take it all)
-    pub lifeforce_per_ko: u8,
+    /// the most lifeforce a knock-out costs: a creature loses its level's worth, up to this
+    /// (20: from level 20 on, 20 a knock-out)
+    pub lifeforce_ko_cap: u8,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), lifeforce: 100, lifeforce_per_ko: 25 }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), lifeforce: 100, lifeforce_ko_cap: 20 }
     }
 }
 

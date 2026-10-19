@@ -349,9 +349,9 @@ small one.
   dropdown's choices), A presses, L and R go through the sorts, B closes a dropdown, then the
   details, then the board; the info icon by Close (the cross, top right) says so.
   **Lifeforce** is a gauge, 0 to the world's top (`settings/world.json`'s `lifeforce`, 100
-  unless it says otherwise): a creature knocked out in a story's battle loses what the world
-  says a knock-out costs (`lifeforce_per_ko`, 25: four take it all); with none left it's lost
-  for good (greyed, LOST): it isn't sent into battle and can't be the main, and only a very
+  unless it says otherwise): a creature knocked out in a story's battle loses its level's
+  worth (a level 15 one, 15), up to the world's cap (`lifeforce_ko_cap`, 20: from level 20
+  on, 20 a knock-out); with none left it's lost for good (greyed, LOST): it isn't sent into battle and can't be the main, and only a very
   rare consumable (to come) could bring it back. Ways to get some back (resting at an inn)
   are to come too. With none of the team left to fight, a battle doesn't happen. The story
   keeps each one's lifeforce with the team, a plain number.

@@ -3,8 +3,8 @@
 //! There's always a main (while there's a team), and it's the one sent out first in a battle.
 //! The board of cards (View all) has them all, the main first, then as the list has them, or
 //! as the player sorts and filters them. Each has lifeforce, a gauge (the world says its top,
-//! 100, and what a knock-out costs, 25): some lost each time it's knocked out in a battle, and
-//! with none left it's lost for good: it fights no more and isn't the main.
+//! 100): each time it's knocked out in a battle it loses its level's worth (up to the world's
+//! cap, 20), and with none left it's lost for good: it fights no more and isn't the main.
 //! The story keeps who fought in each of the last battles, and the main (`SaveGame.team`).
 
 use std::collections::HashMap;
@@ -19,6 +19,12 @@ mod fixture;
 
 /// How many of the last battles count.
 pub const RECENT: usize = 10;
+/// What a knock-out costs a creature of `level`: its level's worth of lifeforce, up to `cap`
+/// (the world's: 20, so from level 20 on it's 20 a knock-out).
+pub fn ko_cost(level: u8, cap: u8) -> u8 {
+    level.min(cap)
+}
+
 /// How many creatures the Team's list shows (the board's first row is them too).
 pub const SHOWN: usize = 5;
 
@@ -318,6 +324,17 @@ mod tests {
         assert_eq!(log.lifeforce("b", 50), 0);
         let text = serde_json::to_string(&log).unwrap();
         assert_eq!(serde_json::from_str::<TeamLog>(&text).unwrap(), log, "kept with the story");
+    }
+
+    /// A knock-out costs a creature its level, up to the cap: level 15, 15; from 20 on, 20.
+    #[test]
+    fn a_knock_out_costs_the_level_up_to_the_cap() {
+        assert_eq!([1, 15, 20, 21, 35, 100].map(|lv| ko_cost(lv, 20)), [1, 15, 20, 20, 20, 20]);
+        assert_eq!(ko_cost(30, 25), 25, "the world's cap");
+        let mut log = TeamLog::default();
+        log.knocked_out("a", 100, ko_cost(15, 20));
+        log.knocked_out("a", 100, ko_cost(35, 20));
+        assert_eq!(log.lifeforce("a", 100), 65);
     }
 
     #[test]
