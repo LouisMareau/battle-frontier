@@ -67,10 +67,11 @@ pine = bpy.data.objects.get("pine_tree")
 lo, hi = bounds([pine]) if pine else (None, None)
 check("imports a stand-in from its shapes", r == {"FINISHED"} and pine is not None)
 if pine:
-    check("as tall as the prop", abs(hi.z - 3.3) < 0.05 and abs(lo.z) < 0.01, f"{lo.z:.2f} to {hi.z:.2f}")
-    check("a material per colour", len(pine.data.materials) == 4, str([m.name for m in pine.data.materials]))
+    # (real size: its top cone's tip 13.3 up; a trunk and five cones, each its own colour)
+    check("as tall as the prop", abs(hi.z - 13.3) < 0.05 and abs(lo.z) < 0.01, f"{lo.z:.2f} to {hi.z:.2f}")
+    check("a material per colour", len(pine.data.materials) == 6, str([m.name for m in pine.data.materials]))
 box = bpy.data.objects.get("pine_tree bounds")
-check("with its bounds: its cells and its height", box is not None and box.get("bf_bounds") and abs(box.dimensions.z - 3.4) < 0.01 and abs(box.dimensions.x - 1.0) < 0.01,
+check("with its bounds: its cells and its height", box is not None and box.get("bf_bounds") and abs(box.dimensions.z - 13.3) < 0.01 and abs(box.dimensions.x - 1.0) < 0.01,
       f"{box.dimensions[:] if box else None}")
 clear()
 
@@ -633,12 +634,13 @@ os.environ["BATTLE_FRONTIER_ROOT"] = str(project)
 clear()
 r = bpy.ops.battle_frontier.export_map(map_id="test_meadow")
 count = len(bpy.data.objects)
-check("exports and imports a map", r == {"FINISHED"} and count > 100, f"{count} objects")
+# (dozens: its props, its buildings' parts, its trees, real size and keeping their crowns' room)
+check("exports and imports a map", r == {"FINISHED"} and count > 40, f"{count} objects")
 names = {o.name for o in bpy.data.objects}
 check("ground, props, trees and buildings apart", {"Ground", "Props", "Trees", "Buildings"} <= names)
 clear()
 r = bpy.ops.battle_frontier.import_export(file="test_meadow.glb")
-check("imports an export", r == {"FINISHED"} and len(bpy.data.objects) > 100)
+check("imports an export", r == {"FINISHED"} and len(bpy.data.objects) > 40, f"{len(bpy.data.objects)} objects")
 
 print("all good" if not failed else f"{len(failed)} failed", flush=True)
 sys.exit(1 if failed else 0)
