@@ -110,18 +110,24 @@ pub fn set_frost(frost: Option<(egui::TextureId, Rect)>) {
 /// darker, for the white on it), a faint white veil (brighter when `hover`ed, 0 to 1), a thin
 /// light edge.
 pub fn frosted(p: &egui::Painter, rect: Rect, radius: f32, hover: f32) {
-    p.add(egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(55) }.as_shape(rect, radius));
-    match FROST.read().ok().and_then(|f| *f) {
+    p.extend(frosted_shapes(rect, radius, hover));
+}
+
+/// The shapes of `frosted`'s glass, to paint later (behind what's drawn on it once its size
+/// is known): the shadow, the blurred picture, the veil, the edge, in that order.
+pub fn frosted_shapes(rect: Rect, radius: f32, hover: f32) -> Vec<egui::Shape> {
+    use egui::epaint::RectShape;
+    let mut out: Vec<egui::Shape> = vec![egui::Shadow { offset: [0, 3], blur: 14, spread: 0, color: Color32::from_black_alpha(55) }.as_shape(rect, radius).into()];
+    out.push(match FROST.read().ok().and_then(|f| *f) {
         Some((id, screen)) if screen.width() > 0.0 && screen.height() > 0.0 => {
             let at = |q: Pos2| Pos2::new((q.x - screen.min.x) / screen.width(), (q.y - screen.min.y) / screen.height());
-            p.add(egui::epaint::RectShape::filled(rect, radius, Color32::from_gray(190)).with_texture(id, Rect::from_min_max(at(rect.min), at(rect.max))));
+            RectShape::filled(rect, radius, Color32::from_gray(190)).with_texture(id, Rect::from_min_max(at(rect.min), at(rect.max))).into()
         }
-        _ => {
-            p.rect_filled(rect, radius, Color32::from_rgba_unmultiplied(28, 34, 48, 170));
-        }
-    }
-    p.rect_filled(rect, radius, Color32::from_white_alpha((22.0 + 26.0 * hover) as u8));
-    p.rect_stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha((60.0 + 70.0 * hover) as u8)), egui::StrokeKind::Inside);
+        _ => RectShape::filled(rect, radius, Color32::from_rgba_unmultiplied(28, 34, 48, 170)).into(),
+    });
+    out.push(RectShape::filled(rect, radius, Color32::from_white_alpha((22.0 + 26.0 * hover) as u8)).into());
+    out.push(RectShape::stroke(rect, radius, Stroke::new(1.0, Color32::from_white_alpha((60.0 + 70.0 * hover) as u8)), egui::StrokeKind::Inside).into());
+    out
 }
 
 /// The ring round where the game's buttons are, over everything of the HUD's.

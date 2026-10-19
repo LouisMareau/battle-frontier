@@ -2,7 +2,9 @@
 //! most in their last battles first, and before all of them the one they pinned as their main.
 //! There's always a main (while there's a team), and it's the one sent out first in a battle.
 //! The board of cards (View all) has them all, the main first, then as the list has them, or
-//! as the player sorts and filters them.
+//! as the player sorts and filters them. Each has lifeforce (the world says how much): one
+//! lost each time it's knocked out in a battle, and with none left it's lost for good: it
+//! fights no more and isn't the main.
 //! The story keeps who fought in each of the last battles, and the main (`SaveGame.team`).
 
 use std::collections::HashMap;
@@ -51,7 +53,7 @@ impl Sort {
 }
 
 /// What the story keeps of the team: who fought in each of the last battles (the latest last,
-/// `RECENT` at most), and the main.
+/// `RECENT` at most), the main, and the lifeforce of those that lost some.
 #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct TeamLog {
@@ -59,6 +61,10 @@ pub struct TeamLog {
     /// the creature pinned first, by its id (`ids`)
     #[serde(skip_serializing_if = "Option::is_none")]
     pub main: Option<String>,
+    /// how much lifeforce those that lost some have left, by their ids (the others have all
+    /// of theirs); none left: lost for good
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub lifeforce: std::collections::BTreeMap<String, u8>,
 }
 
 /// Each of the team's creatures' id: its species, then its place among those of its species
@@ -101,16 +107,35 @@ impl TeamLog {
     }
 
     /// `id` pinned as the main (the one before it is unpinned). There's always a main: pinned
-    /// again, it stays.
+    /// again, it stays. One lost for good can't be.
     pub fn pin(&mut self, id: &str) {
-        self.main = Some(id.to_string());
+        if !self.is_lost(id) {
+            self.main = Some(id.to_string());
+        }
+    }
+
+    /// How much lifeforce `id` has left, of `max`.
+    pub fn lifeforce(&self, id: &str, max: u8) -> u8 {
+        self.lifeforce.get(id).copied().unwrap_or(max).min(max)
+    }
+
+    /// `id` has no lifeforce left: lost for good.
+    pub fn is_lost(&self, id: &str) -> bool {
+        self.lifeforce.get(id) == Some(&0)
+    }
+
+    /// `id` was knocked out in a battle: one lifeforce less (of `max`, if it had lost none).
+    pub fn knocked_out(&mut self, id: &str, max: u8) {
+        let left = self.lifeforce(id, max).saturating_sub(1);
+        self.lifeforce.insert(id.to_string(), left);
     }
 
     /// The main's place in the team (`ids`): the one pinned; while none is (or it's no longer
-    /// in the team), the one that fought most lately: the team's first before any battle.
-    /// None only for no team at all.
+    /// in the team, or it's lost), the one still alive that fought most lately: the team's
+    /// first before any battle. None for no team, or none alive.
     pub fn main_of(&self, ids: &[String]) -> Option<usize> {
-        self.main.as_ref().and_then(|m| ids.iter().position(|i| i == m)).or_else(|| self.ranked(ids, None).first().copied())
+        let alive = |i: &usize| !self.is_lost(&ids[*i]);
+        self.main.as_ref().and_then(|m| ids.iter().position(|i| i == m)).filter(alive).or_else(|| self.ranked(ids, None).into_iter().find(alive))
     }
 
     /// The main the team has (`main_of`) pinned for good, so the story keeps it: the one that
@@ -124,10 +149,10 @@ impl TeamLog {
     }
 
     /// The team in the order it goes into a battle (their places in `ids`): the main first,
-    /// sent out first, then the others in the team's order.
+    /// sent out first, then the others in the team's order; none lost for good.
     pub fn battle_order(&self, ids: &[String]) -> Vec<usize> {
         let main = self.main_of(ids);
-        main.into_iter().chain((0..ids.len()).filter(|&i| Some(i) != main)).collect()
+        main.into_iter().chain((0..ids.len()).filter(|&i| Some(i) != main && !self.is_lost(&ids[i]))).collect()
     }
 
     /// In how many of the last battles `id` fought.
@@ -260,6 +285,38 @@ mod tests {
         // only the levels over 10: the main all the same
         assert_eq!(log.board(&ids, |i| levels[i] > 10 && i != 1, by_level, false), [1, 5, 3, 2]);
         assert!(TeamLog::default().board(&[], |_| true, same, false).is_empty());
+    }
+
+    /// Lifeforce: all of it at first; one less for each knock-out; none left, lost for good:
+    /// not sent into battle, not the main (another alive is), not pinned; all lost, none
+    /// fights.
+    #[test]
+    fn lifeforce_runs_out_and_the_lost_fight_no_more() {
+        let ids: Vec<String> = ["a", "b", "c"].iter().map(|s| s.to_string()).collect();
+        let mut log = TeamLog::default();
+        assert_eq!((log.lifeforce("a", 5), log.is_lost("a")), (5, false));
+        log.knocked_out("a", 5);
+        assert_eq!(log.lifeforce("a", 5), 4);
+        for _ in 0..10 {
+            log.knocked_out("a", 5);
+        }
+        assert!(log.is_lost("a") && log.lifeforce("a", 5) == 0);
+        assert_eq!(log.battle_order(&ids), [1, 2], "the main lost: the next alive goes first");
+        log.pin("a");
+        assert_ne!(log.main.as_deref(), Some("a"), "no pinning the lost");
+        log.pin("c");
+        assert_eq!(log.battle_order(&ids), [2, 1]);
+        log.main = Some("a".into());
+        assert_eq!(log.main_of(&ids), Some(1), "pinned before it was lost: another is the main");
+        for id in ["b", "c"] {
+            for _ in 0..5 {
+                log.knocked_out(id, 5);
+            }
+        }
+        assert!(log.battle_order(&ids).is_empty() && log.main_of(&ids).is_none(), "none alive, none fights");
+        assert_eq!(log.lifeforce("b", 3), 0);
+        let text = serde_json::to_string(&log).unwrap();
+        assert_eq!(serde_json::from_str::<TeamLog>(&text).unwrap(), log, "kept with the story");
     }
 
     #[test]

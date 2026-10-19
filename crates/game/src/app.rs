@@ -524,6 +524,12 @@ impl GameApp {
             }
         };
         match index {
+            // none of the team can fight any more (all lost for good): no battle, the story
+            // goes on
+            Some(_) if ed.playing() && ed.team.battle_order(&crate::team::ids(&self.party)).is_empty() => {
+                ed.resume_after_battle();
+                self.screen = Self::screen_of(ed);
+            }
             Some(i) if self.dex.is_some() => {
                 if ed.playing() {
                     self.save_story(&ed.save_game(), true);
@@ -836,13 +842,20 @@ impl GameApp {
 
     /// The team as the HUD shows it: each creature's id, name (its own, else its kind's),
     /// level and icon, in its order, and its card for the board (View all): its kind, number,
-    /// picture, types, status, HP, MP, Exp and base stats. Out of battle it's as it is between
-    /// battles now: whole (each battle starts it so, none of it kept after), and where its level's
-    /// Exp begins (none is earned yet).
+    /// picture, types, status, HP, MP, Exp, base stats, lifeforce (the story's) and moves. Out of
+    /// battle it's as it is between battles now: whole (each battle starts it so, none of it
+    /// kept after), and where its level's Exp begins (none is earned yet).
     fn team_members(&self) -> Vec<crate::play_hud::Member> {
-        use crate::play_hud::{Card, Member, TypeTag};
+        use crate::play_hud::{Card, Member, MoveInfo, TypeTag};
         let cfg = self.config();
         let content = self.content.as_deref();
+        let max_lifeforce = content.map_or(5, |c| c.world().lifeforce);
+        let log = match &self.screen {
+            Screen::Overworld(ed) => Some(&ed.team),
+            _ => None,
+        };
+        // a type by its id (or its name, as the dex has a move's), as the cards show it
+        let tag = |t: &content::TypeDef| TypeTag { name: t.name.clone(), color: Color32::from_hex(&t.color).unwrap_or(Color32::GRAY), order: t.order };
         self.party
             .iter()
             .zip(crate::team::ids(&self.party))
@@ -856,16 +869,44 @@ impl GameApp {
                 let growth = content.zip(creature).and_then(|(c, cr)| c.growth_rates.get(&cr.growth_rate));
                 let exp_at = |level: u32| growth.and_then(|g| g.exp.get(level as usize).copied());
                 let from = exp_at(s.level as u32).unwrap_or(0);
-                let types = creature
-                    .map(|cr| {
-                        cr.types
-                            .iter()
-                            .filter_map(|t| content?.types.get(t))
-                            .filter(|t| !t.hidden)
-                            .map(|t| TypeTag { name: t.name.clone(), color: Color32::from_hex(&t.color).unwrap_or(Color32::GRAY), order: t.order })
+                let types = creature.map(|cr| cr.types.iter().filter_map(|t| content?.types.get(t)).filter(|t| !t.hidden).map(tag).collect()).unwrap_or_default();
+                // its moves: their XP (the levels a party gives them at least), what they cost
+                // and bring at each level
+                let moves: Vec<MoveInfo> = match (self.dex.as_ref(), sp) {
+                    (Some(dex), Some(_)) => {
+                        let ids: Vec<u16> = if s.moves.is_empty() { rules::mon::default_moves(dex, dex.sp(&s.species), s.level) } else { s.moves.iter().map(|m| dex.move_id(m)).collect() };
+                        ids.iter()
+                            .enumerate()
+                            .map(|(k, &mid)| {
+                                let m = dex.mv(mid);
+                                let mut xp = s.move_xp.get(k).copied().unwrap_or(0);
+                                if let Some(&lv) = s.move_levels.get(k).filter(|&&lv| lv >= 1) {
+                                    xp = xp.max(cfg.xp_levels[(lv.min(5) - 1) as usize]);
+                                }
+                                let level = rules::moves::level_from_xp(xp, &cfg);
+                                let ty = dex.types.get(m.ty as usize).and_then(|name| content?.types.iter().find(|t| &t.name == name)).map(tag);
+                                MoveInfo {
+                                    name: m.name.clone(),
+                                    ty,
+                                    category: match m.category {
+                                        rules::dex::Category::Physical => "Physical",
+                                        rules::dex::Category::Special => "Special",
+                                        rules::dex::Category::Status => "Status",
+                                    },
+                                    power: m.power,
+                                    accuracy: m.accuracy,
+                                    mp: rules::moves::mp_cost(m, dex.profile(mid), level, &cfg),
+                                    level,
+                                    xp,
+                                    next: cfg.xp_levels.get(level as usize).copied(),
+                                    description: m.description.clone(),
+                                    levels: rules::moves::describe_levels(dex.profile(mid), &cfg),
+                                }
+                            })
                             .collect()
-                    })
-                    .unwrap_or_default();
+                    }
+                    _ => vec![],
+                };
                 // the dex has them hp, atk, def, spe, spa, spd; the card HP, Atk, Def, SpA, SpD, Spe
                 let b = sp.map_or([0; 6], |sp| sp.base);
                 let card = Card {
@@ -878,6 +919,8 @@ impl GameApp {
                     mp: (s.mp.unwrap_or(max_mp).clamp(0, max_mp), max_mp),
                     exp: (from, from, exp_at(s.level as u32 + 1)),
                     base: [b[0], b[1], b[2], b[4], b[5], b[3]],
+                    lifeforce: (log.map_or(max_lifeforce, |l| l.lifeforce(&id, max_lifeforce)), max_lifeforce),
+                    moves,
                 };
                 Member { id, name, level: s.level, icon: self.icons.get(&s.species).map(|t| t.id()), card }
             })
@@ -1509,6 +1552,13 @@ impl eframe::App for GameApp {
                         let ids = crate::team::ids(&self.party);
                         let in_battle: Vec<String> = self.fielded.iter().filter_map(|&i| ids.get(i).cloned()).collect();
                         ed.team.record(crate::team::fought(&director.battle, &in_battle));
+                        // each knocked out at the end loses one lifeforce
+                        let max = self.content.as_ref().map_or(5, |c| c.world().lifeforce);
+                        for (k, id) in in_battle.iter().enumerate() {
+                            if director.battle.side(Side::Player).party.get(k).is_some_and(|m| m.hp <= 0) {
+                                ed.team.knocked_out(id, max);
+                            }
+                        }
                     }
                     self.keep_xp(&director.battle);
                     let results = Results {

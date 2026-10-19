@@ -546,6 +546,9 @@ impl Content {
         }
         for s in self.settings.iter() {
             out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
+            if !(1..=20).contains(&s.lifeforce) {
+                out.push(format!("settings/{}: lifeforce {}: 1 to 20", s.id, s.lifeforce));
+            }
             out.extend(s.wind.problems().into_iter().map(|e| format!("settings/{}: wind: {e}", s.id)));
             let st = &s.start;
             if !st.map.is_empty() {

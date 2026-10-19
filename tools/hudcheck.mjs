@@ -4,8 +4,10 @@
 // anywhere else, Settings, View all), always a main (the team's first in a new game), pinned
 // first, staying when clicked again, the creatures that fought most in the last battles next;
 // View all's board of cards (the list's five first; sorted in its dropdown, reversed, only
-// some types in theirs, All and None at its top, the main first all the same; a card clicked
-// pinned), with the controller too;
+// some types in theirs, All and None at its top, the main first all the same; a card's pin,
+// shown while it's hovered, pinning it; a card clicked opening its details: thumbnails, a
+// move's levels, Esc back to the board), with the controller too; one lost for good (no
+// lifeforce left) shown so and sent into no battle;
 // the story keeping them; Exit back to the menu; a controller working all of it (Start, the
 // d-pad, A, B). And the pixelation from the Options (a category of them closing and opening):
 // the world in big square pixels, as dense as asked, bigger as the camera comes closer and
@@ -168,6 +170,8 @@ try {
 
   // 3. the Team's list: opens beside the Team; closes with the Team again
   const all = (await data('hudteamall')).split(',').filter(Boolean);
+  // the one the story says is lost for good (part 6), none before
+  let lostOne = '';
   await press('uiHudTeam', 450);
   check('the Team: its list open', await open('hudteam'));
   const shown = (await data('hudteamshown')).split(',').filter(Boolean);
@@ -255,10 +259,33 @@ try {
     await browser.key('Escape');
     await sleep(300);
     check('    Esc: the dropdown closed, the board still open', (await data('hudboardpopup')) === '' && (await open('hudteamwindow')), `${await data('hudboardpopup')} ${await data('hudteamwindow')}`);
+    // a card's pin: shown (grey) while the card is hovered; pressed, that one is the main,
+    // first
     const lastCard = (await board())[all.length - 1];
-    await press(`uiTeamCard_${all.length - 1}`);
-    check('  a card clicked: pinned as the main, first', (await data('hudmain')) === lastCard && (await board())[0] === lastCard, `${await data('hudmain')} (${lastCard}) ${await board()}`);
+    const [lx, ly] = await at(`uiTeamCard_${all.length - 1}`);
+    await browser.move(lx, ly);
+    await sleep(350);
+    await press(`uiTeamPin_${all.length - 1}`);
+    check("  a card's pin (shown while it's hovered): pinned as the main, first", (await data('hudmain')) === lastCard && (await board())[0] === lastCard && (await data('hudboarddetail')) === '', `${await data('hudmain')} (${lastCard}) ${await board()}`);
     main = lastCard;
+    // a card clicked: its details, the cards turned into thumbnails; a move picked shows its
+    // levels; another thumbnail, its details; Esc: the board again
+    const second = (await board())[1];
+    await press('uiTeamCard_1', 700);
+    check('  a card clicked: its details, not pinned', (await data('hudboarddetail')) === second && (await data('hudmain')) === main, `${await data('hudboarddetail')} (${second})`);
+    check('    the cards turned into thumbnails', (await data('uiTeamThumb_0')) !== '' && (await data('uiTeamBack')) !== '', await data('uiTeamThumb_0'));
+    const moves = await browser.evaluate("Object.keys(document.body.dataset).filter((k) => k.startsWith('uiTeamMove_'))");
+    if (moves.length >= 2) {
+      await press('uiTeamMove_1', 300);
+      const [mvName, mvLevel, mvLevels] = (await data('hudboardmove')).split(':');
+      check(`    a move picked (${mvName}, Lv ${mvLevel}): its levels`, Number(mvLevels) >= 1 && Number(mvLevel) >= 1, await data('hudboardmove'));
+    }
+    await shot('5c-details');
+    await press('uiTeamThumb_0', 400);
+    check('    another thumbnail: its details', (await data('hudboarddetail')) === (await board())[0], `${await data('hudboarddetail')} (${(await board())[0]})`);
+    await browser.key('Escape');
+    await sleep(700);
+    check('    Esc: the board again, still open', (await data('hudboarddetail')) === '' && (await open('hudteamwindow')), `${await data('hudboarddetail')} ${await data('hudteamwindow')}`);
     await press('uiTeamWindowClose');
     check('  Close: gone', !(await open('hudteamwindow')));
 
@@ -267,7 +294,9 @@ try {
     const story = JSON.parse(await browser.evaluate('localStorage.getItem("story")') || '{}');
     check('the story keeps the main', story.team?.main === main, JSON.stringify(story.team));
     const late = all[all.length - 1];
-    story.team = { battles: [[all[2], late], [all[2]], [late], [late, all[0]]], main };
+    // and one lost for good (no lifeforce left): neither the main nor next in the list
+    lostOne = all.find((id, k) => k >= 3 && id !== main && id !== late) ?? '';
+    story.team = { battles: [[all[2], late], [all[2]], [late], [late, all[0]]], main, lifeforce: lostOne ? { [lostOne]: 0 } : {} };
     await press('uiHudExit');
     await state('menu', 'the menu');
     check('Exit: back on the menu', (await data('state')) === 'menu');
@@ -279,7 +308,14 @@ try {
     const ranked = [...new Set([late, all[2], all[0]])].filter((id) => id !== main);
     const expect = [main, ...ranked, ...all.filter((id) => id !== main && !ranked.includes(id))].slice(0, 5);
     check('  the main first, then who fought most (the latest first)', (await data('hudteamshown')) === expect.join(), `${await data('hudteamshown')} (${expect})`);
-    await press('uiHudTeam', 450);
+    if (lostOne) {
+      await press('uiTeamAll', 500);
+      check(`  ${lostOne}, out of lifeforce: lost for good on the board`, (await data('hudboardlost')) === lostOne, await data('hudboardlost'));
+      await shot('5d-lost');
+      await press('uiTeamWindowClose');
+    } else {
+      await press('uiHudTeam', 450);
+    }
   } else {
     check('no team to pin: the list says so', all.length === 0 || shown.length === all.length, `${all}`);
   }
@@ -346,6 +382,18 @@ try {
     check('    left, A: All, every one', (await data('hudboard')).split(',').length === all.length, await data('hudboard'));
     await tap(B.east);
     check('    B: the dropdown closed, the board still open, the ring on its button', (await data('hudboardpopup')) === '' && (await open('hudteamwindow')) && (await data('hudboardring')) === 'uiTeamTypes', `${await data('hudboardpopup')} ${await data('hudboardring')}`);
+    // down onto a card; A: its details, the ring on its thumbnail; B: the board again, the
+    // ring back on its card
+    await tap(B.down);
+    const onCard = await data('hudboardring');
+    check('    down: onto a card', onCard.startsWith('uiTeamCard_'), onCard);
+    await tap(B.south);
+    await sleep(600);
+    check('    A: its details, the ring on its thumbnail', (await data('hudboarddetail')) !== '' && (await data('hudboardring')).startsWith('uiTeamThumb_'), `${await data('hudboarddetail')} ${await data('hudboardring')}`);
+    await shot('6c-details-pad');
+    await tap(B.east);
+    await sleep(600);
+    check('    B: the board again, the ring back on its card', (await data('hudboarddetail')) === '' && (await open('hudteamwindow')) && (await data('hudboardring')) === onCard, `${await data('hudboarddetail')} ${await data('hudboardring')}`);
     await shot('6b-board-pad');
     await tap(B.east);
     check('    B: closed, the ring back on the Team', !(await open('hudteamwindow')) && (await data('hudring')) === 'uiHudTeam', `${await data('hudteamwindow')} ${await data('hudring')}`);
@@ -427,7 +475,7 @@ try {
     await state('battle', 'the battle');
     const party = (await data('battleparty')).split(',');
     check('a battle from the overworld: the main sent out first', party[0] === main, `${party} (${main})`);
-    check("  the others after it, in the team's order", party.slice(1).join() === all.filter((id) => id !== main).join(), `${party}`);
+    check(`  the others after it, in the team's order${lostOne ? ` (not ${lostOne}, lost for good)` : ''}`, party.slice(1).join() === all.filter((id) => id !== main && id !== lostOne).join(), `${party}`);
   }
 } catch (e) {
   console.log(`FAIL ${e.message}`);

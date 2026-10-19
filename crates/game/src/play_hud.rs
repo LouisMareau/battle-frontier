@@ -5,7 +5,9 @@
 //! The Team's list: the five creatures the player fought with most in their last battles,
 //! their main (pinned) first, then "View all": a board of cards, every creature, five a row,
 //! the list's five first (or as the player sorts and filters them, the main first all the
-//! same), each card its picture, name, types, level, status, HP, MP, Exp and base stats. Clicking a creature
+//! same), each card its picture, name, types, level, status, HP, MP, Exp and base stats, its
+//! pin while it's hovered; a card clicked turns the cards into thumbnails and shows that
+//! creature in full: its lifeforce, its moves and their levels too. Clicking a creature
 //! pins it as the main, the one sent out first in battle; there's always one (the team's first
 //! until another is pinned). The list closes with the Team again, a click anywhere else, or
 //! that window opening.
@@ -23,7 +25,7 @@ use crate::input::{Button, Input};
 use crate::layout::{self, BOTTOM_LEFT, BUTTON, TOP_RIGHT};
 use crate::platform;
 use crate::team::{Sort, TeamLog, RECENT, SHOWN};
-use crate::title::{button_label, dialog_frame, menu_font, title_font, OptionsUi};
+use crate::title::{button_label, menu_font, title_font, OptionsUi};
 
 /// The places' names (the checks' marks).
 pub const TEAM: &str = "uiHudTeam";
@@ -43,6 +45,14 @@ const PER_ROW: usize = 5;
 const CARD_W: f32 = 172.0;
 const CARD_H: f32 = 334.0;
 const CARD_GAP: f32 = 12.0;
+/// The details (a card clicked): the cards turned into thumbnails, three a row, on the left;
+/// the details at least this tall; the turning, in seconds.
+const THUMB_W: f32 = 76.0;
+const THUMB_H: f32 = 92.0;
+const THUMB_GAP: f32 = 8.0;
+const THUMBS_PER_ROW: usize = 3;
+const DETAIL_H: f32 = 600.0;
+const MORPH_S: f32 = 0.3;
 /// The board's marks: Close, the sort's dropdown and the types'.
 const CLOSE: &str = "uiTeamWindowClose";
 const SORT: &str = "uiTeamSort";
@@ -80,6 +90,39 @@ pub struct Card {
     pub exp: (u32, u32, Option<u32>),
     /// its kind's base stats: HP, Attack, Defense, Sp. Atk, Sp. Def, Speed
     pub base: [u16; 6],
+    /// its lifeforce: left, at most (one lost each time it's knocked out); none left: lost for
+    /// good
+    pub lifeforce: (u8, u8),
+    /// its moves, in their order
+    pub moves: Vec<MoveInfo>,
+}
+
+impl Card {
+    /// Lost for good: no lifeforce left.
+    pub fn lost(&self) -> bool {
+        self.lifeforce.0 == 0
+    }
+}
+
+/// One of a creature's moves, as its details show it.
+#[derive(Clone, Debug, Default)]
+pub struct MoveInfo {
+    pub name: String,
+    pub ty: Option<TypeTag>,
+    /// "Physical", "Special" or "Status"
+    pub category: &'static str,
+    /// 0: none (a status move); accuracy 0: never misses
+    pub power: u16,
+    pub accuracy: u16,
+    /// what using it costs, at its level
+    pub mp: i32,
+    /// its level (1 to 5), its XP, the XP its next level needs (none at the top)
+    pub level: u8,
+    pub xp: u32,
+    pub next: Option<u32>,
+    pub description: String,
+    /// what each of its levels brings, 1 to 5
+    pub levels: Vec<String>,
 }
 
 /// A type as the cards show it.
@@ -109,6 +152,9 @@ struct Board {
     scrolled: Option<String>,
     /// opened this frame: the button that opened it isn't its own
     fresh: bool,
+    /// the creature whose details show (a card clicked), by its id, and its move open there
+    detail: Option<String>,
+    move_open: usize,
 }
 
 /// What the player did on the HUD that the game answers.
@@ -301,6 +347,10 @@ impl PlayHud {
         }
         if self.team_window {
             self.team_window = team_window(ctx, team, log, input, &mut self.board);
+            // opened again, it shows the board
+            if !self.team_window {
+                self.board.detail = None;
+            }
         }
         platform::set_hook("hudring", self.focus.as_deref().unwrap_or(""));
         platform::set_hook("hudteam", if self.team_open { "open" } else { "" });
@@ -361,10 +411,11 @@ fn team_list(row: &mut layout::Row, open: f32, team: &[Member], shown: &[usize],
     for (slot, &i) in shown.iter().enumerate() {
         let m = &team[i];
         let main = log.main.as_deref() == Some(m.id.as_str());
+        let tint = if m.card.lost() { Color32::from_gray(80) } else { Color32::WHITE };
         tile(ui, slot_mark(slot), x, &|ui, r| {
             match m.icon {
                 Some(t) => {
-                    p.image(t, r.shrink(3.0), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), fade(Color32::WHITE));
+                    p.image(t, r.shrink(3.0), Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), fade(tint));
                 }
                 None => {
                     let initial = m.name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
@@ -399,7 +450,13 @@ fn member_caption(m: &Member, log: &TeamLog, ring: bool) -> (String, String) {
         n => format!("in {n} of your last {RECENT} battles"),
     };
     let how = if ring { button_label(Button::A) } else { "click".to_string() };
-    let does = if log.main.as_deref() == Some(m.id.as_str()) { "your main, sent out first".to_string() } else { format!("{how}: pin as your main") };
+    let does = if m.card.lost() {
+        "lost for good: it fights no more".to_string()
+    } else if log.main.as_deref() == Some(m.id.as_str()) {
+        "your main, sent out first".to_string()
+    } else {
+        format!("{how}: pin as your main")
+    };
     (format!("{} · Lv {}", m.name, m.level), format!("{fought} · {does}"))
 }
 
@@ -459,6 +516,7 @@ fn status_colors(label: &str) -> (Color32, Color32) {
         "PSN" | "TOX" => (Color32::from_rgb(168, 104, 208), Color32::WHITE),
         "SLP" => (Color32::from_rgb(132, 150, 176), Color32::WHITE),
         "FRZ" => (Color32::from_rgb(120, 196, 232), Color32::from_rgb(12, 40, 56)),
+        "LOST" => (Color32::from_rgb(64, 68, 80), Color32::from_white_alpha(230)),
         _ => (Color32::from_rgb(214, 72, 72), Color32::WHITE),
     }
 }
@@ -478,42 +536,98 @@ fn tag(p: &egui::Painter, at: Pos2, words: &str, fill: Color32, ink: Color32) ->
     r
 }
 
-/// A creature's card: its picture (the main's with a pin, its status or KO on it), its name
-/// and level (under them its number, and its kind's name when it has its own), its types, its
-/// HP, MP and Exp in bars, its kind's base stats. Greyed out when it's KO.
-fn card(ui: &mut egui::Ui, m: &Member, main: bool, w: f32) -> egui::Response {
-    let (rect, r) = ui.allocate_exact_size(Vec2::new(w, CARD_H), Sense::click());
+/// A rect on its way from `a` to `b` (`t`: 0 to 1).
+fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
+    Rect::from_min_max(a.min.lerp(b.min, t), a.max.lerp(b.max, t))
+}
+
+/// Where a card's picture is in it: the top, 140 tall (room for the biggest, 64 by 64,
+/// doubled).
+fn card_pic(card: Rect) -> Rect {
+    Rect::from_min_max(card.min + Vec2::splat(10.0), Pos2::new(card.right() - 10.0, card.top() + 150.0))
+}
+
+/// Where a thumbnail's picture is in it: all of it but its foot (its level there).
+fn thumb_pic(thumb: Rect) -> Rect {
+    Rect::from_min_max(thumb.min + Vec2::splat(5.0), Pos2::new(thumb.right() - 5.0, thumb.bottom() - 20.0))
+}
+
+/// A creature's picture in `room`: as big as fits, up to `most` times its pixels, whole ones
+/// when it's settled (`whole`; on its way it scales smoothly), greyed when it can't fight.
+fn paint_picture(p: &egui::Painter, c: &Card, room: Rect, most: f32, whole: bool, grey: bool) {
+    let Some((tex, uv, px)) = c.picture.filter(|(_, _, px)| px.x > 0.0 && px.y > 0.0) else { return };
+    let fit = room.shrink(6.0).size();
+    let k = (fit.x / px.x).min(fit.y / px.y).min(most);
+    let k = if whole && k >= 1.0 { k.floor() } else { k };
+    p.image(tex, Rect::from_center_size(room.center(), px * k), uv, if grey { Color32::from_gray(80) } else { Color32::WHITE });
+}
+
+/// The pin on a creature's picture at `at`: white on the main, grey on another (brighter
+/// while it's hovered, `hover` 0 to 1), where pressing it pins that one.
+fn pin_badge(ui: &egui::Ui, at: Pos2, main: bool, hover: f32) {
+    let (ground, ink) = if main { (Color32::WHITE, Color32::from_rgb(20, 24, 32)) } else { (Color32::from_gray(105).lerp_to_gamma(Color32::from_gray(170), hover), Color32::from_rgb(34, 38, 46)) };
+    ui.painter().circle_filled(at, 9.0, ground);
+    egui::Image::new(egui::include_image!("../icons/pin.svg")).fit_to_exact_size(Vec2::splat(32.0)).tint(ink).paint_at(ui, Rect::from_center_size(at, Vec2::splat(12.0)));
+}
+
+/// What a creature's status tag says: LOST (no lifeforce left), KO, its status, or nothing.
+fn status_words(c: &Card) -> Option<String> {
+    if c.lost() {
+        Some("LOST".into())
+    } else if c.hp.0 <= 0 {
+        Some("KO".into())
+    } else {
+        c.status.clone()
+    }
+}
+
+/// A creature on the board, `t` of the way from its card (`card`, 0) to its thumbnail
+/// (`thumb`, 1): the frame and the picture go from one to the other, the card's words fading
+/// out and the thumbnail's (its level) in. `hover`: how hovered, 0 to 1; `pin`: its pin shown
+/// (the main's always, another's while it's hovered) and how hovered that is. Greyed when it
+/// can't fight (KO, or lost for good).
+#[allow(clippy::too_many_arguments)]
+fn paint_item(ui: &egui::Ui, m: &Member, main: bool, card: Rect, thumb: Rect, t: f32, hover: f32, pin: Option<f32>) {
+    let rect = lerp_rect(card, thumb, t);
     if !ui.is_rect_visible(rect) {
-        return r;
+        return;
     }
     let c = &m.card;
-    let ko = c.hp.0 <= 0;
-    let hover = ui.ctx().animate_bool_with_time(r.id.with("hover"), r.hovered(), 0.15);
+    let down = c.hp.0 <= 0 || c.lost();
     let p = ui.painter_at(rect);
-    let fill = Color32::from_rgb(29, 37, 54).lerp_to_gamma(Color32::from_rgb(40, 51, 74), hover);
-    p.rect_filled(rect, 12.0, fill);
+    let radius = 12.0 - 3.0 * t;
+    p.rect_filled(rect, radius, Color32::from_rgb(29, 37, 54).lerp_to_gamma(Color32::from_rgb(40, 51, 74), hover));
     let edge = if main { Stroke::new(1.6, Color32::from_white_alpha(215)) } else { Stroke::new(1.0, Color32::from_white_alpha((28.0 + 50.0 * hover) as u8)) };
-    p.rect_stroke(rect, 12.0, edge, egui::StrokeKind::Inside);
-    let (x0, x1) = (rect.left() + 10.0, rect.right() - 10.0);
-    let dim = |a: u8| Color32::from_white_alpha(if ko { a / 2 } else { a });
-    // the picture: its pixels doubled (room for the biggest, 64 by 64), whole pixels at least
-    // when there's room for them, smaller when there isn't
-    let pic = Rect::from_min_max(Pos2::new(x0, rect.top() + 10.0), Pos2::new(x1, rect.top() + 150.0));
-    p.rect_filled(pic, 8.0, Color32::from_black_alpha(45));
-    if let Some((tex, uv, px)) = c.picture.filter(|(_, _, px)| px.x > 0.0 && px.y > 0.0) {
-        let room = pic.shrink(6.0).size();
-        let k = (room.x / px.x).min(room.y / px.y);
-        let k = if k >= 1.0 { k.floor().min(2.0) } else { k };
-        p.image(tex, Rect::from_center_size(pic.center(), px * k), uv, if ko { Color32::from_gray(80) } else { Color32::WHITE });
+    p.rect_stroke(rect, radius, edge, egui::StrokeKind::Inside);
+    let pic = lerp_rect(card_pic(card), thumb_pic(thumb), t);
+    p.rect_filled(pic, 8.0 - 2.0 * t, Color32::from_black_alpha(45));
+    paint_picture(&p, c, pic, 2.0, t <= 0.0 || t >= 1.0, down);
+    let words = (1.0 - 2.0 * t).clamp(0.0, 1.0);
+    if words > 0.0 {
+        card_words(&p, m, card, words);
     }
-    if main {
-        let badge = pic.left_top() + Vec2::new(13.0, 13.0);
-        p.circle_filled(badge, 9.0, Color32::WHITE);
-        egui::Image::new(egui::include_image!("../icons/pin.svg")).fit_to_exact_size(Vec2::splat(32.0)).tint(Color32::from_rgb(20, 24, 32)).paint_at(ui, Rect::from_center_size(badge, Vec2::splat(12.0)));
+    let level = (2.0 * t - 1.0).clamp(0.0, 1.0);
+    if level > 0.0 {
+        let ink = Color32::from_white_alpha(if down { 110 } else { 235 }).gamma_multiply(level);
+        p.text(Pos2::new(rect.center().x, rect.bottom() - 10.0), Align2::CENTER_CENTER, format!("Lv {}", m.level), menu_font(12.0), ink);
     }
-    if let Some(words) = if ko { Some("KO".to_string()) } else { c.status.clone() } {
+    if let Some(h) = pin {
+        pin_badge(ui, pic.left_top() + Vec2::splat(12.0 - 3.0 * t), main, h);
+    }
+}
+
+/// A card's words, `alpha` of them (they fade as it becomes a thumbnail): its status, KO or
+/// LOST on its picture, its name and level (under them its number, and its kind's name when
+/// it has its own), its types, HP, MP and Exp in bars, its kind's base stats.
+fn card_words(p: &egui::Painter, m: &Member, card: Rect, alpha: f32) {
+    let c = &m.card;
+    let down = c.hp.0 <= 0 || c.lost();
+    let (x0, x1) = (card.left() + 10.0, card.right() - 10.0);
+    let dim = |a: u8| Color32::from_white_alpha(if down { a / 2 } else { a }).gamma_multiply(alpha);
+    let pic = card_pic(card);
+    if let Some(words) = status_words(c) {
         let (fill, ink) = status_colors(&words);
-        tag(&p, pic.left_bottom() + Vec2::new(6.0, -23.0), &words, fill, ink);
+        tag(p, pic.left_bottom() + Vec2::new(6.0, -23.0), &words, fill.gamma_multiply(alpha), ink.gamma_multiply(alpha));
     }
     // its name; under it its number in the creature index, and its kind's name when it has
     // its own
@@ -527,8 +641,8 @@ fn card(ui: &mut egui::Ui, m: &Member, main: bool, w: f32) -> egui::Response {
     // its types
     let mut x = x0;
     for t in &c.types {
-        let fill = if ko { t.color.gamma_multiply(0.5) } else { t.color };
-        x = tag(&p, Pos2::new(x, y), &t.name, fill, ink_on(fill)).right() + 4.0;
+        let fill = if down { t.color.gamma_multiply(0.5) } else { t.color };
+        x = tag(p, Pos2::new(x, y), &t.name, fill.gamma_multiply(alpha), ink_on(fill).gamma_multiply(alpha)).right() + 4.0;
     }
     y += 27.0;
     // HP, MP and Exp: a bar each, the numbers beside
@@ -536,44 +650,276 @@ fn card(ui: &mut egui::Ui, m: &Member, main: bool, w: f32) -> egui::Response {
         p.text(Pos2::new(x0, y), Align2::LEFT_CENTER, label, FontId::proportional(11.0), dim(165));
         p.text(Pos2::new(x1, y), Align2::RIGHT_CENTER, value, FontId::proportional(11.0), dim(255));
         let track = Rect::from_min_max(Pos2::new(x0 + 27.0, y - 2.5), Pos2::new(x1 - 54.0, y + 2.5));
-        p.rect_filled(track, 2.5, Color32::from_white_alpha(28));
-        p.rect_filled(Rect::from_min_size(track.min, Vec2::new(track.width() * share.clamp(0.0, 1.0), track.height())), 2.5, if ko { color.gamma_multiply(0.5) } else { color });
+        p.rect_filled(track, 2.5, Color32::from_white_alpha(28).gamma_multiply(alpha));
+        let color = if down { color.gamma_multiply(0.5) } else { color };
+        p.rect_filled(Rect::from_min_size(track.min, Vec2::new(track.width() * share.clamp(0.0, 1.0), track.height())), 2.5, color.gamma_multiply(alpha));
     };
-    let hp = c.hp.0.max(0) as f32 / c.hp.1.max(1) as f32;
-    let hp_color = match hp {
-        h if h > 0.5 => Color32::from_rgb(92, 200, 120),
-        h if h > 0.2 => Color32::from_rgb(232, 196, 58),
-        _ => Color32::from_rgb(214, 72, 72),
-    };
-    bar(y, "HP", hp, hp_color, &if ko { "KO".to_string() } else { format!("{}/{}", c.hp.0, c.hp.1) });
+    bar(y, "HP", c.hp.0.max(0) as f32 / c.hp.1.max(1) as f32, hp_color(c), &if c.hp.0 <= 0 { "KO".to_string() } else { format!("{}/{}", c.hp.0, c.hp.1) });
     y += 16.0;
-    bar(y, "MP", c.mp.0.max(0) as f32 / c.mp.1.max(1) as f32, Color32::from_rgb(92, 150, 236), &format!("{}/{}", c.mp.0, c.mp.1));
+    bar(y, "MP", c.mp.0.max(0) as f32 / c.mp.1.max(1) as f32, MP_COLOR, &format!("{}/{}", c.mp.0, c.mp.1));
     y += 16.0;
-    let (exp, from, to) = c.exp;
-    let share = to.map_or(1.0, |to| exp.saturating_sub(from) as f32 / to.saturating_sub(from).max(1) as f32);
-    bar(y, "Exp", share, Color32::from_rgb(170, 132, 236), &thousands(exp));
+    bar(y, "Exp", level_progress(c), EXP_COLOR, &thousands(c.exp.0));
     y += 17.0;
     // its kind's base stats: HP, Attack, Defense down the left, Sp. Atk, Sp. Def, Speed down the right
     let half = (x1 - x0 - 10.0) / 2.0;
-    for (k, (label, v)) in ["HP", "Atk", "Def", "SpA", "SpD", "Spe"].iter().zip(c.base).enumerate() {
+    for (k, (label, v)) in STATS.iter().zip(c.base).enumerate() {
         let cx = x0 + (k / 3) as f32 * (half + 10.0);
         let cy = y + (k % 3) as f32 * 17.0;
         p.text(Pos2::new(cx, cy), Align2::LEFT_TOP, *label, FontId::proportional(10.5), dim(150));
         p.text(Pos2::new(cx + half, cy), Align2::RIGHT_TOP, v.to_string(), FontId::proportional(10.5), dim(235));
         let line = Rect::from_min_size(Pos2::new(cx, cy + 13.0), Vec2::new(half, 2.0));
-        p.rect_filled(line, 1.0, Color32::from_white_alpha(22));
+        p.rect_filled(line, 1.0, Color32::from_white_alpha(22).gamma_multiply(alpha));
         p.rect_filled(Rect::from_min_size(line.min, Vec2::new(half * (v as f32 / 200.0).min(1.0), 2.0)), 1.0, dim(170));
     }
+}
+
+/// The base stats' short names, in the cards' order.
+const STATS: [&str; 6] = ["HP", "Atk", "Def", "SpA", "SpD", "Spe"];
+/// The MP's and the Exp's bars' colours.
+const MP_COLOR: Color32 = Color32::from_rgb(92, 150, 236);
+const EXP_COLOR: Color32 = Color32::from_rgb(170, 132, 236);
+/// Lifeforce's colour.
+const LIFE_COLOR: Color32 = Color32::from_rgb(112, 218, 196);
+
+/// The HP bar's colour: green, yellow under half, scarlet under a fifth.
+fn hp_color(c: &Card) -> Color32 {
+    match c.hp.0.max(0) as f32 / c.hp.1.max(1) as f32 {
+        h if h > 0.5 => Color32::from_rgb(92, 200, 120),
+        h if h > 0.2 => Color32::from_rgb(232, 196, 58),
+        _ => Color32::from_rgb(214, 72, 72),
+    }
+}
+
+/// How far into its level a creature's Exp is, 0 to 1 (full at the top level).
+fn level_progress(c: &Card) -> f32 {
+    let (exp, from, to) = c.exp;
+    to.map_or(1.0, |to| exp.saturating_sub(from) as f32 / to.saturating_sub(from).max(1) as f32)
+}
+
+/// A creature's place on the board (its card, or its thumbnail, at `rect`): clickable, and
+/// its pin at `badge` while shown (the main's always; another's while the pointer is on it;
+/// one lost for good can't be pressed). Its response, and its pin's: how hovered, whether it
+/// was pressed, where it is.
+fn interact_item(ui: &egui::Ui, m: &Member, main: bool, rect: Rect, badge: Pos2) -> (egui::Response, Option<(f32, bool, Rect)>) {
+    let id = Id::new(("hud-team-item", m.id.as_str()));
+    let r = ui.interact(rect, id, Sense::click());
+    let lost = m.card.lost();
+    let pin = (main || r.contains_pointer()).then(|| {
+        let at = Rect::from_center_size(badge, Vec2::splat(22.0));
+        let pr = ui.interact(at, id.with("pin"), if main || lost { Sense::hover() } else { Sense::click() });
+        let tip = if main {
+            "Your main, sent out first"
+        } else if lost {
+            "Lost for good: it can't be your main"
+        } else {
+            "Pin as your main"
+        };
+        let pr = pr.on_hover_text(tip);
+        if pr.hovered() && !main && !lost {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        }
+        (ui.ctx().animate_bool_with_time(id.with("pin-hover"), pr.hovered(), 0.12), pr.clicked(), at)
+    });
     if r.hovered() {
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
-    let next = match to {
-        Some(to) => format!("{} more to Lv {}", thousands(to.saturating_sub(exp)), m.level as u32 + 1),
-        None => "the top level".to_string(),
-    };
+    (r, pin)
+}
+
+/// A bar across `w`: its label, how full (`share`, 0 to 1) in `color`, its value at its end.
+fn bar_line(ui: &mut egui::Ui, w: f32, label: &str, share: f32, color: Color32, value: &str) {
+    let (r, _) = ui.allocate_exact_size(Vec2::new(w, 20.0), Sense::hover());
+    let p = ui.painter();
+    p.text(Pos2::new(r.left(), r.center().y), Align2::LEFT_CENTER, label, FontId::proportional(12.5), Color32::from_white_alpha(170));
+    p.text(Pos2::new(r.right(), r.center().y), Align2::RIGHT_CENTER, value, FontId::proportional(12.5), Color32::WHITE);
+    let track = Rect::from_min_max(Pos2::new(r.left() + 40.0, r.center().y - 3.5), Pos2::new(r.right() - 132.0, r.center().y + 3.5));
+    p.rect_filled(track, 3.5, Color32::from_white_alpha(28));
+    p.rect_filled(Rect::from_min_size(track.min, Vec2::new(track.width() * share.clamp(0.0, 1.0), track.height())), 3.5, color);
+}
+
+/// A title over a part of the details.
+fn part_title(ui: &mut egui::Ui, words: &str) {
+    ui.label(RichText::new(words).font(menu_font(14.0)).color(Color32::WHITE));
+}
+
+/// A creature's details, right of the thumbnails: its picture (three times its pixels; its
+/// model, idle, once creatures have models), name, level, number, kind, types, status, HP,
+/// MP and Exp, lifeforce and a button to pin it as the main; its kind's base stats; its moves
+/// (a tab each, `open_move`'s details and levels shown). Its buttons, by their marks.
+fn detail_panel(ui: &mut egui::Ui, m: &Member, main: bool, open_move: usize) -> Vec<(String, egui::Response)> {
+    let mut out = vec![];
+    let c = &m.card;
+    let down = c.hp.0 <= 0 || c.lost();
+    let soft = Color32::from_white_alpha(165);
+    ui.horizontal_top(|ui| {
+        // its picture, its status on it
+        let (pic, _) = ui.allocate_exact_size(Vec2::splat(200.0), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(pic, 12.0, Color32::from_black_alpha(55));
+        paint_picture(p, c, pic, 3.0, true, down);
+        if let Some(words) = status_words(c) {
+            let (fill, ink) = status_colors(&words);
+            tag(p, pic.left_bottom() + Vec2::new(8.0, -25.0), &words, fill, ink);
+        }
+        ui.add_space(14.0);
+        ui.vertical(|ui| {
+            // its name and level; back to all the cards
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&m.name).font(title_font(24.0)).color(Color32::WHITE));
+                ui.label(RichText::new(format!("Lv {}", m.level)).font(menu_font(16.0)).color(soft));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let back = icon_button(ui, egui::include_image!("../icons/all.svg"), "All the cards");
+                    out.push(("uiTeamBack".to_string(), back));
+                });
+            });
+            let under = if m.name != c.kind { format!("{} · No. {}", c.kind, c.number) } else { format!("No. {}", c.number) };
+            ui.label(RichText::new(under).size(12.5).color(soft));
+            ui.add_space(4.0);
+            // its types
+            let (row, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 18.0), Sense::hover());
+            let mut x = row.left();
+            for t in &c.types {
+                x = tag(ui.painter(), Pos2::new(x, row.top()), &t.name, t.color, ink_on(t.color)).right() + 5.0;
+            }
+            ui.add_space(8.0);
+            // HP, MP and Exp
+            let w = ui.available_width();
+            bar_line(ui, w, "HP", c.hp.0.max(0) as f32 / c.hp.1.max(1) as f32, hp_color(c), &if c.hp.0 <= 0 { "KO".to_string() } else { format!("{} / {}", c.hp.0, c.hp.1) });
+            bar_line(ui, w, "MP", c.mp.0.max(0) as f32 / c.mp.1.max(1) as f32, MP_COLOR, &format!("{} / {}", c.mp.0, c.mp.1));
+            let exp = match c.exp.2 {
+                Some(to) => format!("{} / {}", thousands(c.exp.0), thousands(to)),
+                None => format!("{}: the top", thousands(c.exp.0)),
+            };
+            bar_line(ui, w, "Exp", level_progress(c), EXP_COLOR, &exp);
+            ui.add_space(6.0);
+            // its lifeforce: a pip each, lit while it lasts
+            let (left, max) = c.lifeforce;
+            let r = ui
+                .horizontal(|ui| {
+                    ui.label(RichText::new("Lifeforce").size(12.5).color(Color32::from_white_alpha(170)));
+                    let (pips, _) = ui.allocate_exact_size(Vec2::new(max as f32 * 17.0, 16.0), Sense::hover());
+                    for k in 0..max {
+                        let at = Pos2::new(pips.left() + 8.0 + k as f32 * 17.0, pips.center().y);
+                        let diamond = vec![at + Vec2::new(0.0, -6.0), at + Vec2::new(6.0, 0.0), at + Vec2::new(0.0, 6.0), at + Vec2::new(-6.0, 0.0)];
+                        if k < left {
+                            ui.painter().add(egui::Shape::convex_polygon(diamond, LIFE_COLOR, Stroke::NONE));
+                        } else {
+                            ui.painter().add(egui::Shape::closed_line(diamond, Stroke::new(1.2, Color32::from_white_alpha(90))));
+                        }
+                    }
+                    let words = if left == 0 { "Lost for good".to_string() } else { format!("{left} of {max}") };
+                    ui.label(RichText::new(words).size(12.5).color(if left == 0 { Color32::from_rgb(232, 110, 110) } else { Color32::WHITE }));
+                })
+                .response;
+            r.on_hover_text("One is lost each time it's knocked out; with none left it's lost for good");
+            if c.lost() {
+                ui.label(RichText::new("It can't be brought back but by a very rare consumable.").size(12.0).color(soft));
+            }
+            ui.add_space(6.0);
+            // pinned as the main, or a button to (not one lost for good)
+            if !c.lost() {
+                let words = if main { "Your main, sent out first" } else { "Pin as your main" };
+                let icon = egui::Image::new(egui::include_image!("../icons/pin.svg")).fit_to_exact_size(Vec2::splat(14.0)).tint(Color32::WHITE);
+                let b = ui.add_enabled(!main, egui::Button::image_and_text(icon, RichText::new(words).color(Color32::WHITE)).min_size(Vec2::new(0.0, 26.0)));
+                out.push(("uiTeamDetailPin".to_string(), b));
+            }
+        });
+    });
+    ui.add_space(12.0);
+    // its kind's base stats, in a row
     let total: u32 = c.base.iter().map(|&b| b as u32).sum();
-    let does = if main { "your main, sent out first".to_string() } else { "click: pin as your main".to_string() };
-    r.on_hover_text(format!("{} Exp, {next}\nBase stats {total} in all\n{does}", thousands(exp)))
+    ui.horizontal(|ui| {
+        part_title(ui, "Base stats");
+        ui.label(RichText::new(format!("{total} in all")).size(12.0).color(soft));
+    });
+    let w = ui.available_width();
+    let (row, _) = ui.allocate_exact_size(Vec2::new(w, 30.0), Sense::hover());
+    let col = (w - 5.0 * 12.0) / 6.0;
+    for (k, (label, v)) in STATS.iter().zip(c.base).enumerate() {
+        let x = row.left() + k as f32 * (col + 12.0);
+        let p = ui.painter();
+        p.text(Pos2::new(x, row.top()), Align2::LEFT_TOP, *label, FontId::proportional(12.0), soft);
+        p.text(Pos2::new(x + col, row.top()), Align2::RIGHT_TOP, v.to_string(), FontId::proportional(12.0), Color32::WHITE);
+        let line = Rect::from_min_size(Pos2::new(x, row.top() + 19.0), Vec2::new(col, 3.0));
+        p.rect_filled(line, 1.5, Color32::from_white_alpha(25));
+        p.rect_filled(Rect::from_min_size(line.min, Vec2::new(col * (v as f32 / 200.0).min(1.0), 3.0)), 1.5, Color32::from_white_alpha(190));
+    }
+    ui.add_space(8.0);
+    // its moves: a tab each, the one open shown with its levels
+    part_title(ui, "Moves");
+    if c.moves.is_empty() {
+        ui.label(RichText::new("No moves known.").size(12.5).color(soft));
+    }
+    ui.horizontal_wrapped(|ui| {
+        for (k, mv) in c.moves.iter().enumerate() {
+            // a dot of its type's colour before its name (room left for it)
+            let r = ui.add(egui::Button::new(RichText::new(format!("        {}  ·  Lv {}", mv.name, mv.level)).color(Color32::WHITE)).selected(k == open_move).min_size(Vec2::new(0.0, 26.0)));
+            ui.painter().circle_filled(Pos2::new(r.rect.left() + 12.0, r.rect.center().y), 4.5, mv.ty.as_ref().map_or(Color32::GRAY, |t| t.color));
+            out.push((format!("uiTeamMove_{k}"), r));
+        }
+    });
+    if let Some(mv) = c.moves.get(open_move) {
+        ui.add_space(4.0);
+        egui::Frame::new().fill(Color32::from_black_alpha(60)).corner_radius(10.0).inner_margin(12.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            // what it is: its type, kind, power, accuracy, cost
+            ui.horizontal(|ui| {
+                if let Some(t) = &mv.ty {
+                    let g = ui.painter().layout_no_wrap(t.name.clone(), FontId::proportional(11.0), Color32::WHITE).size().x;
+                    let (at, _) = ui.allocate_exact_size(Vec2::new(g + 12.0, 18.0), Sense::hover());
+                    tag(ui.painter(), at.min, &t.name, t.color, ink_on(t.color));
+                }
+                let facts = [
+                    mv.category.to_string(),
+                    if mv.power > 0 { format!("Power {}", mv.power) } else { "No power".to_string() },
+                    if mv.accuracy > 0 { format!("Accuracy {}%", mv.accuracy) } else { "Never misses".to_string() },
+                    format!("MP {}", mv.mp),
+                ];
+                ui.label(RichText::new(facts.join("  ·  ")).size(12.5).color(Color32::WHITE));
+            });
+            if !mv.description.is_empty() {
+                ui.label(RichText::new(&mv.description).size(12.5).color(soft));
+            }
+            ui.add_space(6.0);
+            // its levels: those reached lit, the one it's at marked
+            egui::Grid::new(("hud-team-move-levels", m.id.as_str(), open_move)).num_columns(3).spacing([12.0, 5.0]).show(ui, |ui| {
+                for (k, line) in mv.levels.iter().enumerate() {
+                    let lv = k as u8 + 1;
+                    let reached = lv <= mv.level;
+                    let ink = if reached { Color32::WHITE } else { Color32::from_white_alpha(105) };
+                    ui.label(RichText::new(format!("Lv {lv}")).font(menu_font(13.0)).color(ink));
+                    ui.label(RichText::new(line).size(12.5).color(if reached { Color32::from_white_alpha(225) } else { Color32::from_white_alpha(105) }));
+                    if lv == mv.level {
+                        ui.label(RichText::new("now").size(11.5).color(LIFE_COLOR));
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+            let words = match mv.next {
+                Some(n) => format!("XP {} of {} for Lv {}", mv.xp, n, mv.level + 1),
+                None => format!("XP {}: the top level", mv.xp),
+            };
+            ui.label(RichText::new(words).size(12.0).color(soft));
+        });
+    }
+    out
+}
+
+/// A field's title in the toolbar: white, in Medium, as tall as the controls beside it.
+fn field_label(ui: &mut egui::Ui, words: &str) {
+    let w = ui.painter().layout_no_wrap(words.to_string(), menu_font(14.0), Color32::WHITE).size().x;
+    ui.add_sized(Vec2::new(w, 24.0), egui::Label::new(RichText::new(words).font(menu_font(14.0)).color(Color32::WHITE)));
+}
+
+/// A thumbnail's mark, and a pin's: their places on the board.
+fn thumb_mark(slot: usize) -> String {
+    format!("uiTeamThumb_{slot}")
+}
+
+fn pin_mark(slot: usize) -> String {
+    format!("uiTeamPin_{slot}")
 }
 
 /// A small button with an icon on it, as the HUD's are (white on a faint ground, brighter
@@ -603,21 +949,29 @@ fn dropdown_frame() -> egui::Frame {
     egui::Frame::new().fill(Color32::from_rgb(26, 33, 49)).corner_radius(10.0).inner_margin(8.0).stroke(Stroke::new(1.0, Color32::from_white_alpha(45)))
 }
 
-/// The window of every creature the player has (View all): a board of cards, five a row,
-/// the main first, then as the Team's list has them (the first row is the list's five), or as
-/// sorted (a dropdown) and filtered by type (a dropdown of checkboxes, All and None at its
-/// top), the main first all the same. A card clicked (A on it) pins it as the main. The
-/// game's buttons work it all: the arrows or the d-pad move a ring over the cards and the
-/// controls above them (and in a dropdown, over its choices), A presses, L and R go through
-/// the sorts, B closes a dropdown, else the board. Close (its icon), B, Esc or a click beside
-/// it closes it: false then.
+/// The window of every creature the player has (View all), on frosted glass: a board of
+/// cards, five a row, the main first, then as the Team's list has them (the first row is the
+/// list's five), or as sorted (a dropdown) and filtered by type (a dropdown of checkboxes,
+/// All and None at its top), the main first all the same. A card's pin (shown while it's
+/// hovered) pins it as the main. A card clicked opens its details: the cards turn into
+/// thumbnails, three a row on the left (one clicked shows its own), and the creature shows on
+/// the right with its lifeforce, its moves (one picked shows its levels) and a button to pin
+/// it. The game's buttons work it all: the arrows or the d-pad move a ring over the cards (or
+/// the thumbnails), the controls and an open dropdown's choices, A presses, L and R go
+/// through the sorts, B closes a dropdown, then the details, then the board; the info icon
+/// says so. Close (its icon), Esc or a click beside it closes it: false then.
 fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &Input, board: &mut Board) -> bool {
     let mut open = true;
     let ids: Vec<String> = team.iter().map(|m| m.id.clone()).collect();
+    // the details of one still in the team
+    if board.detail.as_ref().is_some_and(|d| !ids.contains(d)) {
+        board.detail = None;
+    }
     // a dropdown open from before: Esc or B closes it, not the board; its button clicked
     // again closes it too
     let (sort_was, types_was) = (board.sort_open, board.types_open);
     let was_open = sort_was || types_was;
+    let detail_was = board.detail.clone();
     // the game's buttons: the ring shows once they're used (always with a controller in
     // hand), and the mouse moving hides it; the first press only shows where it is
     let pad = crate::pads::on_pad();
@@ -657,10 +1011,24 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
         log.board(&ids, keep, |a, b| compare(sort, &team[a], &team[b]), board.reverse)
     };
     let main = log.main_of(&ids);
-    // the cards as wide as the screen has room for, up to their size
+    // the details opening (the cards turning into thumbnails) or closing, 0 to 1
+    let t = ctx.animate_bool_with_time(Id::new("hud-team-detail"), board.detail.is_some(), MORPH_S);
+    let settled = t <= 0.0 || t >= 1.0;
+    // the cards as wide as the screen has room for, up to their size; the board as tall as
+    // its rows (scrolling past the room), the details at least as tall as theirs
     let screen = ctx.content_rect();
     let card_w = ((screen.width() - 110.0 - CARD_GAP * (PER_ROW - 1) as f32) / PER_ROW as f32).clamp(110.0, CARD_W);
     let width = card_w * PER_ROW as f32 + CARD_GAP * (PER_ROW - 1) as f32;
+    let rows = order.len().div_ceil(PER_ROW).max(1);
+    let grid_h = rows as f32 * CARD_H + (rows - 1) as f32 * CARD_GAP;
+    let room = (screen.height() - 190.0).max(CARD_H + 8.0);
+    let board_h = grid_h.min(room);
+    let detail_h = grid_h.max(DETAIL_H).min(room.max(DETAIL_H));
+    let area_h = board_h + (detail_h - board_h) * t;
+    let left_w = THUMBS_PER_ROW as f32 * THUMB_W + (THUMBS_PER_ROW - 1) as f32 * THUMB_GAP;
+    let thumbs_h = order.len().div_ceil(THUMBS_PER_ROW).max(1) as f32 * (THUMB_H + THUMB_GAP);
+    let card_at = |origin: Pos2, slot: usize| Rect::from_min_size(origin + Vec2::new((slot % PER_ROW) as f32 * (card_w + CARD_GAP), (slot / PER_ROW) as f32 * (CARD_H + CARD_GAP)), Vec2::new(card_w, CARD_H));
+    let thumb_at = |origin: Pos2, slot: usize| Rect::from_min_size(origin + Vec2::new((slot % THUMBS_PER_ROW) as f32 * (THUMB_W + THUMB_GAP), (slot / THUMBS_PER_ROW) as f32 * (THUMB_H + THUMB_GAP)), Vec2::new(THUMB_W, THUMB_H));
     // the places for the ring (the board's, and an open dropdown's), what was clicked
     let mut stops: Vec<layout::Stop> = vec![];
     let mut pops: Vec<layout::Stop> = vec![];
@@ -673,9 +1041,29 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
         }
         stops.push(layout::Stop { name, rect: r.rect });
     };
-    let modal = egui::Modal::new(Id::new("hud-team-window")).frame(dialog_frame()).show(ctx, |ui| {
+    // a creature's pin: its mark where it is, pressed
+    let pinned = |slot: usize, pin: Option<(f32, bool, Rect)>, clicked: &mut Option<String>| {
+        if let Some((_, pressed, at)) = pin {
+            platform::set_hook(&pin_mark(slot), &place(at));
+            if pressed {
+                *clicked = Some(pin_mark(slot));
+            }
+        }
+    };
+    // the game's buttons, in words, for the info icon
+    let b = |b: Button| button_label(b);
+    let controls = format!(
+        "The arrows or the d-pad: from one to the next\n{}: open a creature's details, or press\n{}, {}: change the sort\n{}: back (from a dropdown, from the details), then close\nA card's pin (it shows on the card): make it your main",
+        b(Button::A),
+        b(Button::L),
+        b(Button::R),
+        b(Button::B)
+    );
+    let modal = egui::Modal::new(Id::new("hud-team-window")).frame(egui::Frame::new().inner_margin(22.0)).show(ctx, |ui| {
+        // the frosted glass behind it all, drawn once its size is known
+        let glass = ui.painter().add(egui::Shape::Noop);
         ui.set_width(width);
-        // the title, how many, Close
+        // the title, how many, the controls' words, Close
         ui.horizontal(|ui| {
             ui.label(RichText::new("Team").font(title_font(26.0)).color(Color32::WHITE));
             ui.add_space(6.0);
@@ -685,32 +1073,43 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
                 (1, _) => "1 creature".to_string(),
                 (n, _) => format!("{n} creatures"),
             };
-            ui.label(RichText::new(count).color(Color32::from_white_alpha(165)));
+            ui.label(RichText::new(count).color(Color32::from_white_alpha(185)));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let close = icon_button(ui, egui::include_image!("../icons/close.svg"), "Close");
                 stop(&mut stops, CLOSE.to_string(), &close, &mut clicked);
+                ui.add_space(2.0);
+                let info = icon_button(ui, egui::include_image!("../icons/info.svg"), &controls);
+                platform::set_hook("uiTeamInfo", &place(info.rect));
             });
         });
         ui.add_space(8.0);
-        // how they're sorted and which types show: a dropdown each
-        let (sort_button, types_button) = ui
-            .horizontal(|ui| {
-                ui.label(RichText::new("Sort").color(Color32::from_white_alpha(150)));
-                let sort = dropdown_button(ui, board.sort.label(), board.sort_open);
-                stop(&mut stops, SORT.to_string(), &sort, &mut clicked);
-                let r = ui.selectable_label(board.reverse, "Reversed").on_hover_text("The other way round (the main stays first)");
-                stop(&mut stops, "uiTeamReverse".to_string(), &r, &mut clicked);
-                ui.add_space(14.0);
-                ui.label(RichText::new("Types").color(Color32::from_white_alpha(150)));
-                let words = match shown_types.len() {
-                    n if n == kinds.len() => "All".to_string(),
-                    0 => "None".to_string(),
-                    1 | 2 => shown_types.join(", "),
-                    n => format!("{n} of {}", kinds.len()),
-                };
-                let types = dropdown_button(ui, &words, board.types_open);
-                stop(&mut stops, TYPES.to_string(), &types, &mut clicked);
-                (sort, types)
+        // how they're sorted and which types show, in a box: a dropdown each
+        let (sort_button, types_button) = egui::Frame::new()
+            .stroke(Stroke::new(1.0, Color32::from_white_alpha(70)))
+            .corner_radius(10.0)
+            .inner_margin(egui::Margin::symmetric(10, 5))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    field_label(ui, "Sort");
+                    let sort = dropdown_button(ui, board.sort.label(), board.sort_open);
+                    stop(&mut stops, SORT.to_string(), &sort, &mut clicked);
+                    let r = ui.add(egui::Button::new(RichText::new("Reversed").color(Color32::WHITE)).selected(board.reverse).min_size(Vec2::new(0.0, 24.0))).on_hover_text("The other way round (the main stays first)");
+                    stop(&mut stops, "uiTeamReverse".to_string(), &r, &mut clicked);
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    field_label(ui, "Types");
+                    let words = match shown_types.len() {
+                        n if n == kinds.len() => "All".to_string(),
+                        0 => "None".to_string(),
+                        1 | 2 => shown_types.join(", "),
+                        n => format!("{n} of {}", kinds.len()),
+                    };
+                    let types = dropdown_button(ui, &words, board.types_open);
+                    stop(&mut stops, TYPES.to_string(), &types, &mut clicked);
+                    (sort, types)
+                })
+                .inner
             })
             .inner;
         // the sort's: its choices, one picked closes it
@@ -747,47 +1146,103 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
             }
         });
         ui.add_space(10.0);
-        // the cards, five a row
-        egui::ScrollArea::vertical().max_height((screen.height() - 190.0).max(CARD_H + 8.0)).auto_shrink([false, true]).show(ui, |ui| {
-            for (row, cards) in order.chunks(PER_ROW).enumerate() {
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = CARD_GAP;
-                    for (k, &i) in cards.iter().enumerate() {
-                        let name = card_mark(row * PER_ROW + k);
-                        let r = card(ui, &team[i], Some(i) == main, card_w);
-                        // the ring brought it here: in view
-                        if board.ring && board.focus.as_deref() == Some(name.as_str()) && board.scrolled.as_deref() != Some(name.as_str()) {
-                            r.scroll_to_me(None);
-                            board.scrolled = Some(name.clone());
-                        }
-                        stop(&mut stops, name, &r, &mut clicked);
-                    }
-                });
-                ui.add_space(CARD_GAP);
+        // the cards, or the details (the thumbnails left, the creature right), or on the way
+        let (area, _) = ui.allocate_exact_size(Vec2::new(width, area_h), Sense::hover());
+        // the ring brought it here: in view
+        let follow = |r: &egui::Response, name: &str, scrolled: &mut Option<String>| {
+            if board.ring && board.focus.as_deref() == Some(name) && scrolled.as_deref() != Some(name) {
+                r.scroll_to_me(None);
+                *scrolled = Some(name.to_string());
             }
-            if order.is_empty() {
-                ui.label(RichText::new("Your creatures show here.").color(Color32::from_white_alpha(165)));
-            }
-        });
-        // the game's buttons' words
-        let b = |b: Button| button_label(b);
-        let words = if was_open {
-            format!("{}: pick  ·  {}: back", b(Button::A), b(Button::B))
-        } else {
-            format!("{}, {}: sort  ·  {}: pin as your main  ·  {}: close", b(Button::L), b(Button::R), b(Button::A), b(Button::B))
         };
-        ui.label(RichText::new(words).size(12.0).color(Color32::from_white_alpha(130)));
+        let mut scrolled = board.scrolled.clone();
+        if t <= 0.0 {
+            // the board: the cards, five a row
+            let mut child = ui.new_child(egui::UiBuilder::new().max_rect(area));
+            egui::ScrollArea::vertical().id_salt("hud-team-cards").max_height(area.height()).auto_shrink([false, false]).show(&mut child, |ui| {
+                let (content, _) = ui.allocate_exact_size(Vec2::new(width, grid_h), Sense::hover());
+                for (slot, &i) in order.iter().enumerate() {
+                    let (m, is_main) = (&team[i], Some(i) == main);
+                    let rect = card_at(content.min, slot);
+                    let (r, pin) = interact_item(ui, m, is_main, rect, card_pic(rect).left_top() + Vec2::splat(12.0));
+                    let hover = ui.ctx().animate_bool_with_time(r.id.with("hover"), r.contains_pointer(), 0.15);
+                    paint_item(ui, m, is_main, rect, rect, 0.0, hover, pin.map(|p| p.0));
+                    let name = card_mark(slot);
+                    follow(&r, &name, &mut scrolled);
+                    stop(&mut stops, name, &r, &mut clicked);
+                    pinned(slot, pin, &mut clicked);
+                }
+                if order.is_empty() {
+                    ui.put(content, egui::Label::new(RichText::new("Your creatures show here.").color(Color32::from_white_alpha(185))));
+                }
+            });
+        } else if t >= 1.0 {
+            // the details: the thumbnails, three a row, on the left
+            let mut left = ui.new_child(egui::UiBuilder::new().max_rect(Rect::from_min_size(area.min, Vec2::new(left_w + 8.0, area.height()))));
+            egui::ScrollArea::vertical().id_salt("hud-team-thumbs").max_height(area.height()).auto_shrink([false, false]).show(&mut left, |ui| {
+                let (content, _) = ui.allocate_exact_size(Vec2::new(left_w, thumbs_h), Sense::hover());
+                for (slot, &i) in order.iter().enumerate() {
+                    let (m, is_main) = (&team[i], Some(i) == main);
+                    let rect = thumb_at(content.min, slot);
+                    let (r, pin) = interact_item(ui, m, is_main, rect, thumb_pic(rect).left_top() + Vec2::splat(9.0));
+                    let shown = board.detail.as_deref() == Some(m.id.as_str());
+                    let hover = ui.ctx().animate_bool_with_time(r.id.with("hover"), r.contains_pointer() || shown, 0.15);
+                    paint_item(ui, m, is_main, rect, rect, 1.0, hover, pin.map(|p| p.0));
+                    if shown {
+                        ui.painter().rect_stroke(rect.expand(2.0), 11.0, Stroke::new(2.0, Color32::from_white_alpha(220)), egui::StrokeKind::Outside);
+                    }
+                    let name = thumb_mark(slot);
+                    follow(&r, &name, &mut scrolled);
+                    stop(&mut stops, name, &r, &mut clicked);
+                    pinned(slot, pin, &mut clicked);
+                }
+            });
+            // and the creature, on the right
+            let panel = Rect::from_min_max(Pos2::new(area.left() + left_w + 18.0, area.top()), area.max);
+            let mut right = ui.new_child(egui::UiBuilder::new().max_rect(panel));
+            if let Some(m) = board.detail.as_ref().and_then(|d| team.iter().find(|m| &m.id == d)) {
+                let is_main = main.is_some_and(|i| team[i].id == m.id);
+                egui::Frame::new().fill(Color32::from_rgba_unmultiplied(18, 24, 38, 215)).corner_radius(12.0).inner_margin(14.0).stroke(Stroke::new(1.0, Color32::from_white_alpha(35))).show(&mut right, |ui| {
+                    ui.set_min_size(panel.size() - Vec2::splat(28.0));
+                    egui::ScrollArea::vertical().id_salt("hud-team-detail").auto_shrink([false, false]).show(ui, |ui| {
+                        for (name, r) in detail_panel(ui, m, is_main, board.move_open) {
+                            stop(&mut stops, name, &r, &mut clicked);
+                        }
+                    });
+                });
+            }
+        } else {
+            // on the way: the cards slide into their thumbnails' places (and back), the
+            // details' panel fading in (or out); nothing to press meanwhile
+            for (slot, &i) in order.iter().enumerate() {
+                paint_item(ui, &team[i], Some(i) == main, card_at(area.min, slot), thumb_at(area.min, slot), t, 0.0, (Some(i) == main).then_some(0.0));
+            }
+            let panel = Rect::from_min_max(Pos2::new(area.left() + left_w + 18.0, area.top()), area.max);
+            let fade = (2.0 * t - 1.0).clamp(0.0, 1.0);
+            if fade > 0.0 {
+                ui.painter().rect_filled(panel, 12.0, Color32::from_rgba_unmultiplied(18, 24, 38, (215.0 * fade) as u8));
+            }
+        }
+        board.scrolled = scrolled;
+        // the glass: frosted as the HUD's buttons, a little darker for the words on it
+        let r = ui.min_rect().expand(22.0);
+        let mut shapes = layout::frosted_shapes(r, 18.0, 0.0);
+        let edge = shapes.len() - 1;
+        shapes.insert(edge, egui::epaint::RectShape::filled(r, 18.0, Color32::from_black_alpha(95)).into());
+        ui.painter().set(glass, egui::Shape::Vec(shapes));
     });
-    // the ring: over an open dropdown's choices, else the board's (onto the first card if
-    // it's nowhere yet); moved, pressed
+    // the ring (not while the cards are on their way): over an open dropdown's choices, else
+    // the board's (onto the first card, or the thumbnail shown, if it's nowhere yet); moved,
+    // pressed
     let popup = board.sort_open || board.types_open;
-    if board.ring {
+    if board.ring && settled {
         let places = if popup && !pops.is_empty() { &pops } else { &stops };
         let at = board.focus.as_ref().and_then(|f| places.iter().position(|s| &s.name == f));
+        let first = if board.detail.is_some() { thumb_mark(0) } else { card_mark(0) };
         let at = match at {
             Some(at) => moved.map_or(at, |d| layout::step(places, at, d)),
             None if popup => 0,
-            None => places.iter().position(|s| s.name == card_mark(0)).unwrap_or(0),
+            None => places.iter().position(|s| s.name == first).unwrap_or(0),
         };
         if let Some(s) = places.get(at) {
             board.focus = Some(s.name.clone());
@@ -797,6 +1252,9 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
             }
         }
     }
+    // a creature's slot on the board, by its id; the one at a mark's slot
+    let slot_of = |id: &str| order.iter().position(|&i| team[i].id == id);
+    let at_slot = |name: &str, prefix: &str| name.strip_prefix(prefix).and_then(|n| n.parse::<usize>().ok()).and_then(|slot| order.get(slot)).map(|&i| &team[i]);
     // what was clicked or pressed
     match clicked.as_deref() {
         Some(CLOSE) => open = false,
@@ -814,6 +1272,15 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
         Some("uiTeamReverse") => board.reverse = !board.reverse,
         Some("uiTeamTypes_All") => board.hidden.clear(),
         Some("uiTeamTypes_None") => board.hidden = kinds.iter().map(|t| t.name.clone()).collect(),
+        Some("uiTeamBack") => {
+            board.focus = board.detail.as_deref().and_then(slot_of).map(card_mark);
+            board.detail = None;
+        }
+        Some("uiTeamDetailPin") => {
+            if let Some(d) = board.detail.clone() {
+                log.pin(&d);
+            }
+        }
         Some(name) if name.starts_with("uiTeamSort_") => {
             if let Some(s) = Sort::ALL.into_iter().find(|s| mark_of("uiTeamSort_", s.label()) == name) {
                 board.sort = s;
@@ -828,18 +1295,33 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
                 }
             }
         }
-        Some(name) if name.starts_with("uiTeamCard_") => {
-            if let Some(&i) = name.strip_prefix("uiTeamCard_").and_then(|n| n.parse::<usize>().ok()).and_then(|slot| order.get(slot)) {
-                log.pin(&team[i].id);
-                // the ring follows it to its place: first
-                if board.ring {
-                    board.focus = Some(card_mark(0));
+        Some(name) if name.starts_with("uiTeamPin_") => {
+            if let Some(m) = at_slot(name, "uiTeamPin_") {
+                log.pin(&m.id);
+            }
+        }
+        Some(name) if name.starts_with("uiTeamMove_") => {
+            if let Some(k) = name.strip_prefix("uiTeamMove_").and_then(|n| n.parse::<usize>().ok()) {
+                board.move_open = k;
+            }
+        }
+        Some(name) if name.starts_with("uiTeamCard_") || name.starts_with("uiTeamThumb_") => {
+            let card = name.starts_with("uiTeamCard_");
+            if let Some(m) = at_slot(name, if card { "uiTeamCard_" } else { "uiTeamThumb_" }) {
+                if board.detail.as_deref() != Some(m.id.as_str()) {
+                    board.move_open = 0;
+                }
+                board.detail = Some(m.id.clone());
+                // the ring onto its thumbnail
+                if card && board.ring {
+                    board.focus = slot_of(&m.id).map(thumb_mark);
                 }
             }
         }
         _ => {}
     }
-    // Esc or B: a dropdown closes (the ring back on its button), else the board
+    // Esc or B: a dropdown closes (the ring back on its button), else the details (the ring
+    // back on its card), else the board; a click beside it closes it
     if was_open && (back || modal.should_close()) {
         if board.focus.as_deref().is_some_and(|f| f.starts_with("uiTeamSort_")) {
             board.focus = Some(SORT.to_string());
@@ -847,15 +1329,22 @@ fn team_window(ctx: &egui::Context, team: &[Member], log: &mut TeamLog, input: &
             board.focus = Some(TYPES.to_string());
         }
         (board.sort_open, board.types_open) = (false, false);
+    } else if back && detail_was.is_some() {
+        board.focus = detail_was.as_deref().and_then(slot_of).map(card_mark);
+        board.detail = None;
     } else if modal.should_close() || back {
         open = false;
     }
+    let shown = board.detail.as_ref().and_then(|d| team.iter().find(|m| &m.id == d));
     platform::set_hook("hudboard", &order.iter().map(|&i| team[i].id.as_str()).collect::<Vec<_>>().join(","));
     platform::set_hook("hudboardlevels", &order.iter().map(|&i| team[i].level.to_string()).collect::<Vec<_>>().join(","));
     platform::set_hook("hudboardsort", &format!("{}{}", board.sort.label(), if board.reverse { " reversed" } else { "" }));
     platform::set_hook("hudboardtypes", &shown_types.join(","));
     platform::set_hook("hudboardpopup", if board.sort_open { "sort" } else if board.types_open { "types" } else { "" });
     platform::set_hook("hudboardring", if board.ring { board.focus.as_deref().unwrap_or("") } else { "" });
+    platform::set_hook("hudboarddetail", shown.map_or("", |m| m.id.as_str()));
+    platform::set_hook("hudboardmove", &shown.and_then(|m| m.card.moves.get(board.move_open)).map(|mv| format!("{}:{}:{}", mv.name, mv.level, mv.levels.len())).unwrap_or_default());
+    platform::set_hook("hudboardlost", &team.iter().filter(|m| m.card.lost()).map(|m| m.id.as_str()).collect::<Vec<_>>().join(","));
     open
 }
 
