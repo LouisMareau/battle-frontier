@@ -55,8 +55,8 @@ try {
   await editor();
 
   // 1. as it first comes
-  check('as it first comes: the Toolbox left, the Inspector right, the Assets along the bottom, the rest closed', (await data('layout')) === 'toolbox=left inspector=right assets=bottom world=- timeline=- requests=- post=- abilities=-', await data('layout'));
-  const marks = ['uiToolbox', 'uiInspector', 'uiAssets', 'uiWorld', 'uiTimeline', 'uiRequests', 'uiPost', 'uiAbilities'];
+  check('as it first comes: the Toolbox left, the Inspector right, the Assets along the bottom, the rest closed', (await data('layout')) === 'toolbox=left inspector=right assets=bottom world=- timeline=- requests=- post=- abilities=- builds=-', await data('layout'));
+  const marks = ['uiToolbox', 'uiInspector', 'uiAssets', 'uiWorld', 'uiTimeline', 'uiRequests', 'uiPost', 'uiAbilities', 'uiBuilds'];
   const xs = [];
   for (const m of marks) xs.push((await at(m))[0]);
   check('  a toggle each, at the top bar\'s right end, in that order', xs.every((x, i) => x > 700 && (i === 0 || x > xs[i - 1])), `${xs}`);

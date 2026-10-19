@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Builds: the game going into a box, an arrow down into it -->
+  <path d="M4 11h16v8a1.5 1.5 0 0 1-1.5 1.5h-13A1.5 1.5 0 0 1 4 19Z"/>
+  <path d="M4 11l1.8-3.5H9M20 11l-1.8-3.5H15"/>
+  <path d="M12 3v9M9 9l3 3 3-3"/>
+</svg>

@@ -35,6 +35,7 @@ pub(super) enum Pane {
     Requests,
     Post,
     Abilities,
+    Builds,
 }
 
 /// Where a docked panel goes.
@@ -73,7 +74,7 @@ impl Default for PaneState {
 }
 
 impl Pane {
-    pub const ALL: [Pane; 8] = [Pane::Toolbox, Pane::Inspector, Pane::Assets, Pane::World, Pane::Timeline, Pane::Requests, Pane::Post, Pane::Abilities];
+    pub const ALL: [Pane; 9] = [Pane::Toolbox, Pane::Inspector, Pane::Assets, Pane::World, Pane::Timeline, Pane::Requests, Pane::Post, Pane::Abilities, Pane::Builds];
 
     pub fn title(self) -> &'static str {
         match self {
@@ -85,6 +86,7 @@ impl Pane {
             Pane::Requests => "Requests",
             Pane::Post => "Post-processing",
             Pane::Abilities => "Abilities",
+            Pane::Builds => "Builds",
         }
     }
 
@@ -99,6 +101,7 @@ impl Pane {
             Pane::Requests => "requests",
             Pane::Post => "post",
             Pane::Abilities => "abilities",
+            Pane::Builds => "builds",
         }
     }
 
@@ -113,6 +116,7 @@ impl Pane {
             Pane::Requests => "uiRequests",
             Pane::Post => "uiPost",
             Pane::Abilities => "uiAbilities",
+            Pane::Builds => "uiBuilds",
         }
     }
 
@@ -127,6 +131,7 @@ impl Pane {
             Pane::Requests => "Pictures of creatures and props for Claude to model in Blender: drop PNG, JPG or WebP files on the window while it's open",
             Pane::Post => "The toon look: how what's toon is lit, and its ink lines; the clouds, the wind",
             Pane::Abilities => "Every ability: make one, change what it does, how it grows and what it becomes, and its timeline",
+            Pane::Builds => "Build the game into a folder: the desktop program or the site, without the terminal",
         }
     }
 
@@ -140,6 +145,7 @@ impl Pane {
             Pane::Requests => egui::include_image!("../../icons/requests.svg"),
             Pane::Post => egui::include_image!("../../icons/post.svg"),
             Pane::Abilities => egui::include_image!("../../icons/abilities.svg"),
+            Pane::Builds => egui::include_image!("../../icons/builds.svg"),
         }
     }
 
@@ -157,6 +163,7 @@ impl Pane {
             Pane::Requests => floating(Side::Right, [270.0, 60.0, 840.0, 760.0]),
             Pane::Post => floating(Side::Right, [880.0, 70.0, 340.0, 620.0]),
             Pane::Abilities => floating(Side::Bottom, [160.0, 60.0, 1000.0, 640.0]),
+            Pane::Builds => floating(Side::Right, [700.0, 80.0, 440.0, 560.0]),
         }
     }
 
@@ -165,6 +172,7 @@ impl Pane {
         match self {
             Pane::Requests => Vec2::new(620.0, 420.0),
             Pane::Abilities => Vec2::new(520.0, 320.0),
+            Pane::Builds => Vec2::new(380.0, 300.0),
             _ => Vec2::new(220.0, 140.0),
         }
     }

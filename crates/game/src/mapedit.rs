@@ -15,6 +15,7 @@ mod actors;
 mod around;
 mod assets;
 mod build;
+mod builds;
 mod dock;
 mod events;
 mod floors;
@@ -264,6 +265,8 @@ pub struct MapEditor {
     assets: assets::Assets,
     /// pictures for Claude to model in Blender
     requests: requests::Requests,
+    /// the Builds panel: the game built into a folder
+    builds: builds::Builds,
     /// the welcome (what the editor is, how to add to the game) on top of everything
     pub welcome: bool,
     /// its "Don't show this again"
@@ -494,6 +497,7 @@ impl MapEditor {
             focus_sent: None,
             assets: assets::Assets::default(),
             requests: requests::Requests::default(),
+            builds: Default::default(),
             welcome: false,
             welcome_hide: false,
             backdrop_t0: None,
@@ -1487,6 +1491,12 @@ impl MapEditor {
         if let Some(said) = self.requests.said.take() {
             self.status = said;
         }
+        let mut builds = self.dock.get(dock::Pane::Builds);
+        if let Some(said) = self.builds.window(ui, &mut builds) {
+            self.status = said;
+        }
+        builds.open = self.builds.open;
+        self.dock.set(dock::Pane::Builds, builds);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -1553,6 +1563,7 @@ impl MapEditor {
             dock::Pane::Requests => self.requests.open,
             dock::Pane::Post => self.post.open,
             dock::Pane::Abilities => self.abilities.open,
+            dock::Pane::Builds => self.builds.open,
             dock::Pane::Toolbox | dock::Pane::Inspector => return None,
         })
     }
@@ -1565,6 +1576,7 @@ impl MapEditor {
             dock::Pane::Requests => self.requests.open = open,
             dock::Pane::Post => self.post.open = open,
             dock::Pane::Abilities => self.abilities.open = open,
+            dock::Pane::Builds => self.builds.open = open,
             dock::Pane::Toolbox | dock::Pane::Inspector => {}
         }
     }
