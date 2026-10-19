@@ -749,7 +749,7 @@ mod tests {
         b.floors[0].holes.push(Hole { cell: [0, 0], railing: String::new() });
         b.floors[1].holes.push(Hole { cell: [5, 5], railing: String::new() });
         b.floors[1].walls.push(WallStyle { cell: [0, 0], side: "s".into(), wall: "bricks".into() });
-        b.floors[1].tiles.push(CellTile { cell: [0, 1], tile: "table".into() });
+        b.floors[1].tiles.push(CellTile { cell: [0, 1], tile: "table".into(), ..Default::default() });
         let wrong = mine(&b);
         assert!(wrong.iter().any(|p| p.contains("ground floor has holes")), "{wrong:?}");
         assert!(wrong.iter().any(|p| p.contains("a hole at [5, 5]")), "{wrong:?}");
