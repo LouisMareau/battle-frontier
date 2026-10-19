@@ -254,7 +254,11 @@ impl MapEditor {
 
     fn new_zone(&mut self) {
         let n = self.map.zones.len() + 1;
-        self.map.zones.push(Zone { mark: self.map.free_zone_mark(), name: format!("Zone {n}"), ..Default::default() });
+        let mark = self.map.free_zone_mark();
+        // nobody lives there yet: a pool the spawns record still has under its letter was a
+        // zone's the map no longer has (its file put back to an older one, say)
+        self.spawns.zones.remove(&mark);
+        self.map.zones.push(Zone { mark, name: format!("Zone {n}"), ..Default::default() });
         self.zone_sel = Some(self.map.zones.len() - 1);
     }
 
@@ -544,5 +548,31 @@ impl MapEditor {
         let coming = self.spawner.roamers.iter().filter(|r| r.phase == Phase::Coming).count();
         let leaving = self.spawner.roamers.iter().filter(|r| r.phase == Phase::Leaving).count();
         format!("{} creatures · {coming} coming · {leaving} going back", self.spawner.roamers.len())
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+mod tests {
+    use std::path::PathBuf;
+    use std::sync::Arc;
+
+    use super::*;
+
+    #[test]
+    fn a_new_zone_starts_with_nobody() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/tests").join(format!("zones-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let mut ed = MapEditor::new(Arc::new(content::Content::default()), None, crate::platform::Files::new(root.to_str().unwrap()));
+        // the map has zone "a"; the spawns record also has creatures under "b", a zone gone
+        // from the map
+        ed.map.zones = vec![Zone { mark: "a".into(), ..Default::default() }];
+        ed.spawns.zones.insert("a".into(), [("day".to_string(), vec![("one".to_string(), 5)])].into());
+        ed.spawns.zones.insert("b".into(), [("day".to_string(), vec![("two".to_string(), 5), ("three".to_string(), 7)])].into());
+        ed.new_zone();
+        assert_eq!(ed.map.zones.last().map(|z| z.mark.as_str()), Some("b"), "the letter that's free on the map");
+        assert_eq!(ed.zone_sel, Some(1));
+        assert!(ed.pool_mut(1).is_empty(), "nobody in it");
+        assert_eq!(ed.spawns.zones["a"]["day"].len(), 1, "the other zones' creatures kept");
+        std::fs::remove_dir_all(&root).ok();
     }
 }
