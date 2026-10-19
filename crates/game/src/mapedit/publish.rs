@@ -33,11 +33,10 @@ use crate::hud::TEXT;
 /// The game's repository on GitHub.
 pub(super) const OWNER: &str = "LouisMareau";
 pub(super) const REPO: &str = "battle-frontier";
-/// The editor's OAuth App on GitHub (its device flow on), whose client id is public: empty
-/// until the repository's owner registers one (README, "Publish"); GITHUB_CLIENT_ID overrides
-/// it (where the editor runs, or where it's built: the site's build on Cloudflare). Without
-/// one, a token pasted signs in.
-const CLIENT_ID: &str = "";
+/// The editor's OAuth App on GitHub ("Battle Frontier editor", the repository owner's, its
+/// device flow on), whose client id is public; GITHUB_CLIENT_ID overrides it (where the editor
+/// runs, or where it's built). A token pasted signs in too.
+const CLIENT_ID: &str = "Ov23liQZPiLKCAggEM69";
 /// What signing in asks for: forks, branches and pull requests on public repositories.
 const SCOPE: &str = "public_repo";
 /// What's published: the game's own content (never temporary/, never private/).

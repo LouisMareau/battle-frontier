@@ -7,7 +7,7 @@
 // games here", then picked on the map (a cell clicked, then dragged from the way the player
 // faces), marked there, turned, and in the World view; then Publish in the browser, against a
 // stand-in for GitHub on the page's own address: signed in by a code, the start saved sent as
-// a pull request from a fork (the site built with GITHUB_CLIENT_ID set, for the code).
+// a pull request from a fork.
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';

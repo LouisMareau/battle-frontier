@@ -88,7 +88,7 @@ node tools/floorcheck.mjs              # floors laid with a set of tiles: a hous
 node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/levelcheck.mjs              # painting levels: the brush on the cell under the pointer, on its own ground, whatever the level picked (raised from the lowland, sunk from a hill's top), a stroke held still painting its own cells and no more, ground raised to meet a hill's top joining it with no seam, saved
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
-node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (signed in by a code, the start saved sent as a pull request from a fork, signed out; build the site with GITHUB_CLIENT_ID set)
+node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (signed in by a code, the start saved sent as a pull request from a fork, signed out)
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, always a main, the last battles, View all's board of cards (its order, sorts, a type, a card's pin, a creature's details and moves, one lost for good), a controller; the pixelation (as dense as asked, with the camera's zoom: hook `pixelzoom`) and LCD, an Options category closed and opened
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
@@ -612,12 +612,11 @@ same on both: on a thread of their own on the desktop, the page's fetch in the b
 API answers other sites, but github.com's sign-in doesn't, so in the browser its two calls go
 through the site's own address: a Cloudflare Pages Function (`functions/github/login/`, only
 those two, nothing kept; `_routes.json`, written by `tools/cloudflare-build.sh`, keeps every
-other address plain files). Signing in by code needs the repository's own OAuth App, set up
-once by its owner: on GitHub, Settings, Developer settings, OAuth Apps, New OAuth App (any
-homepage and callback address), "Enable Device Flow" ticked, and its Client ID (public) in
-`CLIENT_ID` (`crates/game/src/mapedit/publish.rs`), or in `GITHUB_CLIENT_ID` where the editor
-runs or is built (Cloudflare Pages' environment variables, for the site); until then a token
-pasted signs in. For merging to stay the maintainers', keep the repository's collaborators few
+other address plain files). Signing in by code goes through the repository's own OAuth App,
+"Battle Frontier editor" (its owner's: on GitHub, Settings, Developer settings, OAuth Apps; its
+"Enable Device Flow" ticked; no client secret, as the device flow needs none), its Client ID
+(public) in `CLIENT_ID` (`crates/game/src/mapedit/publish.rs`); `GITHUB_CLIENT_ID` where the
+editor runs or is built overrides it (a fork's own app, say). A token pasted signs in too. For merging to stay the maintainers', keep the repository's collaborators few
 (a branch rule on main asking for a review stops anyone merging their own unreviewed).
 
 **Requests** (in the top bar; the desktop only, the browser's window says why) is where the
