@@ -1,5 +1,6 @@
-//! Buildings' geometry: on each floor, each cell's flooring (open where stairs come up and
-//! over its holes, the holes' railings put together from their style's pieces: `railings`),
+//! Buildings' geometry: on each floor, each cell's flooring on a plain base, so nothing shows
+//! between its planks (open where stairs come up and over its holes, the holes' railings put
+//! together from their style's pieces: `railings`),
 //! walls along the outline (each segment's outside and inside in their styles, patterned,
 //! with holes where doors and windows are), the doors, windows and what stands inside;
 //! pillars as high as the building; a gabled roof on a rectangle, a flat one with a parapet
@@ -360,23 +361,28 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
     for f in floors {
         let floor = &b.floors[f];
         let y0 = base + f as f32 * lh;
-        // the floor, each cell its flooring; open where stairs come up from below, and over
-        // its holes (never the ground floor's), a railing round those
+        // the floor, each cell its flooring on a plain base (what shows between its planks or
+        // slabs, never the ground or the room below); open where stairs come up from below,
+        // and over its holes (never the ground floor's), a railing round those
         let holes = b.stairwells(f, &stairs);
         let open: Vec<(i32, i32)> = if f > 0 { floor.holes.iter().map(|h| (h.cell[0], h.cell[1])).filter(|c| !holes.contains(c)).collect() } else { vec![] };
-        let mut tiles: Vec<(&str, Option<Scene>)> = vec![];
+        let foot = y0 + if f == 0 { 0.02 } else { 0.0 };
+        let mut tiles: Vec<(&str, Option<Flooring>)> = vec![];
         for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c) && !open.contains(c)) {
             let id = floor.tile_at(x, z);
             let k = match tiles.iter().position(|(t, _)| *t == id) {
                 Some(k) => k,
                 None => {
-                    tiles.push((id, model(id)));
+                    tiles.push((id, model(id).map(flooring)));
                     tiles.len() - 1
                 }
             };
             if let Some(tile) = &tiles[k].1 {
-                let at = Vec3::new(ox + x as f32 + 0.5, y0 + if f == 0 { 0.02 } else { 0.0 }, oz + z as f32 + 0.5);
-                put(&mut m, &mut textured, tile, Mat4::from_translation(at));
+                let (x0, z0) = (ox + x as f32, oz + z as f32);
+                let from = m.vertices.len();
+                m.quad([Vec3::new(x0, foot, z0), Vec3::new(x0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0)], tile.under);
+                toon_from(&mut m, from, tile.toon);
+                put(&mut m, &mut textured, &tile.scene, Mat4::from_translation(Vec3::new(x0 + 0.5, foot, z0 + 0.5)));
             }
         }
         // the holes' railings: along their edges where the floor goes on (not where another
@@ -464,6 +470,27 @@ fn put(m: &mut Mesh, textured: &mut Scene, s: &Scene, t: Mat4) {
     m.append(&s.plain, t);
     let only = Scene { plain: Mesh::default(), textured: s.textured.clone() };
     textured.append(&only, t);
+}
+
+/// A flooring's model, and the plain base it lies on, a cell wide at its foot: in its colour
+/// seen from above, darker (in the seams between its planks or slabs), toon if it is.
+struct Flooring {
+    scene: Scene,
+    under: [f32; 4],
+    toon: bool,
+}
+
+/// A flooring whose colours are all in its textures lies on a dark brown.
+fn flooring(scene: Scene) -> Flooring {
+    let toon = scene.plain.vertices.iter().chain(scene.textured.values().flat_map(|t| t.vertices.iter())).any(|v| v.toon > 0.5);
+    let tops: Vec<Vec3> = scene.plain.vertices.iter().filter(|v| v.normal[1] > 0.5).map(|v| Vec3::new(v.color[0], v.color[1], v.color[2])).collect();
+    let under = if tops.is_empty() {
+        color("#3d3229")
+    } else {
+        let c = tops.iter().sum::<Vec3>() / tops.len() as f32 * 0.5;
+        [c.x, c.y, c.z, 1.0]
+    };
+    Flooring { scene, under, toon }
 }
 
 /// What's been made in `m` from `from` on, toon if `toon` (what's made from the wall and roof
@@ -808,6 +835,54 @@ mod tests {
         // none along the outside wall (its south side), none on the ground floor below
         assert!(!baluster(&after, 1.375, 2.0), "the wall is there");
         assert_eq!(rail_top(&after, 0.0), 0);
+    }
+
+    /// Between a flooring's planks, and from cell to cell, nothing below shows: straight down
+    /// from anywhere on a floor is the flooring or what it lies on (its colour, darker), never
+    /// the ground (nor, upstairs, the room below); a hole stays open.
+    #[test]
+    fn nothing_shows_between_the_planks() {
+        let mut c = content();
+        // the wood floor's way: three planks a cell long, a hair apart
+        let plank = |z: f64, color: &str| Part { shape: "box".into(), size: [1.0, 0.05, 0.32], at: [0.0, 0.0, z], color: color.into(), ..Default::default() };
+        let parts = vec![plank(-0.33, "#c08a55"), plank(0.0, "#b27c49"), plank(0.33, "#c69060")];
+        c.props.put(Prop { id: "planks".into(), name: "planks".into(), category: "floor".into(), footprint: [1, 1], height: 0.05, parts, ..Default::default() }, Space::Content);
+        let mut b = Building { floors: vec![Floor { tile: "planks".into(), ..Default::default() }; 2], ..house() };
+        b.floors[1].set_hole(1, 1, Some(""));
+        let m = building(&b, &c, 2.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain;
+        // the colour of the highest flat triangle over (x, z) between the heights lo and hi
+        let seen = |x: f32, z: f32, lo: f32, hi: f32| {
+            let mut best: Option<(f32, [f32; 4])> = None;
+            for t in m.indices.chunks(3) {
+                let v = [t[0], t[1], t[2]].map(|i| m.vertices[i as usize]);
+                let p = v.map(|v| Vec3::from(v.pos));
+                let n = (p[1] - p[0]).cross(p[2] - p[0]);
+                if n.y.abs() < 0.99 * n.length() || p[0].y < lo || p[0].y > hi {
+                    continue;
+                }
+                let side = |a: Vec3, b: Vec3| (b.x - a.x) * (z - a.z) - (b.z - a.z) * (x - a.x);
+                let s = [side(p[0], p[1]), side(p[1], p[2]), side(p[2], p[0])];
+                if (s.iter().all(|&d| d >= -1e-6) || s.iter().all(|&d| d <= 1e-6)) && best.is_none_or(|(y, _)| p[0].y > y) {
+                    best = Some((p[0].y, v[0].color));
+                }
+            }
+            best.map(|(_, c)| c)
+        };
+        // every 2.5 mm across the house, on both floors (the ground floor's flooring 0.02 up)
+        for (lo, hi) in [(0.01, 0.1), (1.999, 2.1)] {
+            for x in [0.5, 1.5, 2.5] {
+                for k in 0..800 {
+                    let z = (k as f32 + 0.5) * 0.0025;
+                    let hole = lo > 1.0 && x == 1.5 && z > 1.0;
+                    assert!(hole || seen(x, z, lo, hi).is_some(), "the ground or the room below shows at ({x}, {z}) above {lo}");
+                }
+            }
+        }
+        // between two planks, darker than they are; the hole open, the floor below it whole
+        let gap = seen(1.5, 0.335, 0.01, 0.1).unwrap();
+        assert!((0..3).all(|i| gap[i] < crate::color("#b27c49")[i] * 0.8), "{gap:?}");
+        assert_eq!(seen(1.5, 0.5, 0.01, 0.1), Some(crate::color("#b27c49")), "the middle plank on top");
+        assert!(seen(1.5, 1.5, 1.999, 2.1).is_none() && seen(1.5, 1.5, 0.01, 0.1).is_some());
     }
 
     #[test]
