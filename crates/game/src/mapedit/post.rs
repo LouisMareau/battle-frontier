@@ -71,16 +71,9 @@ impl MapEditor {
         self.post.draft.is_some() || self.post.wind.is_some()
     }
 
-    /// The top bar's button.
-    pub(super) fn post_toggle(&mut self, ui: &mut egui::Ui) {
-        let r = ui.selectable_label(self.post.open, "Post-processing").on_hover_text("The toon look: how what's toon is lit, and its ink lines; the clouds, the wind");
-        mark("uiPost", &r);
-        if r.clicked() {
-            self.post.open = !self.post.open;
-        }
-    }
-
-    pub(super) fn post_window(&mut self, ctx: &egui::Context) {
+    /// The Post-processing panel (docked or floating, as the layout has it), when it's open;
+    /// its marks for the checks whether or not.
+    pub(super) fn post_window(&mut self, ui: &mut egui::Ui) {
         let mut t = self.toon_settings();
         let mut w = self.wind_settings();
         crate::platform::set_hook("wind", &format!("{:.0} {:.2} {:.2}", w.direction, w.strength, w.gusts));
@@ -93,11 +86,12 @@ impl MapEditor {
         }
         let before = t.clone();
         let wind_before = w.clone();
-        let (mut open, mut save, mut revert, mut defaults) = (true, false, false, false);
+        let (mut save, mut revert, mut defaults) = (false, false, false);
         let props = self.content.props.iter().filter(|p| p.toon).count();
         let creatures = self.content.creatures.iter().filter(|c| c.toon).count();
         let plural = |n: usize| if n == 1 { "" } else { "s" };
-        egui::Window::new("Post-processing").id(egui::Id::new("post-window")).open(&mut open).collapsible(false).resizable(false).default_width(340.0).show(ctx, |ui| {
+        let mut st = self.dock.get(super::dock::Pane::Post);
+        super::dock::show(ui, &mut st, super::dock::Pane::Post, "Post-processing", |ui| {
             section(ui, "Toon look");
             hint(ui, &format!("For what's ticked toon: {props} prop{}, {creatures} creature{}. Tick them in the asset browser (creatures under Creatures) or a placed prop's panel.", plural(props), plural(creatures)));
             ui.add_space(4.0);
@@ -231,9 +225,10 @@ impl MapEditor {
         if save {
             self.save_post();
         }
-        if !open {
+        if !st.open {
             self.post.open = false;
         }
+        self.dock.set(super::dock::Pane::Post, st);
     }
 
     /// Writes the world settings record with the toon look and the wind as changed here.

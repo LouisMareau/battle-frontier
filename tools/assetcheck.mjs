@@ -72,8 +72,8 @@ try {
   await sleep(1200);
   await cmd('view:20,12,16,0,55');
 
-  // 1. open, every prop listed, a folder shown
-  await press('uiAssets');
+  // 1. open (it comes open, along the bottom), every prop listed, a folder shown
+  if (!(await data('layout')).includes('assets=bottom')) await press('uiAssets');
   await sleep(300);
   const all = Number(await data('assets'));
   check('the browser lists every prop', all > 30 && (await shown()).length === all, `${all} props, ${(await shown()).length} shown`);

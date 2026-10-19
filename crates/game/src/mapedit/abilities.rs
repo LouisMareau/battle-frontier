@@ -54,15 +54,6 @@ fn effects() -> Vec<String> {
 }
 
 impl MapEditor {
-    /// The top bar's button.
-    pub(super) fn abilities_toggle(&mut self, ui: &mut egui::Ui) {
-        let r = ui.selectable_label(self.abilities.open, "Abilities").on_hover_text("Every ability: make one, change what it does, how it grows and what it becomes, and its timeline");
-        mark("uiAbilities", &r);
-        if r.clicked() {
-            self.abilities.open = !self.abilities.open;
-        }
-    }
-
     /// Changes an ability where it is (its space), to save later.
     pub(super) fn change_move(&mut self, id: &str, change: impl FnOnce(&mut Move)) {
         let Some(e) = self.content.moves.entry(id) else { return };
@@ -166,7 +157,9 @@ impl MapEditor {
         }
     }
 
-    pub(super) fn abilities_window(&mut self, ctx: &egui::Context) {
+    /// The Abilities panel (docked or floating, as the layout has it), when it's open; its
+    /// marks for the checks whether or not.
+    pub(super) fn abilities_window(&mut self, ui: &mut egui::Ui) {
         crate::platform::set_hook("abilities", &self.content.moves.len().to_string());
         crate::platform::set_hook("abilitiesdirty", &self.abilities.dirty.len().to_string());
         crate::platform::set_hook("ability", self.abilities.picked.as_deref().unwrap_or(""));
@@ -176,7 +169,6 @@ impl MapEditor {
         if self.abilities.effects.is_empty() {
             self.abilities.effects = effects();
         }
-        let mut open = true;
         let mut pick: Option<String> = None;
         let mut make: Option<String> = None;
         let mut save = false;
@@ -185,7 +177,8 @@ impl MapEditor {
         let mut after: Option<Move> = None;
         let content = self.content.clone();
         let picked = self.abilities.picked.clone();
-        egui::Window::new("Abilities").id(egui::Id::new("abilities-window")).open(&mut open).resizable(true).default_size([1000.0, 640.0]).show(ctx, |ui| {
+        let mut st = self.dock.get(super::dock::Pane::Abilities);
+        super::dock::show(ui, &mut st, super::dock::Pane::Abilities, "Abilities", |ui| {
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut self.abilities.filter).hint_text("Filter: name, id, type").desired_width(180.0));
                 let field = ui.add(egui::TextEdit::singleline(&mut self.abilities.new_id).hint_text("a new ability's id").desired_width(140.0));
@@ -428,8 +421,9 @@ impl MapEditor {
         if let Some(id) = edit_timeline {
             self.open_timeline(&id);
         }
-        if !open {
+        if !st.open {
             self.abilities.open = false;
         }
+        self.dock.set(super::dock::Pane::Abilities, st);
     }
 }

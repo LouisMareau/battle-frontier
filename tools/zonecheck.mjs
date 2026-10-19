@@ -50,6 +50,12 @@ try {
   await browser.waitFor('document.body.dataset.state === "menu"', { timeout: 90000, what: 'the menu' });
   await cmd('map:test_meadow');
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
+  // the asset browser closed (it comes open, along the bottom): the view as these steps knew it
+  await browser.waitFor('(document.body.dataset.layout ?? "") !== ""', { what: 'the panels laid out' });
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+  }
   await cmd('view:22,20,38,0,60');
   await browser.click(700, 889);
   const zones0 = Number(await data('zones'));

@@ -287,9 +287,9 @@ pub(super) struct Requests {
 }
 
 impl Requests {
-    /// The top bar's "Requests", with how many wait on its corner and, while one is being
-    /// modelled, its bar along the bottom (drawn on the button: the top bar is full).
-    pub fn toggle(&mut self, ui: &mut egui::Ui) {
+    /// The top bar's "Requests" (`r`, its toggle): its tip, how many wait on its corner and,
+    /// while one is being modelled, its bar along the bottom (drawn on the button).
+    pub fn decorate(&mut self, ui: &mut egui::Ui, r: &egui::Response) {
         let waiting = self.waiting();
         let mut about = "Pictures of creatures and props for Claude to model in Blender: drop PNG, JPG or WebP files on the window while it's open".to_string();
         if waiting > 0 {
@@ -305,11 +305,8 @@ impl Requests {
         for r in self.desk.list.iter().filter(|r| r.lines_ready()) {
             about += &format!("\n{}: {LINES_READY}", r.name);
         }
-        let r = ui.selectable_label(self.open, "Requests").on_hover_text(about);
-        super::mark("uiRequests", &r);
-        if r.clicked() {
-            self.open = !self.open;
-        }
+        about += "\nRight-click: show where it is";
+        let r = r.clone().on_hover_text(about);
         let p = ui.painter();
         if waiting > 0 {
             let at = r.rect.right_top() + egui::vec2(-1.0, 2.0);
@@ -346,17 +343,17 @@ impl Requests {
         false
     }
 
-    /// The window: a note.
-    pub fn window(&mut self, ctx: &egui::Context, _content: &content::Content) -> Option<String> {
+    /// The panel (`st`: as the layout has it): a note.
+    pub fn window(&mut self, ui: &mut egui::Ui, st: &mut super::dock::PaneState, _content: &content::Content) -> Option<String> {
         crate::platform::set_hook("requests", if self.open { "note" } else { "" });
-        let mut open = self.open;
-        egui::Window::new("Model requests").id(egui::Id::new("model-requests")).open(&mut open).collapsible(false).resizable(false).default_width(420.0).default_pos([270.0, 70.0]).show(ctx, |ui| {
+        st.open = self.open;
+        super::dock::show(ui, st, super::dock::Pane::Requests, "Model requests", |ui| {
             ui.label("Drop pictures of a creature or a prop here, and Claude makes a base 3D model of it in Blender.");
             ui.add_space(4.0);
             super::warn(ui, "Requests need the desktop app: they're kept in private/requests/ on your computer, which the browser can't write to.");
             super::hint(ui, "cargo run -p engine-game --release -- --requests opens the map editor with this window.");
         });
-        self.open = open;
+        self.open = st.open;
         None
     }
 }
@@ -2173,11 +2170,11 @@ mod desk {
             }
         }
 
-        /// The window, when open (and the pictures dropped, whether or not); a prop to use
-        /// when a done request's "Use it" is clicked.
-        pub fn window(&mut self, ctx: &egui::Context, content: &Content) -> Option<String> {
+        /// The panel (`st`: as the layout has it), when open (and the pictures dropped,
+        /// whether or not); a prop to use when a done request's "Use it" is clicked.
+        pub fn window(&mut self, ui: &mut egui::Ui, st: &mut super::super::dock::PaneState, content: &Content) -> Option<String> {
             let d = &mut self.desk;
-            d.thumbs.take(ctx);
+            d.thumbs.take(ui.ctx());
             if !d.loaded {
                 d.reload();
             }
@@ -2186,18 +2183,13 @@ mod desk {
             }
             let (mut use_prop, mut name_focused) = (None, false);
             if self.open {
-                let (mut open, hovering) = (true, self.hovering);
+                let hovering = self.hovering;
+                st.open = true;
+                let title = format!("Model requests ({})", d.list.len());
                 let (mut said, mut asked) = (None, None);
                 // resizable every way (its corner too); the console in a panel at its foot (open,
                 // its top edge drags), the list and the request in what's left
-                egui::Window::new(format!("Model requests ({})", d.list.len()))
-                    .id(egui::Id::new("model-requests"))
-                    .open(&mut open)
-                    .default_size([840.0, 760.0])
-                    .min_size([620.0, 420.0])
-                    .resizable(true)
-                    .default_pos([270.0, 60.0])
-                    .show(ctx, |ui| {
+                super::super::dock::show(ui, st, super::super::dock::Pane::Requests, &title, |ui| {
                         d.banner(ui, hovering);
                         ui.add_space(4.0);
                         let shown = d.selected.clone().or_else(|| d.busy());
@@ -2239,13 +2231,13 @@ mod desk {
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     None => {}
                 }
-                if let Some(s) = d.bones_window(ctx) {
+                if let Some(s) = d.bones_window(ui.ctx()) {
                     said = Some(s);
                 }
                 if said.is_some() {
                     self.said = said;
                 }
-                self.open = open;
+                self.open = st.open;
             } else {
                 // the Bones window goes with it
                 self.desk.bones.open = false;
@@ -2596,6 +2588,15 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
+    /// The top bar's toggle (a stand-in for the layout's: its count and bar) and the panel,
+    /// floating where it first comes.
+    fn shown(ui: &mut egui::Ui, req: &mut Requests, content: &content::Content) {
+        let r = ui.button("Requests");
+        req.decorate(ui, &r);
+        let mut st = crate::mapedit::dock::Pane::Requests.first();
+        req.window(ui, &mut st, content);
+    }
+
     /// A frame of the window, headless, after what was dropped.
     fn frame(ctx: &egui::Context, req: &mut Requests, files: Vec<egui::DroppedFileHandle>) {
         let content = content::Content::default();
@@ -2603,8 +2604,7 @@ mod tests {
             req.take(files);
         }
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-            req.toggle(ui);
-            req.window(ui.ctx(), &content);
+            shown(ui, req, &content);
         });
         // no renderer here to take the textures
         out.textures_delta.clear();
@@ -2711,8 +2711,7 @@ mod tests {
         let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
         crate::platform::clear_hooks();
         let mut out = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
-            req.toggle(ui);
-            req.window(ui.ctx(), &content);
+            shown(ui, req, &content);
         });
         out.textures_delta.clear();
     }
@@ -2820,6 +2819,45 @@ mod tests {
     fn press(ctx: &egui::Context, req: &mut Requests, key: egui::Key) {
         frame_with(ctx, req, vec![egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }]);
         frame_with(ctx, req, vec![]);
+    }
+
+    #[test]
+    fn the_console_folds_with_its_window() {
+        let root = scratch("fold");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        create(&root, "Moss toad.png").unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("moss_toad".into());
+        req.desk().console_open = true;
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        let shown = || marked("uiPaneDock_requests").is_some() && marked("uiRequestConsole").is_some();
+        assert!(shown(), "the window, its console open at its foot");
+        // its title bar double-clicked: folded, its console with it (it stays open)
+        let window = egui::Id::new(("editor-pane", "requests")).with(("window", 0u32));
+        let fold = |req: &mut Requests| {
+            // (folded, it's as wide as its title)
+            let bar = ctx.memory(|m| m.area_rect(window)).map(|r| egui::pos2(r.center().x, r.top() + 10.0)).expect("the window's place");
+            click_at(&ctx, req, bar, egui::PointerButton::Primary);
+            click_at(&ctx, req, bar, egui::PointerButton::Primary);
+            // (it folds and unfolds in a moment; and the next two clicks within 0.6 s of these
+            // would be a triple click)
+            for _ in 0..60 {
+                frame_with(&ctx, req, vec![]);
+            }
+        };
+        fold(&mut req);
+        assert!(marked("uiPaneDock_requests").is_none(), "folded");
+        assert!(marked("uiRequestConsole").is_none(), "its console folded with it");
+        assert!(req.open);
+        // again: as it was, its console too
+        fold(&mut req);
+        assert!(shown(), "unfolded, its console too");
+        std::fs::remove_dir_all(&root).ok();
     }
 
     /// The Bones window's canvas, once its picture is read and the window has settled its
@@ -2977,8 +3015,7 @@ mod tests {
         let mut run = |req: &mut Requests, events: Vec<egui::Event>| {
             crate::platform::clear_hooks();
             let mut out = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
-                req.toggle(ui);
-                req.window(ui.ctx(), &content);
+                shown(ui, req, &content);
             });
             shooter.textures(&mut out.textures_delta);
             out
@@ -3031,7 +3068,7 @@ mod tests {
             let content = content::Content::default();
             let mut out = ctx.run_ui(raw, |ui| {
                 ed.take_drops(ui.ctx());
-                ed.requests.window(ui.ctx(), &content);
+                shown(ui, &mut ed.requests, &content);
             });
             out.textures_delta.clear();
         };

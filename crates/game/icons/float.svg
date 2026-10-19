@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Float: out of its place, in a window of its own -->
+  <path d="M10.5 6.5H5.2a1.7 1.7 0 0 0-1.7 1.7v10.6a1.7 1.7 0 0 0 1.7 1.7h10.6a1.7 1.7 0 0 0 1.7-1.7v-5.3"/>
+  <path d="M14 3.5h6.5V10M20.5 3.5 11 13"/>
+</svg>

@@ -15,6 +15,7 @@ mod actors;
 mod around;
 mod assets;
 mod build;
+mod dock;
 mod events;
 mod models;
 mod post;
@@ -303,6 +304,8 @@ pub struct MapEditor {
     pub team: crate::team::TeamLog,
     /// the HUD has the game's buttons (its ring, a window of its): no walking, no talking
     pub hud_busy: bool,
+    /// the panels' layout: each docked or floating, open or closed (kept between runs)
+    dock: dock::Dock,
 }
 
 pub(crate) fn gpu(v: &[mesh::Vertex]) -> Vec<MapVertex> {
@@ -498,6 +501,7 @@ impl MapEditor {
             frost: false,
             team: Default::default(),
             hud_busy: false,
+            dock: dock::Dock::load(),
             dirty: false,
             space,
             map,
@@ -506,6 +510,7 @@ impl MapEditor {
         ed.map.know_doors(&ed.content);
         ed.load_spawns();
         ed.recentre();
+        ed.open_as_laid_out();
         if let Some(id) = chunked {
             ed.open(&id);
         }
@@ -1238,11 +1243,18 @@ impl MapEditor {
             self.requests.watch(now);
         }
         self.keys(&ctx);
+        // the layout told what the panels' own flags say (an ability's Timeline opens its
+        // panel, say)
+        self.layout_as_opened();
         egui::Panel::top("maps-top").show(ui, |ui| {
             ui.add_space(4.0);
-            // one row at the window's first size (1400 wide), a second one when narrower,
-            // rather than buttons off the edge
-            ui.horizontal_wrapped(|ui| {
+            // its first row: the panels' toggles at its right end; the rest from the left, one
+            // row at the window's first size (1400 wide), more when narrower, rather than
+            // buttons off the edge
+            let height = ui.spacing().interact_size.y;
+            let first = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), height));
+            let room = (first.width() - self.dock.toggles_width - 12.0).max(240.0);
+            ui.allocate_ui_with_layout(egui::vec2(room, height), egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.spacing_mut().button_padding.x = 3.0;
                 ui.label(RichText::new("Maps").size(16.0).strong());
@@ -1312,22 +1324,15 @@ impl MapEditor {
                         self.start_walk();
                     }
                 }
-                let assets = ui.selectable_label(self.assets.open, "Assets").on_hover_text("Every prop by folder; drop .glb files on the window to add them");
-                mark("uiAssets", &assets);
-                if assets.clicked() {
-                    self.assets.open = !self.assets.open;
-                }
-                self.requests.toggle(ui);
-                self.post_toggle(ui);
-                self.abilities_toggle(ui);
-                let worlds = ui.selectable_label(self.worlds.open, "World").on_hover_text("Maps stitched into a world: place this map next to others");
-                mark("uiWorld", &worlds);
-                if worlds.clicked() {
-                    self.worlds.open = !self.worlds.open;
-                }
             });
+            let toggled = dock::toggles(ui, first, &mut self.dock);
+            if let Some(r) = toggled.get(&dock::Pane::Requests) {
+                self.requests.decorate(ui, r);
+            }
             ui.add_space(4.0);
         });
+        // what the toggles say
+        self.open_as_laid_out();
         egui::Panel::bottom("maps-status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 badge(ui, self.space);
@@ -1356,29 +1361,29 @@ impl MapEditor {
                 }
             });
         });
-        // the asset browser and the World view across the window, under the side panels
-        if self.assets.open {
-            egui::Panel::bottom("maps-assets").resizable(true).default_size(300.0).min_size(140.0).show(ui, |ui| self.assets_panel(ui));
-        }
-        if self.worlds.open {
-            egui::Panel::bottom("maps-world").resizable(true).default_size(320.0).min_size(160.0).show(ui, |ui| self.worlds_panel(ui));
-        }
-        if self.tl.open {
-            egui::Panel::bottom("maps-timeline").resizable(true).default_size(280.0).min_size(160.0).show(ui, |ui| self.timeline_panel(ui));
-        }
-        egui::Panel::left("maps-tools").exact_size(250.0).show(ui, |ui| {
-            ui.add_space(6.0);
-            self.toolbar(ui);
-            egui::ScrollArea::vertical().show(ui, |ui| self.tools_panel(ui));
+        // the panels, as laid out: those along the bottom first (across the window, under the
+        // side ones), then the sides', then those that float as they come
+        self.pane(ui, dock::Pane::Assets, "Assets", |ed, ui| ed.assets_panel(ui));
+        self.pane(ui, dock::Pane::World, "World", |ed, ui| ed.worlds_panel(ui));
+        self.pane(ui, dock::Pane::Timeline, "Timeline", |ed, ui| ed.timeline_panel(ui));
+        self.pane(ui, dock::Pane::Toolbox, "Toolbox", |ed, ui| {
+            ed.toolbar(ui);
+            egui::ScrollArea::vertical().show(ui, |ui| ed.tools_panel(ui));
         });
-        egui::Panel::right("maps-inspector").exact_size(230.0).show(ui, |ui| {
-            egui::ScrollArea::vertical().show(ui, |ui| self.inspector(ui));
+        self.pane(ui, dock::Pane::Inspector, "Inspector", |ed, ui| {
+            // as wide as it's made (it fits the rows to its width), else it scrolls
+            let shown = egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| ed.inspector(ui));
+            crate::platform::set_hook("inspectorfits", if shown.content_size.x <= shown.inner_rect.width() + 1.0 { "1" } else { "" });
         });
         self.light_window(ui);
-        self.post_window(&ctx);
-        self.abilities_window(&ctx);
+        self.post_window(ui);
+        self.abilities_window(ui);
         self.fx_windows(&ctx);
-        if let Some(id) = self.requests.window(&ctx, &self.content) {
+        let mut requests = self.dock.get(dock::Pane::Requests);
+        let used = self.requests.window(ui, &mut requests, &self.content);
+        requests.open = self.requests.open;
+        self.dock.set(dock::Pane::Requests, requests);
+        if let Some(id) = used {
             self.use_prop(&id);
             self.tool = Tool::Place;
             self.status = format!("{id}: the Place tool puts it down");
@@ -1389,11 +1394,13 @@ impl MapEditor {
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
+            crate::platform::set_hook("viewrect", &format!("{:.0},{:.0},{:.0},{:.0}", rect.left(), rect.top(), rect.right(), rect.bottom()));
             self.view_input(ui, &response);
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
         self.welcome_modal(&ctx);
+        self.dock.keep(now);
         self.end_frame(&ctx, audio, now);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));
         crate::platform::set_hook("chunked", if self.map.chunk > 0 { "1" } else { "0" });
@@ -1438,6 +1445,60 @@ impl MapEditor {
         }
         crate::platform::set_hook("tool", self.tool.key());
         back
+    }
+
+    /// A panel's own open flag (its module's), for those that have one.
+    fn pane_flag(&self, p: dock::Pane) -> Option<bool> {
+        Some(match p {
+            dock::Pane::Assets => self.assets.open,
+            dock::Pane::World => self.worlds.open,
+            dock::Pane::Timeline => self.tl.open,
+            dock::Pane::Requests => self.requests.open,
+            dock::Pane::Post => self.post.open,
+            dock::Pane::Abilities => self.abilities.open,
+            dock::Pane::Toolbox | dock::Pane::Inspector => return None,
+        })
+    }
+
+    fn set_pane_flag(&mut self, p: dock::Pane, open: bool) {
+        match p {
+            dock::Pane::Assets => self.assets.open = open,
+            dock::Pane::World => self.worlds.open = open,
+            dock::Pane::Timeline => self.tl.open = open,
+            dock::Pane::Requests => self.requests.open = open,
+            dock::Pane::Post => self.post.open = open,
+            dock::Pane::Abilities => self.abilities.open = open,
+            dock::Pane::Toolbox | dock::Pane::Inspector => {}
+        }
+    }
+
+    /// The panels' own flags as the layout has them (the layout is what's kept).
+    fn open_as_laid_out(&mut self) {
+        for p in dock::Pane::ALL {
+            let open = self.dock.is_open(p);
+            self.set_pane_flag(p, open);
+        }
+    }
+
+    /// The layout told what the panels' own flags say (something opened one).
+    fn layout_as_opened(&mut self) {
+        for p in dock::Pane::ALL {
+            if let Some(open) = self.pane_flag(p) {
+                self.dock.set_open(p, open);
+            }
+        }
+    }
+
+    /// One of the panels as the layout has it (`dock::show`), `add` filling it; its own flag
+    /// kept in step (closed by its header, its window or a button of its own).
+    fn pane(&mut self, ui: &mut egui::Ui, p: dock::Pane, title: &str, add: impl FnOnce(&mut MapEditor, &mut egui::Ui)) {
+        let mut st = self.dock.get(p);
+        dock::show(ui, &mut st, p, title, |ui| add(self, ui));
+        if let Some(open) = self.pane_flag(p) {
+            st.open = st.open && open;
+        }
+        self.set_pane_flag(p, st.open);
+        self.dock.set(p, st);
     }
 
     fn map_picker(&mut self, ui: &mut egui::Ui) {
@@ -1718,6 +1779,8 @@ impl MapEditor {
 
     /// The right panel: the selected building or prop, else the map itself.
     fn inspector(&mut self, ui: &mut egui::Ui) {
+        // its sliders as wide as there's room for (their value and words beside them)
+        ui.spacing_mut().slider_width = (ui.available_width() - 120.0).clamp(60.0, 200.0);
         crate::platform::set_hook("tweak", if self.tweak { "1" } else { "" });
         ui.add_space(6.0);
         if self.tool == Tool::Events && self.event_inspector(ui) {

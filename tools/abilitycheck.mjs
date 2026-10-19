@@ -63,6 +63,12 @@ try {
   await cmd('map:test_meadow');
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
   await sleep(1200);
+  // the asset browser closed (it comes open, along the bottom): the view as these steps knew it
+  await browser.waitFor('(document.body.dataset.layout ?? "") !== ""', { what: 'the panels laid out' });
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+  }
   await cmd('view:20,12,12,0,45');
 
   // 1. a new ability, its power changed, a level-up and something it becomes

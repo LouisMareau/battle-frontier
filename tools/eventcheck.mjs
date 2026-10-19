@@ -59,6 +59,13 @@ try {
   await sleep(400);
   const whole = Number(await data('propsverts'));
   check('the props built again when it came', whole > bare, `${bare} -> ${whole} vertices`);
+  // the asset browser closed (it comes open, along the bottom: after the above, which counts
+  // on the editor's first seconds): the view as these steps knew it
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+    await browser.click(700, 889); // the status bar: the canvas gets the keys
+  }
 
   // 1. the Events tool lists what the map has
   await browser.key('7');

@@ -235,7 +235,6 @@ impl MapEditor {
         let count = |f: &str| content.props.iter().filter(|p| in_folder(p, f)).count();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("Assets").strong());
             ui.add(egui::TextEdit::singleline(&mut self.assets.filter).hint_text("Filter: name, id, category").desired_width(180.0));
             // what files hovering would do: in this line, so nothing moves under them
             if self.assets.hovering {
@@ -562,13 +561,18 @@ impl MapEditor {
             Some(m) if m.wind > 0 => hint(ui, &format!("Moves in the wind by its model's paint ({} vertices).", m.wind)),
             Some(_) => hint(ui, "Still in the wind: its model isn't painted for it (in Blender, a \"wind\" colour layer: R sway, G flutter, B phase)."),
             None => {
+                // (their sliders no wider than what's left beside "Wind" leaves their value
+                // and name room for, as narrow as the inspector is)
+                let narrower = |ui: &mut egui::Ui| ui.spacing_mut().slider_width = ui.spacing().slider_width.min(ui.available_width() - 110.0).max(40.0);
                 ui.horizontal(|ui| {
                     ui.label("Wind").on_hover_text("How its stand-in moves in the wind (a model is painted for it instead)");
+                    narrower(ui);
                     let r = ui.add(egui::Slider::new(&mut after.wind.sway, 0.0..=1.0).text("sway")).on_hover_text("Bending with the wind, more the higher up (0: not at all)");
                     mark("uiPropSway", &r);
                 });
                 ui.horizontal(|ui| {
                     ui.add_space(34.0);
+                    narrower(ui);
                     let r = ui.add(egui::Slider::new(&mut after.wind.flutter, 0.0..=1.0).text("flutter")).on_hover_text("A leaves' quick shiver");
                     mark("uiPropFlutter", &r);
                 });
@@ -644,8 +648,12 @@ impl MapEditor {
                     ui.label("Sound");
                     ui.add(egui::TextEdit::singleline(&mut s.file).desired_width(140.0)).on_hover_text("A file under assets/ (sounds/hum.wav)");
                 });
-                ui.add(egui::Slider::new(&mut s.volume, 0.0..=2.0).text("volume"));
-                ui.add(egui::Slider::new(&mut s.range, 1.0..=24.0).text("range").suffix(" cells"));
+                // (the range's value is wider: "24.0 cells")
+                ui.scope(|ui| {
+                    ui.spacing_mut().slider_width = ui.spacing().slider_width.min(ui.available_width() - 130.0).max(40.0);
+                    ui.add(egui::Slider::new(&mut s.volume, 0.0..=2.0).text("volume"));
+                    ui.add(egui::Slider::new(&mut s.range, 1.0..=24.0).text("range").suffix(" cells"));
+                });
                 if ui.small_button("No sound").clicked() {
                     after.sound = None;
                 }

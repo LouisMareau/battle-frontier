@@ -80,6 +80,12 @@ try {
   await cmd('map:test_meadow');
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
   await sleep(1200);
+  // the asset browser closed (it comes open, along the bottom): the view as these steps knew it
+  await browser.waitFor('(document.body.dataset.layout ?? "") !== ""', { what: 'the panels laid out' });
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+  }
   // still: no roaming creatures, no flag flapping, no grid lines
   await press('uiCreatures');
   await press('uiAnimate');

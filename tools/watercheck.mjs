@@ -101,6 +101,13 @@ const open = async (w, c = { cloud_shadow: 0 }, id = 'water_test') => {
   await cmd(`map:${id}`);
   await browser.waitFor(`document.body.dataset.map === ${JSON.stringify(id)} && document.body.dataset.loading === "0"`, { timeout: 30000, what: 'the test map' });
   await sleep(1500);
+  // the asset browser closed (it comes open, along the bottom): the view as these steps knew it
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+  }
+  const [x0, y0, x1, y1] = (await data('viewrect')).split(',').map(Number);
+  view = { x0: x0 + 20, y0: y0 + 20, x1: x1 - 20, y1: y1 - 20 };
   await browser.click(700, 450);
   await browser.key('g');
 };
@@ -134,7 +141,8 @@ const changed = (a, b, [cx, cy], r) => {
 };
 // a picture's light in blocks of 8 by 8 pixels, over the 3D view
 const BLOCK = 8;
-const view = { x0: 270, y0: 70, x1: 1150, y1: 850 };
+// (the editor's: its `viewrect`, less a margin, as each map opens)
+let view = { x0: 270, y0: 70, x1: 1150, y1: 850 };
 const blocks = (img) => {
   const w = Math.floor((view.x1 - view.x0) / BLOCK);
   const h = Math.floor((view.y1 - view.y0) / BLOCK);

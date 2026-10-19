@@ -49,6 +49,12 @@ try {
   await browser.evaluate(`(document.body.dataset.cmd = "map:${map}", true)`);
   await browser.waitFor('document.body.dataset.state === "maps"', { what: 'the map editor' });
   await sleep(1500);
+  // the asset browser closed (it comes open, along the bottom): the view as these steps knew it
+  await browser.waitFor('(document.body.dataset.layout ?? "") !== ""', { what: 'the panels laid out' });
+  if ((await data('layout')).includes('assets=bottom')) {
+    await press('uiAssets');
+    await sleep(400);
+  }
   await browser.click(700, 889); // the status bar: gives the canvas the keyboard
   const props0 = Number(await data('props'));
 
