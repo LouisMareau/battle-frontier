@@ -618,6 +618,13 @@ impl MapEditor {
         self.content.clone()
     }
 
+    /// The Ground and Trees brushes' size (tests): "0" for one cell, up to "4" (9 x 9).
+    pub fn set_brush(&mut self, arg: &str) {
+        if let Ok(b) = arg.trim().parse::<i32>() {
+            self.brush = b.clamp(0, 4);
+        }
+    }
+
     /// A world point whose place on the screen the checks read (`<body data-point>`).
     pub fn probe(&mut self, args: &str) {
         let v: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse().ok()).collect();
@@ -975,10 +982,9 @@ impl MapEditor {
         (t > 0.0).then(|| origin + dir * t)
     }
 
-    /// The first cell top the ray meets.
-    fn ground(&self, origin: Vec3, dir: Vec3) -> Option<(i32, i32)> {
-        let lh = self.level_height;
-        let top = self.map.level.iter().copied().max().unwrap_or(0) as f32 * lh;
+    /// The first cell top the ray meets on a map (the one open, or as it was).
+    fn ground(map: &WorldMap, lh: f32, origin: Vec3, dir: Vec3) -> Option<(i32, i32)> {
+        let top = map.level.iter().copied().max().unwrap_or(0) as f32 * lh;
         // start where the ray comes down to the highest ground
         let mut t = if origin.y > top && dir.y < 0.0 { (origin.y - top) / -dir.y } else { 0.0 };
         for _ in 0..6000 {
@@ -987,8 +993,8 @@ impl MapEditor {
                 return None;
             }
             let (x, z) = (p.x.floor() as i32, p.z.floor() as i32);
-            if let Some(l) = self.map.level_at(x, z) {
-                if p.y <= self.map.ground_y(p.x, p.z, l, lh) + 0.001 {
+            if let Some(l) = map.level_at(x, z) {
+                if p.y <= map.ground_y(p.x, p.z, l, lh) + 0.001 {
                     return Some((x, z));
                 }
             }
@@ -2185,8 +2191,15 @@ impl MapEditor {
         let ray = if hovered { pointer.and_then(|p| self.ray(p)) } else { None };
         if let Some((o, d)) = ray {
             self.plane_hit = Self::plane(o, d, self.level as f32 * self.level_height);
-            self.ground_hit = self.ground(o, d);
+            // a stroke raising or sinking cells goes by the ground as it was when it began (the
+            // undo step it made): the cells it's moved aren't what the pointer is over
+            let moving = self.stroke && self.tool == Tool::Ground && self.set_level && !self.ramp.on;
+            let was = if moving { self.undo.last().unwrap_or(&self.map) } else { &self.map };
+            self.ground_hit = Self::ground(was, self.level_height, o, d);
         }
+        // the cell under the pointer (the checks): x, z and its level
+        let under = self.ground_hit.and_then(|(x, z)| self.map.level_at(x, z).map(|l| format!("{x},{z},{l}")));
+        crate::platform::set_hook("groundcell", &under.unwrap_or_default());
         self.last_ray = ray;
         // a double-click on a map around this one: that one is edited now
         if response.double_clicked() && self.ground_hit.is_none() {
@@ -2226,7 +2239,6 @@ impl MapEditor {
 
     #[allow(clippy::too_many_arguments)]
     fn tool_input(&mut self, origin: Vec3, dir: Vec3, response: &egui::Response, mods: egui::Modifiers, primary_pressed: bool, primary_down: bool, primary_released: bool, secondary_clicked: bool) {
-        let plane_cell = self.plane_hit.map(|p| (p.x.floor() as i32, p.z.floor() as i32));
         match self.tool {
             Tool::Ground => {
                 if secondary_clicked {
@@ -2239,15 +2251,15 @@ impl MapEditor {
                     self.ramp_input(response.hovered(), primary_pressed, primary_released);
                     return;
                 }
-                // a stroke starts on the map (not on a map around it)
-                let on_map = (if self.set_level { plane_cell } else { self.ground_hit }).map(|c| self.map.inside(c.0, c.1)).unwrap_or(false);
+                // a stroke starts on the map (not on a map around it), on the cell under the
+                // pointer as it stands, whatever level it's to rise or sink to
+                let on_map = self.ground_hit.is_some_and(|c| self.map.inside(c.0, c.1));
                 if primary_pressed && response.hovered() && on_map {
                     self.checkpoint();
                     self.stroke = true;
                 }
                 if self.stroke && primary_down {
-                    let cell = if self.set_level { plane_cell } else { self.ground_hit };
-                    if let Some(c) = cell {
+                    if let Some(c) = self.ground_hit {
                         for c in self.line_to(c) {
                             if self.map.inside(c.0, c.1) {
                                 self.paint_ground(c);
@@ -2456,17 +2468,18 @@ impl MapEditor {
         match self.tool {
             Tool::Ground if self.ramp.on => self.ramp_shapes(&mut shapes),
             Tool::Ground | Tool::Trees => {
-                let at_plane = self.tool == Tool::Ground && self.set_level;
-                let cell = if at_plane { self.plane_hit.map(|p| (p.x.floor() as i32, p.z.floor() as i32)) } else { self.ground_hit };
-                if let Some((x, z)) = cell {
+                // on the cell under the pointer, on its own ground
+                if let Some((x, z)) = self.ground_hit {
                     let size = (self.brush * 2 + 1) as f32;
-                    let y = if at_plane { self.level as f32 * lh } else { self.map.level_at(x, z).unwrap_or(0) as f32 * lh };
+                    let l = self.map.level_at(x, z).unwrap_or(0);
                     let color = if self.tool == Tool::Trees && (self.remove_cells) { [1.0, 0.35, 0.3, 0.4] } else { [1.0, 1.0, 1.0, 0.35] };
-                    shapes.push(rect_at(x as f32 + 0.5, y + 0.04, z as f32 + 0.5, size, size, color));
-                    // where it falls on the ground below (or above)
-                    if let Some(l) = self.map.level_at(x, z) {
-                        if at_plane && l != self.level {
-                            shapes.push(rect_at(x as f32 + 0.5, l as f32 * lh + 0.04, z as f32 + 0.5, size, size, [0.0, 0.0, 0.0, 0.3]));
+                    shapes.push(rect_at(x as f32 + 0.5, l as f32 * lh + 0.04, z as f32 + 0.5, size, size, color));
+                    // painting a level: where it rises or sinks to, outlined (seen through the
+                    // ground it sinks into)
+                    if self.tool == Tool::Ground && self.set_level && l != self.level {
+                        let (cx, y, cz, h, t) = (x as f32 + 0.5, self.level as f32 * lh + 0.04, z as f32 + 0.5, size / 2.0, 0.08);
+                        for (ox, oz, w, d) in [(0.0, -h, size + t, t), (0.0, h, size + t, t), (-h, 0.0, t, size - t), (h, 0.0, t, size - t)] {
+                            overlays.push(rect_at(cx + ox, y, cz + oz, w, d, [1.0, 1.0, 1.0, 0.55]));
                         }
                     }
                 }

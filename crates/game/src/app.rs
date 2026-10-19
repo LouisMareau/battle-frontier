@@ -1053,6 +1053,11 @@ impl GameApp {
                         ed.probe(arg);
                     }
                 }
+                "brush" => {
+                    if let Some(ed) = self.editor_mut() {
+                        ed.set_brush(arg);
+                    }
+                }
                 "requests" => {
                     if let Some(ed) = self.editor_mut() {
                         ed.open_requests();
