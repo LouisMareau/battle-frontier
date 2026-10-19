@@ -5,7 +5,9 @@
 // in the corner (growing when hovered): its welcome (once a run, never again once asked), its
 // Menu (the main menu, the content, the test battles) and where new games start: "Start new
 // games here", then picked on the map (a cell clicked, then dragged from the way the player
-// faces), marked there, turned, and in the World view; Publish and Sign in, the desktop's.
+// faces), marked there, turned, and in the World view; then Publish in the browser, against a
+// stand-in for GitHub on the page's own address: signed in by a code, the start saved sent as
+// a pull request from a fork (the site built with GITHUB_CLIENT_ID set, for the code).
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -27,7 +29,43 @@ const check = (what, ok, detail = '') => {
   if (!ok) failed++;
 };
 
-const server = await serve(0);
+// a stand-in for GitHub (the site's sign-in calls and the API), on the page's own address
+// (`github:stand-in`): what it was asked, kept
+const BASE = '1111111111111111111111111111111111111111';
+const asked = [];
+let polls = 0;
+const reply = (res, status, body) => {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify(body));
+  return true;
+};
+const github = async (req, res, path) => {
+  if (!path.startsWith('stand-in/')) return false;
+  const chunks = [];
+  for await (const c of req) chunks.push(c);
+  const text = Buffer.concat(chunks).toString('utf8');
+  let body = text;
+  try { body = text ? JSON.parse(text) : null; } catch {}
+  const at = path.slice('stand-in/'.length);
+  asked.push({ method: req.method, at, body, auth: req.headers.authorization ?? '' });
+  const repo = 'api/repos/LouisMareau/battle-frontier';
+  const fork = 'api/repos/player/battle-frontier';
+  if (at === 'login/device/code') return reply(res, 200, { device_code: 'dc', user_code: 'WDJB-MJHT', verification_uri: 'https://github.com/login/device', interval: 1, expires_in: 900 });
+  if (at === 'login/oauth/access_token') return reply(res, 200, ++polls < 2 ? { error: 'authorization_pending' } : { access_token: 'gho_check', token_type: 'bearer' });
+  if (at === 'api/user') return reply(res, 200, { login: 'player', id: 42, name: 'Pat Player', email: null });
+  if (at === repo) return reply(res, 200, { default_branch: 'main', permissions: { push: false } });
+  if (at === `${repo}/git/ref/heads/main` || at === `${fork}/git/ref/heads/main`) return reply(res, 200, { object: { sha: BASE } });
+  if (at === `${repo}/git/commits/${BASE}` || at === `${fork}/git/commits/${BASE}`) return reply(res, 200, { sha: BASE, tree: { sha: 't0' } });
+  if (at === `${repo}/forks`) return reply(res, 202, { full_name: 'player/battle-frontier', owner: { login: 'player' } });
+  if (at === `${fork}/merge-upstream`) return reply(res, 200, {});
+  if (at === `${fork}/git/blobs`) return reply(res, 201, { sha: 'b1' });
+  if (at === `${fork}/git/trees`) return reply(res, 201, { sha: 't1' });
+  if (at === `${fork}/git/commits`) return reply(res, 201, { sha: 'k1' });
+  if (at === `${fork}/git/refs`) return reply(res, 201, {});
+  if (at === `${repo}/pulls`) return reply(res, 201, { html_url: 'https://github.com/LouisMareau/battle-frontier/pull/9' });
+  return reply(res, 404, { message: 'Not Found' });
+};
+const server = await serve(0, { handle: github });
 const browser = await Browser.launch({ width: 1400, height: 900, port: 9496, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu'] });
 const url = `http://127.0.0.1:${server.address().port}/index.html`;
 const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(key)}] ?? ''`);
@@ -274,15 +312,48 @@ try {
   check('  marked in the World view', /^\d+,\d+$/.test(await data('worldstart')), await data('worldstart'));
   await shot('11-start-world');
 
-  // 9. Publish is the desktop's (the browser can't read the project's folder): Sign in and
-  // Publish in the top bar, neither opening anything here
+  // 9. Publish in the browser, against the stand-in: it waits for Sign in; signed in by a code
+  // (let through the second time it's asked); the start saved above is what's changed
+  // (world.json, against the site's bundle); sent: a fork, the file, a tree, a commit signed
+  // off, a branch and the pull request; then signed out
+  await cmd('github:stand-in');
   const [sx] = await at('uiSignIn');
   const [px] = await at('uiPublish');
   check('Sign in and Publish in the top bar', sx > 0 && px > sx, `${sx} ${px}`);
-  await press('uiSignIn');
   await press('uiPublish');
-  check('  in the browser neither opens a window, nobody signed in', (await data('signing')) === '' && (await data('publish')) === '' && (await data('signedin')) === '',
-    `${await data('signing')}|${await data('publish')}|${await data('signedin')}`);
+  check('  Publish waits for Sign in', (await data('publish')) === '' && (await data('signedin')) === '', `${await data('publish')}|${await data('signedin')}`);
+  await press('uiSignIn');
+  await browser.waitFor('document.body.dataset.signincode === "WDJB-MJHT"', { timeout: 15000, what: 'the code to type' });
+  check('  Sign in: the code to type on GitHub, from the site\'s own address', asked.some((a) => a.method === 'POST' && a.at === 'login/device/code' && String(a.body).includes('scope=public_repo')));
+  await shot('12-sign-in');
+  await browser.waitFor('document.body.dataset.signedin === "player"', { timeout: 20000, what: 'signed in' });
+  check('  signed in once GitHub let it through (asked again until then)', polls >= 2 && (await data('signing')) === '', `${polls} polls`);
+  await press('uiPublish');
+  await browser.waitFor('(document.body.dataset.publishfiles ?? "") !== ""', { timeout: 20000, what: 'what was saved' });
+  const files = await data('publishfiles');
+  check('  what was saved here against the site: the world settings (its start)', files === 'content/data/settings/world.json:changed', files);
+  check('  GitHub asked as the user', asked.filter((a) => a.at.startsWith('api/')).every((a) => a.auth === 'Bearer gho_check'));
+  await press('uiPublishTitle');
+  await browser.type('A start by the pond');
+  await press('uiPublishCertify');
+  await shot('13-publish');
+  await press('uiPublishSend');
+  await browser.waitFor('(document.body.dataset.published ?? "") !== ""', { timeout: 30000, what: 'the pull request' });
+  check('  the pull request opened', (await data('published')) === 'https://github.com/LouisMareau/battle-frontier/pull/9', await data('published'));
+  const sentBlob = asked.find((a) => a.at.endsWith('/git/blobs'));
+  const sentWorld = sentBlob ? JSON.parse(Buffer.from(sentBlob.body.content, 'base64').toString('utf8')) : {};
+  check("  its file: world.json as saved, the start in it", sentWorld.start?.map === "test_meadow" && sentWorld.start?.at?.join(",") === "11,21", JSON.stringify(sentWorld.start));
+  const tree = asked.find((a) => a.at.endsWith('/git/trees'))?.body;
+  check('  on the copy\'s tree, at its place', tree?.base_tree === 't0' && tree?.tree?.[0]?.path === 'content/data/settings/world.json', JSON.stringify(tree));
+  const commit = asked.find((a) => a.at.endsWith('/git/commits') && a.method === 'POST')?.body;
+  check('  committed on the site\'s commit, signed off as the user', commit?.parents?.[0] === BASE && commit?.message?.endsWith('Signed-off-by: Pat Player <42+player@users.noreply.github.com>'), JSON.stringify(commit));
+  const pr = asked.find((a) => a.at.endsWith('/pulls'))?.body;
+  check('  from the fork\'s branch to main', /^player:publish\/a-start-by-the-pond-\d+$/.test(pr?.head ?? '') && pr?.base === 'main' && pr?.title === 'A start by the pond', JSON.stringify(pr));
+  await shot('14-published');
+  await press('uiPublishClose');
+  await press('uiSignIn');
+  await press('uiSignOut');
+  check('  signed out: the sign-in forgotten here too', (await data('signedin')) === '' && (await browser.evaluate('localStorage.getItem("github_signin")')) === null);
 
   if (browser.errors.length) {
     failed++;

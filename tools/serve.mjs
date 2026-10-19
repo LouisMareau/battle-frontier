@@ -18,8 +18,11 @@ const TYPES = {
 
 /// `rewrite(path, body)`: a check's chance to change what's served (a Buffer back, or the same).
 /// `delay(path)`: milliseconds to hold a file back before serving it (a model that comes late).
-export function serve(port = 8080, { rewrite, delay } = {}) {
+/// `handle(req, res, path)`: a check's own answer to a request (a stand-in for a service the
+/// page calls, any method): true when it answered, the files served otherwise.
+export function serve(port = 8080, { rewrite, delay, handle } = {}) {
   const server = createServer(async (req, res) => {
+    if (handle && (await handle(req, res, new URL(req.url, 'http://x').pathname.replace(/^\/+/, '')))) return;
     const path = normalize(decodeURIComponent(new URL(req.url, 'http://x').pathname)).replace(/^([/\\])+/, '');
     const local = /^temporary[\\/]/.test(path); // normalize() gives backslashes on Windows
     const base = local ? temporary : root;

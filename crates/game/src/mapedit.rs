@@ -930,7 +930,10 @@ impl MapEditor {
             let mut result = crate::platform::download(&name, &content::to_text(&record));
             for c in &chunks {
                 if result.is_ok() {
-                    result = crate::platform::download(&format!("{}_{}.json", c.chunk[0], c.chunk[1]), &content::to_text(c));
+                    let text = content::to_text(c);
+                    result = crate::platform::download(&format!("{}_{}.json", c.chunk[0], c.chunk[1]), &text);
+                    // kept for Publish too (the records are in the content already)
+                    self.saved_for_publish(format!("{}/{}", Space::Content.dir(), Chunk::path(&record.id, c.chunk[0], c.chunk[1])), text.into_bytes());
                 }
             }
             match result {

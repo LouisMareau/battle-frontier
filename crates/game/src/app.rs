@@ -1063,6 +1063,12 @@ impl GameApp {
                         ed.open_requests();
                     }
                 }
+                // the checks: Publish's GitHub at a stand-in on the page's own address
+                "github" => {
+                    if let Some(ed) = self.editor_mut() {
+                        ed.github_at(arg);
+                    }
+                }
                 "walkto" => {
                     if let (Some(ed), Some((x, z))) = (self.editor_mut(), arg.split_once(',')) {
                         if let (Ok(x), Ok(z)) = (x.trim().parse(), z.trim().parse()) {

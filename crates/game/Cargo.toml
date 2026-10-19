@@ -26,6 +26,8 @@ glam.workspace = true
 log = "0.4"
 serde.workspace = true
 serde_json.workspace = true
+# Publish: the files sent to GitHub, in base64
+base64 = "0.22"
 
 # The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -36,9 +38,7 @@ wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "GainNode", "Gamepad", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Navigator", "Performance", "Storage", "Url", "Window"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-# Publish: GitHub's API over HTTPS (ureq and rustls underneath), the files' blobs in base64,
-# their ids as git names them
-base64 = "0.22"
+# Publish: GitHub's API over HTTPS (ureq and rustls underneath), the files' ids as git names them
 ehttp = "0.7"
 sha1_smol = "1"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }

@@ -115,7 +115,7 @@ impl MapEditor {
             line(ui, "This is what Battle Frontier is made with: its maps, props, creatures, abilities and battles.");
             line(ui, "Anyone can add to the game. Make something here, then send it as a pull request on GitHub: once it's reviewed and merged, everyone plays it.");
             let keep = if cfg!(target_arch = "wasm32") {
-                "In the browser, saving downloads each file: put it in the project, then publish it from the desktop app."
+                "In the browser, saving downloads each file, and Publish, in the top bar, sends what you've saved as a pull request once you've signed in with GitHub."
             } else {
                 "What you save goes into the project's folders, and stays on your computer until you publish it: Publish, in the top bar, sends it as a pull request once you've signed in with GitHub."
             };

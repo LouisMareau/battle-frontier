@@ -23,4 +23,8 @@ if ! command -v trunk >/dev/null 2>&1; then
 fi
 trunk --version
 
+# CF_PAGES_COMMIT_SHA (Cloudflare's, as it builds) goes into the program: the editor's Publish
+# sends what's saved in the browser onto the commit the site was built from
 trunk build --release
+# Pages Functions answer only the editor's sign-in (functions/github/login/); the rest is files
+printf '{"version":1,"include":["/github/login/*"],"exclude":[]}\n' > build/dist/_routes.json

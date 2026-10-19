@@ -372,6 +372,24 @@ impl Content {
         self.fx.sort_by_key(|f| f.id.clone());
     }
 
+    /// One space's records as the files they're kept in: "<collection>/<id>.json" (under
+    /// data/) and its text, as `disk::save` writes it.
+    pub fn space_texts(&self, space: Space) -> BTreeMap<String, String> {
+        fn texts<T: Record>(c: &Collection<T>, space: Space, out: &mut BTreeMap<String, String>) {
+            for e in c.entries().iter().filter(|e| e.space == space) {
+                out.insert(format!("{}/{}.json", T::COLLECTION, e.value.id()), to_text(&e.value));
+            }
+        }
+        let mut out = BTreeMap::new();
+        macro_rules! all {
+            ($($field:ident),*) => {
+                $(texts(&self.$field, space, &mut out);)*
+            };
+        }
+        all!(types, creatures, moves, abilities, items, natures, growth_rates, egg_groups, regions, encounters, parties, settings, terrains, props, maps, spawns, worlds, templates, fx);
+        out
+    }
+
     /// The world's measures (the "world" settings record, or the defaults).
     pub fn world(&self) -> Settings {
         self.settings.get("world").cloned().unwrap_or_default()

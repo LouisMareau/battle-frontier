@@ -17,10 +17,11 @@ effects are all made there.
 Then commit those files on a branch of your fork and open a pull request (below). Once it's
 reviewed and merged, everyone plays it.
 
-Or let the desktop app do it: **Sign in** (the editor's top bar) with your GitHub account,
-then **Publish** lists every file of `content/` you've changed, to tick or leave out; with a
-title and your word that it's yours to send, it opens the pull request from your fork, its
-commit signed off as you (below).
+Or let the editor do it, in the desktop app or the browser: **Sign in** (the editor's top
+bar) with your GitHub account, then **Publish** lists every file of `content/` you've changed
+(in the browser, what you've saved there), to tick or leave out; with a title and your word
+that it's yours to send, it opens the pull request from your fork, its commit signed off as
+you (below).
 
 ## What a pull request can contain
 
