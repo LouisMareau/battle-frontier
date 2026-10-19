@@ -960,7 +960,7 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     footprint = [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))]
     if along:
         footprint = record.get("footprint") or [footprint[0], 1]
-        record.setdefault("ramp", {"along": "stretch", "rise": 2.0})
+        record.setdefault("ramp", {"along": "stretch", "rise": 1.0})
     record.update({
         "id": aid,
         "name": facts.get("name") or record.get("name") or meshes[0].name,

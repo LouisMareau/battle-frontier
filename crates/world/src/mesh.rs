@@ -1150,7 +1150,7 @@ pub fn far_region(map: &WorldMap, content: &Content, level_height: f32, region: 
         let wall = content.props.get(&b.wall).map(|p| color(p.color(0))).unwrap_or([0.9, 0.86, 0.8, 1.0]);
         let (bw, bh) = b.size();
         let y0 = b.level as f32 * level_height;
-        let y1 = y0 + b.floors.len().max(1) as f32 * level_height + 0.5;
+        let y1 = y0 + b.floors.len().max(1) as f32 * crate::floor_height(level_height) + 0.5;
         crate::buildings::aabb(&mut plain, Vec3::new(b.at[0] as f32, y0, b.at[1] as f32), Vec3::new((b.at[0] + bw) as f32, y1, (b.at[1] + bh) as f32), wall);
     }
     (tops, plain)

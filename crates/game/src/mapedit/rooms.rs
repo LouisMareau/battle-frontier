@@ -99,6 +99,7 @@ impl MapEditor {
     /// run of wall: its cells and side).
     pub(super) fn pick_face(&self, b: &Building, origin: Vec3, dir: Vec3, inside: bool, floor: Option<usize>, only: Option<(&[(i32, i32)], &str)>) -> Option<WallHit> {
         let lh = self.level_height;
+        let fh = world::floor_height(lh);
         let mut best: Option<(f32, WallHit)> = None;
         for (x, z, side) in b.edges() {
             if let Some((run, run_side)) = only {
@@ -129,16 +130,16 @@ impl MapEditor {
             let a = if along_x { hit.x } else { hit.z };
             let (a0, a1) = if along_x { (p[0] as f32, q[0] as f32) } else { (p[1] as f32, q[1] as f32) };
             let base = b.level as f32 * lh;
-            let f = (((hit.y - base) / lh).floor() as i32).clamp(0, b.floors.len() as i32 - 1) as usize;
-            if a < a0 || a > a1 || hit.y < base || hit.y > base + b.floors.len() as f32 * lh {
+            let f = (((hit.y - base) / fh).floor() as i32).clamp(0, b.floors.len() as i32 - 1) as usize;
+            if a < a0 || a > a1 || hit.y < base || hit.y > base + b.floors.len() as f32 * fh {
                 continue;
             }
             if floor.map(|want| want != f).unwrap_or(false) {
                 continue;
             }
             if best.map(|bb| t < bb.0).unwrap_or(true) {
-                let height = ((hit.y - base - f as f32 * lh) as f64 * 20.0).round() / 20.0;
-                best = Some((t, ([x, z], side, f, height.clamp(0.0, lh as f64 - 0.1))));
+                let height = ((hit.y - base - f as f32 * fh) as f64 * 20.0).round() / 20.0;
+                best = Some((t, ([x, z], side, f, height.clamp(0.0, fh as f64 - 0.1))));
             }
         }
         best.map(|(_, h)| h)
@@ -155,7 +156,7 @@ impl MapEditor {
         let lh = self.level_height;
         let Some(d) = &self.draft else { return };
         let (clicks, floor, b) = (d.clicks, d.floor, d.b.clone());
-        let y = (b.level as usize + floor) as f32 * lh;
+        let y = b.level as f32 * lh + floor as f32 * world::floor_height(lh);
         let rel = |p: Vec3| Vec2::new(p.x - b.at[0] as f32, p.z - b.at[1] as f32);
         match clicks {
             Clicks::Inside => {
@@ -373,12 +374,12 @@ impl MapEditor {
         let Some(d) = &self.draft else { return };
         let b = &d.b;
         let rect = |x: f32, y: f32, z: f32, w: f32, dd: f32, color: [f32; 4]| Shape { kind: ShapeKind::Rect { width: w, depth: dd }, center: Vec3::new(x, y, z), color, additive: false };
-        let floor_y = (b.level as usize + d.floor) as f32 * lh + 0.1;
+        let floor_y = b.level as f32 * lh + d.floor as f32 * world::floor_height(lh) + 0.1;
         let base_y = b.level as f32 * lh + 0.06;
         let face_mark = |hit: WallHit, color: [f32; 4], out: &mut Vec<Shape>| {
             let (cell, side, f, h) = hit;
             let (p, q) = segment_ends(cell[0], cell[1], side);
-            let mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, (b.level as usize + f) as f32 * lh + h as f32, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
+            let mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, b.level as f32 * lh + f as f32 * world::floor_height(lh) + h as f32, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
             let (dx, dz) = side_step(side).unwrap_or((0, 0));
             let (w, dd) = if matches!(side, "n" | "s") { (0.8, 0.2) } else { (0.2, 0.8) };
             out.push(rect(mid.x + dx as f32 * 0.12, mid.y, mid.z + dz as f32 * 0.12, w, dd, color));

@@ -252,7 +252,7 @@ check("comes back rigged, with its action", r == {"FINISHED"} and any(o.type == 
 # 3c. what lies along ramps: where it was made (its foot along Y -0.5, its top along Y 0.5, on
 # the origin), one cell deep whatever pokes out past its cell (a pool at its foot), and how
 def slide_shape(bm):
-    v = [bm.verts.new(p) for p in [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0), (-0.5, 0.5, 2), (0.5, 0.5, 2)]]
+    v = [bm.verts.new(p) for p in [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0), (-0.5, 0.5, 1), (0.5, 0.5, 1)]]
     for f in [(0, 1, 5, 4), (3, 4, 5, 2), (1, 2, 5), (0, 4, 3), (0, 3, 2, 1)]:
         bm.faces.new([v[i] for i in f])
     pool = [bm.verts.new(p) for p in [(-0.5, -0.9, 0.03), (0.5, -0.9, 0.03), (0.5, -0.5, 0.03), (-0.5, -0.5, 0.03)]]
@@ -267,7 +267,7 @@ bpy.context.view_layer.objects.active = slide
 r = bpy.ops.battle_frontier.add_to_project(asset_id="test_slide", asset_name="Test slide", category="ramp", blocks=False)
 slide_path = scratch / "content" / "data" / "props" / "test_slide.json"
 slide_record = json.loads(slide_path.read_text(encoding="utf-8")) if slide_path.is_file() else {}
-check("along ramps: one cell deep, how it lies", r == {"FINISHED"} and slide_record.get("footprint") == [1, 1] and slide_record.get("ramp") == {"along": "stretch", "rise": 2.0}, json.dumps(slide_record))
+check("along ramps: one cell deep, how it lies", r == {"FINISHED"} and slide_record.get("footprint") == [1, 1] and slide_record.get("ramp") == {"along": "stretch", "rise": 1.0}, json.dumps(slide_record))
 slide_doc = glb_doc(scratch / "content" / "assets" / "models" / "test_slide.glb") if r == {"FINISHED"} else {}
 moved = [n.get("translation", [0, 0, 0]) for n in slide_doc.get("nodes", []) if "mesh" in n]
 positions = {p["attributes"]["POSITION"] for m in slide_doc.get("meshes", []) for p in m.get("primitives", [])}

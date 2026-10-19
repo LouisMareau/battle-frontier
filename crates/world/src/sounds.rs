@@ -41,7 +41,7 @@ pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
         let base = b.level as f32 * level_height;
         let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
         for (f, floor) in b.floors.iter().enumerate() {
-            let y0 = base + f as f32 * level_height;
+            let y0 = base + f as f32 * crate::floor_height(level_height);
             for (i, p) in floor.props.iter().enumerate() {
                 let Some((s, scalable)) = sound(&p.prop) else { continue };
                 let scale = if scalable { p.scale as f32 } else { 1.0 };

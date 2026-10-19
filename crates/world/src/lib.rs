@@ -427,15 +427,17 @@ impl WorldMap {
         }
     }
 
-    /// Is there a building's wall (and no door) between two side-by-side cells, at a level?
+    /// Is there a building's wall (and no door) between two side-by-side cells, at a level
+    /// (its floors `content::FLOOR_LEVELS` levels each)?
     pub fn wall_between(&self, a: (i32, i32), b: (i32, i32), level: u8) -> bool {
         let dir = (b.0 - a.0, b.1 - a.1);
         let side_of = |d: (i32, i32)| ["n", "e", "s", "w"].into_iter().find(|s| side_step(s) == Some(d));
+        let span = content::FLOOR_LEVELS as usize;
         for bd in &self.buildings {
-            if level < bd.level || level as usize >= bd.level as usize + bd.floors.len() {
+            if level < bd.level || level as usize >= bd.level as usize + bd.floors.len() * span {
                 continue;
             }
-            let floor = &bd.floors[(level - bd.level) as usize];
+            let floor = &bd.floors[(level - bd.level) as usize / span];
             let (ra, rb) = ((a.0 - bd.at[0], a.1 - bd.at[1]), (b.0 - bd.at[0], b.1 - bd.at[1]));
             // the wall segment crossed: on the inside cell, facing the outside one
             let (cell, side) = match (bd.has(ra.0, ra.1), bd.has(rb.0, rb.1)) {
@@ -476,6 +478,11 @@ impl Rng {
     pub fn range(&mut self, lo: f32, hi: f32) -> f32 {
         lo + (hi - lo) * self.next()
     }
+}
+
+/// A building's floor's height, for a level's (`content::FLOOR_LEVELS` levels of ground).
+pub fn floor_height(level_height: f32) -> f32 {
+    level_height * content::FLOOR_LEVELS as f32
 }
 
 /// "#rrggbb" to linear colour.

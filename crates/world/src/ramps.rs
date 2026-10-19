@@ -220,7 +220,7 @@ mod tests {
             height: 2.0,
             blocks: true,
             parts: vec![content::Part { shape: "wedge".into(), size: [1.0, 2.0, 1.0], color: "#6b4a2f".into(), ..Default::default() }],
-            ramp: Some(RampFit { along: along.into(), ..Default::default() }),
+            ramp: Some(RampFit { along: along.into(), rise: 2.0, ..Default::default() }),
             ..Default::default()
         }
     }

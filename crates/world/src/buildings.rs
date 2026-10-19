@@ -171,10 +171,10 @@ impl Line<'_> {
 }
 
 /// One face of a piece of wall (the outside, or with `inner` the inside), in the wall's
-/// pattern; (a0, a1) along, (v0, v1) from the floor at `floor_y`. Patterns line up from piece
-/// to piece (they're laid from fixed points).
+/// pattern; (a0, a1) along, (v0, v1) from the floor at `floor_y`, the floor `height` high.
+/// Patterns line up from piece to piece (they're laid from fixed points).
 #[allow(clippy::too_many_arguments)]
-fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4], a0: f32, a1: f32, v0: f32, v1: f32, floor_y: f32, level_height: f32, inner: bool) {
+fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4], a0: f32, a1: f32, v0: f32, v1: f32, floor_y: f32, height: f32, inner: bool) {
     let tile = |m: &mut Mesh, b0: f32, b1: f32, w0: f32, w1: f32, c: [f32; 4]| {
         let (b0, b1, w0, w1) = (b0.max(a0), b1.min(a1), w0.max(v0), w1.min(v1));
         if b1 - b0 > 0.02 && w1 - w0 > 0.02 {
@@ -233,7 +233,7 @@ fn pattern(m: &mut Mesh, line: Line, kind: &str, main: [f32; 4], trim: [f32; 4],
         _ => {
             // plaster: a base and a band under the next floor, in the trim colour
             tile(m, a0, a1, 0.0, 0.16, trim);
-            tile(m, a0, a1, level_height - 0.08, level_height, trim);
+            tile(m, a0, a1, height - 0.08, height, trim);
         }
     }
 }
@@ -304,8 +304,9 @@ pub fn walls_above_stub(b: &Building, content: &Content, level_height: f32, floo
 #[allow(clippy::too_many_arguments)]
 fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::Range<usize>, with_roof: bool, grounds: bool, low: Option<(usize, Sides)>, models: &Models) -> Scene {
     let mut m = Mesh::default();
-    let lh = level_height;
-    let base = b.level as f32 * lh;
+    // (its floors a floor high each, on its level of ground)
+    let lh = crate::floor_height(level_height);
+    let base = b.level as f32 * level_height;
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
     let looks = wall_looks(b, content);
     let (main, trim) = (looks[0].1.main, looks[0].1.trim);
@@ -425,7 +426,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
         // the walls, with their doors and windows and what hangs on them; on the floor the
         // cut asks, those on its sides cut down to a stub
         let down = low.filter(|&(at, _)| at == f).map_or(Sides::NONE, |(_, sides)| sides);
-        floor_walls(&mut m, &mut textured, b, content, lh, f, WallPart::Whole { low: down }, models);
+        floor_walls(&mut m, &mut textured, b, content, level_height, f, WallPart::Whole { low: down }, models);
         // inside
         for p in &floor.props {
             let Some(prop) = content.props.get(&p.prop) else { continue };
@@ -561,9 +562,10 @@ enum WallPart {
 /// Floor `f`'s walls along the outline, with their doors and windows and what hangs on them,
 /// as much of them as `part` says.
 #[allow(clippy::too_many_arguments)]
-fn floor_walls(m: &mut Mesh, textured: &mut Scene, b: &Building, content: &Content, lh: f32, f: usize, part: WallPart, models: &Models) {
+fn floor_walls(m: &mut Mesh, textured: &mut Scene, b: &Building, content: &Content, level_height: f32, f: usize, part: WallPart, models: &Models) {
     let floor = &b.floors[f];
-    let y0 = b.level as f32 * lh + f as f32 * lh;
+    let lh = crate::floor_height(level_height);
+    let y0 = b.level as f32 * level_height + f as f32 * lh;
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
     let looks = wall_looks(b, content);
     let look_index = |id: &str| looks.iter().position(|(l, _)| l == id).unwrap_or(0);
@@ -661,7 +663,7 @@ fn floor_walls(m: &mut Mesh, textured: &mut Scene, b: &Building, content: &Conte
     // on the walls: outside facing out, inside (past the wall's thickness) facing in
     for a in b.anchors.iter().filter(|a| a.floor as usize == f && span(&a.side).is_some_and(|(_, _, things)| things)) {
         let Some(model) = model(&a.prop) else { continue };
-        put(m, textured, &model, anchor_placement(b, a, lh));
+        put(m, textured, &model, anchor_placement(b, a, level_height));
     }
 }
 
@@ -739,7 +741,7 @@ fn roof(m: &mut Mesh, b: &Building, content: &Content, top: f32, wall: [f32; 4],
 /// (inside) a wall's thickness in, facing in.
 pub fn anchor_placement(b: &Building, a: &Anchor, level_height: f32) -> Mat4 {
     let (p, q) = segment_ends(a.cell[0], a.cell[1], &a.side);
-    let y0 = (b.level as usize + a.floor as usize) as f32 * level_height;
+    let y0 = b.level as f32 * level_height + a.floor as f32 * crate::floor_height(level_height);
     let mut mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, y0 + a.height as f32, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
     let mut turn = side_turn(&a.side) as f32;
     if a.inside {
@@ -763,7 +765,7 @@ pub fn buildings(map: &WorldMap, content: &Content, level_height: f32, editing: 
 /// is out.
 pub fn segment_point(b: &Building, cell: [i32; 2], side: &str, floor: usize, height: f32, level_height: f32) -> (Vec3, Vec3) {
     let (p, q) = segment_ends(cell[0], cell[1], side);
-    let y = (b.level as usize + floor) as f32 * level_height + height;
+    let y = b.level as f32 * level_height + floor as f32 * crate::floor_height(level_height) + height;
     let mid = Vec3::new(b.at[0] as f32 + (p[0] + q[0]) as f32 / 2.0, y, b.at[1] as f32 + (p[1] + q[1]) as f32 / 2.0);
     let out = Line { side, at: 0.0 }.out();
     (mid, out)
@@ -800,7 +802,7 @@ mod tests {
     }
 
     fn drawn(b: &Building) -> Mesh {
-        building(b, &content(), 2.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain
+        building(b, &content(), 1.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain
     }
 
     /// The vertices (x, y, z) of about a colour (or of it shaded).
@@ -849,7 +851,7 @@ mod tests {
         c.props.put(Prop { id: "planks".into(), name: "planks".into(), category: "floor".into(), footprint: [1, 1], height: 0.05, parts, ..Default::default() }, Space::Content);
         let mut b = Building { floors: vec![Floor { tile: "planks".into(), ..Default::default() }; 2], ..house() };
         b.floors[1].set_hole(1, 1, Some(""));
-        let m = building(&b, &c, 2.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain;
+        let m = building(&b, &c, 1.0, Some(Cut { top: 1, low: Sides::NONE }), &Models::new()).plain;
         // the colour of the highest flat triangle over (x, z) between the heights lo and hi
         let seen = |x: f32, z: f32, lo: f32, hi: f32| {
             let mut best: Option<(f32, [f32; 4])> = None;
@@ -926,7 +928,7 @@ mod tests {
     #[test]
     fn the_walls_cut_down_keep_a_stub() {
         let b = house();
-        let cut = |low: Sides| building(&b, &content(), 2.0, Some(Cut { top: 0, low }), &Models::new()).plain;
+        let cut = |low: Sides| building(&b, &content(), 1.0, Some(Cut { top: 0, low }), &Models::new()).plain;
         // the highest point of a wall's outside face, by its pattern a hair out of the outline
         // (the south's at z 2.004, the north's at -0.004: no other wall's face is there)
         let top = |m: &Mesh, z: f32| m.vertices.iter().filter(|v| (v.pos[2] - z).abs() < 0.002).map(|v| v.pos[1]).fold(0.0f32, f32::max);
@@ -938,12 +940,12 @@ mod tests {
         assert!(south(&low) > 0.1 && south(&low) <= STUB + 0.001, "the south wall a stub: {}", south(&low));
         assert!((north(&low) - 2.0).abs() < 0.01, "the north wall whole");
         // what fades: the south wall above its stub, and nothing else
-        let upper = walls_above_stub(&b, &content(), 2.0, 0, Sides::of("s"), &Models::new()).plain;
+        let upper = walls_above_stub(&b, &content(), 1.0, 0, Sides::of("s"), &Models::new()).plain;
         assert!(!upper.vertices.is_empty());
         assert!(upper.vertices.iter().all(|v| v.pos[1] > STUB - 0.01 && v.pos[1] < 2.01 && v.pos[2] > 2.0 - WALL - 0.01), "only the south wall above its stub");
-        assert!(walls_above_stub(&b, &content(), 2.0, 0, Sides::NONE, &Models::new()).plain.vertices.is_empty());
+        assert!(walls_above_stub(&b, &content(), 1.0, 0, Sides::NONE, &Models::new()).plain.vertices.is_empty());
         // and what a cut takes away has it, on top of the floors above
-        let above = building_above(&b, &content(), 2.0, 0, Sides::of("s"), &Models::new()).plain;
+        let above = building_above(&b, &content(), 1.0, 0, Sides::of("s"), &Models::new()).plain;
         assert!(above.vertices.iter().any(|v| v.pos[1] < 2.0 && v.pos[2] > 2.0 - WALL - 0.01) && above.vertices.iter().any(|v| v.pos[1] > 2.5));
     }
 
@@ -973,5 +975,28 @@ mod tests {
         b.floors[0].set_wall(0, 0, "n", "plaster", "plaster");
         let m = drawn(&b);
         assert!(!face(&m, false) && face(&m, true), "bricks inside only");
+    }
+
+    #[test]
+    fn a_floor_is_two_levels_of_ground_on_the_building_s_level() {
+        // the world's measures: a level of ground one cell, a floor two (a character's 1.5
+        // and room above it)
+        let world = content::Settings::default();
+        assert_eq!((world.level_height(), world.floor_height()), (1.0, 2.0));
+        // a house of two floors on level 3: its walls from 3 cells up to 7, its upper floor's
+        // walls from 5
+        let b = Building { level: 3, ..house() };
+        let m = building(&b, &content(), 1.0, None, &Models::new()).plain;
+        let walls: Vec<f32> = of(&m, "#efe6d2").iter().map(|p| p[1]).collect();
+        let (low, high) = walls.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y)));
+        assert!((low - 3.0).abs() < 0.01 && (high - 7.0).abs() < 0.01, "{low} {high}");
+        assert!(walls.iter().any(|&y| (y - 5.0).abs() < 0.01), "the upper floor's foot");
+        // on the map: its ground floor's walls stand in the way at levels 3 and 4, its upper
+        // floor's at 5 and 6, nothing at 7
+        let mut map = crate::WorldMap::new("m", "M", 8, 8, "grass");
+        map.buildings.push(Building { at: [2, 2], ..b });
+        for (level, wall) in [(2, false), (3, true), (4, true), (5, true), (6, true), (7, false)] {
+            assert_eq!(map.wall_between((1, 2), (2, 2), level), wall, "level {level}");
+        }
     }
 }

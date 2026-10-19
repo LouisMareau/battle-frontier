@@ -66,12 +66,13 @@ the file untouched, for Blender and for later.
 
 The same as the engine's, so nothing needs converting:
 
-- one Blender unit is one cell (a metre), and a level (one floor) is 2 units high;
+- one Blender unit is one cell (a metre); a level of ground is 1 unit high, a building's
+  floor 2;
 - the asset stands on Z = 0 with the middle of its footprint at the origin ("Stand it on
   the origin" does that for you when exporting);
 - what lies along ramps (category "Along ramps": stairs, a mud slide) is made one cell deep
   and a level high, rising toward +Y: its foot along Y -0.5 on Z = 0, its top along Y 0.5 at
-  Z = 2, as wide along X as it should be (the game stretches it, or puts copies side by side,
+  Z = 1, as wide along X as it should be (the game stretches it, or puts copies side by side,
   to fill a ramp's length). It stays where it was made, and keeps its footprint, whatever
   pokes out past its cell (a pool at its foot, mud spilling over its top);
 - its front faces the front view (-Y in Blender, +Z in glTF and in the engine);

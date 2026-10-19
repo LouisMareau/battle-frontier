@@ -1339,7 +1339,7 @@ mod tests {
         assert_eq!(problems.iter().filter(|p| p.contains("ramp")).count(), 8, "{problems:?}");
         // in the record: how, how high, the ends only when some are kept; none, nothing
         let text = to_text(&stairs);
-        assert!(text.contains("\"ramp\": {\n    \"along\": \"stretch\",\n    \"rise\": 2.0\n  }"), "{text}");
+        assert!(text.contains("\"ramp\": {\n    \"along\": \"stretch\",\n    \"rise\": 1.0\n  }"), "{text}");
         assert!(!to_text(&Prop::default()).contains("ramp"));
         // a prop along ramps fits the ramp: it isn't scaled
         assert!(!stairs.scalable() && stairs.folders() == ["Ramps"]);

@@ -156,9 +156,9 @@ runs before every web build; the import writes temporary/'s). A deployed site on
 
 ## Maps and the map editor
 
-A map is a grid. Each cell has a terrain and the level its ground stands at; a level is
-the main character's height plus some room (`settings/world.json`: 1.5 + 0.5 cells), so
-floors of buildings will stack on the same steps. Cells are stored as rows of characters
+A map is a grid. Each cell has a terrain and the level its ground stands at; a level is one
+cell high: half a building's floor, which is the main character's height plus some room
+(`settings/world.json`: 1.5 + 0.5 cells), so floors of buildings stack on every other step. Cells are stored as rows of characters
 (`terrain` with a `legend`, `levels` as 0-9 then a-z, `areas` for tree areas), props as a
 list (`prop`, `at` in cells, `level`, `turn`, `scale`, `offset`). A placed prop stays on
 its cells once it's put down (`at` is their centre): it can stand anywhere within them
@@ -244,7 +244,7 @@ small one.
   `railing` in its inspector. A prop of category `ramp` lies along ramps (stairs, a mud
   slide): its `ramp` says how (`along`: `stretch`, one stretched along the ramp, or `repeat`,
   copies side by side, one per its width; `rise`: how high its model rises, a level when it
-  was made, 2 cells; `ends`: how much of either end keeps its size when stretched, a
+  was made, 1 cell; `ends`: how much of either end keeps its size when stretched, a
   parapet, a post). Its model is made one cell deep, as wide as its footprint, rising along
   -z from its foot (z 0.5, on the ground) to its top (z -0.5); on a ramp it's turned up the
   ramp's way, made a level high, its foot on the ground at the ramp's foot and its top on the
@@ -261,7 +261,7 @@ small one.
   bushes fill in between. The sample trees are real size (a cell is about a metre): a pine
   13 cells tall with a crown 4.6 across, a round tree 10 tall and 6.4 across; an area's size
   range scales them (0.85 to 1.2: 8 to 16 cells).
-- **Buildings** have a footprint of cells (any shape, in one piece), floors one level each
+- **Buildings** have a footprint of cells (any shape, in one piece), floors two levels each
   (each with its flooring, never empty; any cell may have a flooring of its own, and above
   the ground floor a cell may be a hole, open down to the floor below, with a railing of a
   style along its edge or none: an inner balcony), walls along the outline in a style

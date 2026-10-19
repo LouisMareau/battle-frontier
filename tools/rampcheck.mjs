@@ -50,13 +50,14 @@ for (let z = 0; z < H; z++) {
   levels.push(l);
 }
 const map = { id: 'ramp_test', name: 'Ramp test', width: W, height: H, legend: { g: 'grass', w: 'water' }, terrain, levels };
-let levelHeight = 2;
+let levelHeight = 1;
 const rewrite = (path, body) => {
   if (path !== 'content/bundle.json') return body;
   const bundle = JSON.parse(body.toString('utf8'));
   bundle.files['maps/ramp_test.json'] = map;
   const world = bundle.files['settings/world.json'];
-  levelHeight = (world.character_height ?? 1.5) + (world.level_padding ?? 0.5);
+  // a level of ground: half a floor (a character and room above it)
+  levelHeight = ((world.character_height ?? 1.5) + (world.level_padding ?? 0.5)) / 2;
   // the colours as they are: no cloud shadows drifting over, no colour steps
   world.toon = { ...(world.toon ?? {}), cloud_shadow: 0, color_steps: 0 };
   return Buffer.from(JSON.stringify(bundle));
@@ -206,8 +207,9 @@ try {
   // left as it is, would come up through them), along the ramp but its ends' walls; the grass
   // just before its foot and just past its top
   const treads = [];
-  for (let k = 0; k < 8; k++) {
-    for (const x of [5.5, 6.3, 7.1, 7.9, 8.5]) treads.push([x, ((k + 1) * levelHeight) / 8 + 0.003, 8 - (k + 0.85) / 8]);
+  const STEPS = 5; // (stone_stairs: five steps up a level)
+  for (let k = 0; k < STEPS; k++) {
+    for (const x of [5.5, 6.3, 7.1, 7.9, 8.5]) treads.push([x, ((k + 1) * levelHeight) / STEPS + 0.003, 8 - (k + 0.85) / STEPS]);
   }
   const outside = [6, 7, 8].flatMap((x) => [[x, 0.003, 8.1], [x, levelHeight + 0.003, 6.9]]);
   const front = 'view:7,7.5,11,0,35';

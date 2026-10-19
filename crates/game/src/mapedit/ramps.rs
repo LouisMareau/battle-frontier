@@ -484,7 +484,8 @@ mod tests {
         // it covers the ramp's cells, from its foot to its top
         assert_eq!(ed.map.footprint(&ed.map.props[0], &ed.content), [(3, 7), (4, 7), (5, 7)]);
         let (lo, hi) = ed.prop_box(&ed.map.props[0]).unwrap();
-        assert!(lo.distance(Vec3::new(3.0, 0.0, 7.0)) < 1e-5 && hi.distance(Vec3::new(6.0, 2.3, 8.0)) < 1e-5, "{lo} {hi}");
+        let lh = ed.level_height;
+        assert!(lo.distance(Vec3::new(3.0, 0.0, 7.0)) < 1e-5 && hi.distance(Vec3::new(6.0, lh + 0.3, 8.0)) < 1e-5, "{lo} {hi}");
         // one to a ramp
         ed.place_along("slide");
         assert!(ed.status.contains("That ramp has Steps along it already"), "{}", ed.status);
@@ -520,14 +521,14 @@ mod tests {
             }
         };
         let (corners, white) = mark(&mut ed, "slide");
-        assert!(corners.iter().all(|c| (c.y - if c.z == 8.0 { 0.2 } else { 2.2 }).abs() < 1e-5), "{corners:?}");
+        assert!(corners.iter().all(|c| (c.y - if c.z == 8.0 { 0.2 } else { lh + 0.2 }).abs() < 1e-5), "{corners:?}");
         let (_, crimson) = mark(&mut ed, "steps");
         assert!(white[1] > 0.9 && crimson[1] < 0.5, "{white:?} {crimson:?}");
         // over a ramp something lies along already: its cells, on their level, crimson
         ed.ground_hit = Some((4, 7));
         let mut shapes = vec![];
         ed.along_shapes(&mut shapes);
-        assert!(shapes.len() == 3 && shapes.iter().all(|s| matches!(s.kind, ShapeKind::Rect { .. }) && s.center.y == 2.05 && s.color[1] < 0.5), "{shapes:?}");
+        assert!(shapes.len() == 3 && shapes.iter().all(|s| matches!(s.kind, ShapeKind::Rect { .. }) && (s.center.y - (lh + 0.05)).abs() < 1e-5 && s.color[1] < 0.5), "{shapes:?}");
         // undone: the slide gone; the ramp removed: what lay along it with it
         ed.undo();
         assert_eq!(ed.map.props.len(), 1);

@@ -15,8 +15,8 @@ pub const ROUGH: f64 = 0.5;
 pub const ALONG: [&str; 2] = ["stretch", "repeat"];
 
 /// How high a prop made to lie along ramps rises when its record doesn't say (a level, as
-/// the world's settings have it by default: a character's 1.5 cells and 0.5 more).
-pub const RISE: f64 = 2.0;
+/// the world's settings have it by default: one cell).
+pub const RISE: f64 = 1.0;
 
 fn is_zero(v: &f64) -> bool {
     *v == 0.0

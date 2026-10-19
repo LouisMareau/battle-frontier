@@ -110,10 +110,10 @@ impl MapEditor {
         self.extra_changed = true;
     }
 
-    /// Where a cell's floor is: floor `f` of building `b`.
+    /// Where a cell's floor is: floor `f` of building `b` (a floor two levels high).
     fn floor_pos(&self, c: (i32, i32), b: usize, f: usize) -> Vec3 {
-        let level = self.map.buildings.get(b).map(|x| x.level as usize + f).unwrap_or(0) as f32;
-        Vec3::new(c.0 as f32 + 0.5, level * self.level_height, c.1 as f32 + 0.5)
+        let level = self.map.buildings.get(b).map(|x| x.level).unwrap_or(0) as f32;
+        Vec3::new(c.0 as f32 + 0.5, level * self.level_height + f as f32 * world::floor_height(self.level_height), c.1 as f32 + 0.5)
     }
 
     /// A building's flights of stairs on a floor: for each column of steps, the cell in

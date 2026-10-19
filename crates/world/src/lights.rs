@@ -54,7 +54,7 @@ pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<Place
         let base = b.level as f32 * level_height;
         let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
         for (f, floor) in b.floors.iter().enumerate() {
-            let y0 = base + f as f32 * level_height;
+            let y0 = base + f as f32 * crate::floor_height(level_height);
             for p in &floor.props {
                 let Some((l, scalable)) = light(&p.prop) else { continue };
                 let scale = if scalable { p.scale as f32 } else { 1.0 };
@@ -117,7 +117,7 @@ mod tests {
         // stairs a cell wide with a lantern at their top, one a cell along a ramp two long
         let mut content = Content::default();
         let lantern = Light { at: [0.0, 2.2, -0.4], aim: [0.0, -1.0, 0.0], ..Default::default() };
-        let fit = content::RampFit { along: "repeat".into(), ..Default::default() };
+        let fit = content::RampFit { along: "repeat".into(), rise: 2.0, ..Default::default() };
         content.props.put(Prop { id: "steps".into(), category: "ramp".into(), footprint: [1, 1], light: Some(lantern), ramp: Some(fit), ..Default::default() }, content::Space::Content);
         let mut map = WorldMap::new("hill", "Hill", 10, 10, "grass");
         for z in 0..4 {

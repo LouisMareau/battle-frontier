@@ -57,7 +57,7 @@ const cliffMap = {
 };
 const flatMap = { ...cliffMap, id: 'cloud_flat', name: 'Cloud flat', levels: Array.from({ length: 30 }, () => '0'.repeat(40)) };
 // a level's height, as the world says
-let levelHeight = 2;
+let levelHeight = 1;
 const rewrite = (path, body) => {
   if (path !== 'content/bundle.json') return body;
   const bundle = JSON.parse(body.toString('utf8'));
@@ -65,7 +65,8 @@ const rewrite = (path, body) => {
   bundle.files['maps/cloud_test.json'] = cliffMap;
   bundle.files['maps/cloud_flat.json'] = flatMap;
   const world = bundle.files['settings/world.json'];
-  levelHeight = (world.character_height ?? 1.5) + (world.level_padding ?? 0.5);
+  // a level of ground: half a floor (a character and room above it)
+  levelHeight = ((world.character_height ?? 1.5) + (world.level_padding ?? 0.5)) / 2;
   world.wind = wind;
   world.toon = Object.assign(world.toon ?? {}, { color_steps: 0 }, clouds);
   return Buffer.from(JSON.stringify(bundle));

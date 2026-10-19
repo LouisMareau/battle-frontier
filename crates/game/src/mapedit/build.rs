@@ -417,7 +417,7 @@ impl MapEditor {
         let mut best: Option<(f32, usize)> = None;
         for (i, b) in self.map.buildings.iter().enumerate() {
             let y0 = b.level as f32 * lh;
-            let y1 = y0 + b.floors.len() as f32 * lh + 1.0;
+            let y1 = y0 + b.floors.len() as f32 * world::floor_height(lh) + 1.0;
             for (x, z) in b.map_cells() {
                 let (lo, hi) = (Vec3::new(x as f32, y0, z as f32), Vec3::new(x as f32 + 1.0, y1, z as f32 + 1.0));
                 let inv = dir.recip();
@@ -476,7 +476,7 @@ impl MapEditor {
                     self.rooms_view(origin, dir, pressed && over_view);
                     return;
                 }
-                let y = (d.b.level as usize + d.floor) as f32 * lh;
+                let y = d.b.level as f32 * lh + d.floor as f32 * world::floor_height(lh);
                 let Some(p) = Self::plane(origin, dir, y) else { return };
                 match clicks {
                     Clicks::Openings => {
@@ -635,7 +635,7 @@ impl MapEditor {
                 }
             }
             Step::Design => {
-                let y = (d.b.level as usize + d.floor) as f32 * lh + 0.1;
+                let y = d.b.level as f32 * lh + d.floor as f32 * world::floor_height(lh) + 0.1;
                 let (ox, oz) = (d.b.at[0] as f32, d.b.at[1] as f32);
                 let edge = |x: i32, z: i32, side: &str, color: [f32; 4], out: &mut Vec<Shape>| {
                     let (p, q) = segment_ends(x, z, side);

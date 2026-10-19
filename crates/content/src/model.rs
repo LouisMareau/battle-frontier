@@ -533,16 +533,20 @@ fn is_one(v: &f64) -> bool {
     *v == 1.0
 }
 
+/// How many levels of ground a building's floor spans: a floor is a character's height and
+/// some room above it, a level of ground half that (one cell).
+pub const FLOOR_LEVELS: u8 = 2;
+
 /// The world's measures, the same on every map (one record, id "world"). A cell is the
-/// world's unit; a level (one step of elevation, one floor of a building) is the main
-/// character's height plus some room above it.
+/// world's unit; a floor of a building is the main character's height plus some room above
+/// it, and a level (one step of elevation) is half a floor (`FLOOR_LEVELS`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub id: String,
     /// in cells
     pub character_height: f64,
-    /// room above the character in a level, in cells
+    /// room above the character in a building's floor, in cells
     pub level_padding: f64,
     /// the highest level a map can use
     pub max_level: u8,
@@ -745,8 +749,13 @@ impl Default for Toon {
 }
 
 impl Settings {
-    /// A level's height, in cells.
+    /// A level's height (one step of elevation), in cells: half a floor's.
     pub fn level_height(&self) -> f64 {
+        self.floor_height() / FLOOR_LEVELS as f64
+    }
+
+    /// A building's floor's height, in cells: a character's and some room above it.
+    pub fn floor_height(&self) -> f64 {
         self.character_height + self.level_padding
     }
 }

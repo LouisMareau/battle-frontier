@@ -339,13 +339,13 @@ pub fn prop_bounds(prop: &Prop) -> Vec<(Vec3, Vec3)> {
 /// A building's outline on the ground and at every floor, and its corners.
 pub fn building_bounds(b: &Building, level_height: f32) -> Vec<(Vec3, Vec3)> {
     let base = b.level as f32 * level_height;
-    let top = base + b.floors.len() as f32 * level_height;
+    let top = base + b.floors.len() as f32 * crate::floor_height(level_height);
     let (ox, oz) = (b.at[0] as f32, b.at[1] as f32);
     let mut out = vec![];
     for (x, z, side) in b.edges() {
         let (p, q) = content::segment_ends(x, z, side);
         for f in 0..=b.floors.len() {
-            let y = base + f as f32 * level_height;
+            let y = base + f as f32 * crate::floor_height(level_height);
             out.push((Vec3::new(ox + p[0] as f32, y, oz + p[1] as f32), Vec3::new(ox + q[0] as f32, y, oz + q[1] as f32)));
         }
     }
