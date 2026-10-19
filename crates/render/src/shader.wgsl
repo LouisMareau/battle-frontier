@@ -204,7 +204,11 @@ fn swayed(p: vec3<f32>, n: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
     q.y = q.y - w.x * bend * bend * 0.35 / max(height, 0.3);
     let across = vec3<f32>(-way.z, 0.0, way.x);
     let f = w.y * (0.25 + 0.75 * s) * gust * 0.07 * sin(g.wind_b.w + phase * 3.1 + dot(p, vec3<f32>(2.9, 2.1, 3.3)));
-    return q + (n * 0.6 + across * 0.4) * f;
+    // along the way it faces, the same way for both faces of what's made two-sided (a leaf
+    // with a back a hair behind it): they flutter together, the front staying in front (moved
+    // apart, the back came through in patches, dark)
+    let facing = select(-n, n, dot(n, vec3<f32>(0.32, 0.89, 0.33)) >= 0.0);
+    return q + (facing * 0.6 + across * 0.4) * f;
 }
 
 @vertex

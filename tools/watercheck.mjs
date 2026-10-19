@@ -2,7 +2,9 @@
 // a sandy coast to the west, a lake with a beach, tall grass, trees): inland water lands its
 // small waves (their foam) on the shore the wind blows to, not the other; the sea's waves are
 // rougher when the wind blows to the land than out to sea, and roll in either way; the tall
-// grass and the trees sway in the wind and stand still when it's calm; the clouds' shadows drift
+// grass and the trees sway in the wind and stand still when it's calm; a sheet made two-sided
+// (a leaf with its back a hair under it) flutters as one, its back never coming through on top;
+// the clouds' shadows drift
 // the way the wind blows, morph as they go, and run on across a cliff; the Post-processing
 // window's Wind section sets it (the way, the strength, the gusts), back to the defaults too.
 // Screenshots to screenshots/water-*.png. Exits 1 when something fails.
@@ -43,7 +45,15 @@ for (let z = 0; z < H; z++) {
   }
   terrain.push(row);
 }
-const props = [[18, 4, 'round_tree'], [20, 6, 'pine_tree'], [16, 7, 'round_tree'], [21, 20, 'bush'], [23, 21, 'flowers']].map(([x, z, prop]) => ({ prop, at: [x + 0.5, z + 0.5], level: 0 }));
+const props = [[18, 4, 'round_tree'], [20, 6, 'pine_tree'], [16, 7, 'round_tree'], [21, 20, 'bush'], [23, 21, 'flowers'], [34, 6, 'leaf_sheet']].map(([x, z, prop]) => ({ prop, at: [x + 0.5, z + 0.5], level: 0 }));
+// a leaf made two-sided, as models' leaves are: a sheet, its back a hair under it (a sphere
+// squashed 0.012 thick: its upper half facing up, its lower half down), fluttering all it can,
+// on a stem
+const leafSheet = {
+  id: 'leaf_sheet', name: 'Leaf sheet', category: 'flora', footprint: [3, 3], height: 3.0, blocks: false,
+  parts: [{ shape: 'cylinder', size: [0.1, 2.99, 0.1], at: [0, 0, 0], color: '#7a5434' }, { shape: 'sphere', size: [3.0, 0.012, 3.0], at: [0, 2.985, 0], color: '#5aab48' }],
+  wind: { sway: 0, flutter: 1.0 },
+};
 const map = { id: 'water_test', name: 'Water test', width: W, height: H, legend: { g: 'grass', s: 'sand', w: 'water', o: 'ocean', t: 'tall_grass' }, terrain, props };
 let wind = { direction: 90, strength: 0.7, gusts: 0.3 };
 // no clouds' shadows unless a part asks for them (they'd darken what's measured); never colour
@@ -64,6 +74,7 @@ const rewrite = (path, body) => {
   bundle.files['maps/water_test.json'] = map;
   bundle.files['maps/cloud_test.json'] = cliffMap;
   bundle.files['maps/cloud_flat.json'] = flatMap;
+  bundle.files['props/leaf_sheet.json'] = leafSheet;
   const world = bundle.files['settings/world.json'];
   // a level of ground: half a floor (a character and room above it)
   levelHeight = ((world.character_height ?? 1.5) + (world.level_padding ?? 0.5)) / 2;
@@ -259,6 +270,35 @@ try {
   const [calmGrass, calmTrees] = await sway();
   check('the tall grass sways in the wind', grass > 0.06 && grass > calmGrass * 3, `${(grass * 100).toFixed(1)}% vs ${(calmGrass * 100).toFixed(1)}% calm`);
   check('  the trees too', trees > 0.01 && trees > calmTrees * 3, `${(trees * 100).toFixed(1)}% vs ${(calmTrees * 100).toFixed(1)}% calm`);
+
+  // 3b. a sheet made two-sided flutters as one: seen from above in a strong wind, its top stays
+  // on top (its faces moved apart along their facings, the back came up through it in bands,
+  // in the shade: the dark patches models' leaves had)
+  await open({ direction: 90, strength: 1, gusts: 0 });
+  await cmd('view:34.5,6.5,12,0,89');
+  await sleep(1500);
+  const [lx0] = await screen(33, 6.5, 3);
+  const [lx1] = await screen(36, 6.5, 3);
+  const sheet = await screen(34.5, 6.5, 3);
+  // (its middle: towards its rim its two halves meet, too close for the depth to part them)
+  const half = Math.abs(lx1 - lx0) * 0.2;
+  const dims = [];
+  for (let k = 0; k < 8; k++) {
+    const img = await browser.pixels(k === 0 ? join(shots, 'water-leaf.png') : undefined);
+    const lights = [];
+    for (let y = Math.round(sheet[1] - half); y < sheet[1] + half; y++) {
+      for (let x = Math.round(sheet[0] - half); x < sheet[0] + half; x++) {
+        const i = (y * img.width + x) * 4;
+        lights.push(img.rgba[i] * 0.3 + img.rgba[i + 1] * 0.59 + img.rgba[i + 2] * 0.11);
+      }
+    }
+    // in the shade, against its top in the sun (the brightest tenth of it)
+    const lit = [...lights].sort((a, b) => a - b)[Math.floor(lights.length * 0.9)];
+    dims.push(lights.filter((l) => l < lit * 0.8).length / lights.length);
+    await sleep(200);
+  }
+  check("a sheet made two-sided (a leaf's back a hair under it) flutters as one, its back never coming through", Math.max(...dims) < 0.03,
+    `dark ${dims.map((d) => `${(d * 100).toFixed(0)}%`).join(' ')} of its top, frame by frame`);
 
   // 4. the clouds' shadows drift the way the wind blows (east, then south), and morph as they
   // go (with no drift at all, they still change); cast from their own height, they run on
