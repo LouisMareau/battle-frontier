@@ -78,13 +78,16 @@ pub struct Floor {
     pub props: Vec<Placed>,
 }
 
-/// Another flooring than its floor's, on one cell.
+/// Another flooring than its floor's, on one cell (or, out of doors, a cell's flooring).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CellTile {
     pub cell: [i32; 2],
     /// a "floor" prop
     pub tile: String,
+    /// quarter turns clockwise (seen from above), for a tile of a set that may be turned
+    #[serde(skip_serializing_if = "is_default")]
+    pub turn: u8,
 }
 
 /// The railing style a hole had before holes chose theirs.
@@ -140,10 +143,22 @@ impl Floor {
 
     /// `tile` laid on a cell (the floor's own, or "": back to it); a hole there is closed.
     pub fn set_tile(&mut self, x: i32, z: i32, tile: &str) {
+        self.set_laid(x, z, tile, 0);
+    }
+
+    /// A cell's flooring as laid there by itself (not the floor's own): its tile and turn.
+    pub fn laid(&self, x: i32, z: i32) -> Option<&CellTile> {
+        self.tiles.iter().find(|t| t.cell == [x, z])
+    }
+
+    /// `tile` laid on a cell `turn` quarter turns round (a set's tile, as it was picked to
+    /// fit; "": the floor's own again); a hole there is closed. The floor's own tile unturned
+    /// is the floor's own: nothing kept.
+    pub fn set_laid(&mut self, x: i32, z: i32, tile: &str, turn: u8) {
         self.holes.retain(|h| h.cell != [x, z]);
         self.tiles.retain(|t| t.cell != [x, z]);
-        if !tile.is_empty() && tile != self.tile {
-            self.tiles.push(CellTile { cell: [x, z], tile: tile.into() });
+        if !tile.is_empty() && (tile != self.tile || !turn.is_multiple_of(4)) {
+            self.tiles.push(CellTile { cell: [x, z], tile: tile.into(), turn: turn % 4 });
         }
     }
 

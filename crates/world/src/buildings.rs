@@ -12,7 +12,7 @@ use content::{segment_ends, side_turn, Anchor, Building, Content};
 use glam::{Mat4, Vec3};
 
 use crate::mesh::{placement, prop_scene, Mesh, Models, Scene};
-use crate::railings;
+use crate::{floors, railings};
 use crate::{color, WorldMap};
 
 /// How thick walls are, inwards from the outline.
@@ -368,13 +368,16 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
         let holes = b.stairwells(f, &stairs);
         let open: Vec<(i32, i32)> = if f > 0 { floor.holes.iter().map(|h| (h.cell[0], h.cell[1])).filter(|c| !holes.contains(c)).collect() } else { vec![] };
         let foot = y0 + if f == 0 { 0.02 } else { 0.0 };
-        let mut tiles: Vec<(&str, Option<Flooring>)> = vec![];
-        for (x, z) in b.cells().into_iter().filter(|c| !holes.contains(c) && !open.contains(c)) {
-            let id = floor.tile_at(x, z);
-            let k = match tiles.iter().position(|(t, _)| *t == id) {
+        // each cell's tile as it lies (a set's laid to fit its neighbours: `floors`), turned
+        let floored: Vec<(i32, i32)> = b.cells().into_iter().filter(|c| !holes.contains(c) && !open.contains(c)).collect();
+        let laid = floors::floor_laid(b, f, content, &floored);
+        let mut tiles: Vec<(String, Option<Flooring>)> = vec![];
+        for &(x, z) in &floored {
+            let Some(l) = laid.get(&(x, z)) else { continue };
+            let k = match tiles.iter().position(|(t, _)| *t == l.tile) {
                 Some(k) => k,
                 None => {
-                    tiles.push((id, model(id).map(flooring)));
+                    tiles.push((l.tile.clone(), model(&l.tile).map(flooring)));
                     tiles.len() - 1
                 }
             };
@@ -383,7 +386,7 @@ fn build(b: &Building, content: &Content, level_height: f32, floors: std::ops::R
                 let from = m.vertices.len();
                 m.quad([Vec3::new(x0, foot, z0), Vec3::new(x0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0 + 1.0), Vec3::new(x0 + 1.0, foot, z0)], tile.under);
                 toon_from(&mut m, from, tile.toon);
-                put(&mut m, &mut textured, &tile.scene, Mat4::from_translation(Vec3::new(x0 + 0.5, foot, z0 + 0.5)));
+                put(&mut m, &mut textured, &tile.scene, placement(Vec3::new(x0 + 0.5, foot, z0 + 0.5), l.turn as f32 * 90.0, 1.0));
             }
         }
         // the holes' railings: along their edges where the floor goes on (not where another

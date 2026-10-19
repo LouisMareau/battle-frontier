@@ -1,0 +1,16 @@
+{
+  "id": "flagstones_slab",
+  "name": "Flagstones: slab",
+  "category": "floor",
+  "footprint": [1, 1],
+  "height": 0.05,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.0, 0.0], "color": "#857f73" },
+    { "shape": "box", "size": [0.96, 0.05, 0.96], "at": [0.0, 0.0, 0.0], "color": "#b1aa9c" }
+  ],
+  "floor": {
+    "set": "flagstones",
+    "edges": ["joint", "joint", "joint", "joint"],
+    "weight": 2.0
+  }
+}

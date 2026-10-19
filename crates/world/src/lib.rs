@@ -5,6 +5,7 @@
 pub mod anim;
 pub mod buildings;
 pub mod events;
+pub mod floors;
 pub mod fx;
 pub mod timeline;
 pub mod gltf_in;

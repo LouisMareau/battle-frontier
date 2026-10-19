@@ -872,6 +872,9 @@ pub struct Prop {
     /// a piece of railing (category "railing"): its style, and where it goes
     #[serde(skip_serializing_if = "Option::is_none")]
     pub railing: Option<RailingPiece>,
+    /// a tile of a set of floor tiles (category "floor"): its set, and what its edges are
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub floor: Option<FloorTile>,
     /// how its stand-in moves in the wind (a model moves by its own wind paint instead)
     #[serde(skip_serializing_if = "is_default")]
     pub wind: Breeze,
@@ -894,6 +897,54 @@ pub struct Breeze {
 impl Breeze {
     pub fn still(&self) -> bool {
         self.sway <= 0.0 && self.flutter <= 0.0
+    }
+}
+
+/// A floor tile's place in a set of them ("floor" props laid together by wave function
+/// collapse: `world::floors`). A set's tiles are each a cell's flooring, modelled a cell wide
+/// as any flooring is; laid side by side, two tiles fit when the edge between them is the same
+/// on both (the same word), so a set can carry a pattern across its cells: a big flagstone
+/// over two, a border round a medallion, planks running on. `edges` go round from the north
+/// (-z), then east (+x), south (+z) and west, as it's modelled (unturned); a tile that `turns`
+/// may be laid a quarter, a half or three quarters turned clockwise (seen from above), its
+/// edges going round with it. The likelier by `weight` among those that fit.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct FloorTile {
+    /// the set's name ("flagstones"): one floor is laid with one set's tiles
+    pub set: String,
+    /// what its north, east, south and west edges are ("joint", "slab"...)
+    pub edges: [String; 4],
+    pub weight: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub turns: bool,
+}
+
+impl Default for FloorTile {
+    fn default() -> Self {
+        FloorTile { set: String::new(), edges: ["joint".into(), "joint".into(), "joint".into(), "joint".into()], weight: 1.0, turns: false }
+    }
+}
+
+impl FloorTile {
+    /// Its edge on a side (0 north, 1 east, 2 south, 3 west) laid `turn` quarter turns
+    /// clockwise: what was on the side `turn` steps back round.
+    pub fn edge(&self, turn: u8, side: usize) -> &str {
+        &self.edges[(side + 4 - turn as usize % 4) % 4]
+    }
+
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if self.set.trim().is_empty() {
+            out.push("floor: a tile of a set says which (\"set\")".to_string());
+        }
+        if self.edges.iter().any(|e| e.trim().is_empty()) {
+            out.push("floor: each of its four edges says what it is (north, east, south, west)".to_string());
+        }
+        if self.weight <= 0.0 {
+            out.push(format!("floor: weight {}: more than 0", self.weight));
+        }
+        out
     }
 }
 

@@ -1,0 +1,19 @@
+{
+  "id": "flagstones_small",
+  "name": "Flagstones: small",
+  "category": "floor",
+  "footprint": [1, 1],
+  "height": 0.05,
+  "parts": [
+    { "shape": "box", "size": [1.0, 0.04, 1.0], "at": [0.0, 0.0, 0.0], "color": "#857f73" },
+    { "shape": "box", "size": [0.46, 0.05, 0.47], "at": [-0.25, 0.0, -0.25], "color": "#b9b2a5" },
+    { "shape": "box", "size": [0.47, 0.05, 0.46], "at": [0.25, 0.0, -0.25], "color": "#aea799" },
+    { "shape": "box", "size": [0.47, 0.05, 0.47], "at": [-0.25, 0.0, 0.25], "color": "#b4ad9f" },
+    { "shape": "box", "size": [0.46, 0.05, 0.46], "at": [0.25, 0.0, 0.25], "color": "#c0b9ac" }
+  ],
+  "floor": {
+    "set": "flagstones",
+    "edges": ["joint", "joint", "joint", "joint"],
+    "weight": 3.0
+  }
+}

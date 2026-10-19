@@ -411,6 +411,18 @@ impl Content {
     }
 
     /// Every reference that points nowhere, and other mistakes a review should catch.
+    /// The sets of floor tiles there are, each with its tiles (props of category "floor"
+    /// with a `floor` saying the set), by name.
+    pub fn floor_sets(&self) -> std::collections::BTreeMap<String, Vec<&Prop>> {
+        let mut out: std::collections::BTreeMap<String, Vec<&Prop>> = Default::default();
+        for p in self.props.iter().filter(|p| p.category == "floor") {
+            if let Some(f) = &p.floor {
+                out.entry(f.set.clone()).or_default().push(p);
+            }
+        }
+        out
+    }
+
     /// The railing styles there are: those with a span among the railing props.
     pub fn railing_styles(&self) -> Vec<String> {
         let mut out: Vec<String> = self.props.iter().filter_map(|p| p.railing.as_ref().filter(|r| r.is_span()).map(|r| r.style.clone())).collect();
@@ -585,6 +597,12 @@ impl Content {
                 (Some(r), _) => out.extend(r.problems().into_iter().map(|e| format!("props/{}: {e}", p.id))),
                 (None, true) => out.push(format!("props/{}: a railing piece says what it is (\"railing\": its style, span or post)", p.id)),
                 (None, false) => {}
+            }
+            if let Some(f) = &p.floor {
+                out.extend(f.problems().into_iter().map(|e| format!("props/{}: {e}", p.id)));
+                if p.category != "floor" {
+                    out.push(format!("props/{}: a tile of a set of floor tiles is a flooring (category \"floor\")", p.id));
+                }
             }
             match (&p.ramp, p.category == "ramp") {
                 (Some(f), _) => out.extend(f.problems(p.footprint).into_iter().map(|e| format!("props/{}: {e}", p.id))),
