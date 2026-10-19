@@ -653,13 +653,18 @@ What keeps it fast:
 - World meshes (ground, cliffs, props, trees, buildings) are built square by square (64 cells,
   only the squares within reach of the camera, a few per frame; the far ones are dropped) and
   cut into 16 x 16 cell pieces with their bounds; a piece out of the camera's sight isn't drawn,
-  nor one out of the sun's in the shadow pass. A big map costs what's in reach, not its size,
-  and an edit rebuilds the squares it touched: on a 320 x 240 map a prop placed costs 6 ms.
+  nor one out of the sun's in the shadow pass (a square's box out of sight: all its pieces left
+  out at once). A big map costs what's in reach, not its size, and an edit rebuilds the squares
+  it touched: on a 320 x 240 map a prop placed costs 6 ms.
 - An edit works out again only what it can reach, however big the map: the trees round it
   (`trees::Woods`), the ground's squares and the cells' texture round the cells it changed
   (only that box sent), the props' squares where the list changed, a building's digest when it
   changed, the lights and sounds when what gives them off did. An undo step's copy of the map
   is made in memory grown at once.
+- An idle frame looks at what's near, not at all of a big map: the props within reach are
+  posed (tested for reach before their model is looked up), the sounds within earshot heard,
+  the maps around keep their lamps and blocked cells from when they came, and the checks'
+  hook of what lies along ramps is worked out again only when the props or the ramps change.
 - Nearest first, and props without cut-outs on a shader with no `discard`: the GPU drops what's
   hidden before shading it. The ground (the costliest shader) is drawn last, under the rest.
 - The ground shader skips the border votes wherever a cell and its neighbours have one
@@ -691,22 +696,24 @@ time goes. Measured on 2026-10-15 (RTX 3080, WebGPU), before and after the work 
 | Walking (close camera) | not measured | 895 fps (1.1 ms) |
 | A prop placed in the map editor: worst frame | 57 ms | 7.4 ms |
 
-At 1400 x 900 on the meadow itself, every scene runs at ~2400 fps uncapped (~0.4 ms a frame),
-a battle at ~3800. A 320 x 240 map (`tile=8`, 1.8M triangles in view) draws whole at 4K at
+At 1400 x 900 on the meadow itself (2026-10-19), the menu runs at ~540 fps uncapped and the
+map editor's views at ~420 to 470 (about 2.2 ms a frame, most of it the same on any map). A
+320 x 240 map (`tile=8`, 1.8M triangles in view) draws whole at 4K at
 379 fps, and a prop placed on it costs 6 ms (`only=editing`).
 
 Big maps (2026-10-19, RTX 3080, real-size trees; the editing scene paints a stroke of eight
-cells of each kind and undoes; the last column is the build before edits cost what they
-touch, measured the same day):
+cells of each kind and undoes; the last column is the build before edits and idle frames
+cost what they touch, measured the same day):
 
 | `perf.mjs tile=N creatures=0`, 1400 x 900 | 1000 x 750 (`tile=25`: 12,000 props) | 2000 x 1500 (`tile=50`: 47,000 props, a million cells of woods) | 2000 x 1500, before |
 |---|---|---|---|
-| The whole map in view | 166 fps | 84 fps | 83 fps |
-| Walking | 309 fps | 158 fps | 101 fps |
-| A prop placed: worst frame | 11 ms | 25 ms | 34 ms |
-| A stroke of terrain, of water | 10 ms, 10 ms | 19 ms, 17 ms | 24 ms, 27 ms |
-| A stroke a level up, of a wood's cells | 14 ms, 15 ms | 17 ms, 19 ms | 99 ms, 59 ms |
-| An undo | 15 ms | 19 ms | 98 ms |
+| A close view (the camera 14 cells off) | 373 fps | 354 fps | 107 fps |
+| The whole map in view | 151 fps | 158 fps | 83 fps |
+| Walking | 405 fps | 360 fps | 101 fps |
+| A prop placed: worst frame | 9 ms | 20 ms | 34 ms |
+| A stroke of terrain, of water | 9 ms, 11 ms | 17 ms, 13 ms | 24 ms, 27 ms |
+| A stroke a level up, of a wood's cells | 14 ms, 9 ms | 13 ms, 15 ms | 99 ms, 59 ms |
+| An undo | 14 ms | 20 ms | 98 ms |
 
 An edit costs what it touches, not the map's size. The trees are placed again only where it
 can move them (`world::trees::Woods`: the spots on the cells that changed are tried again,
@@ -722,6 +729,17 @@ is made after what undo lets go is freed, in memory grown at once: made a piece 
 big map's copy grew the browser's memory in thousands of small steps (25 ms more). The tools'
 marks over cells cover only what the camera sees. `streamcost` says what a change's costliest
 frame of the last two seconds spent its time on, step by step (`rest`: the rest of the frame).
+
+An idle frame costs what's in view too. On the biggest, half of a close view's frame went to
+looking props up by their id with the standard library's hash (SipHash), each of the 47,000
+every frame: for the checks' hook of what lies along ramps, for the props with a rigged model
+to pose, for the sounds to hear. Now that hook is worked out again only when the props or the
+ramps change (among the props on a ramp's cells), a prop's reach is tested before its model is
+looked up, and only the sounds within earshot go further. The renderer tests a square's box
+before its pieces; the maps around keep their lamps and blocked cells from when they came
+(they were worked out every frame, and every step across a seam); and the walker finds the
+building it's in without listing every building's cells. A close view on the 2000 x 1500 map
+keeps the processor 2.7 ms a frame (9.4 before), the 40 x 30 meadow's 2.2.
 
 ## Not yet
 

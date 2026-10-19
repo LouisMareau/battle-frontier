@@ -179,7 +179,7 @@ impl MapEditor {
     fn stairs_step(&self, cell: (i32, i32), up: Option<(usize, usize)>, d: (i32, i32)) -> Option<((i32, i32), Option<(usize, usize)>, usize)> {
         let (bi, f) = match up {
             Some(x) => x,
-            None => (self.map.buildings.iter().position(|b| b.map_cells().contains(&cell))?, 0),
+            None => (self.map.buildings.iter().position(|b| b.covers(cell))?, 0),
         };
         let steps = |a: (i32, i32), b: (i32, i32)| ((a.0 - b.0).abs() + (a.1 - b.1).abs()) as usize;
         for (front, exit, u) in self.flights(bi, f) {
@@ -214,7 +214,7 @@ impl MapEditor {
     /// Puts the walker on a floor of the building it stands in (a save loaded again).
     pub(super) fn set_walker_floor(&mut self, f: usize) {
         let Some(cell) = self.walker.as_ref().map(|w| w.cell) else { return };
-        let Some(bi) = self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)) else { return };
+        let Some(bi) = self.map.buildings.iter().position(|b| b.covers(cell)) else { return };
         if f == 0 || !self.floor_free(bi, f, cell) {
             return;
         }
@@ -393,7 +393,7 @@ impl MapEditor {
             }
             let someone = self.actor_at(next).is_some();
             // stairs on a building's ground floor are taken from their bottom, not walked over
-            let on_stairs = self.map.buildings.iter().position(|b| b.map_cells().contains(&next)).map(|bi| {
+            let on_stairs = self.map.buildings.iter().position(|b| b.covers(next)).map(|bi| {
                 let b = &self.map.buildings[bi];
                 self.stairs_or_blocking(bi, 0, (next.0 - b.at[0], next.1 - b.at[1]))
             });
@@ -423,7 +423,7 @@ impl MapEditor {
         let inside = match upstairs {
             // on an upper floor; on the roof, outside again
             Some((b, f)) => (f < self.map.buildings.get(b).map(|x| x.floors.len()).unwrap_or(0)).then_some((b, f)),
-            None => self.map.buildings.iter().position(|b| b.map_cells().contains(&cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize)),
+            None => self.map.buildings.iter().position(|b| b.covers(cell)).map(|i| (i, level.saturating_sub(self.map.buildings[i].level) as usize)),
         };
         // the walls facing the camera: cut down while inside (they'd hide the room)
         let front = world::buildings::facing(self.cam.yaw, self.front);

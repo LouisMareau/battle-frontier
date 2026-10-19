@@ -171,19 +171,24 @@ impl MapEditor {
     /// animation (or its first), out of step with the others.
     pub(super) fn animated_draws(&self, now: f64) -> Vec<Animated> {
         let mut out = vec![];
+        // (no rigged model, nothing to pose: a big map has thousands of props)
+        if !self.models.values().any(|m| m.rig.is_some()) {
+            return out;
+        }
         let lh = self.level_height;
         let t = (now / 1000.0) as f32;
+        let (target, reach) = (Vec3::new(self.cam.target.x, 0.0, self.cam.target.z), self.cam.distance * 1.5 + 24.0);
         for (i, p) in self.map.props.iter().enumerate() {
+            // out of reach: not worth posing (looked at first: quicker than its model's lookup)
+            let pos = p.pos();
+            if Vec3::new(pos[0] as f32, 0.0, pos[1] as f32).distance(target) > reach {
+                continue;
+            }
             let Some(m) = self.models.get(&p.prop) else { continue };
             let Some(rig) = &m.rig else { continue };
             // still, at rest, when Animate is off
             let anim = if self.animate { m.idle() } else { None };
             let Some(prop) = self.content.props.get(&p.prop) else { continue };
-            // out of reach: not worth posing
-            let pos = p.pos();
-            if Vec3::new(pos[0] as f32, 0.0, pos[1] as f32).distance(Vec3::new(self.cam.target.x, 0.0, self.cam.target.z)) > self.cam.distance * 1.5 + 24.0 {
-                continue;
-            }
             let phase = (i as f32 * 0.37) % 1.0 * anim.map(|a| a.duration).unwrap_or(1.0).max(0.1);
             // (along a ramp, a pose on each copy laid on it, stretched evenly)
             for put in self.map.puts(p, prop, lh) {

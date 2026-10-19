@@ -603,16 +603,33 @@ impl GpuMesh {
     }
 }
 
-/// One layer's squares: each by texture (WHITE for the vertex-coloured ones), a texture's
-/// pieces one after the other.
-type Squares = BTreeMap<(i32, i32), Vec<(String, GpuMesh)>>;
+/// A square's pieces, by texture (WHITE for the vertex-coloured ones; a texture's pieces one
+/// after the other), with the box round them all and whether any is toon: what's out of
+/// sight is left out a square at a time, and a frame doesn't look at every piece for toon.
+struct Square {
+    lo: Vec3,
+    hi: Vec3,
+    toon: bool,
+    pieces: Vec<(String, GpuMesh)>,
+}
+
+impl Square {
+    fn new(pieces: Vec<(String, GpuMesh)>) -> Square {
+        let lo = pieces.iter().fold(Vec3::splat(f32::MAX), |a, (_, m)| a.min(m.lo));
+        let hi = pieces.iter().fold(Vec3::splat(f32::MIN), |a, (_, m)| a.max(m.hi));
+        Square { lo, hi, toon: pieces.iter().any(|(_, m)| m.toon), pieces }
+    }
+}
+
+/// One layer's squares.
+type Squares = BTreeMap<(i32, i32), Square>;
 
 /// A world map on the GPU, square by square (whatever size the editor cuts it in; each
 /// square's meshes are cut again into CHUNK squares for the culling), in its own space,
 /// placed in the scene's by `place`.
 struct WorldGpu {
     /// the cell tops (the terrain shader), by square
-    tops: BTreeMap<(i32, i32), Vec<GpuMesh>>,
+    tops: Squares,
     /// everything else by layer ("cliffs", "props", "trees", "buildings"...) and square:
     /// by texture (WHITE for the vertex-coloured ones), a texture's pieces one after the
     /// other
@@ -1506,21 +1523,12 @@ impl SceneRenderer {
     /// colours alone); a texture that isn't loaded draws white.
     pub fn set_chunk(&mut self, device: &wgpu::Device, map: &str, layer: &str, square: (i32, i32), batches: &[(String, Vec<MapVertex>, Vec<u32>)]) {
         let Some(w) = self.worlds.get_mut(map) else { return };
-        if layer == "tops" {
-            let meshes: Vec<GpuMesh> = batches.iter().flat_map(|(_, v, i)| GpuMesh::chunked(device, v, i)).collect();
-            if meshes.is_empty() {
-                w.tops.remove(&square);
-            } else {
-                w.tops.insert(square, meshes);
-            }
-            return;
-        }
         let meshes: Vec<(String, GpuMesh)> = batches.iter().flat_map(|(k, v, i)| GpuMesh::chunked(device, v, i).into_iter().map(|m| (k.clone(), m))).collect();
-        let squares = w.layers.entry(layer.to_string()).or_default();
+        let squares = if layer == "tops" { &mut w.tops } else { w.layers.entry(layer.to_string()).or_default() };
         if meshes.is_empty() {
             squares.remove(&square);
         } else {
-            squares.insert(square, meshes);
+            squares.insert(square, Square::new(meshes));
         }
     }
 
@@ -1625,7 +1633,7 @@ impl SceneRenderer {
         let clock = self.wind_clock;
         // the ink lines cost a look at every pixel's neighbours: only when something toon
         // is drawn
-        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).flatten().chain(&self.extra).chain(&self.fade).any(|(_, m)| m.toon);
+        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).any(|s| s.toon) || self.extra.iter().chain(&self.fade).any(|(_, m)| m.toon);
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
@@ -1861,23 +1869,37 @@ impl SceneRenderer {
             }
             pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             let mut bound = WHITE;
-            let own = (0u32, Vec3::ZERO);
-            let maps = self.worlds.values().enumerate().map(|(k, w)| ((slot(k), w.place.offset), w.layers.values().flat_map(|l| l.values()).flatten().collect::<Vec<_>>()));
-            for ((at, off), objects) in maps.chain(std::iter::once((own, self.extra.iter().chain(&self.fade).collect()))) {
-                pass.set_bind_group(0, &self.globals_bind, &[at]);
-                for (key, m) in objects.into_iter().map(|(k, m)| (k.as_str(), m)) {
-                    if !sun.sees(m.lo + off, m.hi + off) {
-                        stats.culled += 1;
-                        continue;
+            // the pieces of each map's squares the sun sees (out of its sight, a square's
+            // pieces all left out at once), then the scene's own
+            let mut objects = vec![];
+            for (k, w) in self.worlds.values().enumerate() {
+                let off = w.place.offset;
+                for sq in w.layers.values().flat_map(|l| l.values()) {
+                    if sun.sees(sq.lo + off, sq.hi + off) {
+                        objects.extend(sq.pieces.iter().map(|(key, m)| (slot(k), off, key.as_str(), m)));
+                    } else {
+                        stats.culled += sq.pieces.len() as u32;
                     }
-                    if key != bound {
-                        pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
-                        bound = key;
-                    }
-                    m.draw(&mut pass);
-                    stats.shadow_draws += 1;
-                    stats.shadow_triangles += m.count / 3;
                 }
+            }
+            let own = self.extra.iter().chain(&self.fade).map(|(key, m)| (0, Vec3::ZERO, key.as_str(), m));
+            let mut placed = None;
+            for (at, off, key, m) in objects.into_iter().chain(own) {
+                if !sun.sees(m.lo + off, m.hi + off) {
+                    stats.culled += 1;
+                    continue;
+                }
+                if placed != Some(at) {
+                    pass.set_bind_group(0, &self.globals_bind, &[at]);
+                    placed = Some(at);
+                }
+                if key != bound {
+                    pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                    bound = key;
+                }
+                m.draw(&mut pass);
+                stats.shadow_draws += 1;
+                stats.shadow_triangles += m.count / 3;
             }
             pass.set_bind_group(0, &self.globals_bind, &[0]);
             pass.set_pipeline(&self.sprite_shadow_pipeline);
@@ -1920,19 +1942,23 @@ impl SceneRenderer {
             // what's in sight, nearest first: what's behind is then hidden before it's shaded
             let mut seen: Vec<(f32, u32, &str, &GpuMesh, bool)> = vec![];
             let through = frame.see_through.is_some();
-            let items = self
-                .worlds
-                .values()
-                .enumerate()
-                .flat_map(|(k, w)| {
-                    let (at, off) = (slot(k), w.place.offset);
-                    w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS).flat_map(move |(name, l)| {
-                        let clear = through && matches!(name.as_str(), "trees" | "props");
-                        l.values().flatten().map(move |(key, m)| (at, off, key.as_str(), m, clear))
-                    })
-                })
-                .chain(self.extra.iter().map(|(key, m)| (0u32, Vec3::ZERO, key.as_str(), m, false)));
-            for (at, off, key, m, clear) in items {
+            // (a square out of sight: its pieces all left out at once)
+            let mut items = vec![];
+            for (k, w) in self.worlds.values().enumerate() {
+                let (at, off) = (slot(k), w.place.offset);
+                for (name, l) in w.layers.iter().filter(|(name, _)| name.as_str() != CLIFFS) {
+                    let clear = through && matches!(name.as_str(), "trees" | "props");
+                    for sq in l.values() {
+                        if eye.sees(sq.lo + off, sq.hi + off) {
+                            items.extend(sq.pieces.iter().map(|(key, m)| (at, off, key.as_str(), m, clear)));
+                        } else {
+                            stats.culled += sq.pieces.len() as u32;
+                        }
+                    }
+                }
+            }
+            let own = self.extra.iter().map(|(key, m)| (0u32, Vec3::ZERO, key.as_str(), m, false));
+            for (at, off, key, m, clear) in items.into_iter().chain(own) {
                 if eye.sees(m.lo + off, m.hi + off) {
                     seen.push((((m.lo + m.hi) * 0.5 + off).distance_squared(frame.camera_pos), at, key, m, clear));
                 } else {
@@ -1987,15 +2013,21 @@ impl SceneRenderer {
                 pass.set_bind_group(0, &self.globals_bind, &[slot(k)]);
                 pass.set_bind_group(1, &w.bind, &[]);
                 let off = w.place.offset;
-                let cliffs = w.layers.get(CLIFFS).into_iter().flat_map(|l| l.values()).flatten().map(|(_, m)| m);
-                for m in w.tops.values().flatten().chain(cliffs) {
-                    if !eye.sees(m.lo + off, m.hi + off) {
-                        stats.culled += 1;
+                let cliffs = w.layers.get(CLIFFS).into_iter().flat_map(|l| l.values());
+                for sq in w.tops.values().chain(cliffs) {
+                    if !eye.sees(sq.lo + off, sq.hi + off) {
+                        stats.culled += sq.pieces.len() as u32;
                         continue;
                     }
-                    m.draw(&mut pass);
-                    stats.draws += 1;
-                    stats.triangles += m.count / 3;
+                    for (_, m) in &sq.pieces {
+                        if !eye.sees(m.lo + off, m.hi + off) {
+                            stats.culled += 1;
+                            continue;
+                        }
+                        m.draw(&mut pass);
+                        stats.draws += 1;
+                        stats.triangles += m.count / 3;
+                    }
                 }
             }
             pass.set_bind_group(0, &self.globals_bind, &[0]);

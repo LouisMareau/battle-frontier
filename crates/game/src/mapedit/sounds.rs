@@ -30,9 +30,10 @@ impl MapEditor {
             Some(s) => std::borrow::Cow::Borrowed(s),
             None => std::borrow::Cow::Owned(world::sounds::sounds(&self.map, &self.content, lh)),
         };
-        for s in placed.iter().cloned() {
+        // (only those within earshot: a big map has thousands)
+        for s in placed.iter().filter(|s| crate::audio::level(listener, Some(s.pos), s.sound.volume as f32, s.sound.range as f32) > 0.0) {
             let Some(e) = self.content.props.entry(&s.prop) else { continue };
-            out.push(Want { key: s.key, file: e.space.asset(&s.sound.file), pos: Some(s.pos), volume: s.sound.volume as f32, range: s.sound.range as f32 });
+            out.push(Want { key: s.key.clone(), file: e.space.asset(&s.sound.file), pos: Some(s.pos), volume: s.sound.volume as f32, range: s.sound.range as f32 });
         }
         if self.creatures_on {
             for r in &self.spawner.roamers {

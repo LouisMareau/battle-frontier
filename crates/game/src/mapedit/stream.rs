@@ -798,6 +798,7 @@ impl MapEditor {
         if stream(r, rs, &mut feed, need, start) {
             self.placed_lights = None;
             self.placed_sounds = None;
+            self.along_hook = None;
         }
         if self.placed_sounds.is_none() {
             let t = crate::platform::now_ms();

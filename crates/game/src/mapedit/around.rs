@@ -30,6 +30,17 @@ pub(super) struct Neighbour {
     pub origin: [i32; 2],
     pub gpu: GpuState,
     need: Needs,
+    /// its lamps (in its own space) and which of its cells block, worked out when it comes
+    /// and when the content changes, not every frame or step: a big map has thousands
+    lights: Vec<PlacedLight>,
+    blocked: Vec<bool>,
+}
+
+impl Neighbour {
+    fn new(map: WorldMap, space: Space, origin: [i32; 2], content: &Content, level_height: f32) -> Neighbour {
+        let (lights, blocked) = (world::lights::lights(&map, content, level_height), map.blocked(content));
+        Neighbour { map, space, origin, gpu: GpuState::default(), need: Needs::all(), lights, blocked }
+    }
 }
 
 /// A map on its way: its chunk files.
@@ -105,10 +116,16 @@ impl MapEditor {
         let c = std::sync::Arc::as_ptr(&self.content) as usize;
         let epoch: u64 = self.model_versions.values().sum();
         if c != self.around.content || epoch != self.around.models {
+            // (their lamps and what blocks come from the records, not the models)
+            let records = c != self.around.content;
             self.around.content = c;
             self.around.models = epoch;
+            let lh = self.level_height;
             for n in self.around.maps.values_mut() {
                 (n.need.props, n.need.trees, n.need.buildings) = (true, true, true);
+                if records {
+                    (n.lights, n.blocked) = (world::lights::lights(&n.map, &self.content, lh), n.map.blocked(&self.content));
+                }
             }
         }
         let world = self.world_record();
@@ -182,7 +199,7 @@ impl MapEditor {
                 WorldMap::from_record(&c.record)
             };
             map.know_doors(&content);
-            self.around.maps.insert(id, Neighbour { map, space: c.space, origin: c.origin, gpu: GpuState::default(), need: Needs::all() });
+            self.around.maps.insert(id, Neighbour::new(map, c.space, c.origin, &content, self.level_height));
             changed = true;
         }
         if changed {
@@ -272,14 +289,10 @@ impl MapEditor {
 
     /// The lamps of the maps around, where they are in the open map's space.
     pub(super) fn around_lights(&self) -> Vec<PlacedLight> {
-        let lh = self.level_height;
         let mut out = vec![];
         for n in self.around.maps.values() {
             let o = self.around.offset(n);
-            out.extend(world::lights::lights(&n.map, &self.content, lh).into_iter().map(|mut l| {
-                l.pos += o;
-                l
-            }));
+            out.extend(n.lights.iter().map(|l| PlacedLight { pos: l.pos + o, ..l.clone() }));
         }
         out
     }
@@ -289,7 +302,7 @@ impl MapEditor {
     pub(super) fn can_cross(&self, id: &str, cell: (i32, i32), level: u8) -> Option<bool> {
         let n = self.around.maps.get(id)?;
         let i = n.map.index(cell.0, cell.1)?;
-        Some(n.map.level[i] == level && !n.map.blocked(&self.content)[i])
+        Some(n.map.level[i] == level && !n.blocked.get(i).copied().unwrap_or(false))
     }
 
     /// Makes a map around this one the open one, keeping all that's on the GPU: the one
@@ -300,13 +313,9 @@ impl MapEditor {
         let origin = self.around.origin?;
         let n = self.around.maps.remove(id)?;
         let delta = Vec3::new((n.origin[0] - origin[0]) as f32, 0.0, (n.origin[1] - origin[1]) as f32);
-        let old = Neighbour {
-            map: std::mem::replace(&mut self.map, n.map),
-            space: std::mem::replace(&mut self.space, n.space),
-            origin,
-            gpu: std::mem::replace(&mut self.gpu, n.gpu),
-            need: Needs::all(),
-        };
+        let (map, space) = (std::mem::replace(&mut self.map, n.map), std::mem::replace(&mut self.space, n.space));
+        let mut old = Neighbour::new(map, space, origin, &self.content, self.level_height);
+        old.gpu = std::mem::replace(&mut self.gpu, n.gpu);
         self.around.maps.insert(old.map.id.clone(), old);
         self.around.origin = Some(n.origin);
         self.around.version += 1;

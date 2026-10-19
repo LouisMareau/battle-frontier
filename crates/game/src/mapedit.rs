@@ -232,6 +232,8 @@ pub struct MapEditor {
     /// (a big map has thousands)
     placed_lights: Option<Vec<world::lights::PlacedLight>>,
     placed_sounds: Option<Vec<world::sounds::PlacedSound>>,
+    /// the `along` hook (what lies along ramps), kept like them
+    along_hook: Option<String>,
     /// the maps around it in its world, drawn where they lie
     around: around::Around,
     /// the rigged models' moving parts on the GPU: whether they were sent toon
@@ -471,6 +473,7 @@ impl MapEditor {
             gpu: Default::default(),
             placed_lights: None,
             placed_sounds: None,
+            along_hook: None,
             around: Default::default(),
             skinned_sent: Default::default(),
             loading: None,
@@ -753,6 +756,7 @@ impl MapEditor {
 
     fn after_load(&mut self) {
         self.map.know_doors(&self.content);
+        (self.placed_lights, self.placed_sounds, self.along_hook) = (None, None, None);
         self.load_spawns();
         self.zone_sel = None;
         self.walker = None;
@@ -809,6 +813,9 @@ impl MapEditor {
         self.blocked = None;
         self.fade = None;
         self.wall_fade = None;
+        // what the map before gave off (the new one's squares came with it: `stream` sees
+        // nothing of them change)
+        (self.placed_lights, self.placed_sounds, self.along_hook) = (None, None, None);
         self.everything_changed();
         self.need_cells = true;
         self.status = format!("{}: {}", if self.walker.is_some() { "Walking on" } else { "Editing" }, self.map.name);

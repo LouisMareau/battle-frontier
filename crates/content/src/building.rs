@@ -336,6 +336,12 @@ impl Building {
         x >= 0 && z >= 0 && self.cells.get(z as usize).and_then(|r| r.chars().nth(x as usize)).map(|c| c == '#').unwrap_or(false)
     }
 
+    /// Whether a map cell is one of its cells (`map_cells` without making the list: a big map
+    /// has thousands of buildings, looked over as the walker goes).
+    pub fn covers(&self, (x, z): (i32, i32)) -> bool {
+        self.has(x - self.at[0], z - self.at[1])
+    }
+
     /// Its cells, from `at`.
     pub fn cells(&self) -> Vec<(i32, i32)> {
         let mut out = vec![];
@@ -625,6 +631,16 @@ mod tests {
         assert!(!b.fits(&bad), "the east side of (0, 1) is inside");
         let apart = Building { cells: vec!["#.#".into()], ..Default::default() };
         assert!(!apart.connected());
+    }
+
+    #[test]
+    fn covers_its_map_cells_and_no_others() {
+        let b = Building { at: [5, -2], ..l_shape() };
+        for z in -4..3 {
+            for x in 3..9 {
+                assert_eq!(b.covers((x, z)), b.map_cells().contains(&(x, z)), "{x}, {z}");
+            }
+        }
     }
 
     #[test]

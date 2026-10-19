@@ -150,7 +150,7 @@ impl MapEditor {
         let up = Ramp::rising(at, size, (yaw.sin(), yaw.cos()), &level)?;
         let r = Ramp { at, size, up, seed: seed_of(at, size), ..Default::default() };
         for (x, z) in r.cells() {
-            if map.buildings.iter().any(|b| b.map_cells().contains(&(x, z))) {
+            if map.buildings.iter().any(|b| b.covers((x, z))) {
                 return Err("No ramp there: a building stands on it".into());
             }
             if map.ramp_at(x, z).is_some() {
@@ -356,21 +356,28 @@ impl MapEditor {
 
     /// The ramps' marks for the checks: how many; the one picked (x, z; length; way up; how
     /// uneven).
-    pub(super) fn ramp_hooks(&self) {
+    pub(super) fn ramp_hooks(&mut self) {
         crate::platform::set_hook("ramps", &self.map.ramps.len().to_string());
         crate::platform::set_hook("groundmode", if self.ramp.on { "ramps" } else { "paint" });
         let picked = self.ramp.selected.and_then(|i| self.map.ramps.get(i)).map(|r| format!("{},{};{};{};{:.2}", r.at[0], r.at[1], r.length(), r.up, r.rough));
         crate::platform::set_hook("ramp", &picked.unwrap_or_default());
-        // what lies along ramps: the prop, the ramp's corner, how many copies laid on it
-        let along: Vec<String> = (0..self.map.props.len())
-            .filter_map(|k| {
-                let r = &self.map.ramps[self.along(k)?];
-                let p = &self.map.props[k];
-                let copies = self.content.props.get(&p.prop).map(|q| self.map.puts(p, q, self.level_height).len()).unwrap_or(0);
-                Some(format!("{}@{},{}x{copies}", p.prop, r.at[0], r.at[1]))
-            })
-            .collect();
-        crate::platform::set_hook("along", &along.join(";"));
+        // what lies along ramps: the prop, the ramp's corner, how many copies laid on it;
+        // looked for again only when the props or the ramps changed (`sync`), among the props
+        // standing on a ramp's cells
+        if self.along_hook.is_none() {
+            let on_ramp = |k: &usize| self.map.props.get(*k).is_some_and(|p| self.map.ramp_at(p.at[0].floor() as i32, p.at[1].floor() as i32).is_some());
+            let along: Vec<String> = (0..self.map.props.len())
+                .filter(on_ramp)
+                .filter_map(|k| {
+                    let r = &self.map.ramps[self.along(k)?];
+                    let p = &self.map.props[k];
+                    let copies = self.content.props.get(&p.prop).map(|q| self.map.puts(p, q, self.level_height).len()).unwrap_or(0);
+                    Some(format!("{}@{},{}x{copies}", p.prop, r.at[0], r.at[1]))
+                })
+                .collect();
+            self.along_hook = Some(along.join(";"));
+        }
+        crate::platform::set_hook("along", self.along_hook.as_deref().unwrap_or(""));
     }
 }
 
