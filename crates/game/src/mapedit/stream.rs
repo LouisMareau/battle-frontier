@@ -258,9 +258,11 @@ impl Feed<'_> {
                         }
                     }
                 }
-                // the ramps on it and round it (their walls come down onto the ground across)
+                // the ramps on it and round it (their walls come down onto the ground across),
+                // and whether something lies along each (its ground straight under it)
                 for ramp in m.ramps.iter().filter(|q| overlaps(q, r, 3)) {
                     format!("{ramp:?}").hash(&mut h);
+                    m.ramp_cover(ramp, self.content).is_some().hash(&mut h);
                 }
                 (s, h.finish())
             })
@@ -417,8 +419,9 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         cost("upload", &mut costs);
     }
     f.gpu.around = f.around_version;
-    // what changed, square by square
-    if need.ground || edges {
+    // what changed, square by square (props too can change the ground: what lies along a
+    // ramp makes it straight)
+    if need.ground || edges || (need.props && !f.map.ramps.is_empty()) {
         let d = f.ground_digests();
         f.refresh("ground", d);
         cost("ground", &mut costs);

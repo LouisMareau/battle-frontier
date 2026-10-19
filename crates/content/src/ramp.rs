@@ -11,6 +11,17 @@ use crate::building::side_step;
 /// How uneven a new ramp's ground is (`Ramp::rough`).
 pub const ROUGH: f64 = 0.5;
 
+/// The ways a prop lies along the length of a ramp (`RampFit::along`).
+pub const ALONG: [&str; 2] = ["stretch", "repeat"];
+
+/// How high a prop made to lie along ramps rises when its record doesn't say (a level, as
+/// the world's settings have it by default: a character's 1.5 cells and 0.5 more).
+pub const RISE: f64 = 2.0;
+
+fn is_zero(v: &f64) -> bool {
+    *v == 0.0
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Ramp {
@@ -177,6 +188,60 @@ impl Ramp {
                 }
                 _ => {}
             }
+        }
+        out
+    }
+}
+
+/// How a prop lies along ramps (`Prop::ramp`): stairs, a mud slide. Its model is made one
+/// cell deep and `rise` high, going up along -z: its foot along z 0.5 on the ground (y 0),
+/// its top along z -0.5, `rise` up, as wide along x as its footprint's first number. Put on
+/// a ramp, it's turned up the ramp's way and made a level high (the world's), its foot on
+/// the ground at the ramp's foot and its top on the ground at the ramp's top, and it covers
+/// the ramp from end to end: "stretch", one stretched along it, or "repeat", copies side by
+/// side, one per its width (each stretched a little where the ramp's length isn't a whole
+/// number of them); either way, `ends` of it at either end keep their size (a parapet, a
+/// post). One goes on a ramp; the ground under it goes straight from its foot to its top,
+/// and it's walked on, never in the way.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RampFit {
+    /// along the ramp's length: "stretch" or "repeat" (`ALONG`)
+    pub along: String,
+    /// how high its model rises from its foot to its top, in cells: a level when it was made
+    pub rise: f64,
+    /// how much of each of its ends (along x, in cells) keeps its size when it's stretched
+    #[serde(skip_serializing_if = "is_zero")]
+    pub ends: f64,
+}
+
+impl Default for RampFit {
+    fn default() -> RampFit {
+        RampFit { along: "stretch".into(), rise: RISE, ends: 0.0 }
+    }
+}
+
+impl RampFit {
+    /// Copies side by side along a ramp, rather than one stretched along it.
+    pub fn repeats(&self) -> bool {
+        self.along == "repeat"
+    }
+
+    /// What's wrong with it, on a prop of that footprint.
+    pub fn problems(&self, footprint: [u8; 2]) -> Vec<String> {
+        let mut out = vec![];
+        if !ALONG.contains(&self.along.as_str()) {
+            out.push(format!("it lies along a ramp \"{}\": {}", self.along, ALONG.join(" or ")));
+        }
+        if self.rise.is_nan() || self.rise <= 0.0 {
+            out.push(format!("along a ramp, it rises {}: more than 0 cells (a level when it was made)", self.rise));
+        }
+        let width = footprint[0].max(1) as f64;
+        if self.ends.is_nan() || self.ends < 0.0 || self.ends * 2.0 >= width {
+            out.push(format!("along a ramp, it keeps {} of each end: 0, up to under half its width ({width})", self.ends));
+        }
+        if footprint[1] != 1 {
+            out.push(format!("it's {} cells deep: a prop along a ramp is made one cell deep, as a ramp is", footprint[1]));
         }
         out
     }

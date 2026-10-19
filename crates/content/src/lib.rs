@@ -586,6 +586,11 @@ impl Content {
                 (None, true) => out.push(format!("props/{}: a railing piece says what it is (\"railing\": its style, span or post)", p.id)),
                 (None, false) => {}
             }
+            match (&p.ramp, p.category == "ramp") {
+                (Some(f), _) => out.extend(f.problems(p.footprint).into_iter().map(|e| format!("props/{}: {e}", p.id))),
+                (None, true) => out.push(format!("props/{}: what lies along ramps says how (\"ramp\": stretched or repeated along one)", p.id)),
+                (None, false) => {}
+            }
         }
         let world = self.world();
         for m in self.maps.iter() {
@@ -641,6 +646,13 @@ impl Content {
             out.extend(r.problems(&level).into_iter().map(|p| format!("{at}: {p}")));
             if r.cells().into_iter().filter_map(|(x, z)| index(x, z)).any(water) {
                 out.push(format!("{at}: the ramp at {}, {} is on water", r.at[0], r.at[1]));
+            }
+            // what lies along it, on its level
+            let top = level(r.at[0], r.at[1]);
+            for p in m.props.iter().filter(|p| self.props.get(&p.prop).is_some_and(|q| q.ramp.is_some()) && r.has(p.at[0].floor() as i32, p.at[1].floor() as i32)) {
+                if top.is_some_and(|l| l != p.level) {
+                    out.push(format!("{at}: \"{}\" lies along the ramp at {}, {} on level {}, but the ramp is on {}", p.prop, r.at[0], r.at[1], p.level, top.unwrap_or(0)));
+                }
             }
         }
         out
@@ -772,6 +784,19 @@ impl Content {
                     let other = if other.starts_with("the ramp") { other } else { format!("building \"{other}\"") };
                     out.push(format!("{at}: {name} and {other} both cover {x}, {z}"));
                     break;
+                }
+            }
+        }
+        // what lies along ramps: on one, one to a ramp (on its level: `check_ramps`)
+        let mut along: BTreeMap<usize, &str> = BTreeMap::new();
+        for p in m.props.iter().filter(|p| self.props.get(&p.prop).is_some_and(|q| q.ramp.is_some())) {
+            match m.ramps.iter().position(|r| r.has(p.at[0].floor() as i32, p.at[1].floor() as i32)) {
+                None => out.push(format!("{at}: \"{}\" at {}, {} lies along ramps, but there's no ramp there", p.prop, p.at[0], p.at[1])),
+                Some(i) => {
+                    if let Some(other) = along.insert(i, &p.prop) {
+                        let r = &m.ramps[i];
+                        out.push(format!("{at}: \"{other}\" and \"{}\" both lie along the ramp at {}, {}: one to a ramp", p.prop, r.at[0], r.at[1]));
+                    }
                 }
             }
         }
@@ -1271,5 +1296,52 @@ mod tests {
         assert_eq!(problems.len(), 4, "{problems:?}");
         // a map without them says nothing of them
         assert!(!to_text(&Map::default()).contains("ramps"));
+    }
+
+    #[test]
+    fn what_lies_along_ramps_is_on_one_one_to_a_ramp() {
+        let mut c = Content::default();
+        c.terrains.put(Terrain { id: "grass".into(), walk: "walk".into(), ..Default::default() }, Space::Content);
+        let stairs = Prop { id: "steps".into(), category: "ramp".into(), footprint: [1, 1], height: 2.0, ramp: Some(RampFit::default()), ..Default::default() };
+        c.props.put(stairs.clone(), Space::Content);
+        // one made two cells deep, along a ramp no way there is, rising nothing, keeping more of
+        // its ends than it has; one of the category saying nothing of how
+        let wrong = RampFit { along: "sideways".into(), rise: 0.0, ends: 0.5 };
+        c.props.put(Prop { id: "slab".into(), footprint: [1, 2], ramp: Some(wrong), ..stairs.clone() }, Space::Content);
+        c.props.put(Prop { id: "chute".into(), ramp: None, ..stairs.clone() }, Space::Content);
+        // 8 x 6: a plateau on 2 up north (z 0, 1), the lowland on 1; two ramps down to it
+        let mut legend = BTreeMap::new();
+        legend.insert("g".to_string(), "grass".to_string());
+        let levels = ["22222222", "22222222", "11111111", "11111111", "11111111", "11111111"].map(String::from).to_vec();
+        let ramps = vec![Ramp { at: [1, 1], size: [2, 1], up: "n".into(), ..Default::default() }, Ramp { at: [5, 1], size: [2, 1], up: "n".into(), ..Default::default() }];
+        let placed = |id: &str, at: [f64; 2], level: u8| Placed { prop: id.into(), at, level, ..Default::default() };
+        let props = vec![
+            // on the first ramp, its centre; then another one there
+            placed("steps", [2.0, 1.5], 2),
+            placed("steps", [1.5, 1.5], 2),
+            // on the second ramp, but a level down
+            placed("steps", [6.0, 1.5], 1),
+            // on the lowland
+            placed("steps", [3.5, 4.5], 1),
+        ];
+        let m = Map { id: "hill".into(), name: "Hill".into(), width: 8, height: 6, legend, terrain: vec!["gggggggg".to_string(); 6], levels, ramps, props, ..Default::default() };
+        c.maps.put(m, Space::Content);
+        let problems = c.validate();
+        let has = |what: &str| problems.iter().any(|p| p.contains(what));
+        assert!(has("props/slab: it lies along a ramp \"sideways\": stretch or repeat"), "{problems:?}");
+        assert!(has("props/slab: along a ramp, it rises 0") && has("props/slab: along a ramp, it keeps 0.5 of each end"), "{problems:?}");
+        assert!(has("props/slab: it's 2 cells deep: a prop along a ramp is made one cell deep"), "{problems:?}");
+        assert!(has("props/chute: what lies along ramps says how"), "{problems:?}");
+        assert!(has("maps/hill: \"steps\" and \"steps\" both lie along the ramp at 1, 1: one to a ramp"), "{problems:?}");
+        assert!(has("maps/hill: \"steps\" lies along the ramp at 5, 1 on level 1, but the ramp is on 2"), "{problems:?}");
+        assert!(has("maps/hill: \"steps\" at 3.5, 4.5 lies along ramps, but there's no ramp there"), "{problems:?}");
+        assert!(!problems.iter().any(|p| p.starts_with("props/steps")), "{problems:?}");
+        assert_eq!(problems.iter().filter(|p| p.contains("ramp")).count(), 8, "{problems:?}");
+        // in the record: how, how high, the ends only when some are kept; none, nothing
+        let text = to_text(&stairs);
+        assert!(text.contains("\"ramp\": {\n    \"along\": \"stretch\",\n    \"rise\": 2.0\n  }"), "{text}");
+        assert!(!to_text(&Prop::default()).contains("ramp"));
+        // a prop along ramps fits the ramp: it isn't scaled
+        assert!(!stairs.scalable() && stairs.folders() == ["Ramps"]);
     }
 }

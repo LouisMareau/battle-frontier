@@ -22,10 +22,21 @@ use super::{badge, hint, mark, requests, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
-const CATEGORIES: [&str; 19] = [
+const CATEGORIES: [&str; 20] = [
     "decoration", "furniture", "wall_decoration", "stairs", "flora", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor", "roof",
-    "railing", "sign", "light", "other",
+    "railing", "ramp", "sign", "light", "other",
 ];
+
+/// A prop given a category: made to lie along ramps when it's "ramp" (as it was, or the
+/// usual way), and no longer when it's another.
+fn recategorized(q: &mut Prop, category: String) {
+    if category == "ramp" {
+        q.ramp.get_or_insert_with(content::RampFit::default);
+    } else if q.category == "ramp" {
+        q.ramp = None;
+    }
+    q.category = category;
+}
 
 /// "#rrggbb" as bytes (magenta when it isn't one).
 fn hex_rgb(hex: &str) -> [u8; 3] {
@@ -379,7 +390,7 @@ impl MapEditor {
                     }
                 });
                 if category != p.category {
-                    changes.push((p.id.clone(), Box::new(move |q: &mut Prop| q.category = category)));
+                    changes.push((p.id.clone(), Box::new(move |q: &mut Prop| recategorized(q, category))));
                 }
                 ui.label(format!("{}×{} · {:.2}", p.footprint[0], p.footprint[1], p.height)).on_hover_text("Footprint in cells, height");
                 match &p.model {
@@ -521,11 +532,15 @@ impl MapEditor {
         });
         ui.horizontal(|ui| {
             ui.label("Category");
-            egui::ComboBox::from_id_salt(("prop-category", id)).selected_text(&after.category).width(130.0).show_ui(ui, |ui| {
+            let mut category = after.category.clone();
+            egui::ComboBox::from_id_salt(("prop-category", id)).selected_text(&category).width(130.0).show_ui(ui, |ui| {
                 for c in CATEGORIES {
-                    ui.selectable_value(&mut after.category, c.to_string(), c);
+                    ui.selectable_value(&mut category, c.to_string(), c);
                 }
             });
+            if category != after.category {
+                recategorized(&mut after, category);
+            }
         });
         ui.horizontal(|ui| {
             ui.label("Cells");
@@ -627,6 +642,26 @@ impl MapEditor {
             ui.horizontal(|ui| {
                 ui.label("Weight");
                 ui.add(egui::DragValue::new(&mut r.weight).speed(0.1).range(0.1..=100.0)).on_hover_text("How likely it's picked among the pieces that fit");
+            });
+        }
+        // along ramps: stretched or copies side by side, how high it was made, its ends kept
+        if let Some(f) = after.ramp.as_mut() {
+            section(ui, "Along a ramp");
+            hint(ui, "Made one cell deep, rising along -z from its foot (z 0.5, on the ground) to its top (z -0.5); laid on a ramp from its foot to its top and end to end, turned up its way.");
+            ui.horizontal(|ui| {
+                let r = ui.radio_value(&mut f.along, "stretch".to_string(), "Stretched").on_hover_text("One of it, stretched along the ramp");
+                mark("uiRampStretch", &r);
+                let r = ui.radio_value(&mut f.along, "repeat".to_string(), "Side by side").on_hover_text("Copies of it side by side, one per its width (stretched a little where the ramp's length isn't a whole number of them)");
+                mark("uiRampRepeat", &r);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Rises");
+                ui.add(egui::DragValue::new(&mut f.rise).speed(0.05).range(0.1..=40.0).suffix(" cells")).on_hover_text("How high its model rises from its foot to its top: a level when it was made (it's made a level of the world's)");
+            });
+            let width = after.footprint[0].max(1) as f64;
+            ui.horizontal(|ui| {
+                ui.label("Ends kept");
+                ui.add(egui::DragValue::new(&mut f.ends).speed(0.01).range(0.0..=(width / 2.0 - 0.01)).suffix(" cells")).on_hover_text("How much of each of its ends (along x) keeps its size when it's stretched: a parapet, a post");
             });
         }
         // its light: the window

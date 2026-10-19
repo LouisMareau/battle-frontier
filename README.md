@@ -84,7 +84,7 @@ node tools/perf.mjs [tile=4] [size=3840x2160]   # how fast it draws, uncapped: m
 node tools/mapcheck.mjs [map=ID]       # drives the map editor (paint, levels, props, trees, undo, download)
 node tools/buildcheck.mjs              # drives the Build tool (footprint, doors, floors, confirm, walk in, turn, move)
 node tools/tilecheck.mjs               # cell by cell: flooring, wall styles, a hole upstairs (walked up to)
-node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved, gone when a cell of it is painted to another level
+node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
 node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, "Start new games here"
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
@@ -241,7 +241,17 @@ small one.
   with its neighbours goes. The styles that come with it: wood (balusters, now and then a
   panel between posts), iron (bars, now and then a ring) and stone (a balustrade with piers);
   a style is new as soon as one span says it, and the asset browser edits a piece's
-  `railing` in its inspector.
+  `railing` in its inspector. A prop of category `ramp` lies along ramps (stairs, a mud
+  slide): its `ramp` says how (`along`: `stretch`, one stretched along the ramp, or `repeat`,
+  copies side by side, one per its width; `rise`: how high its model rises, a level when it
+  was made, 2 cells; `ends`: how much of either end keeps its size when stretched, a
+  parapet, a post). Its model is made one cell deep, as wide as its footprint, rising along
+  -z from its foot (z 0.5, on the ground) to its top (z -0.5); on a ramp it's turned up the
+  ramp's way, made a level high, its foot on the ground at the ramp's foot and its top on the
+  ground at its top, and laid from one end of the ramp to the other. One goes on a ramp; the
+  ramp's ground under it goes straight from foot to top (a hair under that line), and it's
+  walked on, never in the way. The samples: `stone_stairs` (stretched, its low walls kept)
+  and `mud_slide` (a `wedge`: a box whose top slopes down from its back to its front).
 - **Tree areas** are cells the player can't cross. The engine fills them with trees from
   the area's settings (which trees, spacing, size range, density, trees all along the edge,
   seed): the same trees every time, and painting a few cells changes only the trees near
@@ -405,10 +415,15 @@ the ground below, one cell deep (a click, one of a cell; at a corner it goes dow
 camera is on; a drag that runs on past the step's end is cut back to it), and says why not when
 it can't be (two levels down, two rows deep, nothing a level down, water, a building); a click
 picks one (how uneven it is, "Another look", Remove or Delete), and painting another level over
-one of its cells takes it away. On foot a ramp is walked up and down and along, never off its
-sides; props, trees and creatures stand on its slope.
+one of its cells takes it away (with what lay along it). On foot a ramp is walked up and down
+and along, never off its sides; props, trees and creatures stand on its slope.
 **Place** puts a prop at the level (Q/E turn
-it, Shift puts it where the pointer is within its cells); **Select** moves a prop or a
+it, Shift puts it where the pointer is within its cells); what lies along ramps (category
+`ramp`: stairs, a mud slide) goes on the ramp under the pointer instead, or the one next to
+the cell it's on (its foot, past its top), turned up its way and laid from its foot to its top
+and end to end, the slope it'll cover marked as you point (crimson where it can't go); it says
+why not off a ramp, on one that has its own already, or where something that doesn't stack is
+in the way. Select drags it onto another ramp; it isn't turned or scaled. **Select** moves a prop or a
 building to other cells (drag it, where there's room: its position in the inspector only
 shows), turns, scales and deletes props, and a prop's Tweak (in the inspector) moves it
 within its cells instead (drag it, or the inspector's x and z),
@@ -571,7 +586,9 @@ by category (the asset browser's "All props to Blender") and a building (its ins
 rebuilt from their shapes, lamps with their lights) one at a time or all at once, exports
 and imports maps, and adds a selection to the project as a prop: the `.glb` and its
 record, measured and laid out as the project's own, its light read from a spot or point
-light object on it and its sound from a speaker (see `tools/blender/README.md`). The file
+light object on it and its sound from a speaker (see `tools/blender/README.md`); one made to
+lie along ramps (category "Along ramps": one cell deep, rising along +Y from its foot at Y
+-0.5 to its top at Y 0.5) stays where it was made and keeps its footprint. The file
 keeps materials, rigs and animations as Blender writes them: the engine draws base colours
 and textures, and a rigged model plays its "idle" animation (`crates/world/src/anim.rs`
 poses it, the renderer skins it, shadows included); a camera never goes into a model, the
@@ -596,7 +613,7 @@ through the same add-on (`tools/blender/requests.md`, `request_kit.py`).
 | `crates/world` (`world`) | Maps as the engine works on them: the record decoded into a grid and back (`lib.rs`), procedural tree areas (`trees.rs`: each tree keeping its crown's room, each spot its own dice), which cells block, where walls are and who can step where (up and down ramps too), ramps' ground (`ramps.rs`: the slope down a level, the unevenness, the rock), buildings' geometry (`buildings.rs`; railings put together from their style's pieces, `railings.rs`; cut away above a floor, the walls facing the camera there down to a stub), roaming creatures (`spawn.rs`), glTF models in and out (`gltf_in.rs`, `gltf_out.rs`, the `export-glb` tool), the geometry (`mesh.rs`: cell tops, bevelled where the ground steps down or up, lumpy cliff faces with their outer corners cut, tall grass, props' stand-in models from their parts; every vertex's wind: sway, flutter, phase, height above its foot), the FX meshes and sheets (`fx.rs`), and the timeline maths (`timeline.rs`: poses, frames, beats, the camera, the impact). |
 | `crates/render` (`render`) | The renderer on wgpu 30: battle maps (`map.rs`: ground, boxes, cutouts, the battle spot), world maps (cell tops and cliff faces through the ground shader, which draws terrain borders from a texture of the cells and rock on the faces and bevels; vertex-coloured props and trees), billboards, discs, rings, rectangles, glows, rain, the sun's shadow map, day/night light and fog, the toon look (banded light for what's flagged toon; ink lines found in the blit from a second target the solid things write their looks to, each pixel's toon, distance and facing; colour steps over everything; the clouds' shadows, each pixel put back in the world from its distance, cast from the clouds' height and changing shape), the wind (what's painted for it swaying in the vertex shaders, shadows too; its gusts', swaying's and the water's motions added up frame by frame), the water (inland ripples and the sea's waves, foam, the swash up a beach, from the shore's field: `shore.rs`, worked out again round a change only), trees and props seen through round the walker (a dithered cone from the eye), the post-processing (`Retro`: the pixelation, the scene drawn small, its pixels whole squares of the screen's, as dense as asked and bigger or smaller with the camera's zoom, in 15-bit colour; an old handheld's LCD, its colours and the gaps between its pixels) and a small blurred copy of the picture for frosted glass (`frost_view`, which the game hands egui) (`scene.rs`, `shader.wgsl`). Draws into its own target (what's solid, then what's see-through), then blits into the host's pass. Uniform buffers only, so WebGL 2 works as well as WebGPU. |
 | `crates/game` | The program (eframe 0.36, as GBMapping): `app.rs` (menu, loading, battle, results, frame stats, test hooks), `editor.rs` (the content browser), `mapedit.rs` (the map editor; `mapedit/build.rs` the Build tool, `mapedit/rooms.rs` inside and outside a building, `mapedit/assets.rs` the asset browser, dropped files and the disk watch, `mapedit/requests.rs` the model requests' window, its Bones window and their files, `mapedit/welcome.rs` the editor's Menu, its welcome and where new games start, `mapedit/stream.rs` the maps on the GPU square by square, `mapedit/around.rs` the maps around the open one and stepping into them, `mapedit/dock.rs` the panels docked or floating, their toggles and the layout kept, `mapedit/post.rs` the Post-processing window, `mapedit/ramps.rs` the Ground tool's ramps, `mapedit/abilities.rs` the Abilities window, `mapedit/timeline.rs` the Timeline panel, the preview, the FX editor and the Drawing window, `mapedit/worlds.rs` the World view, `mapedit/walk.rs` walking (across seams too), `mapedit/zones.rs` zones, links and roaming creatures, `mapedit/actors.rs` the actors alive, `mapedit/events.rs` the story, the dialog box and the Events tool, `mapedit/sounds.rs` what's heard, `mapedit/templates.rs` templates captured and dropped, `mapedit/models.rs` props' models, their rigs posed and exports to Blender), `audio.rs` (the mixer: Web Audio and rodio), `director.rs` (turn flow, event playback, the animation + timing state machine), `stage.rs` (battlers, motions, effects, camera; the light through the day), `hud.rs` and `menu.rs` (egui), `input.rs` (A/B/d-pad/L/R and the player's keys and controller buttons for them; tap, hold-release and rhythm reads), `pads.rs` (controllers through gilrs, and which device is listened to), `layout.rs` (the HUD's layout groups, frosted buttons, the ring from one to the next), `play_hud.rs` (the overworld's HUD: the Team, its list, its board of cards and a creature's details, Settings, Exit), `team.rs` (who of the team fought in the last battles, the main, the order the team goes into a battle, the board's order, lifeforce), `presets.rs` (battles from encounters), `platform.rs` (clocks: the steady one and the local time of day; files, hooks), `title.rs` (the main menu over the world, its tweens, the fonts, the Options in tabs and their categories), `shot.rs` (the tests' pictures of windows, drawn on the GPU). |
-| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `rampcheck.mjs` (ramps made, refused, walked, saved), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs` (the overworld: the story, the cottage walked into, its walls facing the camera down, another as the camera turns), `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `layoutcheck.mjs` (the editor's panels docked, floating, pinged and kept), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list and board of cards, the pixelation and the LCD), `watercheck.mjs` (the wind and the water: foam on the downwind shore, the sea rougher onshore, what sways, the clouds' shadows going with the wind, the Wind section), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
+| `tools/` | `serve.mjs`, `check.mjs`, `frames.mjs`, `perf.mjs`, `encounters.mjs` (which encounters the checks play, by kind), `mapcheck.mjs`, `buildcheck.mjs`, `tilecheck.mjs` (the Build tool cell by cell: flooring, walls, holes), `rampcheck.mjs` (ramps made, refused, walked, saved; stairs and a slide laid along them), `zonecheck.mjs`, `assetcheck.mjs`, `worldcheck.mjs`, `eventcheck.mjs`, `explorecheck.mjs` (the overworld: the story, the cottage walked into, its walls facing the camera down, another as the camera turns), `templatecheck.mjs`, `postcheck.mjs` (the toon look), `abilitycheck.mjs` (an ability, its timeline, an FX drawn and exported), `timelinebattle.mjs` (a battle playing an ability's timeline), `pwacheck.mjs` (the site installs as an app: `url=` for the deployed one), `menucheck.mjs` (the main menu, the Options, the Editor's welcome), `layoutcheck.mjs` (the editor's panels docked, floating, pinged and kept), `padcheck.mjs` (controllers, through stand-ins for the Gamepad API), `hudcheck.mjs` (the overworld's HUD, the Team's list and board of cards, the pixelation and the LCD), `watercheck.mjs` (the wind and the water: foam on the downwind shore, the sea rougher onshore, what sways, the clouds' shadows going with the wind, the Wind section), `blender/` (the Blender add-on, its test, `make_flag.py` for the rigged sample), `make_sounds.py` (the sample sounds), `make_icons.py` (the app's icons), `shot.mjs`, `cdp.mjs` (headless Chrome). |
 
 ## Frame pacing
 
@@ -692,10 +709,9 @@ what).
 
 - The content browser only reads; the map editor saves maps (other records next).
 - Maps: creatures roam but don't battle yet (walking into one does nothing; a script's
-  `battle` does), ramps between ground levels but no props made to lie along one yet
-  (stairs, a mud slide: a prop on a ramp stands at its slope's height, untilted), actors
-  and events don't know a building's floors yet; most props are still stand-in shapes
-  (samples made in Blender: `stone_well`, `flag_pole`).
+  `battle` does), actors and events don't know a building's floors yet; on stairs along a
+  ramp the walker follows the ramp's slope, not each step; most props are still stand-in
+  shapes (samples made in Blender: `stone_well`, `flag_pole`).
 - Battle items (Potion, Capture Ball...) are still a fixed list in `crates/core`, not content.
 - The overworld (Explore) has no doors into interiors as separate maps: buildings are
   walked into in place; between levels outside, ramps only (no stairs); the save is one slot.

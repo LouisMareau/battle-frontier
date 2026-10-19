@@ -8,7 +8,7 @@ use render::scene::{Animated, SceneRenderer, SkinnedVertex, WHITE};
 use world::gltf_in::load_model;
 use world::gltf_out::{building_glb, map_glb, prop_glb, props_glb};
 use glam::Vec3;
-use world::mesh::{placement, Scene};
+use world::mesh::Scene;
 
 use super::{gpu, MapEditor};
 use crate::platform::Load;
@@ -184,10 +184,11 @@ impl MapEditor {
             if Vec3::new(pos[0] as f32, 0.0, pos[1] as f32).distance(Vec3::new(self.cam.target.x, 0.0, self.cam.target.z)) > self.cam.distance * 1.5 + 24.0 {
                 continue;
             }
-            let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-            let at = self.map.prop_foot(p, lh);
             let phase = (i as f32 * 0.37) % 1.0 * anim.map(|a| a.duration).unwrap_or(1.0).max(0.1);
-            out.push(Animated { key: p.prop.clone(), model: placement(at, p.turn as f32, scale), joints: world::anim::pose(rig, anim, t + phase) });
+            // (along a ramp, a pose on each copy laid on it, stretched evenly)
+            for put in self.map.puts(p, prop, lh) {
+                out.push(Animated { key: p.prop.clone(), model: put.matrix(), joints: world::anim::pose(rig, anim, t + phase) });
+            }
         }
         out
     }

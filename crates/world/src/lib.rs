@@ -292,11 +292,47 @@ impl WorldMap {
         }
     }
 
-    /// The cells a placed prop covers (its footprint, turned by quarter turns).
+    /// The cells a placed prop covers (its footprint, turned by quarter turns; along a ramp,
+    /// the ramp's).
     pub fn footprint(&self, p: &Placed, content: &Content) -> Vec<(i32, i32)> {
         let Some(prop) = content.props.get(&p.prop) else { return vec![] };
+        if let Some(r) = self.along_ramp(p, prop) {
+            return r.cells();
+        }
         let s = if prop.scalable() { p.scale.clamp(0.5, 1.0) } else { 1.0 };
         content::footprint_cells(p.at, p.turn, prop.footprint, s)
+    }
+
+    /// The ramp a placed prop stands on: the one its cell is on, on its level.
+    pub fn ramp_of(&self, p: &Placed) -> Option<&Ramp> {
+        let (x, z) = (p.at[0].floor() as i32, p.at[1].floor() as i32);
+        self.ramp_at(x, z).filter(|_| self.level_at(x, z) == Some(p.level))
+    }
+
+    /// The ramp a placed prop lies along: it's made to (`Prop::ramp`: stairs, a mud slide),
+    /// and it stands on one.
+    pub fn along_ramp(&self, p: &Placed, prop: &content::Prop) -> Option<&Ramp> {
+        prop.ramp.as_ref().and(self.ramp_of(p))
+    }
+
+    /// What lies along a ramp, if something does (one does, at most): the placed prop made
+    /// to lie along ramps that stands on it.
+    pub fn ramp_cover(&self, r: &Ramp, content: &Content) -> Option<&Placed> {
+        self.props.iter().find(|p| {
+            let (x, z) = (p.at[0].floor() as i32, p.at[1].floor() as i32);
+            r.has(x, z) && self.level_at(x, z) == Some(p.level) && content.props.get(&p.prop).is_some_and(|q| q.ramp.is_some())
+        })
+    }
+
+    /// Where a placed prop's model goes: on its cells' ground, turned and scaled; or, made to
+    /// lie along ramps and on one, laid along it from end to end (`ramps::lay`), one copy
+    /// stretched along it or a copy beside another.
+    pub fn puts(&self, p: &Placed, prop: &content::Prop, level_height: f32) -> Vec<mesh::Put> {
+        if let (Some(fit), Some(r)) = (&prop.ramp, self.ramp_of(p)) {
+            return ramps::lay(r, fit, prop.footprint[0], p.level as f32 * level_height, level_height);
+        }
+        let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
+        vec![mesh::Put::plain(mesh::placement(self.prop_foot(p, level_height), p.turn as f32, scale))]
     }
 
     /// Which cells the player can't walk on (on foot): tree areas, blocking terrain and
@@ -322,8 +358,9 @@ impl WorldMap {
                 }
             }
         }
+        // (what lies along a ramp is walked on, up and down it)
         for p in &self.props {
-            if content.props.get(&p.prop).map(|q| q.blocks).unwrap_or(false) {
+            if content.props.get(&p.prop).is_some_and(|q| q.blocks && self.along_ramp(p, q).is_none()) {
                 for (x, z) in self.footprint(p, content) {
                     if let Some(i) = self.index(x, z) {
                         if self.level[i] == p.level {

@@ -61,6 +61,8 @@ CATEGORIES = [
     ("floor", "Floor tile", "laid on every cell of a floor"),
     ("roof", "Roof style", ""),
     ("wall_decoration", "Wall decoration", "anchored on outside walls"),
+    ("ramp", "Along ramps", "stairs, a mud slide: made one cell deep, rising along +Y from its foot (Y -0.5, on the ground) to its top (Y 0.5); "
+     "laid on a ramp end to end. It stays where it was made, on the origin"),
     ("character", "Character", ""),
 ]
 PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "sound", "folders"]
@@ -346,8 +348,14 @@ def shape(kind, size, seed):
             py = max(py, -0.35)
             verts.append((px * sx / 2.0, (py + 0.35) / 1.35 * sy, pz * sz / 2.0))
         return verts, faces
-    # a box: no bottom face, as in the engine
     x, y, z = sx / 2.0, sy, sz / 2.0
+    if kind == "wedge":
+        # a box whose top slopes from its back's top (-z) down to its front's foot (+z); no
+        # bottom face, as in the engine
+        verts = [(-x, 0, -z), (x, 0, -z), (x, 0, z), (-x, 0, z), (-x, y, -z), (x, y, -z)]
+        faces = [(4, 3, 2, 5), (5, 1, 0, 4), (2, 1, 5), (4, 0, 3)]
+        return verts, faces
+    # a box: no bottom face, as in the engine
     verts = [(-x, 0, -z), (x, 0, -z), (x, 0, z), (-x, 0, z), (-x, y, -z), (x, y, -z), (x, y, z), (-x, y, z)]
     faces = [(7, 3, 2, 6), (5, 1, 0, 4), (6, 2, 1, 5), (4, 0, 3, 7), (4, 7, 6, 5)]
     return verts, faces
@@ -894,6 +902,20 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     model_rel = f"models/{aid}.glb"
     glb = root / space / "assets" / model_rel
     record_path = root / space / "data" / "props" / f"{aid}.json"
+    record = {}
+    if record_path.is_file():
+        try:
+            record = json.loads(record_path.read_text(encoding="utf-8"))
+        except ValueError:
+            record = {}
+    # what lies along ramps stays where it was made (its foot along Y -0.5, its top along Y 0.5,
+    # on the origin), one cell deep and as wide as it was, whatever pokes out past its cell (a
+    # pool at its foot, a lip at its top)
+    # (made another category than "ramp", as in the editor: no longer)
+    if facts.get("category") not in (None, "ramp") and record.get("category") == "ramp":
+        record.pop("ramp", None)
+    along = (facts.get("category") or record.get("category")) == "ramp" or bool(record.get("ramp"))
+    recentre = recentre and not along
     # its size, in the world, at rest: the model is written at rest (a rig's animation poses
     # it), so the pose it's in now doesn't count
     posed = [m for o in meshes for m in o.modifiers if m.type == "ARMATURE" and m.show_viewport]
@@ -934,18 +956,16 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
         context.view_layer.objects.active = active
         context.view_layer.update()
     size = hi - lo
-    record = {}
-    if record_path.is_file():
-        try:
-            record = json.loads(record_path.read_text(encoding="utf-8"))
-        except ValueError:
-            record = {}
+    # cells it covers along the engine's x and z (Blender's x and y)
+    footprint = [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))]
+    if along:
+        footprint = record.get("footprint") or [footprint[0], 1]
+        record.setdefault("ramp", {"along": "stretch", "rise": 2.0})
     record.update({
         "id": aid,
         "name": facts.get("name") or record.get("name") or meshes[0].name,
         "category": facts.get("category") or record.get("category") or "decoration",
-        # cells it covers along the engine's x and z (Blender's x and y)
-        "footprint": [max(1, math.ceil(size.x - 0.05)), max(1, math.ceil(size.y - 0.05))],
+        "footprint": footprint,
         "height": round(float(size.z), 2),
         "sill": round(float(facts.get("sill", record.get("sill", 0.0))), 2),
         "blocks": bool(facts.get("blocks", record.get("blocks", True))),
@@ -964,8 +984,8 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     record_path.parent.mkdir(parents=True, exist_ok=True)
     record_path.write_text(to_text(ordered_prop(record)), encoding="utf-8", newline="\n")
     tag(meshes, record)
-    make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection,
-                centre=((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not recentre else (offset.x, offset.y, offset.z))
+    centre = ((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z) if not recentre else (offset.x, offset.y, offset.z)
+    make_bounds(f"{aid} bounds", record["footprint"], record["height"], context.collection, centre=(0.0, 0.0, 0.0) if along else centre)
     extras = ", with its light" if lights else ""
     extras += ", with its sound" if record.get("sound") and speakers else ""
     if extras:

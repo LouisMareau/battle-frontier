@@ -5,7 +5,12 @@
 // middle (nothing a level down) is refused, saying why; on foot, up the ramp onto the plateau
 // and back down, along it but never off its sides nor up the cliff beside it, the walker's
 // height rising on the way; the ramp picked by a click, made smooth, taken away and back
-// (undo); painted to another level, gone; and saved in the map's record. Screenshots to
+// (undo); saved in the map's record. Then what lies along ramps: stone stairs from the
+// asset browser, refused by the Place tool off a ramp (saying why), laid on the ramp (made as
+// uneven as it gets) from its foot to its top and end to end, every tread stone where the
+// ramp's ground would show, the grass before its foot and past its top; a mud slide on a
+// ramp rising west, down to the bay, from a click past its foot; both saved in the map's
+// record; and the ramp painted to another level, gone, the stairs with it. Screenshots to
 // screenshots/ramp-*.png. Exits 1 when something fails.
 //     node tools/rampcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -52,6 +57,8 @@ const rewrite = (path, body) => {
   bundle.files['maps/ramp_test.json'] = map;
   const world = bundle.files['settings/world.json'];
   levelHeight = (world.character_height ?? 1.5) + (world.level_padding ?? 0.5);
+  // the colours as they are: no cloud shadows drifting over, no colour steps
+  world.toon = { ...(world.toon ?? {}), cloud_shadow: 0, color_steps: 0 };
   return Buffer.from(JSON.stringify(bundle));
 };
 
@@ -172,13 +179,127 @@ try {
   const r = saved.ramps?.[0];
   check('saved in the record', saved.ramps?.length === 1 && r.at.join(',') === '5,7' && r.size.join(',') === '4,1' && r.up === 'n', JSON.stringify(saved.ramps));
 
-  // 6. a cell of it painted to another level (the lowland's): the ramp gone
+  // 6. stone stairs along it. First the ramp as uneven as it gets (its ground furthest from
+  // the straight line its stairs are made on): picked, its slider pulled all the way right
+  await cmd('period:12:00');
+  await cmd('view:10,10,30,0,55');
+  const [qx, qy] = await screen(6.5, levelHeight / 2, 7.5);
+  await browser.click(qx, qy);
+  await sleep(400);
+  const [ux, uy] = await at('uiRampRough');
+  await browser.drag([[ux, uy], [ux + 160, uy], [ux + 320, uy]]);
+  await sleep(400);
+  check('the ramp made as uneven as it gets', (await data('ramp')).endsWith(';1.00'), await data('ramp'));
+  // the stairs and the slide from the asset browser's Ramps folder
+  const pick = async (id) => {
+    if (!(await data('layout')).includes('assets=bottom')) await press('uiAssets');
+    await press('uiFolder_Ramps');
+    await press(`uiAsset_${id}`);
+    await press('uiAssets');
+    await browser.click(700, 889);
+    await browser.key('3');
+    await sleep(300);
+  };
+  await pick('stone_stairs');
+  check('the Place tool with the stairs', (await data('tool')) === 'place', await data('tool'));
+  // the points their treads are on, at the back of each (where the ramp's ground, were it
+  // left as it is, would come up through them), along the ramp but its ends' walls; the grass
+  // just before its foot and just past its top
+  const treads = [];
+  for (let k = 0; k < 8; k++) {
+    for (const x of [5.5, 6.3, 7.1, 7.9, 8.5]) treads.push([x, ((k + 1) * levelHeight) / 8 + 0.003, 8 - (k + 0.85) / 8]);
+  }
+  const outside = [6, 7, 8].flatMap((x) => [[x, 0.003, 8.1], [x, levelHeight + 0.003, 6.9]]);
+  const front = 'view:7,7.5,11,0,35';
+  const look = async () => {
+    await cmd(front);
+    await sleep(1200);
+    const places = [];
+    for (const p of [...treads, ...outside]) places.push(await screen(...p));
+    return places;
+  };
+  const colour = (img, [x, y]) => {
+    const i = (Math.round(y) * img.width + Math.round(x)) * 4;
+    return [img.rgba[i], img.rgba[i + 1], img.rgba[i + 2]];
+  };
+  const green = ([r, g, b]) => g > r + 10 && g > b + 10;
+  const stone = ([r, g, b]) => Math.abs(r - g) < 28 && Math.abs(g - b) < 32 && r + g + b > 120;
+  // bare: the ramp's own ground (grass, rock down its middle) where the treads will be
+  const places = await look();
+  const bare = await browser.pixels(join(shots, 'ramp-3-bare.png'));
+  const bareGreen = treads.filter((_, i) => green(colour(bare, places[i]))).length;
+  // off a ramp (the lowland, two cells before its foot): refused, saying why
+  const props0 = Number(await data('props'));
+  await browser.click(...(await screen(7.5, 0, 10.5)));
+  await sleep(400);
+  check('off a ramp: refused', Number(await data('props')) === props0 && (await data('status')).startsWith('No ramp there to lay Stone stairs along'), `${await data('props')} props, ${await data('tool')}: ${await data('status')}`);
+  // on it: laid from its foot to its top, end to end, turned up its way
+  await browser.click(...(await screen(7.0, levelHeight / 2, 7.5)));
+  await sleep(1500);
+  check('on the ramp: laid along it', Number(await data('props')) === props0 + 1 && (await data('along')) === 'stone_stairs@5,7x1', `${await data('props')} props, along ${await data('along')}`);
+  check('  and says so', (await data('status')) === 'Stone stairs along the ramp at 5, 7: 4 cells long, its foot to the south', await data('status'));
+  // (the pointer off the view and the stairs let go: no marks over them)
+  await browser.move(120, 460);
+  await browser.key('Escape');
+  const laid = await look();
+  const img = await browser.pixels(join(shots, 'ramp-4-stairs.png'));
+  const onTreads = treads.map((_, i) => colour(img, laid[i]));
+  const notStone = onTreads.filter((c) => !stone(c));
+  check('  every tread stone, none of the ramp\'s ground through them', notStone.length === 0, `${treads.length - notStone.length} of ${treads.length} stone (bare, ${bareGreen} were grass)${notStone.length ? `; not: ${JSON.stringify(notStone.slice(0, 4))}` : ''}`);
+  const around = outside.map((_, i) => colour(img, laid[treads.length + i]));
+  check('  flush: grass just before its foot and just past its top', around.every(green), JSON.stringify(around));
+  await cmd('view:7,7.5,9,330,22');
+  await sleep(1200);
+  await shot('5-stairs-turned');
+  await cmd('view:7,8,7,60,18');
+  await sleep(1200);
+  await shot('6-stairs-low');
+
+  // 7. a mud slide on a ramp down the plateau's east side to the bay, rising west: a click
+  // on the bay past its foot puts it on
+  await browser.click(700, 889);
+  await browser.key('2');
+  await press('uiGroundRamps');
+  await cmd('view:15,5,30,0,55');
+  await drag([[13, 3, 1], [13, 4, 1], [13, 5, 1]]);
+  check('a ramp down to the bay, rising west', (await data('ramps')) === '2' && (await data('ramp')).startsWith('13,3;3;w;'), `${await data('ramps')} ramps, ${await data('ramp')}`);
+  await pick('mud_slide');
+  check('the Place tool with the slide', (await data('tool')) === 'place', await data('tool'));
+  // (seen from the south-east, over the bay: the tower beyond it hides it from the east)
+  await cmd('view:14,4.5,12,30,60');
+  await sleep(400);
+  await browser.click(...(await screen(14.5, 0, 4.5)));
+  await sleep(1500);
+  check('the slide on it, from a click past its foot', (await data('along')) === 'stone_stairs@5,7x1;mud_slide@13,3x1', `along ${await data('along')}, ${await data('status')}`);
+  check('  and says so', (await data('status')) === 'Mud slide along the ramp at 13, 3: 3 cells long, its foot to the east', await data('status'));
+  await browser.move(120, 460);
+  await browser.key('Escape');
+  await cmd('view:13.5,4.5,11,30,35');
+  await sleep(1200);
+  await shot('7-slide');
+
+  // 8. both in the map's record: on their ramps' cells, their level, turned up their ways
+  rmSync(join(downloads, 'ramp_test.json'), { force: true });
+  await press('uiSave');
+  await sleep(1500);
+  const record = JSON.parse(readFileSync(join(downloads, 'ramp_test.json'), 'utf8'));
+  const placed = (id) => record.props?.find((p) => p.prop === id);
+  const stairs = placed('stone_stairs');
+  const slide = placed('mud_slide');
+  check('saved: the stairs', stairs?.at?.join(',') === '7,7.5' && stairs.level === 1 && !stairs.turn, JSON.stringify(stairs));
+  check('saved: the slide', slide?.at?.join(',') === '13.5,4.5' && slide.level === 1 && slide.turn === 270, JSON.stringify(slide));
+
+  // 9. a cell of the first ramp painted to another level (the lowland's): the ramp gone, and
+  // the stairs with it
+  await browser.click(700, 889);
+  await browser.key('2');
   await press('uiGroundPaint');
   await cmd('view:10,10,30,0,55');
   const [px, py] = await screen(6.5, 0, 7.5);
   await browser.click(px, py);
   await sleep(500);
-  check('a cell of it painted a level down: the ramp gone', (await data('ramps')) === '0', `${await data('ramps')} ramps, ${await data('status')}`);
+  check('a cell of it painted a level down: the ramp gone', (await data('ramps')) === '1', `${await data('ramps')} ramps, ${await data('status')}`);
+  check('  with the stairs along it', (await data('along')) === 'mud_slide@13,3x1' && (await data('status')).includes('with what lay along it'), `along ${await data('along')}, ${await data('status')}`);
   if (browser.errors.length) check('no page errors', false, browser.errors.join(' | '));
 } catch (e) {
   console.log(`FAIL ${e.message}`);

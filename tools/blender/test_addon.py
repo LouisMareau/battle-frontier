@@ -90,7 +90,7 @@ def points(objects):
     return out
 
 
-for pid in ("pine_tree", "round_tree", "boulder", "bench", "lamp_post"):
+for pid in ("pine_tree", "round_tree", "boulder", "bench", "mud_slide", "stone_stairs", "lamp_post"):
     clear()
     theirs = points(bf.import_glb(engine / f"{pid}.glb"))
     clear()
@@ -248,6 +248,33 @@ check("the engine reads the rig and the animation", "a rig of 2 joints" in run.s
 clear()
 r = bpy.ops.battle_frontier.import_prop(prop_id="test_flag")
 check("comes back rigged, with its action", r == {"FINISHED"} and any(o.type == "ARMATURE" for o in bpy.data.objects) and len(bpy.data.actions) >= 1, f"{[o.type for o in bpy.data.objects]}, {len(bpy.data.actions)} actions")
+
+# 3c. what lies along ramps: where it was made (its foot along Y -0.5, its top along Y 0.5, on
+# the origin), one cell deep whatever pokes out past its cell (a pool at its foot), and how
+def slide_shape(bm):
+    v = [bm.verts.new(p) for p in [(-0.5, -0.5, 0), (0.5, -0.5, 0), (0.5, 0.5, 0), (-0.5, 0.5, 0), (-0.5, 0.5, 2), (0.5, 0.5, 2)]]
+    for f in [(0, 1, 5, 4), (3, 4, 5, 2), (1, 2, 5), (0, 4, 3), (0, 3, 2, 1)]:
+        bm.faces.new([v[i] for i in f])
+    pool = [bm.verts.new(p) for p in [(-0.5, -0.9, 0.03), (0.5, -0.9, 0.03), (0.5, -0.5, 0.03), (-0.5, -0.5, 0.03)]]
+    bm.faces.new(pool)
+
+
+clear()
+slide = solid("test_slide", slide_shape, (0.42, 0.29, 0.18, 1.0))
+for o in bpy.context.view_layer.objects:
+    o.select_set(o is slide)
+bpy.context.view_layer.objects.active = slide
+r = bpy.ops.battle_frontier.add_to_project(asset_id="test_slide", asset_name="Test slide", category="ramp", blocks=False)
+slide_path = scratch / "content" / "data" / "props" / "test_slide.json"
+slide_record = json.loads(slide_path.read_text(encoding="utf-8")) if slide_path.is_file() else {}
+check("along ramps: one cell deep, how it lies", r == {"FINISHED"} and slide_record.get("footprint") == [1, 1] and slide_record.get("ramp") == {"along": "stretch", "rise": 2.0}, json.dumps(slide_record))
+slide_doc = glb_doc(scratch / "content" / "assets" / "models" / "test_slide.glb") if r == {"FINISHED"} else {}
+moved = [n.get("translation", [0, 0, 0]) for n in slide_doc.get("nodes", []) if "mesh" in n]
+positions = {p["attributes"]["POSITION"] for m in slide_doc.get("meshes", []) for p in m.get("primitives", [])}
+spans = [a for i, a in enumerate(slide_doc.get("accessors", [])) if i in positions and "min" in a]
+zs = (min(a["min"][2] for a in spans), max(a["max"][2] for a in spans)) if spans else (0, 0)
+check("  where it was made: its top along z -0.5, its pool out to 0.9 past its foot", moved and all(abs(c) < 1e-4 for t in moved for c in t) and abs(zs[0] + 0.5) < 1e-3 and abs(zs[1] - 0.9) < 1e-3, f"{moved} {zs}")
+clear()
 
 # 4. back from its .glb, standing on the origin
 clear()

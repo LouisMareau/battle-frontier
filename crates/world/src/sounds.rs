@@ -29,10 +29,13 @@ fn put(out: &mut Vec<PlacedSound>, key: String, prop: &str, sound: &Sound, m: Ma
 pub fn sounds(map: &WorldMap, content: &Content, level_height: f32) -> Vec<PlacedSound> {
     let mut out = vec![];
     let sound = |id: &str| content.props.get(id).and_then(|p| p.sound.as_ref().map(|s| (s, p.scalable())));
+    // (along a ramp, from the middle of what's laid on it, once)
     for (i, p) in map.props.iter().enumerate() {
-        let Some((s, scalable)) = sound(&p.prop) else { continue };
-        let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, format!("prop:{i}"), &p.prop, s, placement(map.prop_foot(p, level_height), p.turn as f32, scale));
+        let Some((s, prop)) = content.props.get(&p.prop).and_then(|q| q.sound.as_ref().map(|s| (s, q))) else { continue };
+        let puts = map.puts(p, prop, level_height);
+        let Some(at) = puts.get(puts.len() / 2) else { continue };
+        let pos = at.point(Vec3::new(s.at[0] as f32, s.at[1] as f32, s.at[2] as f32));
+        out.push(PlacedSound { pos, sound: s.clone(), key: format!("prop:{i}"), prop: p.prop.clone() });
     }
     for (bi, b) in map.buildings.iter().enumerate() {
         let base = b.level as f32 * level_height;

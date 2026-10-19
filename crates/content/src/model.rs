@@ -799,7 +799,8 @@ impl Terrain {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Part {
-    /// "box", "cylinder", "cone", "sphere", "rock"
+    /// "box", "cylinder", "cone", "sphere", "rock", "wedge" (a box whose top slopes from its
+    /// full height along its back, -z, down to nothing along its front, +z)
     pub shape: String,
     /// width (x), height (y), depth (z), in cells
     pub size: [f64; 3],
@@ -818,8 +819,9 @@ pub struct Part {
 pub struct Prop {
     pub id: String,
     pub name: String,
-    /// "tree", "flora", "rock", "decoration", "fence", "furniture", "stairs", and building
-    /// pieces: "door", "window", "wall", "pillar", "floor", "roof", "wall_decoration"
+    /// "tree", "flora", "rock", "decoration", "fence", "furniture", "stairs", "ramp" (what
+    /// lies along ramps), and building pieces: "door", "window", "wall", "pillar", "floor",
+    /// "roof", "wall_decoration"
     pub category: String,
     /// the cells it covers: [along x, along z]; a door's or window's width is the first
     pub footprint: [u8; 2],
@@ -864,6 +866,9 @@ pub struct Prop {
     /// how its stand-in moves in the wind (a model moves by its own wind paint instead)
     #[serde(skip_serializing_if = "is_default")]
     pub wind: Breeze,
+    /// it lies along ramps (stairs, a mud slide; category "ramp"): see `RampFit`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ramp: Option<crate::ramp::RampFit>,
 }
 
 /// How a prop's stand-in (its parts, which have no paint) moves in the wind: `sway`, bending
@@ -1061,9 +1066,10 @@ pub fn footprint_cells(at: [f64; 2], turn: f64, footprint: [u8; 2], scale: f64) 
 }
 
 impl Prop {
-    /// Trees and flora keep their size when placed; everything else can be scaled down.
+    /// Trees and flora keep their size when placed, and what lies along ramps fits the
+    /// ramp; everything else can be scaled down.
     pub fn scalable(&self) -> bool {
-        !matches!(self.category.as_str(), "tree" | "flora")
+        !matches!(self.category.as_str(), "tree" | "flora") && self.ramp.is_none()
     }
 
     /// The folders it's in: its own list, or the one its category gives.
@@ -1077,6 +1083,7 @@ impl Prop {
             "wall_decoration" => OUTSIDE,
             "door" | "window" | "wall" | "pillar" | "floor" | "roof" => "Buildings/Structure",
             "railing" => "Buildings/Railings",
+            "ramp" => "Ramps",
             "character" => "Characters",
             _ => "Town",
         };

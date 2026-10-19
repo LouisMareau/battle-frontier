@@ -1,0 +1,16 @@
+{
+  "id": "mud_slide",
+  "name": "Mud slide",
+  "category": "ramp",
+  "footprint": [1, 1],
+  "height": 2.03,
+  "parts": [
+    { "shape": "wedge", "size": [1.0, 2.0, 1.0], "at": [0.0, 0.0, 0.0], "color": "#6b4a2f" },
+    { "shape": "box", "size": [1.0, 0.03, 0.22], "at": [0.0, 2.0, -0.605], "color": "#5a3d26" },
+    { "shape": "box", "size": [1.0, 0.03, 0.4], "at": [0.0, 0.0, 0.695], "color": "#5e4029" }
+  ],
+  "ramp": {
+    "along": "stretch",
+    "rise": 2.0
+  }
+}

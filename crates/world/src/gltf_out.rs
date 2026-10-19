@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 
 use crate::buildings::building;
 use crate::gltf_in::Image;
-use crate::mesh::{ground, part_mesh, placement, side_color, Mesh, Models, Scene, Vertex};
+use crate::mesh::{ground, part_mesh, placement, prop_model, side_color, Mesh, Models, Scene, Vertex};
 use crate::trees::trees;
 use crate::{color, hex_color, WorldMap};
 
@@ -451,10 +451,25 @@ pub fn map_glb(map: &WorldMap, content: &Content, level_height: f32, models: &Mo
     let mut props = vec![];
     for (i, p) in map.props.iter().enumerate() {
         let Some(prop) = content.props.get(&p.prop) else { continue };
+        let name = format!("{} {}", p.prop, i + 1);
+        if map.along_ramp(p, prop).is_some() {
+            // laid along its ramp, stretched to it: a mesh of its own, where it lies
+            let model: Scene = match models.get(&prop.id) {
+                Some(m) => m.rest_scene(),
+                None => prop_model(prop).into(),
+            };
+            let mut laid = Scene::default();
+            for at in map.puts(p, prop, level_height) {
+                laid.append_put(&model, &at);
+            }
+            let mesh = glb.scene_mesh(&name, &laid, &images);
+            props.push(glb.node(&name, mesh, Mat4::IDENTITY, vec![]));
+            continue;
+        }
         let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
         let at = map.prop_foot(p, level_height);
         let mesh = mesh_of(&mut glb, &p.prop);
-        props.push(glb.node(&format!("{} {}", p.prop, i + 1), mesh, placement(at, p.turn as f32, scale), vec![]));
+        props.push(glb.node(&name, mesh, placement(at, p.turn as f32, scale), vec![]));
     }
     let props_node = glb.node("Props", None, Mat4::IDENTITY, props);
     let mut tree_nodes = vec![];

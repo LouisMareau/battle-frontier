@@ -981,6 +981,13 @@ impl MapEditor {
 
     fn prop_box(&self, p: &Placed) -> Option<(Vec3, Vec3)> {
         let prop = self.content.props.get(&p.prop)?;
+        // along a ramp: the ramp's cells, from its foot's level up past its top's
+        if let Some(r) = self.map.along_ramp(p, prop) {
+            let lh = self.level_height;
+            let top = p.level as f32 * lh;
+            let (x0, z0) = (r.at[0] as f32, r.at[1] as f32);
+            return Some((Vec3::new(x0, top - lh, z0), Vec3::new(x0 + r.size[0] as f32, top + 0.3, z0 + r.size[1] as f32)));
+        }
         let quarter = ((p.turn / 90.0).round() as i64).rem_euclid(2) == 1;
         let (w, d) = if quarter { (prop.footprint[1], prop.footprint[0]) } else { (prop.footprint[0], prop.footprint[1]) };
         let s = if prop.scalable() { p.scale as f32 } else { 1.0 };
@@ -1071,12 +1078,13 @@ impl MapEditor {
                 self.need_ground = true;
                 // what stood on the old ground keeps standing on it
                 self.need_trees = true;
-                // a ramp's cells are on one level: one painted to another, it's gone
+                // a ramp's cells are on one level: one painted to another, it's gone (and what
+                // lay along it)
                 if let Some(r) = self.map.ramps.iter().position(|r| r.has(x, z)) {
-                    self.map.ramps.remove(r);
+                    let gone = self.take_ramp(r);
                     self.ramp.selected = None;
                     self.need_props = true;
-                    self.status = "The ramp there is gone: its cells are on another level now".into();
+                    self.status = format!("The ramp there is gone{}: its cells are on another level now", if gone > 0 { ", with what lay along it" } else { "" });
                 }
             }
         }
@@ -1108,10 +1116,13 @@ impl MapEditor {
     }
 
     /// How far a placed prop may stand from its cells' centre ([least x, z], [most x, z]);
-    /// None when it fills them.
+    /// None when it fills them (as what lies along a ramp does).
     fn prop_room(&self, i: usize) -> Option<([f64; 2], [f64; 2])> {
         let p = self.map.props.get(i)?;
         let prop = self.content.props.get(&p.prop)?;
+        if self.map.along_ramp(p, prop).is_some() {
+            return None;
+        }
         let scale = if prop.scalable() { p.scale } else { 1.0 };
         let (lo, hi) = world::mesh::offset_room(prop, &self.models, p.turn, scale);
         (hi[0] - lo[0] > 0.02 || hi[1] - lo[1] > 0.02).then_some((lo, hi))
@@ -1121,6 +1132,10 @@ impl MapEditor {
     /// it by half a cell), and within them.
     fn reseat(&mut self, i: usize) {
         let Some(p) = self.map.props.get(i).cloned() else { return };
+        // (along a ramp, it's where the ramp is)
+        if self.along(i).is_some() {
+            return;
+        }
         let at = self.snap(&p.prop, p.turn as f32, Vec3::new(p.at[0] as f32, 0.0, p.at[1] as f32));
         let (lo, hi) = self.prop_room(i).unwrap_or(([0.0; 2], [0.0; 2]));
         let q = &mut self.map.props[i];
@@ -1131,6 +1146,10 @@ impl MapEditor {
 
     fn turn_selected(&mut self, by: f32) {
         if let Some(i) = self.selected {
+            if self.along(i).is_some() {
+                self.status = "It lies along its ramp, turned up the ramp's way".into();
+                return;
+            }
             self.checkpoint();
             let p = &mut self.map.props[i];
             p.turn = ((p.turn as f32 + by).rem_euclid(360.0)) as f64;
@@ -1715,8 +1734,15 @@ impl MapEditor {
                 None => "no such prop".into(),
             };
             hint(ui, &about);
+            let along = p.as_ref().and_then(|p| p.ramp.as_ref()).map(|f| f.repeats());
+            if let Some(repeats) = along {
+                let how = if repeats { "copies of it side by side" } else { "stretched along it" };
+                hint(ui, &format!("It lies along ramps: click one (or next to one) and it's laid on it from its foot to its top and end to end, {how}, turned up its way. One to a ramp; the Ground tool's Ramps tab makes them."));
+            }
             ui.horizontal(|ui| {
-                ui.label(RichText::new(format!("Turned {:.0}°", self.turn)).size(11.5));
+                if along.is_none() {
+                    ui.label(RichText::new(format!("Turned {:.0}°", self.turn)).size(11.5));
+                }
                 let export = ui.small_button("To Blender").on_hover_text("A .glb of it, standing at the origin");
                 mark("uiExportProp", &export);
                 if export.clicked() {
@@ -1854,17 +1880,24 @@ impl MapEditor {
         let mut template = false;
         let room = self.prop_room(i);
         let mut tweak = self.tweak;
+        let along = self.along(i).map(|r| self.map.ramps[r].clone());
         {
             let p = &mut self.map.props[i];
             section(ui, "Placed");
             let (w, d) = prop.as_ref().map(|q| p.turned(q.footprint)).unwrap_or((1, 1));
             let (x0, z0) = ((p.at[0] - w as f64 / 2.0).round() as i32, (p.at[1] - d as f64 / 2.0).round() as i32);
-            // where it is: only a drag on the map moves it
-            ui.label(RichText::new(format!("At {:.2}, {:.2} · level {}", p.at[0] + p.offset[0], p.at[1] + p.offset[1], p.level)).monospace().size(12.0));
-            hint(ui, &format!("On {} cell{} from {x0}, {z0}: drag it on the map to move it to others.", w as u16 * d as u16, if w as u16 * d as u16 == 1 { "" } else { "s" }));
-            ui.add(egui::Slider::new(&mut p.turn, 0.0..=360.0).step_by(15.0).text("turn").suffix("°"));
-            let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
-            ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size");
+            if let Some(r) = &along {
+                // along a ramp: where the ramp is, as it goes
+                ui.label(RichText::new(format!("Along the ramp at {}, {} · level {}", r.at[0], r.at[1], p.level)).monospace().size(12.0));
+                hint(ui, &format!("Laid on its {} cell{} from its foot to its top, turned up its way: drag it onto another ramp to move it.", r.length(), if r.length() == 1 { "" } else { "s" }));
+            } else {
+                // where it is: only a drag on the map moves it
+                ui.label(RichText::new(format!("At {:.2}, {:.2} · level {}", p.at[0] + p.offset[0], p.at[1] + p.offset[1], p.level)).monospace().size(12.0));
+                hint(ui, &format!("On {} cell{} from {x0}, {z0}: drag it on the map to move it to others.", w as u16 * d as u16, if w as u16 * d as u16 == 1 { "" } else { "s" }));
+                ui.add(egui::Slider::new(&mut p.turn, 0.0..=360.0).step_by(15.0).text("turn").suffix("°"));
+                let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
+                ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size, and what lies along ramps fits them");
+            }
             let r = ui
                 .add_enabled(room.is_some(), egui::Button::new(if tweak { "Tweak: on" } else { "Tweak" }).selected(tweak))
                 .on_hover_text("Move it within its cells: drag it on the map, or x and z here")
@@ -2217,7 +2250,11 @@ impl MapEditor {
                 }
             }
             Tool::Place => {
-                if primary_pressed && response.hovered() {
+                // what lies along ramps goes onto the one under the pointer, fitted to it
+                let along = self.prop.clone().filter(|id| self.content.props.get(id).is_some_and(|q| q.ramp.is_some()));
+                if let (Some(id), true) = (along, primary_pressed && response.hovered()) {
+                    self.place_along(&id);
+                } else if primary_pressed && response.hovered() {
                     if let (Some(prop), Some(p)) = (self.prop.clone(), self.plane_hit) {
                         let at = self.snap(&prop, self.turn, p);
                         // Shift: where the pointer is within its cells, as far as it leaves room
@@ -2304,8 +2341,12 @@ impl MapEditor {
                 if let (Some(i), true, true) = (self.selected_building, primary_released, self.stroke) {
                     self.settle(i);
                 }
-                // a prop moves to other cells, where there's room; tweaked, within its own
-                if let (Some(i), Some(grab), true) = (self.selected, self.grab, primary_down && response.dragged()) {
+                // a prop moves to other cells, where there's room; tweaked, within its own; one
+                // along a ramp, onto another ramp
+                let dragged = self.selected.filter(|_| self.grab.is_some() && primary_down && response.dragged());
+                if let Some(i) = dragged.filter(|&i| self.along(i).is_some()) {
+                    self.drag_along(i);
+                } else if let (Some(i), Some(grab), true) = (self.selected, self.grab, primary_down && response.dragged()) {
                     let p = self.map.props[i].clone();
                     if let Some(hit) = Self::plane(origin, dir, p.level as f32 * self.level_height) {
                         // where its centre (on its cells) would go
@@ -2401,6 +2442,9 @@ impl MapEditor {
                     }
                 }
             }
+            Tool::Place if self.prop.as_ref().and_then(|id| self.content.props.get(id)).is_some_and(|q| q.ramp.is_some()) => {
+                self.along_shapes(&mut shapes);
+            }
             Tool::Place => {
                 if let (Some(prop), Some(p)) = (&self.prop, self.plane_hit) {
                     let at = self.snap(prop, self.turn, p);
@@ -2445,7 +2489,10 @@ impl MapEditor {
             }
         }
         if let Some(i) = self.selected {
-            if let Some((lo, hi)) = self.map.props.get(i).and_then(|p| self.prop_box(p)) {
+            // (along a ramp: over the ramp's cells, on their level)
+            if let Some(r) = self.along(i) {
+                self.over_ramp(r, [1.0, 0.85, 0.2, 0.45], &mut shapes);
+            } else if let Some((lo, hi)) = self.map.props.get(i).and_then(|p| self.prop_box(p)) {
                 let c = (lo + hi) * 0.5;
                 shapes.push(rect_at(c.x, lo.y + 0.05, c.z, hi.x - lo.x + 0.1, hi.z - lo.z + 0.1, [1.0, 0.85, 0.2, 0.45]));
             }

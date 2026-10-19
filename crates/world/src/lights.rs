@@ -7,7 +7,7 @@ use content::{Content, Light};
 use glam::{Mat4, Vec3};
 
 use crate::buildings::anchor_placement;
-use crate::mesh::placement;
+use crate::mesh::{placement, Put};
 use crate::WorldMap;
 
 /// A light where its prop stands: in the world, pointing its way.
@@ -20,9 +20,14 @@ pub struct PlacedLight {
 }
 
 fn put(out: &mut Vec<PlacedLight>, light: &Light, m: Mat4) {
-    let at = Vec3::new(light.at[0] as f32, light.at[1] as f32, light.at[2] as f32);
+    lay(out, light, &Put::plain(m));
+}
+
+/// A light where its prop's model goes (stretched along a ramp, say).
+fn lay(out: &mut Vec<PlacedLight>, light: &Light, at: &Put) {
+    let p = Vec3::new(light.at[0] as f32, light.at[1] as f32, light.at[2] as f32);
     let aim = Vec3::new(light.aim[0] as f32, light.aim[1] as f32, light.aim[2] as f32);
-    out.push(PlacedLight { pos: m.transform_point3(at), dir: m.transform_vector3(aim).normalize_or(Vec3::NEG_Y), light: light.clone() });
+    out.push(PlacedLight { pos: at.point(p), dir: at.way(aim).normalize_or(Vec3::NEG_Y), light: light.clone() });
 }
 
 /// A light carried by something standing at `feet` and facing `forward` (along the
@@ -38,10 +43,12 @@ pub fn carried(light: &Light, feet: Vec3, forward: Vec3) -> PlacedLight {
 pub fn lights(map: &WorldMap, content: &Content, level_height: f32) -> Vec<PlacedLight> {
     let mut out = vec![];
     let light = |id: &str| content.props.get(id).and_then(|p| p.light.as_ref().map(|l| (l, p.scalable())));
+    // (along a ramp, one on each copy laid on it)
     for p in &map.props {
-        let Some((l, scalable)) = light(&p.prop) else { continue };
-        let scale = if scalable { p.scale as f32 } else { 1.0 };
-        put(&mut out, l, placement(map.prop_foot(p, level_height), p.turn as f32, scale));
+        let Some((l, prop)) = content.props.get(&p.prop).and_then(|q| q.light.as_ref().map(|l| (l, q))) else { continue };
+        for at in map.puts(p, prop, level_height) {
+            lay(&mut out, l, &at);
+        }
     }
     for b in &map.buildings {
         let base = b.level as f32 * level_height;
@@ -103,5 +110,26 @@ mod tests {
         let c = carried(&tail, Vec3::new(10.0, 0.0, 10.0), Vec3::new(-1.0, 0.0, 0.0));
         assert!((c.pos - Vec3::new(10.4, 0.5, 10.0)).length() < 1e-4, "{:?}", c.pos);
         assert!(c.dir.x < -0.9, "{:?}", c.dir);
+    }
+
+    #[test]
+    fn along_a_ramp_a_light_on_each_copy() {
+        // stairs a cell wide with a lantern at their top, one a cell along a ramp two long
+        let mut content = Content::default();
+        let lantern = Light { at: [0.0, 2.2, -0.4], aim: [0.0, -1.0, 0.0], ..Default::default() };
+        let fit = content::RampFit { along: "repeat".into(), ..Default::default() };
+        content.props.put(Prop { id: "steps".into(), category: "ramp".into(), footprint: [1, 1], light: Some(lantern), ramp: Some(fit), ..Default::default() }, content::Space::Content);
+        let mut map = WorldMap::new("hill", "Hill", 10, 10, "grass");
+        for z in 0..4 {
+            for x in 0..10 {
+                map.level[z * 10 + x] = 1;
+            }
+        }
+        map.ramps.push(content::Ramp { at: [3, 3], size: [2, 1], up: "n".into(), ..Default::default() });
+        map.props.push(Placed { prop: "steps".into(), at: [4.0, 3.5], level: 1, ..Default::default() });
+        let all = lights(&map, &content, 2.0);
+        let at: Vec<Vec3> = all.iter().map(|l| l.pos).collect();
+        assert_eq!(at.len(), 2);
+        assert!(at[0].distance(Vec3::new(3.5, 2.2, 3.1)) < 1e-4 && at[1].distance(Vec3::new(4.5, 2.2, 3.1)) < 1e-4, "{at:?}");
     }
 }

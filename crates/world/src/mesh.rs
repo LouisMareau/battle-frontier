@@ -77,22 +77,98 @@ impl Mesh {
         self.indices.extend_from_slice(&[i, i + 1, i + 2]);
     }
 
-    /// Adds another mesh moved by `m` (rotation, uniform scale, translation); what moves in
-    /// the wind keeps its height above its foot, scaled too.
+    /// Adds another mesh moved by `m` (rotation, scale, translation); what moves in the wind
+    /// keeps its height above its foot, scaled too.
     pub fn append(&mut self, other: &Mesh, m: Mat4) {
+        self.append_put(other, &Put::plain(m));
+    }
+
+    /// Adds another mesh put down as `put` says: stretched along x (what lies along a ramp),
+    /// then moved; its normals turned and leaning as its faces do.
+    pub fn append_put(&mut self, other: &Mesh, put: &Put) {
         let base = self.vertices.len() as u32;
-        let rot = Mat3::from_mat4(m);
-        let scale = m.x_axis.truncate().length();
+        let normals = Mat3::from_mat4(put.m).inverse().transpose();
+        let up = put.m.y_axis.truncate().length();
         for v in &other.vertices {
-            let pos = m.transform_point3(Vec3::from(v.pos));
-            let normal = (rot * Vec3::from(v.normal)).normalize_or(Vec3::Y);
+            let p = Vec3::from(v.pos);
+            let (x, s) = match put.along {
+                Some(a) => (a.x(p.x), a.stretch(p.x)),
+                None => (p.x, 1.0),
+            };
+            let pos = put.m.transform_point3(Vec3::new(x, p.y, p.z));
+            let n = Vec3::from(v.normal);
+            let normal = (normals * Vec3::new(n.x / s, n.y, n.z)).normalize_or(Vec3::Y);
             let mut wind = v.wind;
-            if wind != [0; 4] && (scale - 1.0).abs() > 1e-4 {
-                wind[3] = (wind[3] as f32 * scale).round().min(255.0) as u8;
+            if wind != [0; 4] && (up - 1.0).abs() > 1e-4 {
+                wind[3] = (wind[3] as f32 * up).round().min(255.0) as u8;
             }
             self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), wind, ..*v });
         }
         self.indices.extend(other.indices.iter().map(|i| i + base));
+    }
+}
+
+/// A model's x stretched from half its width as made (`half`) to half the width it's put
+/// down at (`to`), its `ends` either side keeping their size: what lies along a ramp. Where
+/// there's no middle left to stretch, all of it is, ends and all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Along {
+    pub half: f32,
+    pub to: f32,
+    pub ends: f32,
+}
+
+impl Along {
+    /// The ends kept: none when they'd leave no middle.
+    fn kept(&self) -> f32 {
+        let e = self.ends.clamp(0.0, self.half);
+        if self.half - e < 1e-4 || self.to - e < 1e-4 { 0.0 } else { e }
+    }
+
+    /// Where a point of the model at `x` goes along x.
+    pub fn x(&self, x: f32) -> f32 {
+        let e = self.kept();
+        let (from, to) = ((self.half - e).max(1e-6), self.to - e);
+        if x.abs() <= from { x * to / from } else { x.signum() * (to + x.abs() - from) }
+    }
+
+    /// How much the model is stretched along x at `x`.
+    pub fn stretch(&self, x: f32) -> f32 {
+        let e = self.kept();
+        let from = (self.half - e).max(1e-6);
+        if x.abs() <= from + 1e-5 { (self.to - e) / from } else { 1.0 }
+    }
+}
+
+/// Where a placed thing's model goes: stretched along x first (`along`: what lies along a
+/// ramp), then moved by `m` (turned, scaled, put at its foot).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Put {
+    pub m: Mat4,
+    pub along: Option<Along>,
+}
+
+impl Put {
+    pub fn plain(m: Mat4) -> Put {
+        Put { m, along: None }
+    }
+
+    /// A point of the model, put down.
+    pub fn point(&self, p: Vec3) -> Vec3 {
+        let x = self.along.map(|a| a.x(p.x)).unwrap_or(p.x);
+        self.m.transform_point3(Vec3::new(x, p.y, p.z))
+    }
+
+    /// A way in the model (a light's aim), put down: stretched as its middle is.
+    pub fn way(&self, v: Vec3) -> Vec3 {
+        let s = self.along.map(|a| a.stretch(0.0)).unwrap_or(1.0);
+        self.m.transform_vector3(Vec3::new(v.x * s, v.y, v.z))
+    }
+
+    /// All of it as one matrix, the stretch even along it (what a rig is posed by).
+    pub fn matrix(&self) -> Mat4 {
+        let s = self.along.map(|a| a.to / a.half.max(1e-6)).unwrap_or(1.0);
+        self.m * Mat4::from_scale(Vec3::new(s, 1.0, 1.0))
     }
 }
 
@@ -124,6 +200,30 @@ fn shape_box(m: &mut Mesh, s: Vec3, c: [f32; 4]) {
             m.vertex(q, n, ao(c, q.y, y));
         }
         m.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+    }
+}
+
+/// A wedge: a box whose top slopes from its full height along its back (-z) down to nothing
+/// along its front (+z); no bottom face, as a box has none.
+fn shape_wedge(m: &mut Mesh, s: Vec3, c: [f32; 4]) {
+    let (x, y, z) = (s.x / 2.0, s.y, s.z / 2.0);
+    let p = |px: f32, py: f32, pz: f32| Vec3::new(px, py, pz);
+    let faces: [&[Vec3]; 4] = [
+        &[p(-x, y, -z), p(-x, 0.0, z), p(x, 0.0, z), p(x, y, -z)],   // the slope
+        &[p(x, y, -z), p(x, 0.0, -z), p(-x, 0.0, -z), p(-x, y, -z)], // north
+        &[p(x, 0.0, z), p(x, 0.0, -z), p(x, y, -z)],                 // east
+        &[p(-x, y, -z), p(-x, 0.0, -z), p(-x, 0.0, z)],              // west
+    ];
+    for f in faces {
+        let i = m.vertices.len() as u32;
+        let n = (f[1] - f[0]).cross(f[2] - f[0]).normalize_or(Vec3::Y);
+        for &q in f {
+            m.vertex(q, n, ao(c, q.y, y));
+        }
+        m.indices.extend_from_slice(&[i, i + 1, i + 2]);
+        if f.len() == 4 {
+            m.indices.extend_from_slice(&[i, i + 2, i + 3]);
+        }
     }
 }
 
@@ -221,6 +321,7 @@ pub(crate) fn part_mesh(p: &Part, seed: u32) -> Mesh {
         "cone" => shape_round(&mut m, s, c, 0.0, 10),
         "sphere" => shape_sphere(&mut m, s, c),
         "rock" => shape_rock(&mut m, s, c, seed),
+        "wedge" => shape_wedge(&mut m, s, c),
         _ => shape_box(&mut m, s, [1.0, 0.0, 1.0, 1.0]),
     }
     m
@@ -237,9 +338,14 @@ pub struct Scene {
 impl Scene {
     /// Adds another scene moved by `m`.
     pub fn append(&mut self, other: &Scene, m: Mat4) {
-        self.plain.append(&other.plain, m);
+        self.append_put(other, &Put::plain(m));
+    }
+
+    /// Adds another scene put down as `put` says (stretched along a ramp, say).
+    pub fn append_put(&mut self, other: &Scene, put: &Put) {
+        self.plain.append_put(&other.plain, put);
         for (k, mesh) in &other.textured {
-            self.textured.entry(k.clone()).or_default().append(mesh, m);
+            self.textured.entry(k.clone()).or_default().append_put(mesh, put);
         }
     }
 
@@ -790,7 +896,8 @@ fn tall_grass(grass: &mut Mesh, t: &content::Terrain, x: i32, z: i32, foot: &dyn
 /// run from the higher cell's rim down to the lower's, lumpy; they look at the neighbours
 /// (two cells out), so the whole grid is read, and past the edge `beyond` (the map next to
 /// this one: on its level, no face at all). A ramp's cells follow its ground (`ramps`: down a
-/// level from their own), with walls on their sides where the ground next to them is lower,
+/// level from their own; straight under what lies along it, without tall grass), with walls on
+/// their sides where the ground next to them is lower,
 /// or on their level (the step's top either side, down to the ramp's slope); the ground next
 /// to a ramp on its level, or a level down, meets it unbevelled (its top, its foot, the walls
 /// between), and higher ground has its cliff down onto it.
@@ -813,6 +920,10 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
         .filter(|r| r.at[0] - 3 < region[2] && r.at[1] - 3 < region[3] && r.at[0] + r.size[0] as i32 + 3 > region[0] && r.at[1] + r.size[1] as i32 + 3 > region[1])
         .collect();
     let ramp = |x: i32, z: i32| near.iter().copied().find(|r| r.has(x, z) && map.inside(x, z));
+    // those something lies along (stairs, a mud slide): their ground straight under it
+    let covered: Vec<bool> = near.iter().map(|r| map.ramp_cover(r, content).is_some()).collect();
+    let even = |r: &content::Ramp| near.iter().zip(&covered).any(|(o, &c)| c && std::ptr::eq(*o, r));
+    let ground = |r: &content::Ramp, top: f32, px: f32, pz: f32| if even(r) { ramps::even(r, top, level_height, px, pz) } else { ramps::height(r, top, level_height, px, pz) };
     // the levels around a cell on `own`, as it sees them: a ramp's cell is level with it
     // when it's on the ramp's level or a level down (the ramp's walls fill in between)
     let seen = |own: Option<u8>| {
@@ -827,7 +938,7 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
     // a cell's top at a point on it (world x, z); off the map, the skirt's foot
     let surface = |x: i32, z: i32, px: f32, pz: f32| match level(x, z) {
         Some(l) => match ramp(x, z) {
-            Some(r) => ramps::height(r, l as f32 * level_height, level_height, px, pz),
+            Some(r) => ground(r, l as f32 * level_height, px, pz),
             None => l as f32 * level_height + Edges::of(&seen(Some(l)), &flat, x, z).height(px - x as f32, pz - z as f32),
         },
         None => SKIRT,
@@ -845,7 +956,10 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             ([(fx + 1.0, fz + 1.0), (fx + 1.0, fz)], [3, 1]),
         ];
         if let Some(r) = ramp(x, z) {
-            let at = |px: f32, pz: f32| ramps::height(r, y, level_height, px, pz);
+            let at = |px: f32, pz: f32| ground(r, y, px, pz);
+            // (under what lies along it, its walls down a hair in from its ends: behind that
+            // thing's own ends, not through them)
+            let tuck = if even(r) { ramps::TUCK } else { 0.0 };
             ramp_top(&mut tops, fx, fz, &|px, pz| ramps::rock(r.along(px as f64, pz as f64).0 as f32), &at);
             for (k, ([(ax, az), (bx, bz)], _)) in sides.into_iter().enumerate() {
                 let (dx, dz) = SIDES[k];
@@ -862,7 +976,7 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
                     })
                     .collect();
                 // down to lower ground
-                let down: Vec<(f32, f32, f32, f32)> = points.iter().map(|&(px, pz, top, other)| (px, pz, top, other.min(top))).collect();
+                let down: Vec<(f32, f32, f32, f32)> = points.iter().map(|&(px, pz, top, other)| (px - dx as f32 * tuck, pz - dz as f32 * tuck, top, other.min(top))).collect();
                 wall(&mut cliffs, &down, Vec3::new(dx as f32, 0.0, dz as f32), uv);
                 // up to the ground on its level next to it (the step's top either side, or its
                 // foot's level where it dips under); higher ground has its own cliff down to it
@@ -872,7 +986,8 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
                     wall(&mut cliffs, &up, Vec3::new(-dx as f32, 0.0, -dz as f32), uv);
                 }
             }
-            if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
+            // (none through what lies along it)
+            if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall" && !even(r)) {
                 tall_grass(&mut grass, t, x, z, &|u, v| Some(at(fx + u, fz + v)));
             }
             continue;
@@ -952,10 +1067,10 @@ pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models
     let mut out = Scene::default();
     for p in map.props.iter().filter(|p| in_region(region, p.at[0].floor() as i32, p.at[1].floor() as i32)) {
         let Some(prop) = content.props.get(&p.prop) else { continue };
-        let scale = if prop.scalable() { p.scale as f32 } else { 1.0 };
-        let at = map.prop_foot(p, level_height);
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
-        out.append(scene, placement(at, p.turn as f32, scale));
+        for put in map.puts(p, prop, level_height) {
+            out.append_put(scene, &put);
+        }
     }
     out
 }
@@ -1246,6 +1361,33 @@ mod room_tests {
         // a quarter turn: its length runs along z now
         let (_, hi90) = offset_room(&bench, &Models::new(), 90.0, 1.0);
         assert!((hi90[1] - 0.4).abs() < 1e-3 && (hi90[0] - 0.3).abs() < 1e-3, "{hi90:?}");
+    }
+
+    #[test]
+    fn stretched_along_its_faces_lean_as_they_do() {
+        // a face on the plane x + y = 1, its normal halfway between x and up
+        let mut face = Mesh::default();
+        face.tri(Vec3::new(1.0, 0.0, 0.0), Vec3::new(0.0, 1.0, 0.0), Vec3::new(0.0, 1.0, 1.0), [1.0; 4]);
+        let n = Vec3::from(face.vertices[0].normal);
+        assert!(n.distance(Vec3::new(1.0, 1.0, 0.0).normalize()) < 1e-5, "{n:?}");
+        // twice as long along x: the plane x / 2 + y = 1, steeper no more
+        let mut out = Mesh::default();
+        out.append_put(&face, &Put { m: Mat4::IDENTITY, along: Some(Along { half: 1.0, to: 2.0, ends: 0.0 }) });
+        assert_eq!(out.vertices[0].pos, [2.0, 0.0, 0.0]);
+        // (past its width as made, a part keeps its size)
+        assert_eq!(Along { half: 0.5, to: 1.0, ends: 0.0 }.x(0.75), 1.25);
+        let n = Vec3::from(out.vertices[0].normal);
+        assert!(n.distance(Vec3::new(0.5, 1.0, 0.0).normalize()) < 1e-5, "{n:?}");
+        // turned and scaled evenly, as before: turned only
+        let mut turned = Mesh::default();
+        turned.append(&face, placement(Vec3::ZERO, 90.0, 2.0));
+        let n = Vec3::from(turned.vertices[0].normal);
+        assert!(n.distance(Mat4::from_rotation_y(-90f32.to_radians()).transform_vector3(Vec3::new(1.0, 1.0, 0.0).normalize())) < 1e-5, "{n:?}");
+        // a wedge: its slope from its back's top to its front's foot
+        let w = part_mesh(&Part { shape: "wedge".into(), size: [1.0, 2.0, 1.0], color: "#888888".into(), ..Default::default() }, 1);
+        let slope: Vec<&Vertex> = w.vertices.iter().filter(|v| v.normal[1] > 0.1).collect();
+        assert_eq!((w.vertices.len(), w.indices.len(), slope.len()), (14, 18, 4));
+        assert!(slope.iter().all(|v| (v.pos[1] - (1.0 - 2.0 * v.pos[2])).abs() < 1e-5 && (v.normal[2] - 2.0 / 5f32.sqrt()).abs() < 1e-5));
     }
 }
 
