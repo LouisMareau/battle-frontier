@@ -983,10 +983,10 @@ mod tests {
         // and room above it)
         let world = content::Settings::default();
         assert_eq!((world.level_height(), world.floor_height()), (1.0, 2.0));
-        // a house of two floors on level 3: its walls from 3 cells up to 7, its upper floor's
-        // walls from 5
+        // a house of two floors on level 3 (its roof left off: its gables are in the walls'
+        // colour): its walls from 3 cells up to 7, its upper floor's walls from 5
         let b = Building { level: 3, ..house() };
-        let m = building(&b, &content(), 1.0, None, &Models::new()).plain;
+        let m = drawn(&b);
         let walls: Vec<f32> = of(&m, "#efe6d2").iter().map(|p| p[1]).collect();
         let (low, high) = walls.iter().fold((f32::MAX, f32::MIN), |(a, b), &y| (a.min(y), b.max(y)));
         assert!((low - 3.0).abs() < 0.01 && (high - 7.0).abs() < 0.01, "{low} {high}");
