@@ -3,8 +3,9 @@
 // Ground brush aims at the cell under the pointer on its own ground (not where the pointer
 // meets level 2), and a click raises that cell; a 3 x 3 stroke held still raises its nine
 // cells and no more (the cells it's raised don't pull it towards the camera); with level 0
-// picked, a cell of the hill's top sinks, the one under the pointer; the map saved, its levels
-// changed there and nowhere else. Screenshots to screenshots/level-*.png. Exits 1 when
+// picked, a cell of the hill's top sinks, the one under the pointer; ground raised to meet the
+// hill's top joins it with no seam (the ground shader told the cells' new levels: it shaded the
+// old cliff's foot along the join); the map saved, its levels changed there and nowhere else. Screenshots to screenshots/level-*.png. Exits 1 when
 // something fails.
 //     node tools/levelcheck.mjs
 import { mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -132,11 +133,40 @@ try {
   check('  a click sinks that cell', sunk.under === '14,5,0', sunk.under);
   await shot('4-sunk');
 
+  // 3b. raised to the hill's level against its edge: the ground runs on, no seam where they join
+  await browser.key('PageUp');
+  await browser.key('PageUp');
+  check('level 2 picked again', (await data('level')) === '2', await data('level'));
+  await cmd('view:12,8,20,0,52');
+  await sleep(600);
+  for (const x of [12, 13]) {
+    const { p } = await hover(x, 6, 0);
+    await browser.click(...p);
+    await sleep(300);
+  }
+  // (the brush's square off the ground being measured)
+  await browser.move(1300, 450);
+  await sleep(1200);
+  const joined = await browser.pixels(join(shots, 'level-5-joined.png'));
+  const light = ([x, y]) => {
+    const i = (Math.round(y) * joined.width + Math.round(x)) * 4;
+    return joined.rgba[i] * 0.3 + joined.rgba[i + 1] * 0.59 + joined.rgba[i + 2] * 0.11;
+  };
+  const byJoin = [];
+  const onHill = [];
+  for (const x of [12.3, 12.7, 13.3, 13.7]) {
+    byJoin.push(light(await screen(x, 2 * levelHeight, 6.12)));
+    onHill.push(light(await screen(x, 2 * levelHeight, 5.5)));
+  }
+  const mean = (a) => a.reduce((t, v) => t + v, 0) / a.length;
+  check('  raised to meet the hill: no seam where they join, the ground as light on both sides', mean(byJoin) > mean(onHill) * 0.93,
+    `${mean(byJoin).toFixed(0)} by the join, ${mean(onHill).toFixed(0)} on the hill`);
+
   // 4. saved: the levels changed there, and nowhere else
   await press('uiSave');
   await sleep(1500);
   const saved = JSON.parse(readFileSync(join(downloads, 'level_test.json'), 'utf8'));
-  const want = base.map((row, z) => [...row].map((c, x) => (x === 6 && z === 10) || (x >= 2 && x <= 4 && z >= 8 && z <= 10) ? '2' : x === 14 && z === 5 ? '0' : c).join(''));
+  const want = base.map((row, z) => [...row].map((c, x) => (x === 6 && z === 10) || (x >= 2 && x <= 4 && z >= 8 && z <= 10) || (z === 6 && (x === 12 || x === 13)) ? '2' : x === 14 && z === 5 ? '0' : c).join(''));
   const off = [];
   for (let z = 0; z < H; z++) {
     for (let x = 0; x < W; x++) {

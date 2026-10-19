@@ -590,10 +590,12 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         f.gpu.texels_due.clear();
         f.gpu.ground = Some(key);
         tick = cost("texture", tick);
-    } else if need.cells || edges {
+    } else if need.cells || edges || !f.gpu.texels_due.is_empty() {
         // the texels of the cells that changed (and on the map's edge, of the ring round it
         // showing them again), of the ring when the maps around changed, and where the focus
-        // was and is
+        // was and is; a level painted with the terrain as it was too (left out, the shader
+        // read the cells' old levels: a cliff's foot shaded where ground raised to meet it
+        // now runs on, a seam)
         let (wi, hi) = (w as i32, h as i32);
         let mut texels: Vec<(i32, i32)> = vec![];
         for (x, z) in std::mem::take(&mut f.gpu.texels_due) {
