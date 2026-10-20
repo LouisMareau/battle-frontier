@@ -411,12 +411,14 @@ pub(super) struct DeviceCode {
     pub expires_in: u64,
 }
 
-/// Whether the code's been typed: the token, not yet, or not so often.
+/// Whether the code's been typed: the token, not yet, or not so often; or the asking turned
+/// away for now (asked again as often as before).
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Poll {
     Token(String),
     Wait,
     SlowDown,
+    Busy,
 }
 
 /// A form's value, percent-encoded.
@@ -424,8 +426,30 @@ fn encode(v: &str) -> String {
     v.bytes().map(|b| if b.is_ascii_alphanumeric() || b"-_.~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") }).collect()
 }
 
+/// GitHub turning a request away for now: too many from where it came (github.com limits the
+/// addresses the site's sign-in calls come from, shared with many others), or a hiccup.
+/// Asked again a little later.
+fn busy(status: u16) -> bool {
+    status == 429 || (500..600).contains(&status)
+}
+
+/// How long the first asking again waits (ms; each after waits that much more): short in the
+/// tests.
+const AGAIN_MS: u32 = if cfg!(test) { 10 } else { 1500 };
+
+/// What GitHub said no with, in words: its own message, else the status's.
+fn failure(status: u16, text: &str, body: &Value, what: &str) -> String {
+    let message = body.get("message").and_then(Value::as_str).unwrap_or(text);
+    match status {
+        401 => "GitHub doesn't take the sign-in any more: sign in again".to_string(),
+        _ => format!("GitHub answered {status} to {what}: {message}"),
+    }
+}
+
 impl Hub {
-    async fn send(&self, req: ehttp::Request, what: &str) -> Result<Value, String> {
+    /// GitHub's answer to a request, whatever it is: its status (and its words) and its JSON
+    /// (Null when it isn't); an error only when there was no answer.
+    async fn fetch(&self, req: ehttp::Request) -> Result<(u16, String, Value), String> {
         // (the browser sends its own User-Agent: a page can't set one)
         #[cfg(not(target_arch = "wasm32"))]
         let r = {
@@ -437,15 +461,15 @@ impl Hub {
         #[cfg(target_arch = "wasm32")]
         let r = ehttp::fetch_async(req).await;
         let r = r.map_err(|e| format!("GitHub can't be reached ({e})"))?;
-        let body: Value = serde_json::from_slice(&r.bytes).unwrap_or(Value::Null);
-        if r.ok {
+        Ok((r.status, r.status_text, serde_json::from_slice(&r.bytes).unwrap_or(Value::Null)))
+    }
+
+    async fn send(&self, req: ehttp::Request, what: &str) -> Result<Value, String> {
+        let (status, text, body) = self.fetch(req).await?;
+        if (200..300).contains(&status) {
             return Ok(body);
         }
-        let message = body.get("message").and_then(Value::as_str).unwrap_or(&r.status_text).to_string();
-        Err(match r.status {
-            401 => "GitHub doesn't take the sign-in any more: sign in again".to_string(),
-            _ => format!("GitHub answered {} to {what}: {message}", r.status),
-        })
+        Err(failure(status, &text, &body, what))
     }
 
     /// A call to the API: its answer, or what went wrong (GitHub's own words).
@@ -473,17 +497,31 @@ impl Hub {
         self.call(ehttp::Method::POST, path, Some(body)).await
     }
 
-    /// A form posted to the site (signing in), its answer in JSON.
-    async fn form(&self, path: &str, fields: &[(&str, &str)]) -> Result<Value, String> {
+    /// A form posted to the site (signing in): its answer, whatever it is (`fetch`).
+    async fn form(&self, path: &str, fields: &[(&str, &str)]) -> Result<(u16, String, Value), String> {
         let body = fields.iter().map(|(k, v)| format!("{k}={}", encode(v))).collect::<Vec<_>>().join("&");
         let mut req = ehttp::Request::post(format!("{}{path}", self.web), body.into_bytes());
         req.headers = ehttp::Headers::new(&[("Accept", "application/json"), ("Content-Type", "application/x-www-form-urlencoded")]);
-        self.send(req, path).await
+        self.fetch(req).await
     }
 
-    /// Signing in: the code to type on github.com.
+    /// Signing in: the code to type on github.com (asked again, a little later each time,
+    /// while GitHub turns the asking away).
     pub async fn device_code(&self, client: &str) -> Result<DeviceCode, String> {
-        let v = self.form("/login/device/code", &[("client_id", client), ("scope", SCOPE)]).await?;
+        let path = "/login/device/code";
+        let mut tries = 0;
+        let v = loop {
+            let (status, text, v) = self.form(path, &[("client_id", client), ("scope", SCOPE)]).await?;
+            match status {
+                200..300 => break v,
+                s if busy(s) && tries < 4 => {
+                    tries += 1;
+                    pause(AGAIN_MS * tries).await;
+                }
+                s if busy(s) => return Err(format!("GitHub is turning sign-ins away just now (it answered {s}): try again in a few minutes, or paste a token")),
+                s => return Err(failure(s, &text, &v, path)),
+            }
+        };
         let text = |k: &str| v.get(k).and_then(Value::as_str).map(str::to_string).ok_or_else(|| format!("GitHub's answer has no {k}: {v}"));
         Ok(DeviceCode {
             device_code: text("device_code")?,
@@ -495,8 +533,18 @@ impl Hub {
     }
 
     /// Whether the code's been typed (and the sign-in let through): the token, once it is.
+    /// Turned away for now (or no answer): busy, asked again at the next turn.
     pub async fn poll(&self, client: &str, device_code: &str) -> Result<Poll, String> {
-        let v = self.form("/login/oauth/access_token", &[("client_id", client), ("device_code", device_code), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code")]).await?;
+        let path = "/login/oauth/access_token";
+        let Ok((status, text, v)) = self.form(path, &[("client_id", client), ("device_code", device_code), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code")]).await else {
+            return Ok(Poll::Busy);
+        };
+        if busy(status) {
+            return Ok(Poll::Busy);
+        }
+        if !(200..300).contains(&status) {
+            return Err(failure(status, &text, &v, path));
+        }
         if let Some(t) = v.get("access_token").and_then(Value::as_str) {
             return Ok(Poll::Token(t.to_string()));
         }
@@ -1008,8 +1056,8 @@ impl Publisher {
                             Err(e) => Said::NotIn(e),
                         });
                     }
-                    Ok(Poll::Wait) => {}
-                    Ok(Poll::SlowDown) => wait += 5,
+                    Ok(Poll::Wait | Poll::Busy) => {}
+                    Ok(Poll::SlowDown) => wait = (wait + 5).min(30),
                     Err(e) => return said(Said::NotIn(e)),
                 }
             }
@@ -1751,6 +1799,51 @@ mod tests {
         assert!(!asked.iter().any(|(_, p, _)| p.contains("forks")), "no fork");
         let pr = asked.iter().find(|(_, p, _)| p.ends_with("/pulls")).unwrap();
         assert_eq!(pr.2["head"], "publish/pond-5", "the repository's own branch");
+    }
+
+    /// GitHub turning the sign-in's calls away for now (429: it limits the addresses the site's
+    /// calls come from): the code asked for again, a little later; a poll turned away is busy
+    /// (asked again at the next turn), not the end of signing in; past four tries, said so.
+    #[test]
+    fn signing_in_asked_again_while_github_turns_it_away() {
+        let (codes, polls) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(0)));
+        let (c, p) = (codes.clone(), polls.clone());
+        let away = json!({ "code": "429", "message": "Access to this site has been restricted. Please wait a few minutes before you try again." });
+        let (web, _) = stand_in(move |method, path, _| match (method, path) {
+            ("POST", "/login/device/code") => {
+                let mut n = c.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    (429, away.clone())
+                } else {
+                    (200, json!({ "device_code": "dc", "user_code": "ABCD-1234", "verification_uri": "https://github.com/login/device", "interval": 5, "expires_in": 900 }))
+                }
+            }
+            ("POST", "/login/oauth/access_token") => {
+                let mut n = p.lock().unwrap();
+                *n += 1;
+                if *n == 1 {
+                    (429, away.clone())
+                } else {
+                    (200, json!({ "access_token": "gho_x" }))
+                }
+            }
+            _ => (404, json!({ "message": "Not Found" })),
+        });
+        let hub = Hub { api: web.clone(), web, token: String::new() };
+        let code = block_on(hub.device_code("client")).unwrap();
+        assert_eq!((code.user_code.as_str(), *codes.lock().unwrap()), ("ABCD-1234", 2), "asked again once turned away");
+        assert_eq!(block_on(hub.poll("client", "dc")).unwrap(), Poll::Busy);
+        assert_eq!(block_on(hub.poll("client", "dc")).unwrap(), Poll::Token("gho_x".into()));
+        // a GitHub that never lets it through: said so, with what to do instead
+        let (never, _) = stand_in(|_, _, _| (429, json!({ "message": "Access to this site has been restricted." })));
+        let hub = Hub { api: never.clone(), web: never, token: String::new() };
+        let e = block_on(hub.device_code("client")).unwrap_err();
+        assert!(e.contains("turning sign-ins away") && e.contains("paste a token"), "{e}");
+        // a refusal that isn't for now: GitHub's words
+        let (wrong, _) = stand_in(|_, _, _| (404, json!({ "error": "Not Found" })));
+        let hub = Hub { api: wrong.clone(), web: wrong, token: String::new() };
+        assert!(block_on(hub.device_code("nobody")).unwrap_err().contains("answered 404"));
     }
 
     /// The sign-in window (a code to type) and the Publish window (a few changes in groups, one

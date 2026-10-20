@@ -34,6 +34,9 @@ const check = (what, ok, detail = '') => {
 const BASE = '1111111111111111111111111111111111111111';
 const asked = [];
 let polls = 0;
+let codeAsks = 0;
+// how github.com turns the site's sign-in away for a moment (the editor asks again)
+const turnedAway = { code: '429', message: 'Access to this site has been restricted. Please wait a few minutes before you try again.' };
 const reply = (res, status, body) => {
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -50,8 +53,13 @@ const github = async (req, res, path) => {
   asked.push({ method: req.method, at, body, auth: req.headers.authorization ?? '' });
   const repo = 'api/repos/LouisMareau/battle-frontier';
   const fork = 'api/repos/player/battle-frontier';
-  if (at === 'login/device/code') return reply(res, 200, { device_code: 'dc', user_code: 'WDJB-MJHT', verification_uri: 'https://github.com/login/device', interval: 1, expires_in: 900 });
-  if (at === 'login/oauth/access_token') return reply(res, 200, ++polls < 2 ? { error: 'authorization_pending' } : { access_token: 'gho_check', token_type: 'bearer' });
+  // turned away the first time each is asked (as github.com does now and then), then let through
+  if (at === 'login/device/code') return ++codeAsks === 1 ? reply(res, 429, turnedAway) : reply(res, 200, { device_code: 'dc', user_code: 'WDJB-MJHT', verification_uri: 'https://github.com/login/device', interval: 1, expires_in: 900 });
+  if (at === 'login/oauth/access_token') {
+    polls++;
+    if (polls === 1) return reply(res, 429, turnedAway);
+    return reply(res, 200, polls === 2 ? { error: 'authorization_pending' } : { access_token: 'gho_check', token_type: 'bearer' });
+  }
   if (at === 'api/user') return reply(res, 200, { login: 'player', id: 42, name: 'Pat Player', email: null });
   if (at === repo) return reply(res, 200, { default_branch: 'main', permissions: { push: false } });
   if (at === `${repo}/git/ref/heads/main` || at === `${fork}/git/ref/heads/main`) return reply(res, 200, { object: { sha: BASE } });
@@ -324,10 +332,10 @@ try {
   check('  Publish waits for Sign in', (await data('publish')) === '' && (await data('signedin')) === '', `${await data('publish')}|${await data('signedin')}`);
   await press('uiSignIn');
   await browser.waitFor('document.body.dataset.signincode === "WDJB-MJHT"', { timeout: 15000, what: 'the code to type' });
-  check('  Sign in: the code to type on GitHub, from the site\'s own address', asked.some((a) => a.method === 'POST' && a.at === 'login/device/code' && String(a.body).includes('scope=public_repo')));
+  check('  Sign in: the code to type on GitHub, from the site\'s own address (asked again once turned away)', codeAsks === 2 && asked.some((a) => a.method === 'POST' && a.at === 'login/device/code' && String(a.body).includes('scope=public_repo')), `${codeAsks} asks`);
   await shot('12-sign-in');
   await browser.waitFor('document.body.dataset.signedin === "player"', { timeout: 20000, what: 'signed in' });
-  check('  signed in once GitHub let it through (asked again until then)', polls >= 2 && (await data('signing')) === '', `${polls} polls`);
+  check('  signed in once GitHub let it through (asked again until then, a turning away no end)', polls >= 3 && (await data('signing')) === '', `${polls} polls`);
   await press('uiPublish');
   await browser.waitFor('(document.body.dataset.publishfiles ?? "") !== ""', { timeout: 20000, what: 'what was saved' });
   const files = await data('publishfiles');
