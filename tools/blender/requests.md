@@ -604,14 +604,30 @@ lid, a door, a wheel) on a bone of its own, rigged like a creature's jaw.
 
 The game's wind sways what's painted for it, and nothing else: a colour layer named "wind",
 its R how far a point sways (0 at its root: a stem's foot, where hair grows; 1 at the tips),
-its G how much it flutters (leaves, petals, fur, a cloth's edge), its B its phase (different
-values on different leaves or tufts, so they don't all move together). The game adds how high
-the point stands, so taller things bend further. `kit.fur` paints its strands itself (rooted,
-swaying and fluttering to their tips, each in its own time); paint the rest of what the wind
-moves with `kit.wind(part, sway=, flutter=, root=)`: hair, a mane, leaves and petals, a
-cloth, a tail's tuft, a flag. A creature's body, head and limbs stay unpainted: the rig moves
-them, the wind doesn't. A prop's: a tree's crown and its leaves (`root` its trunk's foot), a
-bush, flowers, grass, a banner; never a rock or a wall.
+its G how much it flutters (leaves, petals, fur, a cloth's edge), its B its phase (when it
+sways). The game adds how high the point stands, so taller things bend further, and where it
+is, so pieces flutter each a little in their own time. It moves every point of one place the
+same (a leaf made thick, its faces and its rim, stays whole), so what's joined must be painted
+the same where it's joined.
+
+**A plant is one thing in the wind.** Its leaves touch and overlap: in one phase they lean
+together, in different ones they lean through each other. Paint a plant (a bush, a rosette, a
+mound, a creeper, a tuft of broad leaves, a tree's crown and its leaves) in one call with all
+its moving parts: `kit.plant_wind([leaves, dark_leaves, stalks], root=(0, 0, 0), sway=,
+flutter=, stems=[stalks])` (`root` its foot; for a tree its trunk's foot). One phase for all of
+it; the sway rising over the whole plant from its foot, so a leaf and the stalk it grows on
+bend as one; each leaf (each loose piece) fluttering from its own foot (its point nearest the
+root), so it stays on its stalk; `stems` sway but never flutter. Never a plant's parts one by
+one, each in a `kit.wind` call of its own: each measured on its own and in its own time, a
+leaf parts from its stalk and the leaves cross. A variant: its own call (`seed=` another, its
+own time).
+
+What moves apart, piece by piece, is `kit.wind(part, sway=, flutter=, root=)`, each loose piece
+in its own time: hair, a mane's locks, a cloth, a tail's tuft, a flag, flowers on long stems of
+their own. `kit.fur` paints its strands itself (rooted, swaying and fluttering to their tips,
+each in its own time). A creature's body, head and limbs stay unpainted: the rig moves them,
+the wind doesn't. A prop's: plants, grass, a banner; never a rock, a wall, a plant's crown it
+grows from, its soil or its stones.
 
 The rig and the actions, in `model.py` after `fit`:
 
@@ -764,7 +780,8 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `colours` | region to `"#rrggbb"` or `{"color": ..., "rough": 0.65, "metal": 0, "glow": 0, "specular": 0.5}`: the region's lit tone, its shine as roughness (above, "The design, not the drawing") |
 | `eyes(head, [centres], radius, colour=, look=, separate=True)` | glossy eyes with a glint, seated on the head's surface: parts of their own (`eye.L`, `eye.R`, on the bones of their names, else the head); without `separate`, set into the part (group "eyes", which the rig gives the head) |
 | `fur(part, region, count=, length=, thickness=, droop=)` | fur or hair on a colour region, as mesh strands the game draws, painted for the wind; `fit` again after it |
-| `wind(part, sway=1.0, flutter=0.0, root=None)` | painted for the wind ("The wind"): swaying up to `sway` and fluttering up to `flutter` the further from `root` (a point; by default its lowest), each loose piece in its own time |
+| `plant_wind(parts, root=(0, 0, 0), sway=0.35, flutter=0.5, stems=(), seed=1)` | a plant's moving parts painted for the wind as one plant ("The wind"): one time for all of it, swaying the further out over the whole plant, each leaf fluttering from its own foot, `stems` never fluttering |
+| `wind(part, sway=1.0, flutter=0.0, root=None)` | painted for the wind ("The wind"): swaying up to `sway` and fluttering up to `flutter` the further from `root` (a point; by default its lowest), each loose piece in its own time: for what moves apart (hair, a cloth), never a plant's leaves |
 | `tube(points, radius, region, radius_end=)` | a curved part through the points, round, tapering |
 | `with editing(obj) as bm:` | the mesh as a bmesh to edit by hand (extrude, inset, bevel, move...), written back after |
 | `extrude(bm, faces, move)` | in an editing block: faces pulled out with their sides, the old ones gone |

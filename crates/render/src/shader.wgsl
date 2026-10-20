@@ -185,9 +185,12 @@ fn gust_at(p: vec2<f32>) -> f32 {
 
 // a point of something painted for the wind, moved by it: `w` its weights (sway, flutter,
 // phase, its height above its foot over 8 cells). It leans downwind as far as its sway, its
-// height and the wind (with its gust) say, swaying about that, and flutters quickly along its
-// surface and across the wind; whatever isn't painted stays.
-fn swayed(p: vec3<f32>, n: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
+// height and the wind (with its gust) say, swaying about that, and flutters quickly up and
+// down and across the wind; whatever isn't painted stays. Nothing in it goes by the way a
+// point faces: the points of one place (where a mesh's faces meet at an edge, as all round a
+// leaf made thick, its two faces and its rim) carry the same paint, so they move as one and
+// the mesh never comes apart.
+fn swayed(p: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
     let s = g.wind.z;
     if (s <= 0.0 || (w.x <= 0.0 && w.y <= 0.0)) {
         return p;
@@ -204,17 +207,18 @@ fn swayed(p: vec3<f32>, n: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
     q.y = q.y - w.x * bend * bend * 0.35 / max(height, 0.3);
     let across = vec3<f32>(-way.z, 0.0, way.x);
     let f = w.y * (0.25 + 0.75 * s) * gust * 0.07 * sin(g.wind_b.w + phase * 3.1 + dot(p, vec3<f32>(2.9, 2.1, 3.3)));
-    // along the way it faces, the same way for both faces of what's made two-sided (a leaf
-    // with a back a hair behind it): they flutter together, the front staying in front (moved
-    // apart, the back came through in patches, dark)
-    let facing = select(-n, n, dot(n, vec3<f32>(0.32, 0.89, 0.33)) >= 0.0);
-    return q + (facing * 0.6 + across * 0.4) * f;
+    // up and down and across the wind, each piece a little its own way round (by its phase):
+    // the same for both faces of what's made two-sided (a leaf with a back a hair behind it),
+    // the front staying in front
+    let turn = w.z * 37.7;
+    let flap = normalize(vec3<f32>(0.0, 0.8, 0.0) + across * (0.6 + 0.3 * cos(turn)) + way * (0.3 * sin(turn)));
+    return q + flap * f;
 }
 
 @vertex
 fn vs_map(v: MapIn) -> MapOut {
     var o: MapOut;
-    let pos = swayed(v.pos + place.offset.xyz, v.normal, v.wind);
+    let pos = swayed(v.pos + place.offset.xyz, v.wind);
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
@@ -929,7 +933,7 @@ fn fs_map_shadow(i: MapOut) {
 @vertex
 fn vs_map_shadow(v: MapIn) -> MapOut {
     var o: MapOut;
-    let pos = swayed(v.pos + place.offset.xyz, v.normal, v.wind);
+    let pos = swayed(v.pos + place.offset.xyz, v.wind);
     o.clip = g.light_view_proj * vec4<f32>(pos, 1.0);
     o.uv = v.uv;
     o.normal = v.normal;
@@ -964,7 +968,7 @@ fn skin(v: SkinIn) -> mat4x4<f32> {
 fn vs_skinned(v: SkinIn) -> MapOut {
     let m = skin(v);
     let n = normalize((m * vec4<f32>(v.normal, 0.0)).xyz);
-    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, n, v.wind);
+    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, v.wind);
     var o: MapOut;
     o.clip = g.view_proj * vec4<f32>(p, 1.0);
     o.uv = v.uv;
@@ -979,7 +983,7 @@ fn vs_skinned(v: SkinIn) -> MapOut {
 @vertex
 fn vs_skinned_shadow(v: SkinIn) -> MapOut {
     let m = skin(v);
-    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, normalize((m * vec4<f32>(v.normal, 0.0)).xyz), v.wind);
+    let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, v.wind);
     var o: MapOut;
     o.clip = g.light_view_proj * vec4<f32>(p, 1.0);
     o.uv = v.uv;

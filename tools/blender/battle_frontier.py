@@ -651,12 +651,11 @@ def _islands(me):
     return [find(i) for i in range(len(me.vertices))]
 
 
-def paint_wind(o, along, sway=1.0, flutter=0.0, seed=1, keep=None):
-    """Paints `o` for the wind (its "wind" layer, made if it has none): a vertex sways
-    `sway` and flutters `flutter` times how far `along` it is (a function of the vertex's
-    place in the world, 0 rooted to 1 free; the sway rising more slowly at first), each loose
-    part in its own phase. `keep`: which vertices keep the paint they had (a function of the
-    vertex's index), else every one is painted."""
+def paint_wind_each(o, weigh, keep=None):
+    """Paints `o` for the wind (its "wind" layer, made if it has none) with what `weigh` says
+    of each vertex: (sway, flutter, phase), each 0 to 1, from the vertex's index. Every corner
+    of a vertex gets the same, so the faces meeting there move as one. `keep`: which vertices
+    keep the paint they had (a function of the vertex's index), else every one is painted."""
     me = o.data
     layers = colour_layers(me)
     layer = layers.get(WIND)
@@ -666,22 +665,39 @@ def paint_wind(o, along, sway=1.0, flutter=0.0, seed=1, keep=None):
         layer.data.foreach_set("color", [0.0, 0.0, 0.0, 1.0] * len(layer.data))
     before = [0.0] * (len(me.loops) * 4)
     layer.data.foreach_get("color", before)
-    part = _islands(me)
-    rng = random.Random(seed * 7919 + len(me.vertices))
-    phases = {}
+    weights = {}
     colours = []
     for i, loop in enumerate(me.loops):
         v = loop.vertex_index
         if keep and keep(v):
             colours.extend(before[i * 4:i * 4 + 4])
             continue
+        if v not in weights:
+            weights[v] = tuple(weigh(v))
+        colours.extend((*weights[v], 1.0))
+    layer.data.foreach_set("color", colours)
+    return layer
+
+
+def paint_wind(o, along, sway=1.0, flutter=0.0, seed=1, keep=None):
+    """Paints `o` for the wind (its "wind" layer, made if it has none): a vertex sways
+    `sway` and flutters `flutter` times how far `along` it is (a function of the vertex's
+    place in the world, 0 rooted to 1 free; the sway rising more slowly at first), each loose
+    part in its own phase. `keep`: which vertices keep the paint they had (a function of the
+    vertex's index), else every one is painted."""
+    me = o.data
+    part = _islands(me)
+    rng = random.Random(seed * 7919 + len(me.vertices))
+    phases = {}
+
+    def weigh(v):
         k = part[v]
         if k not in phases:
             phases[k] = rng.random()
         a = max(0.0, min(1.0, along(o.matrix_world @ me.vertices[v].co)))
-        colours.extend((sway * a ** 1.5, flutter * a, phases[k], 1.0))
-    layer.data.foreach_set("color", colours)
-    return layer
+        return (sway * a ** 1.5, flutter * a, phases[k])
+
+    return paint_wind_each(o, weigh, keep)
 
 
 def paint_wind_by_height(objects, flutter=0.0, sway=1.0):

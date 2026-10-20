@@ -566,6 +566,65 @@ if back and all("wind" in o.data.vertex_colors for o in back):
     check("    as it was painted", max(tops) > 0.98, f"{tops}")
 clear()
 
+# 5e2. a plant painted as one (kit.plant_wind; requests.md, "The wind"): a stalk with a leaf on
+# its tip and a leaf on the ground beside it, both made thick. One time for all of it (its
+# leaves lean together); the sway rising over the whole plant, so the leaf's foot sways as its
+# stalk's tip does; each leaf fluttering from its own foot to its far end, the stalk never
+translation = __import__("mathutils").Matrix.Translation
+
+
+def thick_leaves(bm):
+    for at, size in (((0.1, 0.0, 0.4), 0.1), ((-0.3, 0.0, 0.02), 0.08)):
+        grid = bmesh.ops.create_grid(bm, x_segments=4, y_segments=2, size=size, matrix=translation(at))
+        bmesh.ops.solidify(bm, geom=[f for f in bm.faces if all(v in grid["verts"] for v in f.verts)], thickness=0.02)
+
+
+stalk = solid("plant stalk", lambda bm: bmesh.ops.create_cone(bm, cap_ends=True, segments=6, radius1=0.02, radius2=0.015, depth=0.4, matrix=translation((0, 0, 0.2))), colour=(0.3, 0.5, 0.2, 1))
+plant = solid("plant leaves", thick_leaves, colour=(0.4, 0.7, 0.3, 1))
+kit.plant_wind([plant, stalk], root=(0, 0, 0), sway=0.4, flutter=0.5, stems=[stalk])
+
+
+def paint_of(o):
+    layer = o.data.vertex_colors["wind"]
+    out = {}
+    for p in o.data.polygons:
+        for i, v in zip(p.loop_indices, p.vertices):
+            out.setdefault(v, set()).add(tuple(round(c, 4) for c in layer.data[i].color[:3]))
+    return out
+
+
+if all(o.data.vertex_colors.get("wind") for o in (plant, stalk)):
+    leaf_paint, stalk_paint = paint_of(plant), paint_of(stalk)
+    one = {c[2] for paints in (leaf_paint, stalk_paint) for cs in paints.values() for c in cs}
+    corners_agree = all(len(cs) == 1 for paints in (leaf_paint, stalk_paint) for cs in paints.values())
+    check("a plant painted as one: one time for all of it, every corner of a vertex the same", len(one) == 1 and corners_agree, f"{len(one)} phases")
+    # (the paint is kept in steps of 1/255)
+    near = lambda a, b: abs(a - b) < 0.005  # noqa: E731
+    paint = lambda paints, v: next(iter(paints[v]))  # noqa: E731
+    places = [(o.data.vertices[v].co, paint(paints, v)) for o, paints in ((plant, leaf_paint), (stalk, stalk_paint)) for v in paints]
+    reach = max(co.length for co, _ in places)
+    off = [(co[:], c) for co, c in places if not near(c[0], 0.4 * (co.length / reach) ** 1.5)]
+    check("  swaying by one measure over the whole plant (a leaf as its stalk, as far out), from its root to its farthest", not off, f"{len(off)} off, e.g. {off[:2]}")
+    # each leaf's foot: where the stalk's tip (its end furthest from the root) holds it, else its
+    # point nearest the root
+    pieces = bf._islands(plant.data)
+    tip = max((v.co for v in stalk.data.vertices), key=lambda co: co.length)
+    foot, far = {}, {}
+    for v in leaf_paint:
+        co, k = plant.data.vertices[v].co, pieces[v]
+        held = lambda c: (c - tip).length < kit.HELD  # noqa: E731
+        if k not in foot or (held(co) and (not held(foot[k]) or (co - tip).length < (foot[k] - tip).length)) or (not held(foot[k]) and not held(co) and co.length < foot[k].length):
+            foot[k] = co
+    feet = sorted(foot.values(), key=lambda f: f.z)
+    check("  the leaf on the stalk held at the stalk's tip, the other at its point nearest the root", len(feet) == 2 and feet[0].z < 0.05 and (feet[1] - tip).length < kit.HELD, f"{[f[:] for f in feet]}")
+    for v in leaf_paint:
+        far[pieces[v]] = max(far.get(pieces[v], 0.0), (plant.data.vertices[v].co - foot[pieces[v]]).length)
+    wrong = [v for v in leaf_paint if not near(paint(leaf_paint, v)[1], 0.5 * (plant.data.vertices[v].co - foot[pieces[v]]).length / far[pieces[v]])]
+    check("  each leaf fluttering from its own foot to its far end, the stalk never", len(foot) == 2 and not wrong and all(paint(stalk_paint, v)[1] == 0.0 for v in stalk_paint), f"{len(foot)} leaves, {len(wrong)} off")
+else:
+    check("a plant painted as one", False, "no wind layer")
+clear()
+
 # 5f. a tree: its cells are its foot's, up to a character's height, the crown spreading over the cells
 # round it (walked under) left out; it stands on its trunk's middle, the crown where it was beside it
 Matrix = __import__("mathutils").Matrix

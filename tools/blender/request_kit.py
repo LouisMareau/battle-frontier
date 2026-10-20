@@ -897,8 +897,9 @@ def wind(obj, sway=1.0, flutter=0.0, root=None, seed=1):
     """Paints a part for the wind (its "wind" colour layer, which the game reads: R sway,
     G flutter, B phase): swaying up to `sway` and fluttering up to `flutter` the
     further a point is from `root` (a point in the world; by default the part's lowest),
-    rooted there, each loose piece in its own time. For what the wind moves: hair, leaves,
-    petals, a cloth, a tail's tuft (fur paints itself). Paint it once the part is fitted."""
+    rooted there, each loose piece in its own time. For what the wind moves apart: hair,
+    a mane's locks, a cloth, a tail's tuft, flowers on stems of their own (fur paints itself).
+    A plant's leaves, which touch and overlap: `plant_wind`. Paint it once the part is fitted."""
     me = obj.data
     pts = [obj.matrix_world @ v.co for v in me.vertices]
     if not pts:
@@ -913,6 +914,72 @@ def wind(obj, sway=1.0, flutter=0.0, root=None, seed=1):
         along = lambda p: (p - r).length / max(far, 1e-6)  # noqa: E731
     bf.paint_wind(obj, along, sway, flutter, seed)
     return obj
+
+
+# how near a stem's tip a leaf's point is to be held there (cells): its foot, for `plant_wind`
+HELD = 0.03
+
+
+def plant_wind(parts, root=(0.0, 0.0, 0.0), sway=0.35, flutter=0.5, stems=(), seed=1):
+    """Paints a plant's parts for the wind as ONE plant (a bush, a rosette, a mound, a
+    creeper, a tuft of broad leaves, a tree's crown): all of it in one time, so its leaves
+    lean together, never through each other; swaying from `root` (its foot, in the world) the
+    further out a point is over the whole plant, so a leaf and the stalk it grows on bend as
+    one; each leaf (each loose piece) fluttering from its own foot out to its far end, up to
+    `flutter`: where a stem ends on it (within `HELD` of a stem's tip, its end furthest from the
+    root), else its point nearest the root, so it stays on its stalk (a stalk only passing under
+    it doesn't hold it); the parts in `stems` (stalks, stems, twigs) swaying but never
+    fluttering. Leave out what stays still (a crown it grows from, the soil, stones). Paint it
+    once the parts are fitted; the variants each with their own call (`seed`: their own
+    time)."""
+    import random
+    from mathutils.kdtree import KDTree
+    meshes = [o for o in parts if o.type == "MESH" and o.data.vertices]
+    if not meshes:
+        return 0
+    r = Vector(root)
+    places = {o.name: [o.matrix_world @ v.co for v in o.data.vertices] for o in meshes}
+    reach = max(max((p - r).length for p in pts) for pts in places.values())
+    phase = random.Random(seed * 7919 + 17).random()
+    still = {o.name for o in stems}
+    # the stems' tips: each stem's point furthest from the root, where its leaf is
+    tips = {}
+    for o in meshes:
+        if o.name in still:
+            for p, k in zip(places[o.name], bf._islands(o.data)):
+                if (o.name, k) not in tips or (p - r).length > (tips[(o.name, k)] - r).length:
+                    tips[(o.name, k)] = p
+    held = list(tips.values())
+    tree = KDTree(len(held))
+    for i, p in enumerate(held):
+        tree.insert(p, i)
+    tree.balance()
+    for o in meshes:
+        pts = places[o.name]
+        piece = bf._islands(o.data)
+        # each piece's foot: where a stem ends on it, else its point nearest the root
+        nearest, foot, far = {}, {}, {}
+        for p, k in zip(pts, piece):
+            gap = tree.find(p)[2] if held and o.name not in still else None
+            if gap is not None and gap < nearest.get(k, (HELD, None))[0]:
+                nearest[k] = (gap, p)
+        for p, k in zip(pts, piece):
+            if k in nearest:
+                foot[k] = nearest[k][1]
+            elif k not in foot or (p - r).length < (foot[k] - r).length:
+                foot[k] = p
+        for p, k in zip(pts, piece):
+            far[k] = max(far.get(k, 0.0), (p - foot[k]).length)
+        flutters = 0.0 if o.name in still else flutter
+
+        def weigh(v, pts=pts, piece=piece, foot=foot, far=far, flutters=flutters):
+            p, k = pts[v], piece[v]
+            a = min(1.0, (p - r).length / max(reach, 1e-6))
+            b = min(1.0, (p - foot[k]).length / max(far[k], 1e-6))
+            return (sway * a ** 1.5, flutters * b, phase)
+
+        bf.paint_wind_each(o, weigh)
+    return len(meshes)
 
 
 def fit(objects, height):

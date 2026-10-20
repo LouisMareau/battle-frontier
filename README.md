@@ -239,9 +239,11 @@ maps).
   a model's "wind" colour layer (see Blender: R sway, G flutter, B phase), a
   stand-in's `wind` (its `sway` and `flutter`, rising with height: the asset inspector's
   Wind sliders; the trees, bushes and flowers that come with it have one), the tall grass.
-  It leans downwind, sways about that and flutters, the taller the further, in gusts that go
-  by in broad patches (a wood moves as one, a wave going through it), shadows included, on
-  the GPU (`swayed` in the vertex shaders). The water ripples and rolls with it, and the
+  It leans downwind, sways about that and flutters (up and down and across the wind, never
+  by the way a point faces: the faces meeting at a mesh's edges, as round a leaf made thick,
+  move as one), the taller the further, in gusts that go by in broad patches (a wood moves as
+  one, a wave going through it), shadows included, on the GPU (`swayed` in the vertex
+  shaders). The water ripples and rolls with it, and the
   clouds' shadows drift its way. How far each of these has gone is added up frame by frame,
   so a change of wind (its way, its strength) turns them smoothly, nothing jumping.
 - **Abilities** (`moves`) hold what an ability does in battle, its level-ups, what it
@@ -764,8 +766,11 @@ poses it, the renderer skins it, shadows included); a camera never goes into a m
 game has its own. What the wind moves is painted for it in Vertex Paint, on a colour layer
 named "wind": its R how far a point sways (0 at a stem's or a trunk's foot, where hair grows;
 1 at the tips), its G how much it flutters (leaves, petals, fur, a cloth's edge), its B its
-phase (different values on different leaves or tufts, so they don't move together); the
-game adds how high the point stands, so taller things bend further. The add-on's "Wind
+phase: when it sways (one for a whole plant, its leaves leaning together, never through each
+other, and only fluttering apart; different values for what moves apart, tufts of hair, a
+flag); the game adds how high the point stands, so taller things bend further, and where it
+is. What's joined is painted the same where it's joined (a leaf where its stalk ends on it),
+or it parts as it moves; the model kit's `plant_wind` paints a plant so. The add-on's "Wind
 paint from height" starts one (the sway rising from the foot, a phase for each loose part);
 Add to the project writes it as the model's second colour layer and marks it (`bf_wind`),
 which the engine reads (`export-glb check` says "painted for the wind") and the import gives
