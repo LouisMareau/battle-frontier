@@ -187,9 +187,10 @@ outer corner over a ramp comes down square onto it rather than cut round). A **j
 the cell between, whatever's there (a ditch, a stream, a fence); its ends are on one level,
 neither on water, on a ramp nor under a building, and each pair once (the content check says
 so). Each end it's jumped from has a little ramp of its own ground poking out of its edge
-towards the other: rising from flush with its top to a lip, its terrain on top (grass on
-grass, dirt on dirt), rock under its lip and down its sides where the ground falls away, as
-the cell's own edge is.
+towards the other, in the style of the cell's own edges: its top one slope from flush with
+the cell's top up to its lip, a bevel round it at 45 degrees (its corners mitred), straight
+down from there as a cliff goes; its terrain on top (grass on grass, dirt on dirt), rock
+showing down its bevel and its sides as it stands taller above the ground.
 
 A map is 2048 cells a side at most (a cell is about a metre: two kilometres); past 256 a side,
 it's kept in **chunk files** (the editor switches to them, and the content check says so of a
