@@ -994,42 +994,115 @@ pub fn grown(tufts: &[Tuft], content: &Content, models: &Models) -> Scene {
 }
 
 /// A jump's little ramp (cells): how far in from its cell's edge it starts, how far past the
-/// edge its lip pokes out, half its width, how high its lip is and how far below the ground
-/// it goes down.
-const KICK_BACK: f32 = 0.3;
+/// edge its lip pokes out, half its width along its top (its sides curve down another
+/// `KICK_SKIRT` out), how high its lip is above the cell's level, and how far below the level
+/// its sides come down at most (where the ground falls away under them, rock below).
+const KICK_BACK: f32 = 0.36;
 const KICK_OUT: f32 = 0.12;
-const KICK_HALF: f32 = 0.19;
+const KICK_HALF: f32 = 0.14;
+const KICK_SKIRT: f32 = 0.1;
 const KICK_RISE: f32 = 0.12;
-const KICK_UNDER: f32 = 0.05;
+const KICK_DIP: f32 = 0.05;
+/// How finely it's made: points across it and along it, less one.
+const KICK_STEPS: usize = 8;
 
-/// A jump's little ramp at the edge of the cell it's jumped from (its top `y`): a wedge
-/// rising the way `d` towards the other end, from on the cell's top to a lip poking out past
-/// its edge, a cliff face's stuff (`uv`: the cell's centre).
-fn kicker(m: &mut Mesh, x: i32, z: i32, y: f32, d: (i32, i32), uv: [f32; 2]) {
+/// A jump's little ramp at the edge of the cell it's jumped from (its level's height `y`, its
+/// top's bevels `e`): a tongue of the cell's own ground rising the way `d` towards the other
+/// end, from flush with the top to a lip poking out past the edge, its sides curving down to
+/// the ground (no further than `KICK_DIP` below the level); painted as the top is, its
+/// terrain. Where the ground falls away under it (down the bevel, past the edge) it's closed
+/// as the cell's own edge is, rock below its top's edge: its cheeks, the lip's end and, past
+/// the edge, under it. A hair above the ground, all of it, so the two never fight where they
+/// meet.
+fn kicker(m: &mut Mesh, e: &Edges, x: i32, z: i32, y: f32, d: (i32, i32), uv: [f32; 2]) {
     let f = Vec3::new(d.0 as f32, 0.0, d.1 as f32);
     let s = Vec3::new(-f.z, 0.0, f.x);
     let edge = Vec3::new(x as f32 + 0.5, 0.0, z as f32 + 0.5) + f * 0.5;
-    let (back, tip, half) = (edge - f * KICK_BACK, edge + f * KICK_OUT, KICK_HALF);
-    let (low, rise, under) = (y + 0.004, y + KICK_RISE, y - KICK_UNDER);
-    let at = |p: Vec3, h: f32| Vec3::new(p.x, h, p.z);
-    let (bl, br, tl, tr) = (at(back - s * half, low), at(back + s * half, low), at(tip - s * half, rise), at(tip + s * half, rise));
-    let (tlu, tru, blu, bru) = (at(tip - s * half, under), at(tip + s * half, under), at(back - s * half, under), at(back + s * half, under));
-    // each face lit as it faces (its corners in turn round it)
-    let mut face = |c: [Vec3; 4], out: Vec3, shade: f32| {
-        let n = (c[1] - c[0]).cross(c[2] - c[0]).normalize_or(out);
-        let (c, n) = if n.dot(out) < 0.0 { ([c[0], c[3], c[2], c[1]], -n) } else { (c, n) };
-        let i = m.vertices.len() as u32;
-        for p in c {
-            m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [shade, shade, shade, 1.0], toon: 0.0, wind: [0; 4] });
+    let wide = KICK_HALF + KICK_SKIRT;
+    let n = KICK_STEPS;
+    let lift = Vec3::Y * 0.004;
+    // the top under a point (past the edge, as at the edge)
+    let ground = |p: Vec3| y + e.height((p.x - x as f32).clamp(0.0, 1.0), (p.z - z as f32).clamp(0.0, 1.0));
+    // what's under it past the edge: a little below the edge's foot
+    let under = ground(edge) - 0.1;
+    let along = |j: usize| -KICK_BACK + (KICK_BACK + KICK_OUT) * j as f32 / n as f32;
+    let ease = |t: f32| t * t * (3.0 - 2.0 * t);
+    // its top, row by row from the back to the lip, each from one side to the other
+    let mut at = Vec::with_capacity((n + 1) * (n + 1));
+    for j in 0..=n {
+        let t = j as f32 / n as f32;
+        // rising slowly at first, then more steeply up to the lip
+        let rise = KICK_RISE * t * t;
+        for i in 0..=n {
+            let across = (i as f32 / n as f32 * 2.0 - 1.0) * wide;
+            let p = edge + f * along(j) + s * across;
+            let g = ground(p).max(y - KICK_DIP);
+            let held = 1.0 - ease(((across.abs() - KICK_HALF) / KICK_SKIRT).clamp(0.0, 1.0));
+            at.push(Vec3::new(p.x, g + (y + rise - g) * held, p.z));
         }
-        m.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+    }
+    let k = |i: usize, j: usize| j * (n + 1) + i;
+    let first = m.vertices.len() as u32;
+    let rock_of = |p: Vec3| ((y - p.y) / CHAMFER).clamp(0.0, 1.0);
+    for j in 0..=n {
+        for i in 0..=n {
+            // the way it faces, from its neighbours either way
+            let (i0, i1, j0, j1) = (i.saturating_sub(1), (i + 1).min(n), j.saturating_sub(1), (j + 1).min(n));
+            let normal = (at[k(i0, j)] - at[k(i1, j)]).cross(at[k(i, j1)] - at[k(i, j0)]).normalize_or(Vec3::Y);
+            let normal = if normal.y < 0.0 { -normal } else { normal };
+            let p = at[k(i, j)];
+            m.vertices.push(Vertex { pos: (p + lift).to_array(), normal: normal.to_array(), uv, color: [1.0, 1.0, 1.0, rock_of(p)], toon: 0.0, wind: [0; 4] });
+        }
+    }
+    let row = n as u32 + 1;
+    for j in 0..n as u32 {
+        for i in 0..n as u32 {
+            let (a, b) = (first + j * row + i, first + (j + 1) * row + i);
+            m.indices.extend_from_slice(&[a, b, b + 1, a, b + 1, a + 1]);
+        }
+    }
+    // faces down from an edge of the top: a strip of quads from each of its points down to its
+    // foot, painted as the top at the top (where little of it shows above the ground, as the
+    // ground), rock below, as a cliff's top edge is
+    let strip = |m: &mut Mesh, tops: &[(Vec3, f32)], normal: Vec3| {
+        let start = m.vertices.len() as u32;
+        for &(p, foot) in tops {
+            for (q, rock) in [(p + lift, rock_of(p)), (Vec3::new(p.x, foot, p.z), 1.0)] {
+                m.vertices.push(Vertex { pos: q.to_array(), normal: normal.to_array(), uv, color: [1.0, 1.0, 1.0, rock], toon: 0.0, wind: [0; 4] });
+            }
+        }
+        for i in 0..tops.len() as u32 - 1 {
+            let (a, b) = (start + i * 2, start + i * 2 + 2);
+            m.indices.extend_from_slice(&[a, a + 1, b + 1, a, b + 1, b]);
+        }
     };
-    let slope = (Vec3::Y * (KICK_BACK + KICK_OUT) - f * KICK_RISE).normalize();
-    face([bl, tl, tr, br], slope, 0.95);
-    face([tl, tlu, tru, tr], f, 0.8);
-    face([bl, blu, tlu, tl], -s, 0.72);
-    face([br, tr, tru, bru], s, 0.72);
-    face([blu, bru, tru, tlu], -Vec3::Y, 0.6);
+    // the lip's end, down to under it
+    let end: Vec<(Vec3, f32)> = (0..=n).map(|i| (at[k(i, n)], under)).collect();
+    strip(m, &end, f);
+    // its cheeks where the ground falls away from under its sides: down into the ground (past
+    // the edge, to under it); none where its sides are on the ground
+    for (side, out) in [(0, -s), (n, s)] {
+        let cheek: Vec<(Vec3, f32)> = (0..=n)
+            .map(|j| {
+                let p = at[k(side, j)];
+                let foot = if along(j) >= 0.0 {
+                    under
+                } else if ground(p) >= p.y - 1e-3 {
+                    p.y + lift.y
+                } else {
+                    ground(p) - 0.05
+                };
+                (p, foot)
+            })
+            .collect();
+        strip(m, &cheek, out);
+    }
+    // under it past the edge
+    let base = m.vertices.len() as u32;
+    for p in [edge - s * wide, edge + s * wide, edge + f * KICK_OUT + s * wide, edge + f * KICK_OUT - s * wide] {
+        m.vertices.push(Vertex { pos: [p.x, under, p.z], normal: [0.0, -1.0, 0.0], uv, color: [1.0, 1.0, 1.0, 1.0], toon: 0.0, wind: [0; 4] });
+    }
+    m.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
 }
 
 /// The cell tops, the cliff faces and the tall grass of a region's cells. Every edge of a
@@ -1170,9 +1243,10 @@ pub fn ground_region_grown(map: &WorldMap, content: &Content, level_height: f32,
             }
         }
         cell_top(&mut tops, fx, fz, y, &e);
-        // a jump jumped from here: its little ramp at the edge towards the other end
+        // a jump jumped from here: its little ramp at the edge towards the other end, of the
+        // top's own ground
         for j in map.jumps.iter().filter(|j| j.from_cell([x, z]).is_some()) {
-            kicker(&mut cliffs, x, z, y, j.way_from([x, z]), uv);
+            kicker(&mut tops, &e, x, z, y, j.way_from([x, z]), uv);
         }
         // a face on each side that steps down, sampled where the rims either side bend; it
         // stops short of a rounded corner
@@ -1801,24 +1875,13 @@ mod jump_tests {
         (map, c)
     }
 
-    fn cliffs(map: &WorldMap, c: &Content) -> Mesh {
-        ground_region(map, c, 2.0, whole(map), &Alone).1
+    fn tops(map: &WorldMap, c: &Content) -> Mesh {
+        ground_region(map, c, 2.0, whole(map), &Alone).0
     }
 
-    /// Hundredths of a cell.
-    fn cents(v: f32) -> i32 {
-        (v * 100.0).round() as i32
-    }
-
-    /// Where the cliffs' mesh rises above the ground on level 1: the little ramps' lips (x, z
-    /// in hundredths, each once) and how high.
-    fn lips(map: &WorldMap, c: &Content) -> (Vec<(i32, i32)>, Vec<f32>) {
-        let up: Vec<Vec3> = cliffs(map, c).vertices.iter().map(|v| Vec3::from(v.pos)).filter(|p| p.y > 2.0 + KICK_RISE / 2.0).collect();
-        let mut at: Vec<(i32, i32)> = up.iter().map(|p| (cents(p.x), cents(p.z))).collect();
-        at.sort();
-        at.dedup();
-        (at, up.iter().map(|p| p.y).collect())
-    }
+    /// A little ramp's points: its top; its lip's end and its two cheeks (two rows each);
+    /// under it past the edge.
+    const POINTS: usize = (KICK_STEPS + 1) * (KICK_STEPS + 1) + 3 * 2 * (KICK_STEPS + 1) + 4;
 
     /// The little ramp's vertices: the ones `with` has that `plain` hasn't (pushed one after
     /// another where the cell's own go).
@@ -1828,55 +1891,92 @@ mod jump_tests {
         with.vertices[k..k + n].to_vec()
     }
 
-    #[test]
-    fn a_jump_s_ends_have_little_ramps_poking_out_towards_each_other() {
-        let (mut map, c) = pit();
-        assert!(lips(&map, &c).0.is_empty(), "nothing rises above the ground without a jump");
-        let plain = cliffs(&map, &c);
-        // over the pit from 2, 3 to 4, 3: a little ramp at each end's edge, its lip poking out
-        // over the pit towards the other end, narrower than the cell, a little up
-        map.jumps.push(Jump { from: [2, 3], to: [4, 3], one_way: false });
-        assert_eq!(cliffs(&map, &c).vertices.len() - plain.vertices.len(), 40, "two little ramps of five faces");
-        let (near, far, a, b) = (cents(3.0 + KICK_OUT), cents(4.0 - KICK_OUT), cents(3.5 - KICK_HALF), cents(3.5 + KICK_HALF));
-        let (at, high) = lips(&map, &c);
-        assert_eq!(at, [(near, a), (near, b), (far, a), (far, b)], "each just past its own cell's edge, over the cell between");
-        assert!(high.iter().all(|y| (y - 2.0 - KICK_RISE).abs() < 1e-4), "{high:?}");
-        // one way: at the end it's jumped from only
-        map.jumps[0].one_way = true;
-        assert_eq!(cliffs(&map, &c).vertices.len() - plain.vertices.len(), 20);
-        assert_eq!(lips(&map, &c).0, [(near, a), (near, b)]);
-        // along z, the other way round: its lip past the north edge of 3, 4
-        map.jumps[0] = Jump { from: [3, 4], to: [3, 2], one_way: true };
-        assert_eq!(lips(&map, &c).0, [(a, far), (b, far)]);
+    /// The highest points of the ground: the little ramps' lips.
+    fn lips(map: &WorldMap, c: &Content) -> Vec<Vec3> {
+        tops(map, c).vertices.iter().map(|v| Vec3::from(v.pos)).filter(|p| p.y > 2.0 + KICK_RISE).collect()
     }
 
     #[test]
-    fn a_little_ramp_rises_from_on_its_cell_and_its_faces_face_out() {
+    fn a_jump_s_ends_have_little_ramps_poking_out_towards_each_other() {
         let (mut map, c) = pit();
-        let plain = cliffs(&map, &c);
+        let plain = tops(&map, &c);
+        assert!(lips(&map, &c).is_empty(), "nothing rises above the ground without a jump");
+        // over the pit from 2, 3 to 4, 3: a little ramp at each end's edge, its lip poking out
+        // over the pit towards the other end, narrower than the cell, a little up
+        map.jumps.push(Jump { from: [2, 3], to: [4, 3], one_way: false });
+        assert_eq!(tops(&map, &c).vertices.len() - plain.vertices.len(), 2 * POINTS);
+        let on = |p: &Vec3, x: f32| (p.x - x).abs() < 1e-4 && (p.z - 3.5).abs() <= KICK_HALF + 1e-4;
+        let both = lips(&map, &c);
+        assert!(both.iter().all(|p| on(p, 3.0 + KICK_OUT) || on(p, 4.0 - KICK_OUT)), "{both:?}");
+        assert!(both.iter().any(|p| on(p, 3.0 + KICK_OUT)) && both.iter().any(|p| on(p, 4.0 - KICK_OUT)), "{both:?}");
+        // one way: at the end it's jumped from only
+        map.jumps[0].one_way = true;
+        assert_eq!(tops(&map, &c).vertices.len() - plain.vertices.len(), POINTS);
+        assert!(lips(&map, &c).iter().all(|p| on(p, 3.0 + KICK_OUT)));
+        // along z, the other way round: its lip past the north edge of 3, 4
+        map.jumps[0] = Jump { from: [3, 4], to: [3, 2], one_way: true };
+        let north = lips(&map, &c);
+        assert!(!north.is_empty() && north.iter().all(|p| (p.z - (4.0 - KICK_OUT)).abs() < 1e-4 && (p.x - 3.5).abs() <= KICK_HALF + 1e-4), "{north:?}");
+    }
+
+    #[test]
+    fn a_little_ramp_grows_out_of_its_cell_s_top_painted_as_the_top_is() {
+        let (mut map, c) = pit();
+        let plain = tops(&map, &c);
         map.jumps.push(Jump { from: [2, 3], to: [4, 3], one_way: true });
-        let ramp = added(&plain, &cliffs(&map, &c));
-        assert_eq!(ramp.len(), 20);
-        let at: Vec<Vec3> = ramp.iter().map(|v| Vec3::from(v.pos)).collect();
-        // from on the cell's top (a little in from its edge) out past it, its lip a little up,
-        // a little of it under the ground
-        let (lo, hi) = at.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
-        assert!((lo.x - (3.0 - KICK_BACK)).abs() < 1e-4 && (hi.x - (3.0 + KICK_OUT)).abs() < 1e-4, "{lo} {hi}");
-        assert!((lo.y - (2.0 - KICK_UNDER)).abs() < 1e-4 && (hi.y - (2.0 + KICK_RISE)).abs() < 1e-4, "{lo} {hi}");
-        // its top rises towards the other end: its back on the ground, its lip up
-        let top: Vec<Vec3> = ramp.iter().filter(|v| v.normal[1] > 0.5).map(|v| Vec3::from(v.pos)).collect();
-        assert_eq!(top.len(), 4);
-        for p in &top {
-            let rise = if p.x > 3.0 { 2.0 + KICK_RISE } else { 2.004 };
-            assert!((p.y - rise).abs() < 1e-4, "{p}");
+        let ramp = added(&plain, &tops(&map, &c));
+        assert_eq!(ramp.len(), POINTS);
+        let n = KICK_STEPS + 1;
+        let (top, rest) = ramp.split_at(n * n);
+        let (end, rest) = rest.split_at(2 * n);
+        let (cheeks, under) = rest.split_at(4 * n);
+        let at = |v: &Vertex| Vec3::from(v.pos);
+        // its cell's ground (the terrain of the cell whose middle its uv is)
+        assert!(ramp.iter().all(|v| v.uv == [2.5, 3.5]));
+        // flush with the top at its back, all the way across (a hair above it)
+        for v in &top[..n] {
+            assert!((at(v).y - 2.004).abs() < 1e-4 && (at(v).x - (3.0 - KICK_BACK)).abs() < 1e-4, "{}", at(v));
         }
-        // each face looks out of it
-        let middle = at.iter().sum::<Vec3>() / at.len() as f32;
-        for quad in ramp.chunks(4) {
-            let centre = quad.iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / 4.0;
-            let n = Vec3::from(quad[0].normal);
-            assert!(n.dot(centre - middle) > 0.0, "a face looking in: {n} at {centre}");
-            assert!(quad.iter().all(|v| v.normal == quad[0].normal), "one normal a face");
+        // its middle rising all the way to the lip: the terrain, no rock, facing up
+        let middle: Vec<&Vertex> = (0..n).map(|j| &top[j * n + n / 2]).collect();
+        assert!(middle.windows(2).all(|w| at(w[1]).y > at(w[0]).y));
+        assert!(middle.iter().all(|v| v.color[3] == 0.0 && v.normal[1] > 0.5));
+        assert!((at(middle[n - 1]).y - (2.004 + KICK_RISE)).abs() < 1e-4);
+        // its sides on the ground as the top is there (level, then down the bevel towards the
+        // pit), never further than a little below the level, as rocky as a bevel is so far down
+        let drop = |p: Vec3| (CHAMFER - (1.0 - (p.x - 2.0).clamp(0.0, 1.0))).clamp(0.0, CHAMFER);
+        for j in 0..n {
+            for side in [0, n - 1] {
+                let v = &top[j * n + side];
+                let p = at(v);
+                let down = drop(p).min(KICK_DIP);
+                assert!((p.y - (2.004 - down)).abs() < 1e-4 && (v.color[3] - down / CHAMFER).abs() < 1e-4, "{p} {:?}", v.color);
+            }
         }
+        // where the ground falls away under it, rock closes it as the cell's edge is closed:
+        // the lip's end facing the other end, down past the bevel's foot
+        let foot = 2.0 - CHAMFER - 0.1;
+        let painted = |q: &[Vertex], top: &Vertex| q[0].color[3] == top.color[3] && q[1].color[3] == 1.0;
+        assert!(end.iter().all(|v| v.normal == [1.0, 0.0, 0.0]));
+        assert!(end.chunks(2).enumerate().all(|(i, q)| painted(q, &top[(n - 1) * n + i])), "its top's edge as its top, rock below");
+        assert!(end.chunks(2).all(|q| (at(&q[1]).y - foot).abs() < 1e-4 && (at(&q[0]).x - (3.0 + KICK_OUT)).abs() < 1e-4));
+        // its cheeks facing out either side, from its sides down into the ground where it falls
+        // away from under them (past the edge, to under it); none (nothing tall) on the ground
+        for ((side, out), column) in cheeks.chunks(2 * n).zip([-1.0, 1.0]).zip([0, n - 1]) {
+            for (j, q) in side.chunks(2).enumerate() {
+                let (p, low) = (at(&q[0]), at(&q[1]));
+                let below = if p.x >= 3.0 - 1e-4 {
+                    foot
+                } else if drop(p) <= KICK_DIP + 1e-5 {
+                    p.y
+                } else {
+                    2.0 - drop(p) - 0.05
+                };
+                assert!(q.iter().all(|v| v.normal == [0.0, 0.0, out]) && painted(q, &top[j * n + column]), "{:?} {:?}", q[0].normal, q[0].color);
+                assert!((low.y - below).abs() < 1e-4 && low.y <= p.y, "{p} {low}");
+            }
+        }
+        // and under it past the edge, facing down
+        assert!(under.len() == 4 && under.iter().all(|v| v.normal == [0.0, -1.0, 0.0] && (at(v).y - foot).abs() < 1e-4 && at(v).x >= 3.0 - 1e-4));
     }
 }

@@ -186,7 +186,10 @@ outer corner over a ramp comes down square onto it rather than cut round). A **j
 `one_way` when it's jumped from `from` only) takes the player from one end to the other over
 the cell between, whatever's there (a ditch, a stream, a fence); its ends are on one level,
 neither on water, on a ramp nor under a building, and each pair once (the content check says
-so). Each end it's jumped from has a little ramp poking out of its edge towards the other.
+so). Each end it's jumped from has a little ramp of its own ground poking out of its edge
+towards the other: rising from flush with its top to a lip, its terrain on top (grass on
+grass, dirt on dirt), rock under its lip and down its sides where the ground falls away, as
+the cell's own edge is.
 
 A map is 2048 cells a side at most (a cell is about a metre: two kilometres); past 256 a side,
 it's kept in **chunk files** (the editor switches to them, and the content check says so of a
