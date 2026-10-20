@@ -381,6 +381,8 @@ grass = mr.load(SCRATCH, "test_grass")
 asked = rc.prompt(grass)
 check("grass: it fills its cells to the edges, fitted to them, a grass prop", "grass filling 2 x 1 cells to the edges, 0.4 cells tall" in asked
       and "kit.fit_cells(parts, (2, 1), job.height) in place of kit.fit" in asked and 'kit.finish\'s category "grass", never blocking the way' in asked, asked[:1800])
+check("  light enough to grow over whole fields: its most vertices, by its cells", f"at most {2 * mr.GRASS_MOST} vertices in all ({mr.GRASS_MOST} a cell" in asked
+      and "kit.finish refuses more" in asked and mr.GRASS_MOST == 1000, asked[:2400])
 check("  its variants made with it, two besides it, as the user says they differ, each a prop of its own",
       "Variants: make 2 besides it, each a prop of its own" in asked and "- its variants, 2 besides it" in asked
       and "they differ as the user says:\n    one taller\n    one yellower\n  model.py builds the model from a function" in asked

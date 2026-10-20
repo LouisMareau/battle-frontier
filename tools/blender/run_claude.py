@@ -40,7 +40,8 @@ change what the comments say, keeping the rest. Once it's done, the comments joi
 which the runs made again after that are told too.
 
 A request of grass fills its cells to their edges (request.json's "cells"), so copies side by
-side join without a gap. One whose settings ask for variants ("variants": how many besides it,
+side join without a gap, and is kept light enough to tile whole fields (model_requests'
+GRASS_MOST vertices a cell, the engine's own most). One whose settings ask for variants ("variants": how many besides it,
 "vary": how they differ; grass and environment) has them made with the model, each a prop of
 its own. Any request made can have variants made from its model later (the editor's "Make
 variants"): --variants has Claude start from what the last run made, keep the model itself, and
@@ -437,7 +438,10 @@ def settings_lines(record):
         out.append(f"Grass: it fills {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, as a tile does (requests.md, \"Grass\"): fit it with "
                    f"kit.fit_cells(parts, ({w}, {d}), job.height) in place of kit.fit, so its bounds are exactly its cells; its blades (or "
                    "leaves) evenly dense right up to the borders, none past them, no bare margin and no soil or base showing at an edge: "
-                   "copies in the cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way.")
+                   "copies in the cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way. "
+                   f"Light: it's tiled over whole fields, so at most {mr.GRASS_MOST * w * d} vertices in all ({mr.GRASS_MOST} a cell, as the engine "
+                   "counts them in its .glb: flat faces and seams split vertices): fewer, simpler blades (a strip of 2 or 3 segments each) "
+                   "rather than many fine ones; kit.finish refuses more.")
     elif record["kind"] != "floor" and list(record["cells"]) != [1, 1]:
         # (a drawing outlined with its own cells: the ground it covers)
         w, d = record["cells"]

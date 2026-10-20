@@ -35,6 +35,7 @@ writes views.json, which run_request.py uses to lay the lines on the renders.
 """
 import json
 import math
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -1704,6 +1705,28 @@ def _fills(job, objects):
         print(f"the grass doesn't fill its cells: {hi.x - lo.x:.3f} x {hi.y - lo.y:.3f}, not {w} x {d} (kit.fit_cells fits it)", flush=True)
 
 
+def _weighed(job, pid, objects, facts):
+    """Grass too heavy to grow (more than mr.GRASS_MOST vertices a cell, as the engine counts
+    them in its .glb) refused before anything goes into the project: written to the run's own
+    folder first and counted there, then thrown away."""
+    if not job.grass:
+        return
+    w, d = job.cells
+    cells = f"{w} x {d} cell{'' if w * d == 1 else 's'}"
+    most = mr.GRASS_MOST * w * d
+    trial = job.dir / "weighed"
+    try:
+        glb, _, _, _ = bf.write_prop(bpy.context, str(trial), "temporary", pid, [o for o in objects if not bf.is_bounds(o)], facts)
+        n = mr.glb_vertices(glb)
+    finally:
+        shutil.rmtree(trial, ignore_errors=True)
+    if n > most:
+        raise ValueError(f"too heavy to grow: {n} vertices for its {cells}, at most {most} ({mr.GRASS_MOST} a cell, as the engine counts "
+                         "them in its .glb: flat faces and seams split vertices). Grass is tiled over whole fields: fewer blades or "
+                         "leaves, fewer segments each (a blade a strip of 2 or 3), nothing nobody sees; then finish again")
+    print(f"Light enough to grow: {n} vertices for its {cells} (at most {most})", flush=True)
+
+
 def finish_variant(job, k, objects, category=None, blocks=None, unstackable=False):
     """With `-- --finish`: variant `k` of the model (2 on: the model itself is the first) added
     to the project as a prop of its own (requests.md, "Variants"), as `finish` adds the model:
@@ -1719,6 +1742,7 @@ def finish_variant(job, k, objects, category=None, blocks=None, unstackable=Fals
     category, blocks = _facts(job, category, blocks)
     facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable}
     _fills(job, objects)
+    _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
     if pid not in job.variants_made:
         job.variants_made.append(pid)
@@ -1744,6 +1768,7 @@ def finish(job, objects, files, reply=None, category=None, blocks=None, unstacka
     category, blocks = _facts(job, category, blocks)
     facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable}
     _fills(job, objects)
+    _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
     other = "temporary" if space == "content" else "content"
     if (job.root / other / "data" / "props" / f"{pid}.json").is_file():

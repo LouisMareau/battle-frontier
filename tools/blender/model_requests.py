@@ -104,6 +104,10 @@ KINDS = ("creature", "prop", "grass", "environment", "floor")
 VARYING = ("grass", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
 VARIANTS_CAP = 12
+# grass is tiled over whole fields (the engine grows it through tall ground, one to a cell): the
+# most vertices it may have a cell, as the engine counts them (its .glb's: flat faces and seams
+# split vertices), the engine's world::mesh::GROWN_MOST; more and it doesn't grow
+GRASS_MOST = 1000
 STYLES = ("smooth", "low_poly", "accurate")
 POSES = ("t_pose", "as_is")
 # "unlimited" shapes stop at about this many
@@ -369,6 +373,16 @@ def finish(root, rid, prop, previews, reply=None, variant_props=None):
     if variant_props is not None:
         fields["variant_props"] = list(variant_props)
     return update(root, rid, **fields)
+
+
+def glb_vertices(path):
+    """A .glb's vertices as the engine reads them: each node's mesh, every primitive of it."""
+    data = Path(path).read_bytes()
+    size = int.from_bytes(data[12:16], "little")
+    gltf = json.loads(data[20:20 + size].decode("utf-8"))
+    accessors, meshes = gltf.get("accessors", []), gltf.get("meshes", [])
+    return sum(accessors[p["attributes"]["POSITION"]]["count"] for node in gltf.get("nodes", []) if "mesh" in node
+               for p in meshes[node["mesh"]]["primitives"] if "POSITION" in p.get("attributes", {}))
 
 
 def variant_id(record, k):

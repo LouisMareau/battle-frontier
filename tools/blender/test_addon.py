@@ -562,6 +562,27 @@ check("  the model a grass prop out of the way, filling its 2 x 1 cells; its var
       and not variant_record.get("blocks", False) and variant_record.get("footprint") == [2, 1], json.dumps([tuft_record, variant_record]))
 check("  the request done, its variant listed, its render with the model's", done["status"] == "done" and done["prop"] == "test_tuft" and done["variant_props"] == ["test_tuft_variant_2"]
       and done["previews"] == files, json.dumps({k: done[k] for k in ("status", "prop", "variant_props", "previews")}))
+check("  light enough to grow: its .glb's vertices within its cells' most", 0 < mr.glb_vertices(scratch / "temporary" / "assets" / "models" / "test_tuft.glb") <= 2 * mr.GRASS_MOST)
+clear()
+
+# grass too heavy to grow over a field (more than mr.GRASS_MOST vertices a cell, as the engine
+# counts them): refused, nothing written to the project, the request not done
+mr.new(scratch, "Heavy sod", [scratch / "critter.png"], kind="grass", height=0.3)
+job = kit.start(scratch / "private" / "requests" / "heavy_sod" / "model.py")
+job.finishing = True
+Matrix = __import__("mathutils").Matrix
+dense = solid("dense sod", lambda bm: [bmesh.ops.create_cone(bm, cap_ends=True, segments=32, radius1=0.04, radius2=0.0, depth=0.3,
+                                                             matrix=Matrix.Translation((-0.45 + 0.1 * (i % 10), -0.45 + 0.3 * (i // 10), 0.15))) for i in range(40)],
+              colour=(0.3, 0.6, 0.3, 1))
+kit.fit_cells([dense], job.cells, job.height)
+try:
+    kit.finish(job, [dense], [])
+    refused = ""
+except ValueError as e:
+    refused = str(e)
+check("grass too heavy to grow refused, with its count; nothing written, not done", "too heavy to grow" in refused and "at most 1000" in refused
+      and not (scratch / "temporary" / "data" / "props" / "heavy_sod.json").exists() and not (scratch / "temporary" / "assets" / "models" / "heavy_sod.glb").exists()
+      and not (job.dir / "weighed").exists() and mr.load(scratch, "heavy_sod")["status"] != "done", refused)
 clear()
 
 # 5e. a model painted for the wind: painted from its height (a stem and its leaves, each its

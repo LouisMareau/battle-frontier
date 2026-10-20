@@ -546,7 +546,7 @@ impl Feed<'_> {
         let (reg, lh, id) = (region(s), self.level_height, self.id);
         match layer {
             "ground" => {
-                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond);
+                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond, &|p| mesh::prop_vertices(p, self.models));
                 r.set_chunk(device, id, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
                 r.set_chunk(device, id, CLIFFS, s, &[(WHITE.to_string(), gpu(&cliffs.vertices), cliffs.indices)]);
                 // the engine's blades, and the grass props grown through tall ground

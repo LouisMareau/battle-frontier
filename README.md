@@ -221,8 +221,19 @@ maps).
   smallest and the biggest, against the prop as made), `patchy` (how much it thins out in
   patches a few cells across: 1, bare in places) and `turn` (each turned its own way). They
   stand on the cells' ground (down their bevels, not on a corner cut away), the same each
-  time, moving in the wind as their props do. The Ground tool's **Grows here**, with a tall
-  terrain picked to paint, sets it (and says about how many vertices a cell it costs); a
+  time, moving in the wind as their props do. Or `tiled` (grass made to fill its cells, as a
+  grass request makes it): each whole over its footprint's cells, lined up with them, so
+  copies side by side join; the cells go in blocks (the largest footprint's, up to 8 cells a
+  side, so never split between two squares), each block one footprint picked by its props'
+  weights and laid with copies of them, a cell-sized one where a bigger one doesn't fit (another
+  terrain, level or a ramp in the way; else the blades), turned by quarter turns (half turns
+  when longer than wide), standing on the lowest of their cells' tops (down a rim's bevel, never
+  over it in the air); a ramp's cells keep the blades. A grass prop costing more than 1,000
+  vertices a cell (`world::mesh::GROWN_MOST`; scattered, its vertices times how many to a cell;
+  tiled, shared by its cells) doesn't grow, the blades in its place: a square of tall ground
+  then stays within what a GPU buffer holds. The Ground tool's **Grows here**, with a tall
+  terrain picked to paint, sets it (tiled when the first prop ticked fills its cells; says about
+  how many vertices a cell it costs, and which are too heavy to grow, with their weights); a
   grass prop's inspector has **Grows in**, the tall terrains it grows through. A grass prop is
   still placed by itself like any other.
 - **Water** is a terrain's `water`: `inland` (lakes, ponds, rivers; what's drawn as water is

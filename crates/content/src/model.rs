@@ -795,27 +795,33 @@ pub struct Terrain {
 }
 
 /// What grows through a tall terrain's cells in place of the engine's own blades: grass props
-/// (the "grass" category), each picked as often as its weight says among them; so many to a
-/// cell on average, fewer where the ground thins in patches; each turned and sized its own
-/// way, the same each time.
+/// (the "grass" category), each picked as often as its weight says among them. Scattered: so
+/// many to a cell on average, fewer where the ground thins in patches; each turned and sized
+/// its own way, the same each time. Tiled (grass made to fill its cells, as a tile is): each
+/// whole over its footprint's cells, lined up with them, so copies side by side join.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Growth {
     /// the grass props, with how often each is picked
     pub props: Vec<Grower>,
-    /// how many to a cell, on average (0 to 32)
+    /// how many to a cell, on average (0 to 32; scattered)
     pub density: f64,
-    /// how much smaller and how much bigger than its prop each one can be
+    /// how much smaller and how much bigger than its prop each one can be (scattered)
     pub scale: [f64; 2],
-    /// how much the ground thins in patches (0: as thick everywhere; 1: bare in places)
+    /// how much the ground thins in patches (0: as thick everywhere; 1: bare in places;
+    /// scattered)
     pub patchy: f64,
-    /// each turned its own way (else all as their props are made)
+    /// each turned its own way (else all as their props are made; tiled, by half or quarter
+    /// turns, so it still covers its cells)
     pub turn: bool,
+    /// tiled: each whole over its footprint's cells, lined up with them (else scattered)
+    #[serde(skip_serializing_if = "is_default")]
+    pub tiled: bool,
 }
 
 impl Default for Growth {
     fn default() -> Self {
-        Growth { props: vec![], density: 4.0, scale: [0.8, 1.25], patchy: 0.35, turn: true }
+        Growth { props: vec![], density: 4.0, scale: [0.8, 1.25], patchy: 0.35, turn: true, tiled: false }
     }
 }
 
