@@ -300,7 +300,7 @@ fresh("test_again_none", status="done", prop="test_prop")
 code, out, rec, log = run("test_again_none", "finish", "--again", "--note", "the trunk thicker")
 check("made again with no model.py yet: failed before Claude starts", rec["status"] == "failed" and "nothing to make again from: no model.py yet" in rec["progress"]["step"]
       and "Claude Code: " not in log, rec["progress"]["step"])
-# 9d. several drawings on its picture ("Several of them"): the first run makes each a request of its
+# 9d. several drawings on its picture ("Process multiple"): the first run makes each a request of its
 # own, with the request's settings, its own name, height, picture and notes; the request done
 try:
     from PIL import Image as _Image
@@ -327,10 +327,10 @@ if _Image is not None:
           and pine["kind"] == "prop" and pine["status"] == "waiting" and not pine["several"]
           and pine["notes"].startswith("tall trees the darker one Tall pine is one of the drawings on Test Split's picture (private/requests/test_split/front.png"),
           json.dumps({k: pine[k] for k in ("images", "height", "parent", "notes")}) + f" {size}")
-    check("  its prompt: find each drawing, a request each through split, no lines nor model", "Several of them" in asked
+    check("  its prompt: find each drawing, a request each through split, no lines nor model", "Process multiple" in asked
           and "python tools/blender/model_requests.py split test_split PICTURE X0 Y0 X1 Y1" in asked and "the request's 9.0 is the tallest's" in asked
           and "no lines, no model" in asked and "draw the design's lines over each picture" not in asked, asked[:2500])
-    check("  each of its requests made as any other, the whole recipe", rc.part_of(pine) == "all" and "Several of them" not in rc.prompt(pine))
+    check("  each of its requests made as any other, the whole recipe", rc.part_of(pine) == "all" and "Process multiple" not in rc.prompt(pine))
     code, out, rec, log = run("test_split", "split")
     check("  started again once split: nothing run, the request as it was", rec["status"] == "done" and len(rec["children"]) == 2
           and "Split already, into 2 requests" in log and log.count("Claude Code: ") == 1, rec["status"])
@@ -339,6 +339,39 @@ if _Image is not None:
     code, out, rec, log = run("test_split_none", "quit")
     check("  a split run that makes none: failed, and why", rec["status"] == "failed" and "without splitting it" in rec["progress"]["step"], rec["progress"]["step"])
     check("  in the record's layout: several, parent and children last", list(mr.FIELDS)[-3:] == ["several", "parent", "children"])
+    # the drawings the user has outlined (the editor's Outlines window): those only, each cut to its
+    # outline, as tall and on as many cells as the user said
+    fresh("test_outlined", several=True, images=["front.png"], kind="environment", height=9.0,
+          outlines={"front.png": [{"points": [[15, 5], [85, 5], [85, 98], [15, 98]], "height": 3.0, "cells": [2, 2]}]})
+    pic.save(mr.folder(SCRATCH, "test_outlined") / "front.png")
+    asked = " ".join(rc.prompt(mr.load(SCRATCH, "test_outlined")).split())
+    check("outlined: the prompt makes those only, by their numbers, from their outlines", "the user has outlined the ones to make: 1 on front.png" in asked
+          and "python tools/blender/model_requests.py outlines test_outlined" in asked and "split test_outlined --outline K --name" in asked
+          and "of nothing else on the pictures: what isn't outlined is left out" in asked and "1 to 1:" in asked and "find each drawing" not in asked, asked[:2200])
+    said = mr.draw_outlines(SCRATCH, "test_outlined")
+    check("  drawn over its picture, each numbered, with its height and cells", (mr.folder(SCRATCH, "test_outlined") / "outlines_front.png").is_file()
+          and said[0].startswith("1. on front.png") and "3 cells tall, on 2 x 2 cells" in said[0], str(said))
+    cut = mr.split_outlined(SCRATCH, "test_outlined", 1, "Tall pine")
+    with _Image.open(mr.folder(SCRATCH, cut["id"]) / cut["images"][0]) as img:
+        corner, middle, mode = img.getpixel((1, 1)), img.getpixel((img.width // 2, img.height // 2)), img.mode
+    check("  split by it: its picture cut to the outline, outside it clear, as tall and on the cells the user said", cut["height"] == 3.0 and cut["cells"] == [2, 2]
+          and mode == "RGBA" and corner[3] == 0 and middle[3] == 255 and cut["kind"] == "environment" and "the user's outline round it" in cut["notes"],
+          f"{corner} {middle} {mode} {cut['height']} {cut['cells']}")
+    check("  its own run told the ground it covers", "Cells: it covers about 2 x 2 cells on the ground" in rc.prompt(cut))
+    try:
+        mr.split_outlined(SCRATCH, "test_outlined", 2, "Nothing")
+        wrong = ""
+    except SystemExit as e:
+        wrong = str(e)
+    check("  an outline that isn't there: said", "has 1 outline: there's no 2" in wrong, wrong)
+    check("  none outlined: every drawing made", mr.draw_outlines(SCRATCH, "test_split")[0].startswith("The user has outlined no drawings"))
+    check("  in the record's layout: the outlines after the bones", list(mr.FIELDS).index("outlines") == list(mr.FIELDS).index("bones") + 1, str(list(mr.FIELDS)))
+
+def after(a, b):
+    """Whether field `b` comes right after field `a` in the record's layout."""
+    names = list(mr.FIELDS)
+    return names.index(b) == names.index(a) + 1
+
 
 # 9f. grass (requests.md, "Grass"): it fills its cells to the edges, as a tile does; asked for
 # variants (requests.md, "Variants"), they're made with it, each a prop of its own; an environment
@@ -355,8 +388,7 @@ check("  its variants made with it, two besides it, as the user says they differ
       and asked.index("- its variants") < asked.index("- add it to the project"), asked[asked.find("Variants:"):][:1500])
 check("  and its estimate longer for them", mr.estimate(grass) > mr.estimate(mr.normal(dict(grass, variants=0))))
 check("  in the record's layout: its cells after its height, its variants after the notes, the props they became after its own",
-      list(mr.FIELDS)[3:5] == ["height", "cells"] and list(mr.FIELDS)[9:12] == ["notes", "variants", "vary"]
-      and list(mr.FIELDS)[20:22] == ["prop", "variant_props"], str(list(mr.FIELDS)))
+      all(after(a, b) for a, b in (("height", "cells"), ("notes", "variants"), ("variants", "vary"), ("prop", "variant_props"))), str(list(mr.FIELDS)))
 fresh("test_env", kind="environment", height=1.2)
 asked = rc.prompt(mr.load(SCRATCH, "test_env"))
 check("environment: what dresses the outdoors, its category the one that fits; no variants unless asked", "an environment asset 1.2 cells tall" in asked

@@ -45,6 +45,33 @@ pub(super) struct Bone {
     pub points: Vec<[i32; 2]>,
 }
 
+/// A drawing the user has outlined on a picture (Process multiple): only the drawings outlined
+/// are made, each a request of its own, as tall and on as many cells as the user says.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub(super) struct Outline {
+    /// its line round the drawing, closed, in the picture's pixels (x right, y down)
+    pub points: Vec<[i32; 2]>,
+    /// how tall it stands, in cells
+    pub height: f64,
+    /// the cells it covers (grass: fills), across x and z
+    pub cells: [u32; 2],
+}
+
+impl Default for Outline {
+    fn default() -> Self {
+        Outline { points: vec![], height: 1.0, cells: [1, 1] }
+    }
+}
+
+/// The outlines' colours, one after another.
+const OUTLINE_COLOURS: [[u8; 3]; 8] = [[255, 196, 64], [90, 200, 255], [255, 110, 160], [140, 230, 120], [200, 150, 255], [255, 150, 90], [120, 220, 210], [240, 240, 120]];
+
+/// The colour of outline `k` (0 on).
+pub(super) fn outline_colour(k: usize) -> [u8; 3] {
+    OUTLINE_COLOURS[k % OUTLINE_COLOURS.len()]
+}
+
 /// What each of a picture's bone lines is called: its name when it has one, else its part,
 /// numbered when the picture has several of that part ("leg 1", "leg 2", "tail", "spike").
 pub(super) fn bone_names(bones: &[Bone]) -> Vec<String> {
@@ -258,6 +285,10 @@ pub(super) struct ModelRequest {
     /// plan as they see it, which parts there are and where they join, for Claude to read the
     /// pictures by and to rig the creature on
     pub bones: BTreeMap<String, Vec<Bone>>,
+    /// with Process multiple, the drawings the user has outlined on the pictures (the Outlines
+    /// window), by picture: only those are made, each with its own height and cells; none, all
+    /// of them
+    pub outlines: BTreeMap<String, Vec<Outline>>,
     /// the drawings the modeller made to work from and to check by: its lines over each
     /// picture, the front and the side drawn from them, and once rendered those lines over the model
     /// (files in its folder; tools/blender/request_lines.py)
@@ -306,6 +337,7 @@ impl Default for ModelRequest {
             progress: Progress::default(),
             images: vec![],
             bones: BTreeMap::new(),
+            outlines: BTreeMap::new(),
             lines: vec![],
             previews: vec![],
             prop: String::new(),
@@ -329,6 +361,12 @@ impl ModelRequest {
     /// look right: go on".
     pub(super) fn lines_ready(&self) -> bool {
         self.status == Status::Waiting && self.progress.step == LINES_READY
+    }
+
+    /// Its outlines in turn, numbered as the split run numbers them: picture by picture in its
+    /// pictures' order, each picture's in the order drawn.
+    pub(super) fn outlined(&self) -> Vec<(&str, &Outline)> {
+        self.images.iter().flat_map(|f| self.outlines.get(f).into_iter().flatten().map(move |o| (f.as_str(), o))).collect()
     }
 
     /// Variants of it can be made from its model now: made, a model of its own (not a set of
@@ -409,7 +447,7 @@ impl Requests {
         0
     }
 
-    pub fn drawing_bones(&self) -> bool {
+    pub fn drawing_on_picture(&self) -> bool {
         false
     }
 
@@ -441,7 +479,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{bone_colour, bone_names, Bone, Kind, ModelRequest, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
+    use super::{bone_colour, bone_names, outline_colour, Bone, Kind, ModelRequest, Outline, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -975,6 +1013,8 @@ mod desk {
         splitting: Option<String>,
         /// the Bones window: the user drawing the body's bones over a picture
         pub bones: Sketch,
+        /// the Outlines window: the user outlining the drawings to make (Process multiple)
+        pub outlines: Outlining,
         /// the runs that would have started (the tests start none)
         #[cfg(test)]
         pub launched: Vec<Vec<String>>,
@@ -994,6 +1034,19 @@ mod desk {
         /// the name the next misc line gets
         pub name: String,
         /// the line being drawn: its joints so far, in the picture's pixels
+        pub drawing: Vec<[i32; 2]>,
+    }
+
+    /// The Outlines window's state: which request and picture are outlined on, the outline
+    /// being drawn.
+    #[derive(Default)]
+    pub(in super::super) struct Outlining {
+        pub open: bool,
+        /// the request it's on (another selected: it starts afresh)
+        of: String,
+        /// the picture outlined on (None, or one gone: the request's first)
+        pub picture: Option<String>,
+        /// the outline being drawn: its points so far, in the picture's pixels
         pub drawing: Vec<[i32; 2]>,
     }
 
@@ -1074,6 +1127,57 @@ mod desk {
     fn add_joint(line: &mut Vec<[i32; 2]>, at: [i32; 2]) {
         if line.last() != Some(&at) {
             line.push(at);
+        }
+    }
+
+    /// Outline `k`'s colour (0 on), to paint with.
+    fn tint(k: usize) -> Color32 {
+        let c = outline_colour(k);
+        Color32::from_rgb(c[0], c[1], c[2])
+    }
+
+    /// The outlines over the picture on the canvas: each closed, in its colour, numbered (from
+    /// `first` + 1) by its highest point; then the one being drawn, its next side following the
+    /// pointer (`hover`) and its closing side dashed back to its first point.
+    fn draw_outlines(p: &egui::Painter, rect: egui::Rect, size: egui::Vec2, outlines: &[Outline], first: usize, drawing: &[[i32; 2]], hover: Option<egui::Pos2>) {
+        let to_screen = |j: &[i32; 2]| rect.min + egui::vec2(j[0] as f32 / size.x.max(1.0) * rect.width(), j[1] as f32 / size.y.max(1.0) * rect.height());
+        let halo = Color32::from_rgba_unmultiplied(20, 20, 24, 200);
+        let line = |pts: &[egui::Pos2], colour: Color32| {
+            for pair in pts.windows(2) {
+                p.line_segment([pair[0], pair[1]], egui::Stroke::new(5.0, halo));
+            }
+            for pair in pts.windows(2) {
+                p.line_segment([pair[0], pair[1]], egui::Stroke::new(2.5, colour));
+            }
+            for at in pts {
+                p.circle(*at, 3.0, colour, egui::Stroke::new(1.0, halo));
+            }
+        };
+        for (i, o) in outlines.iter().enumerate() {
+            let colour = tint(first + i);
+            let mut pts: Vec<egui::Pos2> = o.points.iter().map(to_screen).collect();
+            if let Some(start) = pts.first().copied() {
+                pts.push(start);
+            }
+            line(&pts, colour);
+            if let Some(top) = pts.iter().min_by(|a, b| a.y.total_cmp(&b.y)) {
+                let text = format!("{}", first + i + 1);
+                let galley = p.layout_no_wrap(text, egui::FontId::proportional(13.0), colour);
+                let at = (*top + egui::vec2(-galley.size().x / 2.0, -galley.size().y - 6.0)).max(rect.min);
+                p.rect_filled(egui::Rect::from_min_size(at, galley.size()).expand(2.0), 2.0, halo);
+                p.galley(at, galley, colour);
+            }
+        }
+        if !drawing.is_empty() {
+            let colour = tint(first + outlines.len());
+            let pts: Vec<egui::Pos2> = drawing.iter().map(to_screen).collect();
+            line(&pts, colour);
+            if let (Some(last), Some(h)) = (pts.last(), hover) {
+                let next = h.clamp(rect.min, rect.max);
+                p.add(egui::Shape::dashed_line(&[*last, next], egui::Stroke::new(2.0, colour.gamma_multiply(0.75)), 6.0, 4.0));
+                p.add(egui::Shape::dashed_line(&[next, pts[0]], egui::Stroke::new(1.5, colour.gamma_multiply(0.45)), 4.0, 5.0));
+                p.circle_stroke(next, 3.5, egui::Stroke::new(1.5, colour));
+            }
         }
     }
 
@@ -2134,7 +2238,7 @@ mod desk {
                     ui.label("Variants");
                     ui.horizontal(|ui| {
                         let count = ui.add(egui::DragValue::new(&mut r.variants).range(0..=VARIANTS_CAP)).on_hover_text(
-                            "How many variants of it to make besides it, each a prop of its own (with Several of them: of each drawing)",
+                            "How many variants of it to make besides it, each a prop of its own (with Process multiple: of each drawing)",
                         );
                         mark("uiRequestVariants", &count);
                         hint(ui, &match (r.variants, r.several && r.parent.is_empty()) {
@@ -2173,11 +2277,27 @@ mod desk {
                 }
                 if r.children.is_empty() && r.parent.is_empty() {
                     ui.label("");
-                    let several = ui.checkbox(&mut r.several, "Several of them: one asset per drawing").on_hover_text(
-                        "The pictures hold several drawings of the same kind of asset (trees, bushes, rocks, plants): Start finds each one and makes it a request of its own, with these settings; Make them all then has them made one after another",
+                    let several = ui.checkbox(&mut r.several, "Process multiple").on_hover_text(
+                        "The pictures hold several drawings of the same kind of asset (trees, bushes, rocks, plants): Start makes each one a request of its own, with these settings (outline the ones to make, each with its height and cells; none outlined, all of them); Make them all then has them made one after another",
                     );
                     mark("uiRequestSeveral", &several);
                     ui.end_row();
+                    if r.several && !r.images.is_empty() {
+                        ui.label("");
+                        ui.horizontal(|ui| {
+                            let open = self.outlines.open && self.outlines.of == r.id;
+                            let b = ui.button(if open { "Outlining the drawings…" } else { "Outline the drawings…" }).on_hover_text(
+                                "A window with a picture large, to draw a line round each drawing to make, and give each its height and cells: only those are made, the rest left out",
+                            );
+                            mark("uiRequestOutlines", &b);
+                            if b.clicked() {
+                                self.outlines.open = !open;
+                            }
+                            let n = r.outlined().len();
+                            hint(ui, &if n == 0 { "none outlined: all of them made".to_string() } else { format!("{n} outlined: only those made") });
+                        });
+                        ui.end_row();
+                    }
                 }
                 if !r.parent.is_empty() {
                     ui.label("From");
@@ -2494,6 +2614,184 @@ mod desk {
                 self.deleting = false;
             }
             (use_prop, said, asked)
+        }
+
+        // ------------------------------------------------------------ the Outlines window
+
+        /// The Outlines window, while it's open: the selected request's picture, large, with the
+        /// outlines the user draws round the drawings to make (Process multiple, before it's
+        /// split). What changed is written at once.
+        pub(in super::super) fn outlines_window(&mut self, ctx: &egui::Context) -> Option<String> {
+            if !self.outlines.open {
+                return None;
+            }
+            let Some(before) = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id && r.several && r.parent.is_empty() && r.children.is_empty())).cloned() else {
+                self.outlines.open = false;
+                return None;
+            };
+            if self.outlines.of != before.id {
+                self.outlines = Outlining { open: true, of: before.id.clone(), ..Default::default() };
+            }
+            let mut r = before.clone();
+            let mut open = true;
+            let screen = ctx.content_rect();
+            // the picture as large as the screen leaves room for
+            let room = egui::vec2((screen.width() - 400.0).clamp(240.0, 900.0), (screen.height() - 330.0).clamp(200.0, 640.0));
+            let mut said = None;
+            egui::Window::new(format!("Outlines: {}", r.name)).id(egui::Id::new("request-outlines")).open(&mut open).collapsible(false).resizable(false).default_pos([300.0, 70.0]).show(ctx, |ui| {
+                said = self.outlines_pane(ui, &mut r, room);
+            });
+            self.outlines.open = open;
+            if r != before {
+                if let Err(e) = self.keep(&before, r) {
+                    said = Some(e);
+                }
+            }
+            said
+        }
+
+        /// Inside the Outlines window: which picture, the canvas (a click starts an outline and
+        /// adds each point, a right-click closes it there, Escape drops it, Backspace takes the
+        /// last point back), and the outlines drawn, each numbered with its height, its cells
+        /// and its ×.
+        fn outlines_pane(&mut self, ui: &mut egui::Ui, r: &mut ModelRequest, room: egui::Vec2) -> Option<String> {
+            if r.images.is_empty() {
+                hint(ui, "Drop pictures on the Requests window first.");
+                return None;
+            }
+            let picture = match self.outlines.picture.clone().filter(|p| r.images.contains(p)) {
+                Some(p) => p,
+                None => r.images[0].clone(),
+            };
+            if self.outlines.picture.as_deref() != Some(picture.as_str()) {
+                self.outlines.picture = Some(picture.clone());
+                self.outlines.drawing.clear();
+            }
+            let path = self.picture_path(&r.id, &picture);
+            let texture = self.thumbs.at(ui.ctx(), &path, LARGE);
+            let fitted = |size: egui::Vec2| {
+                let k = (room.x / size.x.max(1.0)).min(room.y / size.y.max(1.0)).min(6.0);
+                egui::vec2((size.x * k).max(120.0), (size.y * k).max(80.0))
+            };
+            let width = match &texture {
+                Some(Ok((_, size))) => fitted(*size).x,
+                _ => 480.0,
+            };
+            ui.set_max_width(width.max(480.0));
+            hint(ui, "A line round each drawing to make: a click starts it and adds each point, a right-click closes it there. Only the drawings outlined are made, each a request of its own, as tall and on as many cells as you say; with none outlined, all of them are.");
+            // (numbered across the pictures, as the split run numbers them)
+            let before: usize = r.images.iter().take_while(|f| **f != picture).map(|f| r.outlines.get(f).map(Vec::len).unwrap_or(0)).sum();
+            ui.horizontal_wrapped(|ui| {
+                if r.images.len() > 1 {
+                    hint(ui, "On");
+                    for f in r.images.clone() {
+                        let n = r.outlines.get(&f).map(Vec::len).unwrap_or(0);
+                        let pick = ui.selectable_label(f == picture, if n > 0 { format!("{f} ({n})") } else { f.clone() });
+                        mark(&format!("uiRequestOutlinesOn_{f}"), &pick);
+                        if pick.clicked() {
+                            self.outlines.picture = Some(f.clone());
+                            self.outlines.drawing.clear();
+                        }
+                    }
+                    ui.separator();
+                }
+                let undo = ui.small_button("Undo").on_hover_text("Takes back the last point, or the last outline (Backspace does too)");
+                mark("uiRequestOutlinesUndo", &undo);
+                if undo.clicked() && self.outlines.drawing.pop().is_none() {
+                    if let Some(list) = r.outlines.get_mut(&picture) {
+                        list.pop();
+                    }
+                }
+                let clear = ui.small_button("Clear").on_hover_text("Every outline on this picture, gone");
+                mark("uiRequestOutlinesClear", &clear);
+                if clear.clicked() {
+                    r.outlines.remove(&picture);
+                    self.outlines.drawing.clear();
+                }
+            });
+            let (id, size) = match texture {
+                Some(Ok(t)) => t,
+                Some(Err(e)) => {
+                    warn(ui, &e);
+                    return None;
+                }
+                None => {
+                    hint(ui, "Reading the picture…");
+                    return None;
+                }
+            };
+            let (rect, resp) = ui.allocate_exact_size(fitted(size), Sense::click());
+            platform::set_hook("requestoutlines", &format!("{:.0},{:.0},{:.0},{:.0}", rect.left(), rect.top(), rect.width(), rect.height()));
+            let p = ui.painter_at(rect);
+            p.image(id, rect, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
+            p.rect_stroke(rect, 2.0, egui::Stroke::new(1.0, Color32::from_gray(80)), egui::StrokeKind::Outside);
+            let hover = resp.hover_pos();
+            if let Some(at) = hover.map(|h| on_picture(rect, size, h)) {
+                if resp.clicked() {
+                    add_joint(&mut self.outlines.drawing, at);
+                }
+                if resp.secondary_clicked() {
+                    add_joint(&mut self.outlines.drawing, at);
+                    let points = std::mem::take(&mut self.outlines.drawing);
+                    if points.len() >= 3 {
+                        let cells = if r.kind == Kind::Grass { r.cells } else { [1, 1] };
+                        r.outlines.entry(picture.clone()).or_default().push(Outline { points, height: r.height, cells });
+                    }
+                }
+            }
+            // while an outline is drawn these keys are the window's (the editor's own stand aside:
+            // MapEditor::keys), unless a number is being typed
+            if !self.outlines.drawing.is_empty() && !ui.ctx().egui_wants_keyboard_input() {
+                if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    self.outlines.drawing.clear();
+                } else if ui.input(|i| i.key_pressed(egui::Key::Backspace)) {
+                    self.outlines.drawing.pop();
+                }
+            }
+            let drawn = r.outlines.get(&picture).cloned().unwrap_or_default();
+            draw_outlines(&p, rect, size, &drawn, before, &self.outlines.drawing, hover);
+            resp.on_hover_cursor(egui::CursorIcon::Crosshair);
+            let points = self.outlines.drawing.len();
+            hint(
+                ui,
+                &if points == 0 {
+                    format!("{} outline{} on {picture} · click to start one round a drawing", drawn.len(), if drawn.len() == 1 { "" } else { "s" })
+                } else {
+                    format!("an outline, {points} point{} so far · click for the next, right-click to close it (Escape drops it)", if points == 1 { "" } else { "s" })
+                },
+            );
+            // the outlines drawn: each one's height and cells, its × taking it out
+            let mut gone = None;
+            if let Some(list) = r.outlines.get_mut(&picture) {
+                for (i, o) in list.iter_mut().enumerate() {
+                    let k = before + i + 1;
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{k}.")).color(tint(k - 1)).strong());
+                        hint(ui, "height");
+                        let h = ui.add(egui::DragValue::new(&mut o.height).speed(0.05).range(0.1..=40.0).suffix(" cells").max_decimals(2)).on_hover_text("How tall it stands");
+                        mark(&format!("uiRequestOutlineHeight_{k}"), &h);
+                        hint(ui, "on");
+                        let x = ui.add(egui::DragValue::new(&mut o.cells[0]).range(1..=8)).on_hover_text("The cells it covers across (x)");
+                        mark(&format!("uiRequestOutlineCellsX_{k}"), &x);
+                        ui.label("×");
+                        let z = ui.add(egui::DragValue::new(&mut o.cells[1]).range(1..=8)).on_hover_text("The cells it covers deep (z)");
+                        mark(&format!("uiRequestOutlineCellsZ_{k}"), &z);
+                        hint(ui, "cells");
+                        let out = ui.small_button("×").on_hover_text("Takes this outline out");
+                        mark(&format!("uiRequestOutlineOut_{k}"), &out);
+                        if out.clicked() {
+                            gone = Some(i);
+                        }
+                    });
+                }
+                if let Some(i) = gone {
+                    list.remove(i);
+                }
+            }
+            if r.outlines.get(&picture).is_some_and(Vec::is_empty) {
+                r.outlines.remove(&picture);
+            }
+            None
         }
 
         // ------------------------------------------------------------ the Bones window
@@ -2874,9 +3172,10 @@ mod desk {
             self.desk.list.iter().filter(|r| r.status == Status::Waiting).count()
         }
 
-        /// A bone line being drawn in the Bones window: Escape and Backspace are its.
-        pub fn drawing_bones(&self) -> bool {
-            self.open && self.desk.bones.open && !self.desk.bones.drawing.is_empty()
+        /// A line being drawn in the Bones window or the Outlines window: Escape and Backspace
+        /// are its.
+        pub fn drawing_on_picture(&self) -> bool {
+            self.open && ((self.desk.bones.open && !self.desk.bones.drawing.is_empty()) || (self.desk.outlines.open && !self.desk.outlines.drawing.is_empty()))
         }
 
         pub fn watch(&mut self, now: f64) {
@@ -2956,6 +3255,9 @@ mod desk {
                     None => {}
                 }
                 if let Some(s) = d.bones_window(ui.ctx()) {
+                    said = Some(s);
+                }
+                if let Some(s) = d.outlines_window(ui.ctx()) {
                     said = Some(s);
                 }
                 if said.is_some() {
@@ -3059,6 +3361,7 @@ mod tests {
         assert!(text.contains("  \"images\": [\"front.png\", \"side.jpg\"],\n"), "short lists on one line: {text}");
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
+        assert!(text.contains("  \"outlines\": {},\n  \"lines\""), "the outlines after the bones, as model_requests.py has them: {text}");
         assert!(text.contains("  \"mine\": true,\n  \"check_lines\": false,\n  \"status\""), "the lines' check after mine, as model_requests.py has it: {text}");
         assert!(
             text.ends_with("  \"reply\": \"\",\n  \"comments\": \"\",\n  \"earlier\": [],\n  \"several\": false,\n  \"parent\": \"\",\n  \"children\": []\n}\n"),
@@ -3703,7 +4006,7 @@ mod tests {
             frame_with(&ctx, &mut req, vec![]);
         }
         assert!(marked("uiRequestMakeAll").is_none(), "nothing split yet");
-        // "Several of them", ticked: kept in its request.json
+        // "Process multiple", ticked: kept in its request.json
         click(&ctx, &mut req, "uiRequestSeveral");
         assert!(read(&root, "shrubs").unwrap().several, "the box ticked");
         // Start: run_claude.py on it (which splits it)
@@ -3967,6 +4270,99 @@ mod tests {
         panic!("the Bones window's picture never came");
     }
 
+    /// The Outlines window's picture, once it's come and stays put.
+    fn outline_canvas(ctx: &egui::Context, req: &mut Requests) -> egui::Rect {
+        let (mut last, mut same) = (String::new(), 0);
+        for _ in 0..300 {
+            frame_with(ctx, req, vec![]);
+            match crate::platform::hook("requestoutlines") {
+                Some(at) if at == last => same += 1,
+                Some(at) => (last, same) = (at, 0),
+                None => std::thread::sleep(std::time::Duration::from_millis(10)),
+            }
+            if same >= 3 {
+                let v: Vec<f32> = last.split(',').map(|n| n.parse().unwrap()).collect();
+                return egui::Rect::from_min_size(egui::pos2(v[0], v[1]), egui::vec2(v[2], v[3]));
+            }
+        }
+        panic!("the Outlines window's picture never came");
+    }
+
+    #[test]
+    fn the_drawings_to_make_are_outlined_each_with_its_height_and_cells() {
+        let root = scratch("outlines");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Shrubs.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(200, 100, 3)).unwrap();
+        (r.kind, r.height) = (Kind::Environment, 1.5);
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("shrubs".into());
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestOutlines").is_none(), "nothing to outline unless it processes several");
+        // Process multiple ticked: the drawings to make outlined in a window of their own
+        click(&ctx, &mut req, "uiRequestSeveral");
+        assert!(read(&root, "shrubs").unwrap().several);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestOutlines");
+        assert!(req.desk().outlines.open, "Outline the drawings… opens its window");
+        let c = outline_canvas(&ctx, &mut req);
+        let at = |u: f32, v: f32| c.min + egui::vec2(u * c.width(), v * c.height());
+        let outlines = |root: &Path| read(root, "shrubs").unwrap().outlines.get("front.png").cloned().unwrap_or_default();
+        // a click for each point round it, a right-click for the last: closed, kept at once, as
+        // tall as the request, on a cell
+        click_at(&ctx, &mut req, at(0.1, 0.1), egui::PointerButton::Primary);
+        assert!(req.drawing_on_picture(), "an outline being drawn: the editor's own Escape and Backspace stand aside");
+        click_at(&ctx, &mut req, at(0.4, 0.1), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.4, 0.9), egui::PointerButton::Primary);
+        assert!(outlines(&root).is_empty(), "nothing kept until it's closed");
+        click_at(&ctx, &mut req, at(0.1, 0.9), egui::PointerButton::Secondary);
+        assert!(!req.drawing_on_picture());
+        assert_eq!(outlines(&root), [Outline { points: vec![[20, 10], [80, 10], [80, 90], [20, 90]], height: 1.5, cells: [1, 1] }]);
+        // two points make no outline; Escape drops the one being drawn
+        click_at(&ctx, &mut req, at(0.6, 0.2), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.7, 0.2), egui::PointerButton::Secondary);
+        assert_eq!(outlines(&root).len(), 1, "an outline takes three points or more");
+        click_at(&ctx, &mut req, at(0.6, 0.2), egui::PointerButton::Primary);
+        press(&ctx, &mut req, egui::Key::Escape);
+        assert!(req.desk().outlines.drawing.is_empty());
+        // listed with its height and its cells; a second one, then the first out by its ×
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestOutlineHeight_1").is_some() && marked("uiRequestOutlineCellsX_1").is_some() && marked("uiRequestOutlineCellsZ_1").is_some());
+        click_at(&ctx, &mut req, at(0.6, 0.2), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.9, 0.2), egui::PointerButton::Primary);
+        click_at(&ctx, &mut req, at(0.9, 0.8), egui::PointerButton::Secondary);
+        assert_eq!(outlines(&root).len(), 2);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestOutlineOut_1");
+        assert_eq!((outlines(&root).len(), outlines(&root)[0].points[0]), (1, [120, 20]));
+        // a second picture's outlines numbered after the first's
+        let mut two = read(&root, "shrubs").unwrap();
+        add_picture(&root, &mut two, "side.png", &png(100, 100, 9)).unwrap();
+        two.outlines.insert("side.png".into(), vec![Outline { points: vec![[1, 1], [50, 1], [50, 50]], height: 2.0, cells: [2, 1] }]);
+        save(&root, &two).unwrap();
+        let numbered: Vec<(&str, f64)> = two.outlined().iter().map(|(p, o)| (*p, o.height)).collect();
+        assert_eq!(numbered, [("front.png", 1.5), ("side.png", 2.0)]);
+        req.watch(1.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestOutlinesOn_side.png");
+        crate::platform::clear_hooks();
+        outline_canvas(&ctx, &mut req);
+        assert!(marked("uiRequestOutlineHeight_2").is_some() && marked("uiRequestOutlineHeight_1").is_none(), "side.png's first is the 2nd");
+        // split: nothing more to outline, its window gone
+        let mut split = read(&root, "shrubs").unwrap();
+        split.children = vec!["shrubs_round_bush".into()];
+        save(&root, &split).unwrap();
+        req.watch(2.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(!req.desk().outlines.open);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
     #[test]
     fn the_bones_are_drawn_over_a_picture() {
         let root = scratch("bones");
@@ -3988,11 +4384,11 @@ mod tests {
         let bones = |root: &Path| read(root, "moss_toad").unwrap().bones.get("front.png").cloned().unwrap_or_default();
         // a leg: a click for each joint, chained, and a right-click for the last
         click_at(&ctx, &mut req, at(0.25, 0.5), egui::PointerButton::Primary);
-        assert!(req.drawing_bones(), "a line being drawn: the editor's own Escape and Backspace stand aside");
+        assert!(req.drawing_on_picture(), "a line being drawn: the editor's own Escape and Backspace stand aside");
         click_at(&ctx, &mut req, at(0.5, 0.5), egui::PointerButton::Primary);
         assert!(bones(&root).is_empty(), "nothing kept until the line ends");
         click_at(&ctx, &mut req, at(0.75, 0.6), egui::PointerButton::Secondary);
-        assert!(!req.drawing_bones());
+        assert!(!req.drawing_on_picture());
         assert_eq!(bones(&root), [Bone { part: "leg".into(), name: String::new(), points: vec![[50, 50], [100, 50], [150, 60]] }], "kept in request.json at once");
         // Backspace takes a joint back, Escape drops the line being drawn
         click_at(&ctx, &mut req, at(0.1, 0.1), egui::PointerButton::Primary);
@@ -4157,6 +4553,75 @@ mod tests {
             out = Some(run(&mut req, &mut shooter, vec![]));
         }
         shooter.shoot(&ctx, out.take().unwrap().shapes, [1400, 900], &dir.join("requests-variants.png")).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A look by eye at the Outlines window: three bushes on a picture, two outlined with their
+    /// heights and cells, the third being outlined: build/shots/requests-outlines.png. It needs
+    /// a GPU, so it's run by hand:
+    ///     cargo test -p engine-game -- --ignored shot
+    #[test]
+    #[ignore]
+    fn shot_of_the_outlines_window() {
+        let root = scratch("shot-outlines");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        // three round bushes on a pale ground
+        let bushes = [(130.0, 150.0, 90.0, 70.0), (330.0, 170.0, 70.0, 55.0), (500.0, 140.0, 80.0, 95.0)];
+        let img = image::RgbaImage::from_fn(640, 280, |x, y| {
+            let inside = bushes.iter().any(|&(cx, cy, rx, ry)| ((x as f32 - cx) / rx).powi(2) + ((y as f32 - cy) / ry).powi(2) <= 1.0);
+            if inside { image::Rgba([70, 140, 60, 255]) } else { image::Rgba([236, 232, 220, 255]) }
+        });
+        let mut bytes = std::io::Cursor::new(vec![]);
+        img.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let mut r = create(&root, "Round bushes.png").unwrap();
+        let Ok(Added::New(file)) = add_picture(&root, &mut r, "bushes.png", bytes.get_ref()) else { panic!("the picture") };
+        let ring = |cx: f32, cy: f32, rx: f32, ry: f32| (0..10).map(|k| {
+            let t = k as f32 / 10.0 * std::f32::consts::TAU;
+            [(cx + rx * 1.1 * t.cos()) as i32, (cy + ry * 1.1 * t.sin()) as i32]
+        }).collect::<Vec<_>>();
+        (r.kind, r.several, r.height) = (Kind::Environment, true, 1.2);
+        r.outlines.insert(file.clone(), vec![
+            Outline { points: ring(130.0, 150.0, 90.0, 70.0), height: 1.2, cells: [2, 2] },
+            Outline { points: ring(500.0, 140.0, 80.0, 95.0), height: 1.8, cells: [1, 1] },
+        ]);
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some(r.id.clone());
+        req.desk().outlines.open = true;
+        let mut shooter = crate::shot::Shooter::new().unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let content = content::Content::default();
+        let mut run = |req: &mut Requests, events: Vec<egui::Event>| {
+            crate::platform::clear_hooks();
+            let mut out = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
+                shown(ui, req, &content);
+            });
+            shooter.textures(&mut out.textures_delta);
+            out
+        };
+        for _ in 0..300 {
+            run(&mut req, vec![]);
+            if crate::platform::hook("requestoutlines").is_some() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        for _ in 0..5 {
+            run(&mut req, vec![]);
+        }
+        let v: Vec<f32> = crate::platform::hook("requestoutlines").unwrap().split(',').map(|n| n.parse().unwrap()).collect();
+        let at = |x: f32, y: f32| egui::pos2(v[0] + x / 640.0 * v[2], v[1] + y / 280.0 * v[3]);
+        // the third being outlined, its next side following the pointer
+        req.desk().outlines.drawing = ring(330.0, 170.0, 70.0, 55.0)[..6].to_vec();
+        let mut out = None;
+        for _ in 0..20 {
+            out = Some(run(&mut req, vec![egui::Event::PointerMoved(at(255.0, 150.0))]));
+        }
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots/requests-outlines.png");
+        shooter.shoot(&ctx, out.unwrap().shapes, [1400, 900], &path).unwrap();
         std::fs::remove_dir_all(&root).ok();
     }
 

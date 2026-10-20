@@ -5,10 +5,12 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID --again [--note "what to change"]
     python tools/blender/run_claude.py ID --variants
 
-A request whose pictures hold several drawings of the same kind of asset ("several": trees,
-bushes, rocks...) is split by its first run: Claude finds each drawing and makes it a request
-of its own (model_requests.py split), which the editor's "Make them all" then has made one
-after another; the request itself is done once split.
+A request whose pictures hold several drawings of the same kind of asset ("several", the
+editor's "Process multiple": trees, bushes, rocks...) is split by its first run: Claude finds
+each drawing and makes it a request of its own (model_requests.py split), which the editor's
+"Make them all" then has made one after another; the request itself is done once split. When
+the user has outlined the drawings to make ("outlines"), only those are made, each cut to its
+outline, as tall and on as many cells as the user said; the rest are left out.
 
 Claude Code (`claude`: CLAUDE names the program, else the PATH, else ~/.local/bin) gets the
 recipe (requests.md) for that one request and only the tools it needs, set in the request's
@@ -249,8 +251,8 @@ AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its 
   with them; run python tools/blender/model_requests.py lines {id} again);
 """
 # a request whose pictures hold several drawings of the same kind of asset: split first
-SPLIT = """- its pictures hold several drawings of the same kind of asset (the request says "several of
-  them": one asset per drawing), each to be made a request of its own, modelled one after
+SPLIT = """- its pictures hold several drawings of the same kind of asset (the request says "Process
+  multiple": one asset per drawing), each to be made a request of its own, modelled one after
   another: find each drawing of it (all of each: a tree's crown and its trunk's foot, a bush
   and the stems it stands on), and give each a short name saying what it is ("Tall pine",
   "Round bush", "Flat rock"), how tall it stands in cells (the request's {height} is the
@@ -266,9 +268,30 @@ SPLIT = """- its pictures hold several drawings of the same kind of asset (the r
   drawing twice is one request; a drawing of something else (a figure, a building, a word)
   none;
 """
-SPLIT_RUN = (HEAD + "This one request is split first (tools/blender/requests.md, \"Several of them\"; it's started already):\n"
+SPLIT_RUN = (HEAD + "This one request is split first (tools/blender/requests.md, \"Process multiple\"; it's started already):\n"
              + READ + SPLIT + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's name and height, and\n"
                                                     "anything on the pictures you left out, and why."))
+# split, the user having outlined the drawings to make ({outlined}: how many on which pictures;
+# {count}: how many in all): those only, each cut to its outline
+OUTLINED = """- its pictures hold several drawings of the same kind of asset (the request says "Process
+  multiple": one asset per drawing), and the user has outlined the ones to make: {outlined}
+  (request.json's "outlines", each a closed line round a drawing in its picture's pixels,
+  with the height and the cells the user wants it). Make a request of each outlined drawing,
+  and of nothing else on the pictures: what isn't outlined is left out. Run
+  python tools/blender/model_requests.py outlines {id}
+  and look at each outlines_PICTURE.png (each outline numbered in its colour), then give each
+  a short name saying what it is ("Tall pine", "Round bush", "Flat rock") and what's only its
+  (its colours, a marking, a part the others don't have);
+- for each, by its number, 1 to {count}:
+  python tools/blender/model_requests.py split {id} --outline K --name "NAME" --notes "what's only its"
+  which cuts its picture to its outline (what's outside it left out) and gives it the height
+  and the cells the user set; then look at the picture it writes for the new request, to be
+  sure it's the drawing outlined;
+- that's all: no lines, no model (each new request is made by a run of its own);
+"""
+OUTLINED_RUN = (HEAD + "This one request is split first, into the drawings the user outlined (tools/blender/requests.md,\n"
+                "\"Process multiple\"; it's started already):\n" + READ + OUTLINED
+                + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's number and name."))
 # a set of floor tiles: the pattern on the pictures broken into cells, each a tile whose edges
 # say what goes on into the next, laid by wave function collapse
 FLOOR = """- the pictures show a floor, a pavement or a tiling (or a part of one): make it a set of floor
@@ -415,7 +438,11 @@ def settings_lines(record):
                    f"kit.fit_cells(parts, ({w}, {d}), job.height) in place of kit.fit, so its bounds are exactly its cells; its blades (or "
                    "leaves) evenly dense right up to the borders, none past them, no bare margin and no soil or base showing at an edge: "
                    "copies in the cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way.")
-    elif record["kind"] == "environment":
+    elif record["kind"] != "floor" and list(record["cells"]) != [1, 1]:
+        # (a drawing outlined with its own cells: the ground it covers)
+        w, d = record["cells"]
+        out.append(f"Cells: it covers about {w} x {d} cells on the ground (Blender's X and Y), as the user says: size it so.")
+    if record["kind"] == "environment":
         out.append("Environment: an asset that dresses the outdoors (requests.md, \"Environment\"): a rock, a bush, flowers, a log, a "
                    "tree... kit.finish's category the one that fits (tree, flora, rock, grass, decoration), blocking the way when it's big "
                    "enough to walk round (a rock, a tree, a log), not when it's walked through (flowers, a low bush); what the wind moves "
@@ -504,8 +531,9 @@ def prompt(record, go_on=False, note="", again=False, variants=False):
     earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
     part = part_of(record, go_on, again, variants)
+    shapes = mr.outlined(record)
     template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_FLOOR_RUN if record["kind"] == "floor" else AGAIN_RUN,
-                "variants": VARIANTS_RUN, "split": SPLIT_RUN, "floor": FLOOR_RUN}[part]
+                "variants": VARIANTS_RUN, "split": OUTLINED_RUN if shapes else SPLIT_RUN, "floor": FLOOR_RUN}[part]
     kind, height = record["kind"], record["height"]
     if kind == "floor":
         what = "a set of floor tiles, each a cell, laid to fit by wave function collapse"
@@ -524,7 +552,16 @@ def prompt(record, go_on=False, note="", again=False, variants=False):
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
-                           variants=step, count=count, vary=vary, made=made)
+                           variants=step, count=len(shapes) if part == "split" and shapes else count, vary=vary, made=made,
+                           outlined=outlines_said(record, shapes))
+
+
+def outlines_said(record, shapes):
+    """How many drawings the user has outlined, on which pictures: "3 on front.png and 1 on
+    side.png"."""
+    each = [(pic, sum(1 for p, _ in shapes if p == pic)) for pic in record["images"]]
+    said = [f"{n} on {pic}" for pic, n in each if n]
+    return said[0] if len(said) == 1 else ", ".join(said[:-1]) + " and " + said[-1] if said else "none"
 
 
 def bones_drawn(drawn):
@@ -697,8 +734,10 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         how = record["vary"].strip()
         say(f"This run makes {record['variants']} variant{'' if record['variants'] == 1 else 's'} of it from its model, the model itself kept: "
             + (how if how else "as Claude sees fit"))
+    elif part == "split" and mr.outlined(record):
+        say(f"This run splits the request: the {len(mr.outlined(record))} drawings the user outlined, each a request of its own (\"Process multiple\"); the rest left out")
     elif part == "split":
-        say("This run splits the request: each drawing on its pictures made a request of its own (\"Several of them\")")
+        say("This run splits the request: each drawing on its pictures made a request of its own (\"Process multiple\")")
     if part not in ("model", "again") and note.strip():
         say(f"What the user says is off in the lines there: {note.strip()}")
     drawn = rl.user_bones(record)

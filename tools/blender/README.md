@@ -144,9 +144,11 @@ run makes them with the model, each a prop of its own (`kit.variant_preview`,
 variants** runs `run_claude.py ID --variants`: from the model made, kept as it is, the variants
 added, everything else as it was.
 A picture with several drawings of the same kind of asset (trees, bushes, rocks) makes as many
-assets: with **"Several of them: one asset per drawing"** ticked, Start has Claude make each
-drawing a request of its own (`model_requests.py split`: its crop, its name and height, the
-request's settings), and **Make them all** has those made one after another.
+assets: with **"Process multiple"** ticked, Start has Claude make each drawing a request of its
+own (`model_requests.py split`: its crop, its name and height, the request's settings), and
+**Make them all** has those made one after another. Drawings outlined in the Outlines window
+(`outlines`: a closed line each, with its height and cells) are the only ones made, each cut
+to its outline (`split ID --outline K`; `model_requests.py outlines ID` draws them numbered).
 A **floor set** (`"kind": "floor"`) makes a set of floor tiles instead (requests.md, "A set
 of floor tiles"): the pattern broken into cells, each tile's four edges words that say what
 fits beside it, each modelled a cell wide (`kit.floor_tile`), laid out by the game's rules

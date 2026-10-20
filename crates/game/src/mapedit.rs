@@ -2177,8 +2177,8 @@ impl MapEditor {
     }
 
     fn keys(&mut self, ctx: &egui::Context) {
-        // a bone line being drawn over a request's picture has Escape and Backspace
-        if ctx.egui_wants_keyboard_input() || self.requests.drawing_bones() || self.welcome {
+        // a line being drawn over a request's picture (its bones, its outlines) has Escape and Backspace
+        if ctx.egui_wants_keyboard_input() || self.requests.drawing_on_picture() || self.welcome {
             return;
         }
         let (mods, keys) = ctx.input(|i| (i.modifiers, i.keys_down.clone()));

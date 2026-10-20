@@ -44,6 +44,7 @@ Rules that hold all the way:
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
   "images": ["round_stone_lantern.png"],
   "bones": {},
+  "outlines": {},
   "lines": [],
   "previews": [],
   "prop": "",
@@ -105,10 +106,13 @@ are.)
   of that model for the next run, what to look for and what to change; `earlier`: the comments
   the runs that made it again were given, oldest first (below, "Made again, with the user's
   comments").
-- `several` (the window's **"Several of them: one asset per drawing"**): the pictures hold
-  several drawings of the same kind of asset (trees, bushes, rocks, plants, grass); the first
-  run splits it, each drawing a request of its own, listed in `children` (each one's `parent`
-  this request), and the request is done once split (below, "Several of them").
+- `several` (the window's **"Process multiple"**): the pictures hold several drawings of the
+  same kind of asset (trees, bushes, rocks, plants, grass); the first run splits it, each
+  drawing a request of its own, listed in `children` (each one's `parent` this request), and
+  the request is done once split (below, "Process multiple"). `outlines`: the drawings the user
+  has outlined to make (the window's Outlines), by picture, each a closed line of points in the
+  picture's pixels with its `height` and `cells`; only those are made, the rest left out; none,
+  all of them.
 
 The window and the files are written the same way (`content::to_text`'s layout), and either
 side reads the file again before writing it, so the editor and a session can both change a
@@ -226,11 +230,25 @@ box empties (unless the user has written others meanwhile); a run that fails or 
 leaves them in the box, to try again. A request with no `model.py`, or nothing said, fails at
 once, saying so.
 
-### Several of them
+### Process multiple
 
 An artwork with several drawings of the same kind of asset (five trees, a row of bushes, a
-sheet of rocks) makes several assets: tick **"Several of them: one asset per drawing"** before
-Start. That run doesn't model: Claude finds each drawing (all of it), names it after what it is,
+sheet of rocks) makes several assets: tick **"Process multiple"** before Start. Its
+**Outline the drawings…** opens the Outlines window: a picture large, to draw a line round each
+drawing to make (a click for each point, a right-click closing it; Escape drops the one being
+drawn, Backspace or Undo takes a point back), each numbered, with its own height and cells (as
+tall as the request and on a cell at first) and its × to take it out. Only the drawings outlined
+are made, the rest left out; with none outlined, all of them are. The split run then makes a
+request of each outline, by its number:
+
+```bash
+python tools/blender/model_requests.py outlines ID          # each outline numbered over its picture (outlines_PICTURE.png)
+python tools/blender/model_requests.py split ID --outline 2 --name "Round bush" [--notes "the darker one"]
+```
+
+its picture cut to the outline (what's outside it clear), its height and cells the user's (the
+cells as the ground it covers; grass fills them). With no outlines, that run doesn't model:
+Claude finds each drawing (all of it), names it after what it is,
 works out how tall it stands (the request's height is the tallest's, the others' by how they
 compare with it in the picture) and what's only its, and makes it a request of its own:
 
@@ -832,7 +850,7 @@ no lines (a floor is seen from above, laid out):
 
 Made again with the user's comments, it starts from the last run's `model.py` like any request
 ("Made again, with the user's comments"); a sheet of several floors splits like any request
-("Several of them"), each one a set of its own.
+("Process multiple"), each one a set of its own.
 
 ## The kit: `request_kit.py`
 

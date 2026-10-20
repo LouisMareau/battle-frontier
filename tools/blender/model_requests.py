@@ -24,6 +24,13 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               (how far its outline and the picture's silhouette
                                               overlap), the front and the side in cells
                                               (request_lines.py)
+    python tools/blender/model_requests.py outlines ID
+                                              the drawings the user has outlined on the pictures
+                                              (Process multiple), each numbered over its picture
+                                              (outlines_PICTURE.png), with its height and cells
+    python tools/blender/model_requests.py split ID --outline K --name "NAME" [--notes "..."]
+                                              outline K made a request of its own: its picture
+                                              cut to the outline, its height and cells the user's
     python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
@@ -69,6 +76,10 @@ FIELDS = {
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
     "bones": {},
+    # with several (the editor's "Process multiple"), the drawings the user has outlined on the
+    # pictures, by picture: [{"points": [[x, y]...], "height": 1.2, "cells": [1, 1]}], only those
+    # made; none: all of them
+    "outlines": {},
     "lines": [],
     "previews": [],
     "prop": "",
@@ -423,31 +434,110 @@ def new(root, name, pictures, **fields):
     return save(root, normal(record))
 
 
-def split(root, rid, picture, box, name, height=None, notes=""):
+def outlined(record):
+    """The drawings the user has outlined on a request's pictures, in turn: picture by picture in
+    its pictures' order, each picture's in the order drawn (numbered 1 on, as the editor numbers
+    them): [(picture, outline)]."""
+    return [(pic, o) for pic in record["images"] for o in (record.get("outlines") or {}).get(pic, [])]
+
+
+def _around(points, size, margin=0.04):
+    """The box round an outline, with a little room (inside the picture)."""
+    xs, ys = [q[0] for q in points], [q[1] for q in points]
+    pad = max(4, round(margin * max(size)))
+    return [max(0, min(xs) - pad), max(0, min(ys) - pad), min(size[0], max(xs) + pad), min(size[1], max(ys) + pad)]
+
+
+def split(root, rid, picture, box, name, height=None, notes="", cells=None, outline=None):
     """One of the drawings on a request's picture (one whose pictures hold several of the same
     kind of asset: `several`) made a request of its own: that box of the picture its picture
     (in pixels, or fractions of the picture when all four are at most 1), named, `height`
-    cells tall (else the request's), with the request's settings and notes, `notes` of its own
-    and where on the picture it was; its `parent` the request, whose `children` gets it.
-    Returns the new request."""
+    cells tall (else the request's), on `cells` (else the request's), with the request's
+    settings and notes, `notes` of its own and where on the picture it was; its `parent` the
+    request, whose `children` gets it. Cut to an `outline` (the user's: its points in the
+    picture's pixels), the box is the outline's, with a little room, and what's outside the
+    outline is left out (clear). Returns the new request."""
     Image = _pillow("split")
     parent = load(root, rid)
     img = _picture(root, rid, picture, Image)
-    x0, y0, x1, y1 = _box(img.size, box)
+    points = [tuple(q) for q in outline["points"]] if outline else None
+    x0, y0, x1, y1 = _box(img.size, box if box is not None else _around(points, img.size))
     cid = free_id(root, f"{rid}_{slug(name)}")
     d = folder(root, cid)
     d.mkdir(parents=True)
     out = f"{slug(name) or 'drawing'}.png"
-    img.crop((x0, y0, x1, y1)).convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB").save(d / out)
+    crop = img.crop((x0, y0, x1, y1))
+    if points:
+        from PIL import ImageChops, ImageDraw
+        crop = crop.convert("RGBA")
+        inside = Image.new("L", crop.size, 0)
+        ImageDraw.Draw(inside).polygon([(x - x0, y - y0) for x, y in points], fill=255)
+        crop.putalpha(ImageChops.multiply(crop.getchannel("A"), inside))
+    else:
+        crop = crop.convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB")
+    crop.save(d / out)
     whence = (f"{name} is one of the drawings on {parent['name']}'s picture (private/requests/{rid}/{picture}, from ({x0}, {y0}) to "
-              f"({x1}, {y1})): model this one only; the whole picture shows the style it shares with the others.")
+              f"({x1}, {y1})" + (", the user's outline round it: what's outside it left out" if points else "") + "): model this one only; the "
+              "whole picture shows the style it shares with the others.")
     kept = {k: parent[k] for k in ("kind", "cells", "style", "details", "pose", "shapes", "variants", "vary", "mine", "check_lines")}
+    if cells:
+        kept["cells"] = [int(cells[0]), int(cells[1])]
     record = dict(FIELDS, id=cid, name=name, images=[out], parent=rid, height=float(height) if height else parent["height"],
                   notes=" ".join(t for t in (parent["notes"].strip(), notes.strip(), whence) if t), **kept)
     save(root, normal(record))
     update(root, rid, children=load(root, rid)["children"] + [cid])
     log(root, rid, f"Split off {cid}: {name}, {record['height']} cells, from {picture} ({x0}, {y0}) to ({x1}, {y1})")
     return load(root, cid)
+
+
+def split_outlined(root, rid, k, name, notes=""):
+    """The user's outline `k` (1 on, as `outlined` numbers them) made a request of its own: its
+    picture cut to the outline, as tall and on the cells the user said."""
+    shapes = outlined(load(root, rid))
+    if not 1 <= k <= len(shapes):
+        raise SystemExit(f"{rid} has {len(shapes)} outline{'' if len(shapes) == 1 else 's'}: there's no {k}")
+    picture, o = shapes[k - 1]
+    return split(root, rid, picture, None, name, o.get("height") or None, notes, cells=o.get("cells"), outline=o)
+
+
+OUTLINE_COLOURS = [(255, 196, 64), (90, 200, 255), (255, 110, 160), (140, 230, 120), (200, 150, 255), (255, 150, 90), (120, 220, 210), (240, 240, 120)]
+
+
+def draw_outlines(root, rid):
+    """The command: the drawings the user has outlined over each picture, each numbered in its
+    colour (outlines_<picture>.png). Returns what to say: each one's number, picture, box,
+    height and cells."""
+    Image = _pillow("outlines")
+    from PIL import ImageDraw, ImageFont
+    record = load(root, rid)
+    shapes = outlined(record)
+    if not shapes:
+        return ["The user has outlined no drawings: every drawing on the pictures is made."]
+    said = []
+    for pic in record["images"]:
+        mine = [(k, o) for k, (p, o) in enumerate(shapes, 1) if p == pic]
+        if not mine:
+            continue
+        img = _picture(root, rid, pic, Image).convert("RGB")
+        scale = max(1.0, min(4.0, 1100.0 / max(img.size)))
+        drawing = img.resize((round(img.width * scale), round(img.height * scale)))
+        pen = ImageDraw.Draw(drawing)
+        font = ImageFont.load_default()
+        for k, o in mine:
+            colour = OUTLINE_COLOURS[(k - 1) % len(OUTLINE_COLOURS)]
+            pts = [(x * scale, y * scale) for x, y in o["points"]]
+            pen.line(pts + pts[:1], fill=(20, 20, 24), width=6)
+            pen.line(pts + pts[:1], fill=colour, width=3)
+            top = min(pts, key=lambda q: q[1])
+            pen.rectangle([top[0] - 2, top[1] - 18, top[0] + 18, top[1] - 4], fill=(20, 20, 24))
+            pen.text((top[0], top[1] - 17), str(k), fill=colour, font=font)
+            x0, y0, x1, y1 = _around(o["points"], img.size)
+            said.append(f"{k}. on {pic}, from ({x0}, {y0}) to ({x1}, {y1}): {o.get('height', record['height']):g} cells tall, "
+                        f"on {o.get('cells', [1, 1])[0]} x {o.get('cells', [1, 1])[1]} cells")
+        out = folder(root, rid) / f"outlines_{Path(pic).stem}.png"
+        drawing.save(out)
+        said.append(f"wrote {out.name}")
+    return said
 
 
 # ---------------------------------------------------------------- a closer look at a picture
@@ -690,10 +780,15 @@ def main(argv):
         height = option("--height")
         name = option("--name")
         notes = option("--notes", "")
-        if not name or len(argv) < 6:
-            print("split ID PICTURE X0 Y0 X1 Y1 --name NAME [--height H] [--notes \"what's only its\"]")
+        which = option("--outline")
+        if name and which and argv:
+            r = split_outlined(root, argv[0], int(which), name, notes)
+        elif not name or len(argv) < 6:
+            print("split ID PICTURE X0 Y0 X1 Y1 --name NAME [--height H] [--notes \"what's only its\"]\n"
+                  "split ID --outline K --name NAME [--notes \"what's only its\"]")
             return 1
-        r = split(root, argv[0], argv[1], [float(v) for v in argv[2:6]], name, height, notes)
+        else:
+            r = split(root, argv[0], argv[1], [float(v) for v in argv[2:6]], name, height, notes)
         print(f"{r['id']}: a new request, {r['name']}, {r['height']} cells, its picture {r['images'][0]} (private/requests/{r['id']}/)")
     elif verb == "lines":
         import request_lines as rl
@@ -709,6 +804,8 @@ def main(argv):
         except rl.LinesError as e:
             print(e)
             return 1
+    elif verb == "outlines":
+        print("\n".join(draw_outlines(root, argv[0])))
     elif verb == "colours":
         count = option("--count", "8")
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None

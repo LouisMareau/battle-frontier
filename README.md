@@ -687,7 +687,7 @@ trees; or floor set: a set of floor tiles, each a cell, laid to fit), its height
 it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
 to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
 100), notes, grass's and environment's **Variants** (how many more of it, each a prop of its
-own, with several of them of each drawing) and **What changes** (how they differ: its size,
+own, with Process multiple of each drawing) and **What changes** (how they differ: its size,
 its colours...; else as Claude sees fit), and "This design is mine or licensed" (off by default: the model of someone else's
 design goes to `temporary/`, never `content/`). A creature's **Draw the bones…** opens one of its
 pictures large to draw its bones over it, a colour per part (leg, arm, torso, head, ear, horn,
@@ -713,10 +713,12 @@ Variants and What changes too, and **Make variants**: a run from the model made 
 it is and adds that many variants, the style, the notes and the rest as they were (queued
 while another is being made); its panel lists the variants made. A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
-kind of asset (trees, bushes, rocks, plants) makes as many: tick "Several of them: one asset
-per drawing" and Start has each drawing made a request of its own (its crop, its name and
-height, the request's settings); **Make them all** then queues them, to be made one after
-another. **The queue**, over the list, makes requests one after another with no Start for each:
+kind of asset (trees, bushes, rocks, plants) makes as many: tick "Process multiple" and Start
+has each drawing made a request of its own (its crop, its name and height, the request's
+settings); **Outline the drawings…** first, to make only some: a window with the picture
+large, a line drawn round each drawing to make (a click a point, a right-click to close it),
+each with its own height and cells, its picture cut to its outline, the rest left out (none
+outlined: all of them); **Make them all** then queues them, to be made one after another. **The queue**, over the list, makes requests one after another with no Start for each:
 while one is being made, the others' Start is **Queue** (the lines' "go on" and "Make it
 again" are queued too, the note or comments going with them), and **Queue all waiting** puts
 every request waiting to be made in it, in the list's order; it shows the one being made, then
