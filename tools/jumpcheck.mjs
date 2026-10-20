@@ -2,7 +2,9 @@
 // level 1 with a ditch a level down along x 10, a pond south of it, a rise a level up north-east):
 // two clicks two cells apart over the ditch make a jump, both ways; one between cells it can't
 // join (onto the rise, into the pond) is refused, saying why; on foot, over the ditch and back,
-// in an arc; one way, there and never back, then turned round; a jump's end keeps its level
+// in an arc; down into the ditch off its edge (a ledge a level high: facing it, its arrow
+// again with Shift held; not without Shift, never back up); one way, there and never back,
+// then turned round; a jump's end keeps its level
 // under the brush (a cell away from it sinks); taken away with Delete and back with an undo; saved
 // in the map's record. Screenshots to screenshots/jump-*.png. Exits 1 when something fails.
 //     node tools/jumpcheck.mjs
@@ -143,8 +145,8 @@ try {
   await sleep(400);
   const ground = Number(await data('walkery'));
   // (its height through the jump: the most of it, sampled as it goes)
-  const jump = async (key, want, what, name) => {
-    await browser.key(key);
+  const jump = async (key, want, what, name, opts = {}) => {
+    await browser.key(key, opts);
     if (name) {
       await sleep(170);
       await shot(name);
@@ -162,6 +164,16 @@ try {
   const top = await jump('ArrowRight', '11,5', 'east over the ditch');
   check('  in an arc', top > ground + 0.3 && Math.abs(Number(await data('walkery')) - ground) < 0.05, `on ${ground.toFixed(2)}, up to ${top.toFixed(2)}, down on ${Number(await data('walkery')).toFixed(2)}`);
   await jump('ArrowLeft', '9,5', 'and back', '4-mid-jump');
+  // down a ledge a level high, away from the jump: the first arrow turns to face it, the
+  // next does nothing without Shift; with Shift held, down into the ditch, up a little first
+  await cmd('walkto:9,7');
+  await sleep(400);
+  await jump('ArrowRight', '9,7', 'a ledge: its arrow first turns to face it');
+  await jump('ArrowRight', '9,7', '  again without Shift: no jump');
+  const high = await jump('ArrowRight', '10,7', '  again with Shift held: down it', null, { shift: true });
+  const below = Number(await data('walkery'));
+  check('    up a little first, onto the level below', high > ground + 0.15 && Math.abs(below - (ground - levelHeight)) < 0.05, `on ${ground.toFixed(2)}, up to ${high.toFixed(2)}, down on ${below.toFixed(2)}`);
+  await jump('ArrowRight', '10,7', '  never back up, Shift or not', null, { shift: true });
   await press('uiWalk');
 
   // 4. one way: there, never back; turned round
