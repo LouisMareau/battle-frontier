@@ -334,6 +334,39 @@ impl Content {
         Ok(())
     }
 
+    /// Takes out the record a file under data/ holds ("<collection>/<id>.json", as `add` puts
+    /// one in): whether there was one (the browser: a record the editor removed).
+    pub fn remove_file(&mut self, path: &str) -> bool {
+        let Some((collection, id)) = path.strip_suffix(".json").and_then(|p| p.split_once('/')) else { return false };
+        macro_rules! go {
+            ($field:ident) => {
+                self.$field.remove(id).is_some()
+            };
+        }
+        match collection {
+            "types" => go!(types),
+            "creatures" => go!(creatures),
+            "moves" => go!(moves),
+            "abilities" => go!(abilities),
+            "items" => go!(items),
+            "natures" => go!(natures),
+            "growth_rates" => go!(growth_rates),
+            "egg_groups" => go!(egg_groups),
+            "regions" => go!(regions),
+            "encounters" => go!(encounters),
+            "parties" => go!(parties),
+            "settings" => go!(settings),
+            "terrains" => go!(terrains),
+            "props" => go!(props),
+            "maps" => go!(maps),
+            "spawns" => go!(spawns),
+            "worlds" => go!(worlds),
+            "templates" => go!(templates),
+            "fx" => go!(fx),
+            _ => false,
+        }
+    }
+
     /// Adds a bundle's records; returns how many. Unreadable records go to `problems`.
     pub fn add_bundle(&mut self, text: &str) -> Result<usize, String> {
         let bundle: Bundle = serde_json::from_str(text).map_err(|e| format!("bundle: {e}"))?;

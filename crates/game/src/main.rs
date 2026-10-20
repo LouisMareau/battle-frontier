@@ -18,6 +18,7 @@ mod director;
 mod editor;
 mod hud;
 mod input;
+mod keep;
 mod layout;
 mod mapedit;
 mod menu;

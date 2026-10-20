@@ -121,8 +121,8 @@ impl MapEditor {
         self.content = Arc::new(c);
     }
 
-    /// Writes the abilities changed here: into their space on the desktop, as downloads in
-    /// the browser.
+    /// Writes the abilities changed here: into their space on the desktop, kept in the
+    /// browser (or downloaded).
     pub(super) fn save_abilities(&mut self) {
         let ids: Vec<String> = self.abilities.dirty.keys().cloned().collect();
         let mut done = 0;
@@ -143,12 +143,13 @@ impl MapEditor {
         {
             for id in &ids {
                 let Some(e) = self.content.moves.entry(id) else { continue };
-                match crate::platform::download(&format!("{id}.json"), &content::to_text(&e.value)) {
-                    Ok(()) => done += 1,
+                match super::saving::browser_save_record(e.space, &e.value, &format!("{id}.json")) {
+                    Ok(_) => done += 1,
                     Err(err) => errors.push(err),
                 }
             }
-            self.status = format!("Downloaded {done} abilit{} (into <space>/data/moves/)", if done == 1 { "y" } else { "ies" });
+            let what = format!("{done} abilit{}", if done == 1 { "y" } else { "ies" });
+            self.status = if super::saving::keeps() { format!("Saved {what} in this browser") } else { format!("Downloaded {what} (into <space>/data/moves/)") };
         }
         if errors.is_empty() {
             self.abilities.dirty.clear();

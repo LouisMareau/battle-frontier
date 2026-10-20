@@ -675,8 +675,12 @@ impl Hub {
                 contents.insert(path, bytes.to_vec());
             }
         }
-        // squares of chunked maps saved (downloaded) here, against the site's
+        // the other files saved here (a big map's squares, models, FX sheets), against the
+        // site's
         for (path, bytes) in &site.saved {
+            if contents.contains_key(path) {
+                continue;
+            }
             if let Some(c) = file_change(path, bytes, site_file(path).await.as_deref()) {
                 changed.push(c);
                 contents.insert(path.clone(), bytes.clone());
@@ -835,8 +839,9 @@ fn project_root() -> PathBuf {
 pub(super) type Source = PathBuf;
 
 /// What a survey reads in the browser: the editor's records as they are now, its files (the
-/// models dropped on the page among them), and the other files saved (downloaded) here by
-/// their paths in the repository (a chunked map's squares).
+/// models dropped on the page among them), and the other files saved here (kept by the
+/// browser, or saved since the page opened when it downloads them) by their paths in the
+/// repository (a chunked map's squares, models, FX sheets).
 #[cfg(target_arch = "wasm32")]
 pub(super) struct Site {
     pub content: Arc<content::Content>,
@@ -896,10 +901,6 @@ pub(super) struct Publisher {
     pub kept: Option<PathBuf>,
     #[cfg(not(target_arch = "wasm32"))]
     pub root: Option<PathBuf>,
-    /// the browser: files saved (downloaded) here besides records, by their paths in the
-    /// repository (a chunked map's squares)
-    #[cfg(target_arch = "wasm32")]
-    pub saved: BTreeMap<String, Vec<u8>>,
     /// the kept sign-in read
     pub loaded: bool,
     /// GitHub (stand-ins in the tests and the checks)
@@ -929,8 +930,6 @@ impl Default for Publisher {
             kept: kept_path(),
             #[cfg(not(target_arch = "wasm32"))]
             root: None,
-            #[cfg(target_arch = "wasm32")]
-            saved: BTreeMap::new(),
             loaded: false,
             api: "https://api.github.com".into(),
             // the browser signs in through the site's own address (functions/github/login/)
@@ -1235,7 +1234,7 @@ fn token_part(ui: &mut egui::Ui, s: &mut Signing) -> bool {
 }
 
 /// A size, short.
-fn size(n: u64) -> String {
+pub(super) fn size(n: u64) -> String {
     match n {
         0..1024 => format!("{n} B"),
         1024..1_048_576 => format!("{:.1} KB", n as f64 / 1024.0),
@@ -1311,15 +1310,16 @@ impl MapEditor {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            Site { content: self.content.clone(), files: self.files.clone(), saved: self.publisher.saved.clone() }
+            // the files besides records saved here (`crate::keep`)
+            let saved = crate::keep::files()
+                .into_iter()
+                .filter_map(|(path, k)| match k {
+                    crate::keep::Kept::File(b) if crate::keep::record_of(&path).is_none() => Some((path, b.to_vec())),
+                    _ => None,
+                })
+                .collect();
+            Site { content: self.content.clone(), files: self.files.clone(), saved }
         }
-    }
-
-    /// The browser: a file saved (downloaded) besides the records, kept to be published (a
-    /// chunked map's square), by its path in the repository.
-    #[cfg(target_arch = "wasm32")]
-    pub(super) fn saved_for_publish(&mut self, path: String, bytes: Vec<u8>) {
-        self.publisher.saved.insert(path, bytes);
     }
 
     /// The checks: GitHub at a stand-in (`base`: its address, the API under base/api).

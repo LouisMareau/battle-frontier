@@ -88,7 +88,7 @@ node tools/floorcheck.mjs              # floors laid with a set of tiles: a hous
 node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/levelcheck.mjs              # painting levels: the brush on the cell under the pointer, on its own ground, whatever the level picked (raised from the lowland, sunk from a hill's top), a stroke held still painting its own cells and no more, ground raised to meet a hill's top joining it with no seam, saved
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
-node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (its sign-in starting with a token, signed in by a code instead, the start saved sent as a pull request from a fork, signed out; a code GitHub keeps turning away given up on, a token pasted)
+node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (its sign-in starting with a token, signed in by a code instead, the start saved sent as a pull request from a fork, signed out; a code GitHub keeps turning away given up on, a token pasted), and what the editor saves kept in the browser (nothing downloaded: a cell painted saved by itself, all of it there when the page opens again, listed in "Saved in this browser", one zip of it, then forgotten)
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, always a main, the last battles, View all's board of cards (its order, sorts, a type, a card's pin, a creature's details and moves, one lost for good), a controller; the pixelation (as dense as asked, with the camera's zoom: hook `pixelzoom`) and LCD, an Options category closed and opened
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
@@ -310,8 +310,8 @@ maps).
   building or actor takes that one. Drag one from Select's list onto the map (any map) and a
   copy goes down there: on the ground there, ids made unique on that map (Bo comes back as
   `bo_2`, his events too), the scripts' cells moved along and their actors renamed; it's
-  refused off the map or onto another building. Ctrl+S saves the templates changed (a
-  download in the browser); a template naming placeholders is kept in `temporary/`.
+  refused off the map or onto another building. Ctrl+S saves the templates changed (kept
+  in the browser); a template naming placeholders is kept in `temporary/`.
   Dragging a prop from the asset browser onto the map puts it down too.
 - **Stairs** take the walker up: standing in front of a flight's bottom step and walking
   the way it rises, it climbs to the floor above (or out onto a flat roof), the building
@@ -555,7 +555,7 @@ each with a flipbook of hand-drawn frames; the **Drawing** window paints the fra
 (brushes, colours, an eraser, undo, the frame before copied), the frames before and after
 ghosted, and plays them; "Export the flipbooks" packs every mesh's frames at a smaller
 size (what the game draws; the drawn frames stay as the source). Abilities and FX save with
-Ctrl+S (the browser downloads them). In battle an ability with a timeline plays it instead of
+Ctrl+S (the browser keeps them). In battle an ability with a timeline plays it instead of
 the engine's own animation (`world::timeline` is the maths both read): the stage runs its
 motions, FX, sounds and camera, and its first input clip is the timing read (a tap, cast or
 block at the beat with the clip's window, a charge over the clip, a rhythm of its beats); a
@@ -564,15 +564,31 @@ foe's ability asks the player to block at that beat; the ability lands at the cl
 pieces on a grid (the map being edited lit), seams green where the levels match and crimson
 where they don't; drag a map in from the list, drag pieces into place (they snap to cells),
 double-click a piece to edit that map, "New world" starts one with this map, "Save world"
-writes `content/data/worlds/<id>.json` (a download in the browser). A map in a world is
+writes `content/data/worlds/<id>.json` (kept in the browser). A map in a world is
 never alone: the other pieces within the camera's reach are drawn where they lie, streamed
 square by square like the open map, a little darker in the editor (the status bar names the
 one under the pointer; a double-click edits it, the view staying put), their lamps lighting
 across. At a seam on one level there's no cliff, and terrain borders and patterns run on
 from one map into the next. Walk crosses into the next map at a matching seam without a
 pause: it becomes the open map, the one before a map around it, nothing reloaded and
-nothing moving on the screen (the map must be saved first). Save writes `content/data/maps/<id>.json` on the desktop; the browser downloads the
-file. Maps made here are the game's own content.
+nothing moving on the screen (the map must be saved first). Save writes `content/data/maps/<id>.json` on the desktop; the browser keeps it
+(below). Maps made here are the game's own content.
+
+**Auto-save**, next to Save, saves what's changed a moment (1.5 s) after the last click, key
+or drag, with nothing held and nothing being typed into (a name half typed isn't a new
+file): the map and its creatures, the world, the props, the world settings, the abilities,
+the FX and the templates, new ones too, as each has its place in the project. It's on in the
+browser, and on the desktop once ticked there (it writes into the project's folders; the
+choice is kept). **In the browser** nothing asks where to save: each file is kept in the
+browser's own storage (IndexedDB, `crates/game/src/keep.rs`) at its place in the project
+(`content/data/maps/<id>.json`, a map's squares, a model, an FX sheet; a template deleted is
+kept as removed), laid over the site's content whenever the page opens (the game plays it
+too), and dropped once the site has the same record. Publish sends it; the Menu's **Saved in
+this browser** lists it, downloads it as one zip (each file at its place) or forgets it all
+(the page then opens again on the site's own). With `?saves=downloads` in the address, or in
+a browser that keeps nothing, saving downloads each file instead, as the checks that read
+downloads ask (`data-keeping`, `data-kept`, `data-keptwindow` and `data-autosave` for the
+checks; the `kept:<path>` page command puts a kept file's text in `data-keptfile`).
 
 **Assets** (in the top bar, or drop a file on the window) is the asset browser: every prop
 of both spaces as a detailed list, with its GAME or TEMPORARY tag, category, size, model or
@@ -583,7 +599,7 @@ click a row to use it (the Place tool, or a building's Inside or Outside list wh
 that folder); "light" on a row opens the prop's light (colour, intensity, range, cone, where
 it sits and points) or gives it one; drop `.glb` files on a folder and each becomes a prop there, its footprint and
 height measured from the model: written at once on the desktop (`content/`, or `temporary/`
-with the box ticked), kept until Save in the browser (its record and model download). On the
+with the box ticked), kept until saved in the browser (its record and model with it). On the
 desktop, `data/props` and `assets/models` of both spaces are watched: a record or model
 changed there (the Blender add-on's Add to project, a re-export) shows within a second.
 

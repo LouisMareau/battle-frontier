@@ -25,6 +25,7 @@ mod publish;
 mod ramps;
 mod requests;
 mod rooms;
+mod saving;
 mod sounds;
 mod stream;
 mod templates;
@@ -209,6 +210,10 @@ pub struct MapEditor {
     start_pick: welcome::StartPick,
     /// signed in with GitHub, and what's published as a pull request (the top bar's Publish)
     publisher: publish::Publisher,
+    /// saving by itself (the top bar's Auto-save), and "Saved in this browser" (the Menu's, in
+    /// the browser)
+    autosave: saving::Autosave,
+    kept_window: saving::KeptWindow,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -463,6 +468,8 @@ impl MapEditor {
             floorer: floors::Floorer::default(),
             start_pick: Default::default(),
             publisher: Default::default(),
+            autosave: Default::default(),
+            kept_window: Default::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -893,10 +900,49 @@ impl MapEditor {
     }
 
     fn save(&mut self) {
+        self.save_some(true);
+    }
+
+    /// Saves the map (`map`: Ctrl+S always does; saving by itself when it's changed) with its
+    /// creatures, then whatever else has changed: the props, the world settings, the
+    /// abilities, the FX, the templates. What was saved goes in the status line.
+    fn save_some(&mut self, map: bool) {
+        let mut said = vec![];
+        if map {
+            if !self.save_map() {
+                return;
+            }
+            said.push(std::mem::take(&mut self.status));
+            if let Some(note) = self.save_spawns() {
+                said.push(note);
+            }
+        }
+        let parts = [
+            (self.assets.changed() > 0, Self::save_assets as fn(&mut Self)),
+            (self.post_changed(), Self::save_post),
+            (!self.abilities.dirty.is_empty(), Self::save_abilities),
+            (!self.tl.fx_dirty.is_empty(), Self::save_fx),
+            (!self.tpl.dirty.is_empty(), Self::save_templates),
+        ];
+        for (changed, save) in parts {
+            if changed {
+                save(self);
+                said.push(std::mem::take(&mut self.status));
+            }
+        }
+        said.retain(|s| !s.is_empty());
+        if !said.is_empty() {
+            self.status = said.join(" · ");
+        }
+    }
+
+    /// Writes the map (a chunked one's squares too): false when it isn't (the status line says
+    /// why).
+    fn save_map(&mut self) -> bool {
         let (record, chunks) = self.map.records();
         if !slug_ok(&record.id) {
             self.status = format!("Not saved: the id \"{}\" must be lowercase letters, digits, _ or -", record.id);
-            return;
+            return false;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -913,7 +959,7 @@ impl MapEditor {
                 Ok(msg) => self.status = msg,
                 Err(e) => {
                     self.status = format!("Not saved: {e}");
-                    return;
+                    return false;
                 }
             }
             // the next opening reads the files as they are now
@@ -926,22 +972,41 @@ impl MapEditor {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            const JSON: &str = "application/json";
+            let dir = Space::Content.dir();
             let name = format!("{}.json", record.id);
-            let mut result = crate::platform::download(&name, &content::to_text(&record));
+            let mut result = saving::browser_save(&format!("{dir}/data/maps/{name}"), &name, content::to_text(&record).into_bytes(), JSON);
+            let mut squares = 0;
             for c in &chunks {
-                if result.is_ok() {
-                    let text = content::to_text(c);
-                    result = crate::platform::download(&format!("{}_{}.json", c.chunk[0], c.chunk[1]), &text);
-                    // kept for Publish too (the records are in the content already)
-                    self.saved_for_publish(format!("{}/{}", Space::Content.dir(), Chunk::path(&record.id, c.chunk[0], c.chunk[1])), text.into_bytes());
+                if result.is_err() {
+                    break;
+                }
+                let path = format!("{dir}/{}", Chunk::path(&record.id, c.chunk[0], c.chunk[1]));
+                let bytes = content::to_text(c).into_bytes();
+                // kept: a square just as the site (or this browser) has it stays as it is
+                if saving::keeps() && self.files.peek(&path).is_some_and(|b| *b == bytes) {
+                    continue;
+                }
+                squares += 1;
+                self.files.insert(&path, bytes.clone());
+                result = saving::browser_save(&path, &format!("{}_{}.json", c.chunk[0], c.chunk[1]), bytes, JSON);
+            }
+            // the squares kept here that the map hasn't any more (it's smaller now)
+            if saving::keeps() {
+                let ours = format!("{dir}/data/maps/{}/", record.id);
+                let now: std::collections::HashSet<String> = chunks.iter().map(|c| format!("{dir}/{}", Chunk::path(&record.id, c.chunk[0], c.chunk[1]))).collect();
+                for path in crate::keep::files().into_keys().filter(|p| p.starts_with(&ours) && !now.contains(p)) {
+                    crate::keep::forget(&path);
                 }
             }
             match result {
-                Ok(()) if chunks.is_empty() => self.status = format!("Downloaded {name}: put it in content/data/maps/"),
-                Ok(()) => self.status = format!("Downloaded {name} (for content/data/maps/) and {} chunk files (for content/data/maps/{}/)", chunks.len(), record.id),
+                Ok(true) if squares > 0 => self.status = format!("Saved {} in this browser, with {squares} of its squares", record.id),
+                Ok(true) => self.status = format!("Saved {} in this browser", record.id),
+                Ok(false) if chunks.is_empty() => self.status = format!("Downloaded {name}: put it in content/data/maps/"),
+                Ok(false) => self.status = format!("Downloaded {name} (for content/data/maps/) and {} chunk files (for content/data/maps/{}/)", chunks.len(), record.id),
                 Err(e) => {
                     self.status = format!("Not saved: {e}");
-                    return;
+                    return false;
                 }
             }
         }
@@ -951,34 +1016,7 @@ impl MapEditor {
         self.content = Arc::new(c);
         self.space = Space::Content;
         self.dirty = false;
-        if let Some(note) = self.save_spawns() {
-            self.status = format!("{} · {note}", self.status);
-        }
-        if self.assets.changed() > 0 {
-            let map = self.status.clone();
-            self.save_assets();
-            self.status = format!("{map} · {}", self.status);
-        }
-        if self.post_changed() {
-            let map = self.status.clone();
-            self.save_post();
-            self.status = format!("{map} · {}", self.status);
-        }
-        if !self.abilities.dirty.is_empty() {
-            let map = self.status.clone();
-            self.save_abilities();
-            self.status = format!("{map} · {}", self.status);
-        }
-        if !self.tl.fx_dirty.is_empty() {
-            let map = self.status.clone();
-            self.save_fx();
-            self.status = format!("{map} · {}", self.status);
-        }
-        if !self.tpl.dirty.is_empty() {
-            let map = self.status.clone();
-            self.save_templates();
-            self.status = format!("{map} · {}", self.status);
-        }
+        true
     }
 
     // ------------------------------------------------------------ the GPU
@@ -1342,6 +1380,7 @@ impl MapEditor {
             self.requests.watch(now);
         }
         self.keys(&ctx);
+        self.autosave(&ctx);
         // the layout told what the panels' own flags say (an ability's Timeline opens its
         // panel, say)
         self.layout_as_opened();
@@ -1363,7 +1402,9 @@ impl MapEditor {
                 ui.separator();
                 self.map_picker(ui);
                 ui.separator();
-                let (save, about) = if cfg!(target_arch = "wasm32") {
+                let (save, about) = if saving::keeps() {
+                    ("Save", "Ctrl+S · kept in this browser, at content/data/maps/<id>.json (the Menu's Saved in this browser): Publish sends it")
+                } else if cfg!(target_arch = "wasm32") {
                     ("Download", "Ctrl+S · downloads the map: put it in content/data/maps/")
                 } else {
                     ("Save", "Ctrl+S · writes content/data/maps/<id>.json")
@@ -1373,6 +1414,7 @@ impl MapEditor {
                 if s.clicked() {
                     self.save();
                 }
+                self.autosave_toggle(ui);
                 if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
                     self.undo();
                 }
@@ -1515,6 +1557,8 @@ impl MapEditor {
         });
         self.welcome_modal(&ctx);
         self.publish_window(&ctx);
+        #[cfg(target_arch = "wasm32")]
+        self.kept_window(&ctx);
         self.dock.keep(now);
         self.end_frame(&ctx, audio, now);
         crate::platform::set_hook("mapsize", &format!("{}x{}", self.map.width, self.map.height));

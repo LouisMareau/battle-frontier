@@ -101,7 +101,8 @@ const mismatches = (cells) => {
 try {
   await browser.viewport(1400, 900);
   await browser.downloadsTo(downloads);
-  await browser.goto(`http://127.0.0.1:${server.address().port}/index.html`);
+  // saving downloads each file here, as this check reads them (the browser keeps them otherwise)
+  await browser.goto(`http://127.0.0.1:${server.address().port}/index.html?saves=downloads`);
   await browser.waitFor('document.body.dataset.state === "menu"', { timeout: 90000, what: 'the menu' });
   await cmd('map:floor_test');
   await browser.waitFor('document.body.dataset.state === "maps" && document.body.dataset.map === "floor_test"', { timeout: 60000, what: 'the test map' });

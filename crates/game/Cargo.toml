@@ -28,14 +28,17 @@ serde.workspace = true
 serde_json.workspace = true
 # Publish: the files sent to GitHub, in base64
 base64 = "0.22"
+# the browser's saves as one zip (Saved in this browser): each file's checksum
+crc32fast = "1"
 
-# The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>
+# The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>, the
+# editor's saves kept in the browser (IndexedDB)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 ehttp = "0.7"
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringMap", "Element", "GainNode", "Gamepad", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "Navigator", "Performance", "Storage", "Url", "Window"] }
+web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode", "AudioContext", "AudioContextState", "AudioDestinationNode", "AudioNode", "AudioParam", "AudioScheduledSourceNode", "BaseAudioContext", "Blob", "BlobPropertyBag", "Document", "DomStringList", "DomStringMap", "Element", "Event", "EventTarget", "GainNode", "Gamepad", "HtmlAnchorElement", "HtmlCanvasElement", "HtmlElement", "IdbDatabase", "IdbFactory", "IdbObjectStore", "IdbOpenDbRequest", "IdbRequest", "IdbTransaction", "IdbTransactionMode", "IdbVersionChangeEvent", "Location", "Navigator", "Performance", "Storage", "StorageManager", "Url", "Window"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # Publish: GitHub's API over HTTPS (ureq and rustls underneath), the files' ids as git names them

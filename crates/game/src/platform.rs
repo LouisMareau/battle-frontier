@@ -173,6 +173,15 @@ impl Files {
         self.done(path, Ok(bytes));
     }
 
+    /// A file here already (read, or put in by hand), without asking for it.
+    #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
+    pub fn peek(&self, path: &str) -> Option<Arc<Vec<u8>>> {
+        match self.slots.lock().unwrap().get(path) {
+            Some(Slot::Ready(b)) => Some(b.clone()),
+            _ => None,
+        }
+    }
+
     /// Forgets a file, so the next `get` reads it again (it changed on disk).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     pub fn forget(&self, path: &str) {
@@ -287,26 +296,6 @@ pub fn hook(key: &str) -> Option<String> {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 pub fn clear_hooks() {
     HOOKS.with(|hooks| hooks.borrow_mut().clear());
-}
-
-/// Saves a text file through the browser (a download).
-#[cfg(target_arch = "wasm32")]
-pub fn download(name: &str, text: &str) -> Result<(), String> {
-    use wasm_bindgen::JsCast;
-    let err = |e: wasm_bindgen::JsValue| format!("{e:?}");
-    let parts = js_sys::Array::new();
-    parts.push(&wasm_bindgen::JsValue::from_str(text));
-    let bag = web_sys::BlobPropertyBag::new();
-    bag.set_type("application/json");
-    let blob = web_sys::Blob::new_with_str_sequence_and_options(&parts, &bag).map_err(err)?;
-    let url = web_sys::Url::create_object_url_with_blob(&blob).map_err(err)?;
-    let document = web_sys::window().and_then(|w| w.document()).ok_or("no document")?;
-    let a: web_sys::HtmlAnchorElement = document.create_element("a").map_err(err)?.dyn_into().map_err(|_| "no anchor".to_string())?;
-    a.set_href(&url);
-    a.set_download(name);
-    a.click();
-    let _ = web_sys::Url::revoke_object_url(&url);
-    Ok(())
 }
 
 /// Saves a binary file through the browser (a download).

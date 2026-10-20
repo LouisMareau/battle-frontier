@@ -86,6 +86,10 @@ impl MapEditor {
             if item(ui, "Test battles", "uiTestBattles", "Any encounter, to try it") {
                 to = Some(Leave::Battles);
             }
+            // the browser: what's been saved there
+            if cfg!(target_arch = "wasm32") && item(ui, "Saved in this browser", "uiKept", "What you've saved here, each file at its place in the project: as one zip, or forgotten") {
+                self.kept_window.open = true;
+            }
             ui.separator();
             if item(ui, "About the editor", "uiAboutEditor", "What the editor is, and how what you make gets into the game") {
                 self.welcome = true;
@@ -115,7 +119,7 @@ impl MapEditor {
             line(ui, "This is what Battle Frontier is made with: its maps, props, creatures, abilities and battles.");
             line(ui, "Anyone can add to the game. Make something here, then send it as a pull request on GitHub: once it's reviewed and merged, everyone plays it.");
             let keep = if cfg!(target_arch = "wasm32") {
-                "In the browser, saving downloads each file, and Publish, in the top bar, sends what you've saved as a pull request once you've signed in with GitHub."
+                "In the browser, what you make is saved in this browser by itself, a moment after you stop (the Menu's Saved in this browser lists it), and Publish, in the top bar, sends it as a pull request once you've signed in with GitHub."
             } else {
                 "What you save goes into the project's folders, and stays on your computer until you publish it: Publish, in the top bar, sends it as a pull request once you've signed in with GitHub."
             };
@@ -295,8 +299,13 @@ impl MapEditor {
             content::disk::save(&root, space, &record).map(|path| format!("New games start here ({}, {}): {}", start.at[0], start.at[1], path.display()))
         };
         #[cfg(target_arch = "wasm32")]
-        let saved = crate::platform::download("world.json", &content::to_text(&record))
-            .map(|()| format!("New games start here ({}, {}): world.json downloaded, for {}/data/settings/", start.at[0], start.at[1], space.dir()));
+        let saved = super::saving::browser_save_record(space, &record, "world.json").map(|kept| {
+            if kept {
+                format!("New games start here ({}, {}): saved in this browser", start.at[0], start.at[1])
+            } else {
+                format!("New games start here ({}, {}): world.json downloaded, for {}/data/settings/", start.at[0], start.at[1], space.dir())
+            }
+        });
         match saved {
             Ok(said) => {
                 let mut c = (*self.content).clone();

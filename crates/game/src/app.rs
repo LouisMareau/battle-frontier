@@ -406,6 +406,9 @@ impl GameApp {
                 files.request(&format!("{}/bundle.json", space.dir()));
             }
         }
+        // what this browser kept of the editor's saves, read while the bundles come
+        #[cfg(target_arch = "wasm32")]
+        crate::keep::start(&cc.egui_ctx);
         // the options as the player left them, then what the command line says
         let mut options = Options::default();
         if let Some(kept) = platform::stored_text(OPTIONS_NAME).and_then(|t| serde_json::from_str::<KeptOptions>(&t).ok()) {
@@ -440,6 +443,9 @@ impl GameApp {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            if crate::keep::keeping() == crate::keep::Keeping::Loading {
+                return;
+            }
             let mut texts = vec![];
             for space in Space::ALL {
                 match self.files.get(&format!("{}/bundle.json", space.dir())) {
@@ -449,7 +455,15 @@ impl GameApp {
                 }
             }
             let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
-            self.set_content(content::from_bundles(&refs));
+            let mut content = content::from_bundles(&refs);
+            // the editor's saves this browser kept, over the site's (what the site has just
+            // the same is forgotten: the game has it now)
+            if crate::keep::keeping() == crate::keep::Keeping::Ready {
+                for path in crate::keep::lay_over(&mut content, &self.files, &crate::keep::files()) {
+                    crate::keep::forget(&path);
+                }
+            }
+            self.set_content(content);
         }
     }
 
@@ -1068,6 +1082,17 @@ impl GameApp {
                     if let Some(ed) = self.editor_mut() {
                         ed.github_at(arg);
                     }
+                }
+                // the checks: a file this browser kept (`data-keptfile`: its text, "removed",
+                // or nothing)
+                #[cfg(target_arch = "wasm32")]
+                "kept" => {
+                    let text = match crate::keep::files().get(arg) {
+                        Some(crate::keep::Kept::File(b)) => String::from_utf8_lossy(b).to_string(),
+                        Some(crate::keep::Kept::Removed) => "removed".to_string(),
+                        None => String::new(),
+                    };
+                    platform::set_hook("keptfile", &text);
                 }
                 "walkto" => {
                     if let (Some(ed), Some((x, z))) = (self.editor_mut(), arg.split_once(',')) {

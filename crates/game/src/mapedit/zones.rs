@@ -540,7 +540,7 @@ impl MapEditor {
         #[cfg(target_arch = "wasm32")]
         let saved = {
             let name = format!("{}.spawns.json", self.spawns.id);
-            crate::platform::download(&name, &content::to_text(&self.spawns)).map(|_| format!("{name} (put it in {}/data/spawns/{}.json)", space.dir(), self.spawns.id))
+            super::saving::browser_save_record(space, &self.spawns, &name).map(|kept| if kept { "this browser".to_string() } else { format!("{name} (put it in {}/data/spawns/{}.json)", space.dir(), self.spawns.id) })
         };
         let mut c = (*self.content).clone();
         c.spawns.put(self.spawns.clone(), space);

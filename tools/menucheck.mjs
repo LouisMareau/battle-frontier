@@ -8,10 +8,13 @@
 // faces), marked there, turned, and in the World view; then Publish in the browser, against a
 // stand-in for GitHub on the page's own address: its sign-in starting with a token, signed in
 // by a code instead, the start saved sent as a pull request from a fork; then a code GitHub
-// keeps turning away, given up on, and a token pasted.
+// keeps turning away, given up on, and a token pasted. And what the editor saves, kept in the
+// browser (nothing downloaded): a cell painted saved by itself a moment after, all of it kept
+// through the page opening again, listed in the Menu's "Saved in this browser", downloaded as
+// one zip, then forgotten.
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
@@ -102,11 +105,24 @@ const cellAt = async ([x, y]) => {
   await sleep(250);
   return (await data('groundcell')).split(',').slice(0, 2).join(',');
 };
-// the world.json downloaded last (the browser numbers the ones after the first)
-const lastWorld = () => {
-  const files = readdirSync(downloads).filter((f) => /^world.*\.json$/.test(f)).map((f) => join(downloads, f));
-  files.sort((a, b) => statSync(a).mtimeMs - statSync(b).mtimeMs);
-  return files.length ? JSON.parse(readFileSync(files[files.length - 1], 'utf8')) : {};
+// a file the browser kept of the editor's saves (`kept:` page command): its text, or ''
+const keptFile = async (path) => {
+  await cmd(`kept:${path}`);
+  return data('keptfile');
+};
+const keptWorld = async () => JSON.parse((await keptFile('content/data/settings/world.json')) || '{}');
+// the files' names in a zip, from the list at its end
+const zipNames = (zip) => {
+  const end = zip.length - 22;
+  if (end < 0 || zip.readUInt32LE(end) !== 0x06054b50) return [];
+  const names = [];
+  let at = zip.readUInt32LE(end + 16);
+  for (let i = 0; i < zip.readUInt16LE(end + 10); i++) {
+    const len = zip.readUInt16LE(at + 28);
+    names.push(zip.toString('utf8', at + 46, at + 46 + len));
+    at += 46 + len + zip.readUInt16LE(at + 30) + zip.readUInt16LE(at + 32);
+  }
+  return names;
 };
 const state = (s, what) => browser.waitFor(`document.body.dataset.state === ${JSON.stringify(s)}`, { timeout: 30000, what });
 const load = async () => {
@@ -283,12 +299,12 @@ try {
   // 7. "Start new games here": the map panel's, where the view looks
   await cmd('view:12.5,20.5');
   await sleep(400);
+  const siteStart = await data('start');
   await press('uiStartHere');
   await sleep(600);
   check('"Start new games here": the cell in the middle of the view', (await data('start')) === 'test_meadow:12,20', await data('start'));
-  const file = join(downloads, 'world.json');
-  const world = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
-  check('  world.json downloaded with it (the browser can\'t write the project)', world.start?.map === 'test_meadow' && world.start?.at?.join(',') === '12,20', JSON.stringify(world.start));
+  const world = await keptWorld();
+  check('  kept in this browser with it, at content/data/settings/world.json (nothing downloaded)', world.start?.map === 'test_meadow' && world.start?.at?.join(',') === '12,20' && readdirSync(downloads).length === 0, `${JSON.stringify(world.start)}; downloaded: ${readdirSync(downloads).join(', ')}`);
   await shot('9-start-here');
 
   // 8. picked on the map: a cell clicked (facing as it was), marked there; then dragged from
@@ -308,12 +324,13 @@ try {
   await browser.drag([from, to]);
   await sleep(600);
   check('  dragged east from a cell: there, facing east', (await data('start')) === `test_meadow:${dragged}` && (await data('startfacing')) === 'east', `${await data('start')} ${await data('startfacing')} (from ${dragged})`);
-  const picked = lastWorld();
-  check('  world.json downloaded with it: one start, facing east (270)', picked.start?.map === 'test_meadow' && picked.start?.at?.join(',') === dragged && picked.start?.facing === 270, JSON.stringify(picked.start));
+  const picked = await keptWorld();
+  check('  kept with it: one start, facing east (270)', picked.start?.map === 'test_meadow' && picked.start?.at?.join(',') === dragged && picked.start?.facing === 270, JSON.stringify(picked.start));
   await shot('10-start-picked');
   await press('uiStartFacing');
   await sleep(500);
-  check('  "Facing" turned a quarter clockwise: east to south', (await data('startfacing')) === 'south' && lastWorld().start?.facing === 0, `${await data('startfacing')} ${JSON.stringify(lastWorld().start)}`);
+  const turned = await keptWorld();
+  check('  "Facing" turned a quarter clockwise: east to south', (await data('startfacing')) === 'south' && turned.start?.facing === 0, `${await data('startfacing')} ${JSON.stringify(turned.start)}`);
   await press('uiStartPick');
   await browser.key('Escape');
   await sleep(300);
@@ -387,6 +404,55 @@ try {
   check('  a token pasted instead: GitHub asked with it, the sign-in kept', asked.some((a) => a.at === 'api/user' && a.auth === 'Bearer ghp_pasted') && keptToken === 'ghp_pasted', keptToken);
   await press('uiSignIn');
   await press('uiSignOut');
+
+  // 10. saved in this browser, by itself: the page opened again on what was kept (the start
+  // picked above, over the site's); a cell painted saved a moment after (Auto-save), nothing
+  // downloaded; the Menu's "Saved in this browser": the files at their places, one zip of
+  // them; then forgotten, the page opening on the site's own content again
+  await load();
+  await press('uiEditor');
+  await state('maps', 'the editor again');
+  await sleep(1500);
+  check('Saved in this browser: the page opened again on what was kept (the start picked above)', (await data('keeping')) === 'ready' && (await data('start')) === `test_meadow:${dragged}` && (await data('startfacing')) === 'south', `${await data('keeping')}: ${await data('start')} ${await data('startfacing')}`);
+  check('  Auto-save on in the browser', (await data('autosave')) === 'on', await data('autosave'));
+  // room for the map and the Toolbox: the World and Assets panels (opened above, kept) closed
+  for (const [pane, mark] of [['world', 'uiWorld'], ['assets', 'uiAssets']]) {
+    const placed = (await data('layout')).split(' ').find((p) => p.startsWith(`${pane}=`))?.split('=')[1];
+    if (placed && placed !== '-') await press(mark);
+  }
+  await sleep(500);
+  await browser.click(700, 889); // the status bar: the canvas has the keyboard
+  await press('uiTerrain_dirt');
+  const spot = await point(5.5, 0, 5.5);
+  const painted = (await cellAt(spot)).split(',').map(Number);
+  await browser.click(...spot);
+  await sleep(250);
+  check('  a cell painted: changed, not saved yet', (await data('dirty')) === '1', await data('dirty'));
+  await browser.move(700, 450);
+  await browser.waitFor('document.body.dataset.dirty === "0"', { timeout: 10000, what: 'saved by itself' });
+  const keptMap = JSON.parse((await keptFile('content/data/maps/test_meadow.json')) || '{}');
+  const char = keptMap.terrain?.[painted[1]]?.[painted[0]];
+  check('  saved by itself a moment after: the map kept, its cell dirt, nothing downloaded', keptMap.legend?.[char] === 'dirt' && readdirSync(downloads).length === 0, `${painted} ${char} -> ${keptMap.legend?.[char]}; downloaded: ${readdirSync(downloads).join(', ')}`);
+  await press('uiEditorMenu');
+  await press('uiKept');
+  await sleep(500);
+  const keptList = (await data('kept')).split(';');
+  check('  "Saved in this browser" (the Menu): the files kept, at their places', (await data('keptwindow')) === 'open' && keptList.includes('content/data/maps/test_meadow.json') && keptList.includes('content/data/settings/world.json'), keptList.join(', '));
+  await shot('17-saved-here');
+  await press('uiKeptZip');
+  const zipFile = join(downloads, 'battle-frontier-saved.zip');
+  for (let i = 0; i < 40 && !existsSync(zipFile); i++) await sleep(200);
+  await sleep(300);
+  const names = existsSync(zipFile) ? zipNames(readFileSync(zipFile)) : [];
+  check('  as one zip: each file at its place in the project', names.includes('content/data/maps/test_meadow.json') && names.includes('content/data/settings/world.json'), names.join(', '));
+  await press('uiKeptForget');
+  await press('uiKeptForgetYes');
+  await state('menu', 'the page opened again, nothing kept');
+  await sleep(600);
+  await press('uiEditor');
+  await state('maps', 'the editor on the site\'s own');
+  await sleep(1500);
+  check('  forgotten: nothing kept, the site\'s own start again', (await data('kept')) === '' && (await data('start')) === siteStart, `${await data('kept')} | ${await data('start')} (the site's ${siteStart})`);
 
   if (browser.errors.length) {
     failed++;

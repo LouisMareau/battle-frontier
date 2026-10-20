@@ -51,7 +51,8 @@ const rewrite = (path, body) => {
 
 const server = await serve(0, { rewrite });
 const browser = await Browser.launch({ width: 1400, height: 900, port: 9513, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu', '--mute-audio'] });
-const url = `http://127.0.0.1:${server.address().port}/index.html`;
+// saving downloads each file here, as this check reads them (the browser keeps them otherwise)
+const url = `http://127.0.0.1:${server.address().port}/index.html?saves=downloads`;
 const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(key)}] ?? ''`);
 const cmd = async (c) => {
   await browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringify(c)}, true)`);

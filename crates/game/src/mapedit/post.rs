@@ -246,7 +246,13 @@ impl MapEditor {
             content::disk::save(&root, space, &record).map(|path| format!("Saved the toon look and the wind into {}", path.display()))
         };
         #[cfg(target_arch = "wasm32")]
-        let saved = crate::platform::download("world.json", &content::to_text(&record)).map(|()| format!("Downloaded world.json: the toon look and the wind, for {}/data/settings/", space.dir()));
+        let saved = super::saving::browser_save_record(space, &record, "world.json").map(|kept| {
+            if kept {
+                "Saved the toon look and the wind in this browser".to_string()
+            } else {
+                format!("Downloaded world.json: the toon look and the wind, for {}/data/settings/", space.dir())
+            }
+        });
         match saved {
             Ok(said) => {
                 let mut c = (*self.content).clone();

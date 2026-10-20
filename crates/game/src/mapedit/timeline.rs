@@ -995,7 +995,7 @@ impl MapEditor {
     }
 
     /// Writes the FX changed here: records and the sheets drawn on, into their space on
-    /// the desktop, as downloads in the browser.
+    /// the desktop, kept in the browser (or downloaded).
     pub(super) fn save_fx(&mut self) {
         let ids: Vec<String> = self.tl.fx_dirty.iter().cloned().collect();
         let mut done = 0;
@@ -1039,20 +1039,21 @@ impl MapEditor {
         {
             for id in &ids {
                 let Some(e) = self.content.fx.entry(id) else { continue };
-                match crate::platform::download(&format!("{id}.json"), &content::to_text(&e.value)) {
-                    Ok(()) => done += 1,
+                match super::saving::browser_save_record(e.space, &e.value, &format!("{id}.json")) {
+                    Ok(_) => done += 1,
                     Err(err) => errors.push(err),
                 }
             }
             for (key, _) in &sheets {
                 let Some(s) = self.tl.sheets.get_mut(key) else { continue };
                 let name = key.rsplit('/').next().unwrap_or(key).to_string();
-                match png(s.width, s.height, &s.rgba).and_then(|bytes| crate::platform::download_bytes(&name, &bytes, "image/png")) {
-                    Ok(()) => s.dirty = false,
+                match png(s.width, s.height, &s.rgba).and_then(|bytes| super::saving::browser_save(key, &name, bytes, "image/png")) {
+                    Ok(_) => s.dirty = false,
                     Err(e) => errors.push(format!("{name}: {e}")),
                 }
             }
-            self.status = format!("Downloaded {done} FX record{} (into <space>/data/fx/) and {} sheet{} (into <space>/assets/fx/)", if done == 1 { "" } else { "s" }, sheets.len(), if sheets.len() == 1 { "" } else { "s" });
+            let (records, drawn) = (format!("{done} FX record{}", if done == 1 { "" } else { "s" }), format!("{} sheet{}", sheets.len(), if sheets.len() == 1 { "" } else { "s" }));
+            self.status = if super::saving::keeps() { format!("Saved {records} and {drawn} in this browser") } else { format!("Downloaded {records} (into <space>/data/fx/) and {drawn} (into <space>/assets/fx/)") };
         }
         if errors.is_empty() {
             self.tl.fx_dirty.clear();

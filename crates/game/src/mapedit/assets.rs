@@ -78,7 +78,8 @@ pub(super) struct Assets {
     hovering: bool,
     /// the prop whose light is being edited
     light_edit: Option<String>,
-    /// models dropped in the browser (file name, bytes): downloaded with the records on save
+    /// models dropped in the browser (their paths in the project, bytes): saved with the
+    /// records
     #[cfg(target_arch = "wasm32")]
     new_models: Vec<(String, Vec<u8>)>,
     /// the desktop: the props' records and models on disk, as last seen
@@ -870,29 +871,38 @@ impl MapEditor {
         }
         #[cfg(target_arch = "wasm32")]
         {
+            use super::saving::{browser_save, browser_save_record};
             for id in &ids {
                 let Some(e) = self.content.props.entry(id) else { continue };
-                match platform::download(&format!("{id}.json"), &content::to_text(&e.value)) {
-                    Ok(()) => done += 1,
+                match browser_save_record(e.space, &e.value, &format!("{id}.json")) {
+                    Ok(_) => done += 1,
                     Err(err) => errors.push(err),
                 }
             }
             for id in &creatures {
                 let Some(e) = self.content.creatures.entry(id) else { continue };
-                match platform::download(&format!("{id}.json"), &content::to_text(&e.value)) {
-                    Ok(()) => done_creatures += 1,
+                match browser_save_record(e.space, &e.value, &format!("{id}.json")) {
+                    Ok(_) => done_creatures += 1,
                     Err(err) => errors.push(err),
                 }
             }
             let models = std::mem::take(&mut self.assets.new_models);
-            for (name, bytes) in &models {
-                if let Err(err) = platform::download_bytes(name, bytes, "model/gltf-binary") {
+            for (path, bytes) in &models {
+                let name = path.rsplit('/').next().unwrap_or(path);
+                if let Err(err) = browser_save(path, name, bytes.clone(), "model/gltf-binary") {
                     errors.push(err);
                 }
             }
-            self.status = format!("Downloaded {done} prop record{} (into <space>/data/props/) and {} model{} (into <space>/assets/models/)", plural(done), models.len(), plural(models.len()));
-            if done_creatures > 0 {
-                self.status = format!("{}, {done_creatures} creature record{} (into <space>/data/creatures/)", self.status, plural(done_creatures));
+            if super::saving::keeps() {
+                self.status = format!("Saved {done} prop record{} and {} model{} in this browser", plural(done), models.len(), plural(models.len()));
+                if done_creatures > 0 {
+                    self.status = format!("{}, and {done_creatures} creature record{}", self.status, plural(done_creatures));
+                }
+            } else {
+                self.status = format!("Downloaded {done} prop record{} (into <space>/data/props/) and {} model{} (into <space>/assets/models/)", plural(done), models.len(), plural(models.len()));
+                if done_creatures > 0 {
+                    self.status = format!("{}, {done_creatures} creature record{} (into <space>/data/creatures/)", self.status, plural(done_creatures));
+                }
             }
         }
         if errors.is_empty() {
@@ -1003,9 +1013,13 @@ impl MapEditor {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            self.assets.new_models.push((format!("{id}.{ext}"), bytes.clone()));
+            self.assets.new_models.push((path.clone(), bytes.clone()));
             self.assets.dirty.insert(id.clone());
-            self.status = format!("Added {} to {folder}: save to download its record and model", prop.name);
+            self.status = if super::saving::keeps() {
+                format!("Added {} to {folder}: its record and model are saved with the rest", prop.name)
+            } else {
+                format!("Added {} to {folder}: save to download its record and model", prop.name)
+            };
         }
         self.files.insert(&path, bytes);
         if !note.is_empty() {

@@ -147,7 +147,7 @@ impl MapEditor {
                 content::disk::save(&root, e.space, &e.value).map(|_| ())
             };
             #[cfg(target_arch = "wasm32")]
-            let saved = crate::platform::download(&format!("{id}.json"), &content::to_text(&e.value));
+            let saved = super::saving::browser_save_record(e.space, &e.value, &format!("{id}.json")).map(|_| ());
             match saved {
                 Ok(()) => done += 1,
                 Err(err) => errors.push(err),
@@ -157,18 +157,24 @@ impl MapEditor {
         self.status = match (done, errors.is_empty()) {
             (_, false) => format!("Templates not saved: {}", errors.join("; ")),
             (0, true) => String::new(),
+            (n, true) if super::saving::keeps() => format!("Saved {n} template{} in this browser", if n == 1 { "" } else { "s" }),
             (n, true) if cfg!(target_arch = "wasm32") => format!("Downloaded {n} template{}: put it in content/data/templates/", if n == 1 { "" } else { "s" }),
             (n, true) => format!("Saved {n} template{}", if n == 1 { "" } else { "s" }),
         };
     }
 
-    /// Takes a template out of the project (its file too, on the desktop).
+    /// Takes a template out of the project (its file too, on the desktop; in the browser, kept
+    /// as removed).
     fn delete_template(&mut self, id: &str) {
         let Some(e) = self.content.templates.entry(id).cloned() else { return };
         #[cfg(not(target_arch = "wasm32"))]
         {
             let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
             let _ = std::fs::remove_file(root.join(e.space.dir()).join("data").join("templates").join(format!("{id}.json")));
+        }
+        #[cfg(target_arch = "wasm32")]
+        if super::saving::keeps() {
+            crate::keep::keep_removed(&format!("{}/data/templates/{id}.json", e.space.dir()));
         }
         let mut c = (*self.content).clone();
         c.templates.remove(id);

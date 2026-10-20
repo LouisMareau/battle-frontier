@@ -21,7 +21,7 @@ pub(super) struct Worlds {
     pub world: Option<String>,
     /// the world as edited here, saved or not
     draft: Option<World>,
-    dirty: bool,
+    pub dirty: bool,
     /// a piece being dragged: its index, and the pointer's grab from its corner (cells)
     drag: Option<(usize, [f32; 2])>,
     /// screen points per cell, and the world cell at the canvas's top-left corner
@@ -360,8 +360,8 @@ impl MapEditor {
         }
     }
 
-    /// Writes the world: into content/ on the desktop, a download in the browser.
-    fn save_world(&mut self) {
+    /// Writes the world: into content/ on the desktop, kept in the browser (or downloaded).
+    pub(super) fn save_world(&mut self) {
         let Some(w) = self.worlds.draft.clone() else { return };
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -377,8 +377,9 @@ impl MapEditor {
         #[cfg(target_arch = "wasm32")]
         {
             let name = format!("{}.json", w.id);
-            match crate::platform::download(&name, &content::to_text(&w)) {
-                Ok(()) => self.status = format!("Downloaded {name}: put it in content/data/worlds/"),
+            match super::saving::browser_save_record(Space::Content, &w, &name) {
+                Ok(true) => self.status = format!("Saved the world {} in this browser", w.id),
+                Ok(false) => self.status = format!("Downloaded {name}: put it in content/data/worlds/"),
                 Err(e) => {
                     self.status = format!("Not saved: {e}");
                     return;
