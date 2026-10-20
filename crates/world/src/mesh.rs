@@ -905,7 +905,7 @@ fn ramp_top(m: &mut Mesh, fx: f32, fz: f32, rock: &dyn Fn(f32, f32) -> f32, at: 
 /// height anywhere.
 fn wall(m: &mut Mesh, points: &[(f32, f32, f32, f32)], out: Vec3, uv: [f32; 2]) {
     let high = points.iter().map(|&(_, _, top, foot)| top - foot).fold(0.0f32, f32::max);
-    if high > 0.005 {
+    if high > 1e-4 {
         face(m, points, (high / 0.5).ceil().max(1.0) as usize, out, [false, false], uv);
     }
 }
@@ -1011,13 +1011,26 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
                 if next.is_some_and(|o| std::ptr::eq(o, r)) {
                     continue;
                 }
-                let points: Vec<(f32, f32, f32, f32)> = RAMP_AT
+                let sampled: Vec<(f32, f32, f32, f32)> = RAMP_AT
                     .iter()
                     .map(|&t| {
                         let (px, pz) = (ax + (bx - ax) * t, az + (bz - az) * t);
                         (px, pz, at(px, pz), surface(nx, nz, px, pz))
                     })
                     .collect();
+                // where the ramp's ground and the ground next to it cross between two points,
+                // a point there too: the walls down and up both end on it, with nothing left
+                // between them and the ground next door
+                let mut points = vec![sampled[0]];
+                for w in sampled.windows(2) {
+                    let ((x0, z0, t0, o0), (x1, z1, t1, o1)) = (w[0], w[1]);
+                    let (d0, d1) = (t0 - o0, t1 - o1);
+                    if d0 * d1 < 0.0 {
+                        let k = d0 / (d0 - d1);
+                        points.push((x0 + (x1 - x0) * k, z0 + (z1 - z0) * k, t0 + (t1 - t0) * k, o0 + (o1 - o0) * k));
+                    }
+                    points.push(w[1]);
+                }
                 // down to lower ground
                 let down: Vec<(f32, f32, f32, f32)> = points.iter().map(|&(px, pz, top, other)| (px - dx as f32 * tuck, pz - dz as f32 * tuck, top, other.min(top))).collect();
                 wall(&mut cliffs, &down, Vec3::new(dx as f32, 0.0, dz as f32), uv);
@@ -1035,7 +1048,14 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             }
             continue;
         }
-        let e = Edges::of(&seen(own), &flat, x, z);
+        let mut e = Edges::of(&seen(own), &flat, x, z);
+        // a corner is never rounded onto a ramp: the cut's floor is level ground, a ramp's
+        // isn't (the faces either side meet in the corner instead, down onto it)
+        for (k, &(a, b, _, _, across)) in CORNERS.iter().enumerate() {
+            if [SIDES[a], SIDES[b], across].iter().any(|&(dx, dz)| ramp(x + dx, z + dz).is_some()) {
+                e.round[k] = false;
+            }
+        }
         cell_top(&mut tops, fx, fz, y, &e);
         // a face on each side that steps down, sampled where the rims either side bend; it
         // stops short of a rounded corner
@@ -1048,10 +1068,13 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             let foot = across.map(|l| l as f32 * level_height).unwrap_or(SKIRT);
             let rows = ((y - c - foot) / 0.5).ceil().max(1.0) as usize;
             let (ex, ez) = ((bx - ax) as i32, (bz - az) as i32);
-            // (not into a ramp: its walls meet the face where it stops, pinned)
-            let goes_on = |cx: i32, cz: i32| level(cx, cz) == level(x, z) && level(cx + dx, cz + dz) == across && ramp(cx, cz).is_none() && ramp(cx + dx, cz + dz).is_none();
+            // (not into a ramp: its walls meet the face where it stops, pinned; nor on from a
+            // face down onto one, whose neighbour stops pinned where it starts)
+            let onto_ramp = ramp(x + dx, z + dz).is_some();
+            let goes_on = |cx: i32, cz: i32| !onto_ramp && level(cx, cz) == level(x, z) && level(cx + dx, cz + dz) == across && ramp(cx, cz).is_none() && ramp(cx + dx, cz + dz).is_none();
             let free = [goes_on(x - ex, z - ez), goes_on(x + ex, z + ez)];
-            let mut cols = vec![0.0, c, 0.5, 1.0 - c, 1.0];
+            // down onto a ramp, its foot follows the ramp's ground point for point
+            let mut cols = if onto_ramp { RAMP_AT.to_vec() } else { vec![0.0, c, 0.5, 1.0 - c, 1.0] };
             if e.round[ends[0]] {
                 cols.remove(0);
             }

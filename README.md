@@ -178,7 +178,9 @@ cell deep, on water, or over a building or another ramp). Its cells keep their l
 upper one) and their terrain; the engine shapes their ground in place of the cliff, a little
 uneven, each ramp its own way (bumps, its slope rounder in places and straighter in others
 along it; none at its foot and top, which meet the ground flush), ragged rock showing down
-its middle, and walls up its sides to the step's top either side.
+its middle, and walls up its sides to the step's top either side; the cliffs and the ground
+beside it meet its ground and its walls with nothing open between them (a higher cell's
+outer corner over a ramp comes down square onto it rather than cut round).
 
 A map is 2048 cells a side at most (a cell is about a metre: two kilometres); past 256 a side,
 it's kept in **chunk files** (the editor switches to them, and the content check says so of a

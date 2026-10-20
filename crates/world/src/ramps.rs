@@ -142,6 +142,291 @@ mod tests {
         assert!(rock(0.0) == 0.0 && rock(1.0).abs() < 1e-6 && rock(0.5) > 0.4);
     }
 
+    /// Where the ground lies open: the stretches of its triangles' edges (the tops and the
+    /// cliffs together) that only one triangle has and that no other such edge runs along,
+    /// cracks to see through (or fins standing off the ground); the map's own rim, the skirt's
+    /// foot, left out. Each as a point of it.
+    fn open_seams(map: &crate::WorldMap, level_height: f32) -> Vec<[f32; 3]> {
+        use std::collections::HashMap;
+        let (tops, cliffs, _) = crate::mesh::ground_region(map, &content::Content::default(), level_height, crate::mesh::whole(map), &crate::mesh::Alone);
+        let mut tris = vec![];
+        for m in [&tops, &cliffs] {
+            for t in m.indices.chunks(3) {
+                let p = |i: u32| Vec3::from(m.vertices[i as usize].pos);
+                let (a, b, c) = (p(t[0]), p(t[1]), p(t[2]));
+                if (b - a).cross(c - a).length() > 1e-7 {
+                    tris.push([a, b, c]);
+                }
+            }
+        }
+        // each edge by its ends, and how many triangles have it
+        type Key = (i64, i64, i64);
+        let key = |p: Vec3| -> Key { ((p.x * 1e4).round() as i64, (p.y * 1e4).round() as i64, (p.z * 1e4).round() as i64) };
+        let mut count: HashMap<(Key, Key), (Vec3, Vec3, usize)> = HashMap::new();
+        for t in &tris {
+            for (a, b) in [(t[0], t[1]), (t[1], t[2]), (t[2], t[0])] {
+                let (ka, kb) = (key(a), key(b));
+                count.entry(if ka < kb { (ka, kb) } else { (kb, ka) }).or_insert((a, b, 0)).2 += 1;
+            }
+        }
+        let open: Vec<(Vec3, Vec3)> = count.values().filter(|e| e.2 == 1).map(|e| (e.0, e.1)).collect();
+        // the open edges by the half cells they pass over
+        let mut near: HashMap<(i32, i32), Vec<usize>> = HashMap::new();
+        for (i, (a, b)) in open.iter().enumerate() {
+            let (lo, hi) = (a.min(*b), a.max(*b));
+            for gx in (lo.x * 2.0 - 0.01).floor() as i32..=(hi.x * 2.0 + 0.01).floor() as i32 {
+                for gz in (lo.z * 2.0 - 0.01).floor() as i32..=(hi.z * 2.0 + 0.01).floor() as i32 {
+                    near.entry((gx, gz)).or_default().push(i);
+                }
+            }
+        }
+        let on = |p: Vec3, (a, b): (Vec3, Vec3)| {
+            let ab = b - a;
+            let t = ((p - a).dot(ab) / ab.length_squared()).clamp(0.0, 1.0);
+            (a + ab * t - p).length() < 2e-3
+        };
+        let mut out = vec![];
+        for (i, &(a, b)) in open.iter().enumerate() {
+            if a.y <= -0.6 + 1e-3 && b.y <= -0.6 + 1e-3 {
+                continue;
+            }
+            for s in [0.1, 0.3, 0.5, 0.7, 0.9] {
+                let p = a + (b - a) * s;
+                let others = near.get(&((p.x * 2.0).floor() as i32, (p.z * 2.0).floor() as i32));
+                if !others.is_some_and(|o| o.iter().any(|&j| j != i && on(p, open[j]))) {
+                    out.push(p.to_array());
+                    break;
+                }
+            }
+        }
+        out
+    }
+
+    /// Where the sky shows through the ground, looked at from above along `d` (down): the
+    /// ground's triangles (tops and cliffs: both their sides are drawn) laid flat across `d`
+    /// onto a grid `step` fine; a point of the grid none covers whose line of sight comes out
+    /// under the ground inside the map (a cell or more in from its edges) is a hole. Each as
+    /// where the line of sight first goes into the ground.
+    fn sky_through(map: &crate::WorldMap, level_height: f32, d: Vec3, step: f32) -> Vec<[f32; 3]> {
+        let (tops, cliffs, _) = crate::mesh::ground_region(map, &content::Content::default(), level_height, crate::mesh::whole(map), &crate::mesh::Alone);
+        let d = d.normalize();
+        let e1 = d.cross(Vec3::Y).normalize();
+        let e2 = e1.cross(d).normalize();
+        let flat = |p: Vec3| (p.dot(e1), p.dot(e2));
+        let mut tris = vec![];
+        for m in [&tops, &cliffs] {
+            for t in m.indices.chunks(3) {
+                let p = |i: u32| flat(Vec3::from(m.vertices[i as usize].pos));
+                tris.push([p(t[0]), p(t[1]), p(t[2])]);
+            }
+        }
+        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for &(a, b) in tris.iter().flatten() {
+            lo = (lo.0.min(a), lo.1.min(b));
+            hi = (hi.0.max(a), hi.1.max(b));
+        }
+        let (w, h) = (((hi.0 - lo.0) / step) as usize + 2, ((hi.1 - lo.1) / step) as usize + 2);
+        let mut covered = vec![false; w * h];
+        let eps = step * 0.15;
+        for t in &tris {
+            let [(ax, ay), (bx, by), (cx, cy)] = *t;
+            let area = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+            if area.abs() < 1e-9 {
+                continue;
+            }
+            // in: on the inner side of each edge, or within eps of it
+            let side = |(px, py): (f32, f32), (qx, qy): (f32, f32), (x, y): (f32, f32)| {
+                let (ex, ey) = (qx - px, qy - py);
+                (ex * (y - py) - ey * (x - px)) * area.signum() / (ex * ex + ey * ey).sqrt().max(1e-9)
+            };
+            let i0 = ((ax.min(bx).min(cx) - lo.0) / step).floor().max(0.0) as usize;
+            let i1 = (((ax.max(bx).max(cx) - lo.0) / step).ceil() as usize).min(w - 1);
+            let j0 = ((ay.min(by).min(cy) - lo.1) / step).floor().max(0.0) as usize;
+            let j1 = (((ay.max(by).max(cy) - lo.1) / step).ceil() as usize).min(h - 1);
+            for j in j0..=j1 {
+                for i in i0..=i1 {
+                    let q = (lo.0 + i as f32 * step, lo.1 + j as f32 * step);
+                    if side(t[0], t[1], q) > -eps && side(t[1], t[2], q) > -eps && side(t[2], t[0], q) > -eps {
+                        covered[j * w + i] = true;
+                    }
+                }
+            }
+        }
+        // the ground a line of sight goes into: the cells' levels, a ramp's own
+        let ideal = |p: Vec3| {
+            let (cx, cz) = (p.x.floor() as i32, p.z.floor() as i32);
+            let l = map.level_at(cx, cz)? as f32 * level_height;
+            Some(map.ramps.iter().find(|r| r.has(cx, cz)).map(|r| height(r, l, level_height, p.x, p.z)).unwrap_or(l))
+        };
+        let mut out = vec![];
+        for j in 0..h {
+            for i in 0..w {
+                if covered[j * w + i] {
+                    continue;
+                }
+                let base = e1 * (lo.0 + i as f32 * step) + e2 * (lo.1 + j as f32 * step);
+                let s = (-0.5 - base.y) / d.y;
+                let q = base + d * s;
+                if q.x > 1.0 && q.z > 1.0 && q.x < map.width as f32 - 1.0 && q.z < map.height as f32 - 1.0 {
+                    let mut k = (12.0 - base.y) / d.y;
+                    let mut into = q;
+                    while k < s {
+                        let p = base + d * k;
+                        if ideal(p).is_some_and(|g| p.y < g - 0.3) {
+                            into = p;
+                            break;
+                        }
+                        k += 0.01;
+                    }
+                    out.push(into.to_array());
+                }
+            }
+        }
+        out
+    }
+
+    /// The ways looked from, at 50 degrees down: every eighth of the way round (`ways` 8),
+    /// or every quarter.
+    fn views(ways: usize) -> Vec<Vec3> {
+        (0..ways)
+            .map(|k| {
+                let (yaw, pitch) = (k as f32 * 2.0 * PI / ways as f32 + 0.3, 50f32.to_radians());
+                Vec3::new(yaw.sin() * pitch.cos(), -pitch.sin(), yaw.cos() * pitch.cos())
+            })
+            .collect()
+    }
+
+    /// A map `n` cells square of blocks raised on blocks (levels 0 to 3), with up to four
+    /// ramps where they can go: 1 to 3 long, smooth to rough, side by side or not.
+    fn random_ground(seed: u64, n: i32) -> crate::WorldMap {
+        let mut state = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        let mut next = move |k: u64| {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            ((state >> 33) % k) as i32
+        };
+        let mut map = crate::WorldMap::new("fuzz", "Fuzz", n as usize, n as usize, "grass");
+        for _ in 0..(4 + next(5)) {
+            let (x0, z0, w, h) = (next(n as u64), next(n as u64), 1 + next(3), 1 + next(3));
+            for z in z0..(z0 + h).min(n) {
+                for x in x0..(x0 + w).min(n) {
+                    let i = (z * n + x) as usize;
+                    map.level[i] = (map.level[i] + 1).min(3);
+                }
+            }
+        }
+        for _ in 0..(1 + next(4)) {
+            for _ in 0..60 {
+                let (x, z) = (1 + next(n as u64 - 2), 1 + next(n as u64 - 2));
+                let up = ["n", "e", "s", "w"][next(4) as usize];
+                let long = 1 + next(3) as u16;
+                let size = if matches!(up, "n" | "s") { [long, 1] } else { [1, long] };
+                let r = Ramp { at: [x, z], size, up: up.into(), rough: [0.0, 0.5, 1.0][next(3) as usize], seed: next(1000) as u32 };
+                let ((dx, dz), cells) = (r.way(), r.cells());
+                let Some(top) = map.level_at(x, z).filter(|&l| l >= 1) else { continue };
+                let inside = |cx: i32, cz: i32| cx > 0 && cz > 0 && cx < n - 1 && cz < n - 1;
+                let fits = cells.iter().all(|&(cx, cz)| inside(cx, cz) && map.level_at(cx, cz) == Some(top) && map.level_at(cx - dx, cz - dz) == Some(top - 1))
+                    && map.ramps.iter().all(|o| cells.iter().all(|&(cx, cz)| !o.has(cx, cz) && !o.has(cx - dx, cz - dz)));
+                if fits {
+                    map.ramps.push(r);
+                    break;
+                }
+            }
+        }
+        map
+    }
+
+    /// A map's levels row by row, each ramp's cells with its way up (for a failure's message).
+    fn drawn(map: &crate::WorldMap) -> String {
+        let mut out = String::new();
+        for z in 0..map.height as i32 {
+            for x in 0..map.width as i32 {
+                let way = map.ramps.iter().find(|r| r.has(x, z)).map(|r| r.up.as_str()).unwrap_or(" ");
+                out.push_str(&format!("{}{way} ", map.level_at(x, z).unwrap_or(0)));
+            }
+            out.push('\n');
+        }
+        out
+    }
+
+    /// The ground round ramps closes up whatever is round them: random ground, ramps 1 to 3
+    /// long, smooth or rough, side by side, at both level heights; no seam open anywhere, and
+    /// (looked at every way round, now and then) no sky through it.
+    #[test]
+    fn no_seam_opens_round_ramps_on_any_ground() {
+        let ways = views(4);
+        let mut tried = 0;
+        for seed in 0..300u64 {
+            let map = random_ground(seed, 9);
+            if map.ramps.is_empty() {
+                continue;
+            }
+            tried += 1;
+            for level_height in [2.0, 1.0] {
+                let open = open_seams(&map, level_height);
+                assert!(open.is_empty(), "seed {seed}, level height {level_height}, ramps {:?}\n{}open at {:?}", map.ramps, drawn(&map), &open[..open.len().min(4)]);
+                if seed % 25 == 0 {
+                    for &d in &ways {
+                        let sky = sky_through(&map, level_height, d, 0.03);
+                        assert!(sky.is_empty(), "seed {seed}, level height {level_height}: the sky through at {:?}\n{}", &sky[..sky.len().min(4)], drawn(&map));
+                    }
+                }
+            }
+        }
+        assert!(tried > 250, "{tried} maps with ramps");
+    }
+
+    /// The ground as `rows` says (a digit per cell: its level), and ramps.
+    fn ground(rows: &[&str], ramps: Vec<Ramp>) -> crate::WorldMap {
+        let mut map = crate::WorldMap::new("seams", "Seams", rows[0].len(), rows.len(), "grass");
+        for (z, row) in rows.iter().enumerate() {
+            for (x, l) in row.bytes().enumerate() {
+                map.level[z * rows[0].len() + x] = l - b'0';
+            }
+        }
+        map.ramps = ramps;
+        map
+    }
+
+    /// A ramp down beside a cliff a level higher than it, the cliff running on past it (a
+    /// ramp's left side on the user's map, a slit two levels high along the cliff's corner):
+    /// the cliff's face down onto the ramp and its neighbour's on past it are both pinned
+    /// where they meet, nothing between them; and the sky doesn't show through anywhere.
+    #[test]
+    fn a_cliff_s_face_onto_a_ramp_meets_the_next_face_without_a_slit() {
+        let map = ground(&["0000000", "0222100", "0222100", "0233100", "0011100", "0000000"], vec![Ramp { at: [4, 2], size: [1, 1], up: "w".into(), rough: 0.0, seed: 1 }]);
+        let (_, cliffs, _) = crate::mesh::ground_region(&map, &content::Content::default(), 2.0, crate::mesh::whole(&map), &crate::mesh::Alone);
+        // the faces' points on the line where they meet (x 4, z 2), from below the cliff's
+        // top: all on it, none pushed off it by the rock's lumps
+        let at_line: Vec<[f32; 3]> = cliffs.vertices.iter().map(|v| v.pos).filter(|p| (p[0] - 4.0).abs() < 0.2 && (p[2] - 2.0).abs() < 0.2 && p[1] > 2.05 && p[1] < 3.7).collect();
+        assert!(!at_line.is_empty());
+        let off: Vec<&[f32; 3]> = at_line.iter().filter(|p| (p[2] - 2.0).abs() < 1e-4 && (p[0] - 4.0).abs() > 1e-4).collect();
+        assert!(off.is_empty(), "lumps off the corner: {off:?}");
+        assert!(open_seams(&map, 2.0).is_empty(), "{:?}", open_seams(&map, 2.0));
+        for d in views(8) {
+            assert!(sky_through(&map, 2.0, d, 0.02).is_empty(), "the sky through, looking along {d}");
+        }
+    }
+
+    /// A higher cell's outer corner over a ramp's top (a ramp's top corner on the user's map,
+    /// a hole beside it): it isn't cut round as it would be over level ground, the faces either
+    /// side meet in it down onto the ramp; nothing open, no sky through.
+    #[test]
+    fn a_corner_over_a_ramp_is_not_cut_round() {
+        let map = ground(&["000000000", "000022100", "000022100", "000011100", "000000000", "000000000"], vec![Ramp { at: [5, 3], size: [1, 1], up: "n".into(), rough: 0.0, seed: 1 }]);
+        let mut level_ground = map.clone();
+        level_ground.ramps.clear();
+        let (_, cliffs, _) = crate::mesh::ground_region(&map, &content::Content::default(), 2.0, crate::mesh::whole(&map), &crate::mesh::Alone);
+        let (_, plain, _) = crate::mesh::ground_region(&level_ground, &content::Content::default(), 2.0, crate::mesh::whole(&level_ground), &crate::mesh::Alone);
+        // the cell (5, 2) a level up over the ramp's top: its south-east corner (6, 3) is cut
+        // round over level ground (a slanted face across it), never over the ramp
+        let slanted = |m: &crate::mesh::Mesh| m.vertices.iter().any(|v| v.normal[0] > 0.5 && v.normal[2] > 0.5 && (v.pos[0] - 5.89).abs() < 0.12 && (v.pos[2] - 2.89).abs() < 0.12);
+        assert!(slanted(&plain) && !slanted(&cliffs));
+        assert!(open_seams(&map, 2.0).is_empty(), "{:?}", open_seams(&map, 2.0));
+        for d in views(8) {
+            assert!(sky_through(&map, 2.0, d, 0.02).is_empty(), "the sky through, looking along {d}");
+        }
+    }
+
     /// 10 x 10: a plateau on level 1 north of z 4, the lowland on 0, and a ramp two long on
     /// the plateau's edge (x 3, 4; z 3) down to it.
     fn hill() -> crate::WorldMap {
