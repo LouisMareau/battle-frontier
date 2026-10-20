@@ -19,6 +19,10 @@ use super::{gpu, models, MapEditor};
 
 /// One cell's walk, in milliseconds.
 const STEP_MS: f64 = 210.0;
+/// A jump over the cell between its ends, in milliseconds, and how high it goes at least
+/// (cells: over the cell between too, when that's higher).
+pub(super) const JUMP_MS: f64 = 430.0;
+pub(super) const JUMP_HIGH: f32 = 0.55;
 const CHARACTER: &str = "stand_in_character";
 /// A building's upper floors and roof fading, in milliseconds.
 const FADE_MS: f64 = 450.0;
@@ -60,6 +64,8 @@ pub(super) struct Walker {
     t0: f64,
     /// how long the move from `from` to `to` takes (a step, or a flight of stairs)
     dur: f64,
+    /// how high the move arcs over the line from `from` to `to` (a jump; 0: a step)
+    hop: f32,
     /// on a building's upper floor (or its roof): the building and the floor
     pub upstairs: Option<(usize, usize)>,
     /// degrees clockwise from south
@@ -73,7 +79,12 @@ pub(super) struct Walker {
 impl Walker {
     pub fn pos(&self, now: f64) -> Vec3 {
         let t = ((now - self.t0) / self.dur).clamp(0.0, 1.0) as f32;
-        self.from.lerp(self.to, t)
+        self.from.lerp(self.to, t) + Vec3::Y * self.hop * 4.0 * t * (1.0 - t)
+    }
+
+    /// Off on a move: from `from` to `to`, taking `dur`, arcing `hop` high (0: a step).
+    fn go(&mut self, from: Vec3, to: Vec3, now: f64, dur: f64, hop: f32) {
+        (self.from, self.to, self.t0, self.dur, self.hop) = (from, to, now, dur, hop);
     }
 
     pub fn stepping(&self, now: f64) -> bool {
@@ -102,7 +113,7 @@ impl MapEditor {
     fn stand(&mut self, cell: (i32, i32), facing: f32) {
         let pos = self.cell_pos(cell);
         let inside = self.walker.as_ref().and_then(|w| w.inside);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, dur: STEP_MS, upstairs: None, facing, inside, route: VecDeque::new() });
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, dur: STEP_MS, hop: 0.0, upstairs: None, facing, inside, route: VecDeque::new() });
         self.blocked = Some(self.map.blocked(&self.content));
         self.story.started = false;
         // standing on cells counts as entering them
@@ -332,10 +343,7 @@ impl MapEditor {
             };
             let w = self.walker.as_mut().unwrap();
             w.facing = facing_of(d);
-            w.from = pos;
-            w.to = to;
-            w.t0 = now;
-            w.dur = STEP_MS * steps as f64;
+            w.go(pos, to, now, STEP_MS * steps as f64, 0.0);
             w.cell = to_cell;
             w.upstairs = to_floor;
             w.route.pop_front();
@@ -348,12 +356,19 @@ impl MapEditor {
             w.facing = facing_of(d);
             w.route.pop_front();
             if free {
-                w.from = pos;
-                w.to = to;
-                w.t0 = now;
-                w.dur = STEP_MS;
+                w.go(pos, to, now, STEP_MS, 0.0);
                 w.cell = next;
             }
+        } else if let (Some(d), true, Some(land)) = (dir, t >= 1.0, self.jump_landing(w.cell, dir, routed.is_some())) {
+            // a jump from here that way: over the cell between, onto its other end, high
+            // enough to clear it
+            let (from, to) = (self.cell_pos(w.cell), self.cell_pos(land));
+            let between = (w.cell.0 + d.0, w.cell.1 + d.1);
+            let over = self.map.level_at(between.0, between.1).map(|l| l as f32 * self.level_height).unwrap_or(0.0) - from.y.max(to.y);
+            let w = self.walker.as_mut().unwrap();
+            w.facing = facing_of(d);
+            w.go(pos, to, now, JUMP_MS, JUMP_HIGH.max(over + 0.45));
+            w.cell = land;
         } else if let (Some(d), true) = (dir, t >= 1.0) {
             let cell = w.cell;
             let next = (cell.0 + d.0, cell.1 + d.1);
@@ -370,10 +385,7 @@ impl MapEditor {
                             if let Some(delta) = self.step_into(&id) {
                                 let to = self.cell_pos(there);
                                 let w = self.walker.as_mut().unwrap();
-                                w.from = pos - delta;
-                                w.to = to;
-                                w.t0 = now;
-                                w.dur = STEP_MS;
+                                w.go(pos - delta, to, now, STEP_MS, 0.0);
                                 w.cell = there;
                                 self.cam.target = w.from;
                                 self.extra_changed = true;
@@ -411,10 +423,7 @@ impl MapEditor {
                 }
             }
             if free {
-                w.from = pos;
-                w.to = to;
-                w.t0 = now;
-                w.dur = STEP_MS;
+                w.go(pos, to, now, STEP_MS, 0.0);
                 w.cell = next;
             }
         }
@@ -472,8 +481,23 @@ impl MapEditor {
         }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
-        crate::platform::set_hook("walkery", &format!("{:.2}", pos.y));
+        // (as it's drawn: up in the air through a jump; the camera stays level)
+        crate::platform::set_hook("walkery", &format!("{:.2}", self.walker.as_ref().map_or(pos.y, |w| w.pos(now).y)));
         crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
+    }
+
+    /// Where a jump from `cell` the way `dir` lands, when one can be jumped now: the player's
+    /// own move (a script's route steps a cell at a time), on the ground (not upstairs), its
+    /// other end free (nothing blocking there, nobody standing on it).
+    fn jump_landing(&self, cell: (i32, i32), dir: Option<(i32, i32)>, routed: bool) -> Option<(i32, i32)> {
+        let w = self.walker.as_ref()?;
+        if routed || w.upstairs.is_some() {
+            return None;
+        }
+        let land = self.map.jump_from(cell, dir?)?;
+        let i = self.map.index(land.0, land.1)?;
+        let blocked = self.blocked.as_ref().is_some_and(|b| b.get(i).copied().unwrap_or(true));
+        (!blocked && self.actor_at(land).is_none()).then_some(land)
     }
 
     /// How a building shows for the walker: cut above the floor they're on, the walls facing
@@ -550,9 +574,9 @@ impl MapEditor {
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
         let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
-        let mut pos = w.from.lerp(w.to, t);
-        // a little bob while walking
-        if t < 1.0 {
+        // up in the air through a jump; a little bob while walking
+        let mut pos = w.pos(now);
+        if t < 1.0 && w.hop == 0.0 {
             pos.y += (t * std::f32::consts::PI).sin() * 0.06;
         }
         out.append(&prop_scene(prop, &self.models), placement(pos, w.facing, 1.0));

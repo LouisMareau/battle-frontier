@@ -993,6 +993,45 @@ pub fn grown(tufts: &[Tuft], content: &Content, models: &Models) -> Scene {
     out
 }
 
+/// A jump's little ramp (cells): how far in from its cell's edge it starts, how far past the
+/// edge its lip pokes out, half its width, how high its lip is and how far below the ground
+/// it goes down.
+const KICK_BACK: f32 = 0.3;
+const KICK_OUT: f32 = 0.12;
+const KICK_HALF: f32 = 0.19;
+const KICK_RISE: f32 = 0.12;
+const KICK_UNDER: f32 = 0.05;
+
+/// A jump's little ramp at the edge of the cell it's jumped from (its top `y`): a wedge
+/// rising the way `d` towards the other end, from on the cell's top to a lip poking out past
+/// its edge, a cliff face's stuff (`uv`: the cell's centre).
+fn kicker(m: &mut Mesh, x: i32, z: i32, y: f32, d: (i32, i32), uv: [f32; 2]) {
+    let f = Vec3::new(d.0 as f32, 0.0, d.1 as f32);
+    let s = Vec3::new(-f.z, 0.0, f.x);
+    let edge = Vec3::new(x as f32 + 0.5, 0.0, z as f32 + 0.5) + f * 0.5;
+    let (back, tip, half) = (edge - f * KICK_BACK, edge + f * KICK_OUT, KICK_HALF);
+    let (low, rise, under) = (y + 0.004, y + KICK_RISE, y - KICK_UNDER);
+    let at = |p: Vec3, h: f32| Vec3::new(p.x, h, p.z);
+    let (bl, br, tl, tr) = (at(back - s * half, low), at(back + s * half, low), at(tip - s * half, rise), at(tip + s * half, rise));
+    let (tlu, tru, blu, bru) = (at(tip - s * half, under), at(tip + s * half, under), at(back - s * half, under), at(back + s * half, under));
+    // each face lit as it faces (its corners in turn round it)
+    let mut face = |c: [Vec3; 4], out: Vec3, shade: f32| {
+        let n = (c[1] - c[0]).cross(c[2] - c[0]).normalize_or(out);
+        let (c, n) = if n.dot(out) < 0.0 { ([c[0], c[3], c[2], c[1]], -n) } else { (c, n) };
+        let i = m.vertices.len() as u32;
+        for p in c {
+            m.vertices.push(Vertex { pos: p.to_array(), normal: n.to_array(), uv, color: [shade, shade, shade, 1.0], toon: 0.0, wind: [0; 4] });
+        }
+        m.indices.extend_from_slice(&[i, i + 1, i + 2, i, i + 2, i + 3]);
+    };
+    let slope = (Vec3::Y * (KICK_BACK + KICK_OUT) - f * KICK_RISE).normalize();
+    face([bl, tl, tr, br], slope, 0.95);
+    face([tl, tlu, tru, tr], f, 0.8);
+    face([bl, blu, tlu, tl], -s, 0.72);
+    face([br, tr, tru, bru], s, 0.72);
+    face([blu, bru, tru, tlu], -Vec3::Y, 0.6);
+}
+
 /// The cell tops, the cliff faces and the tall grass of a region's cells. Every edge of a
 /// step in the ground is bevelled: the top edge (the higher cell's rim goes down), the foot
 /// (the lower cell's rim comes up, unless it's water), and an outer corner standing on one
@@ -1131,6 +1170,10 @@ pub fn ground_region_grown(map: &WorldMap, content: &Content, level_height: f32,
             }
         }
         cell_top(&mut tops, fx, fz, y, &e);
+        // a jump jumped from here: its little ramp at the edge towards the other end
+        for j in map.jumps.iter().filter(|j| j.from_cell([x, z]).is_some()) {
+            kicker(&mut cliffs, x, z, y, j.way_from([x, z]), uv);
+        }
         // a face on each side that steps down, sampled where the rims either side bend; it
         // stops short of a rounded corner
         for (k, ([(ax, az), (bx, bz)], ends)) in sides.into_iter().enumerate() {
@@ -1739,5 +1782,101 @@ mod growth_tests {
         // a prop not there any more: left out
         let gone = vec![Tuft { prop: "nothing".into(), ..tufts[0].clone() }];
         assert!(grown(&gone, &content, &Models::new()).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod jump_tests {
+    use content::{Content, Jump, Space, Terrain};
+
+    use super::*;
+
+    /// A field on level 1 (2 high) with a pit a level down at 3, 3 (the cell a jump goes over).
+    fn pit() -> (WorldMap, Content) {
+        let mut c = Content::default();
+        c.terrains.put(Terrain { id: "grass".into(), pattern: "grass".into(), walk: "walk".into(), ..Default::default() }, Space::Content);
+        let mut map = WorldMap::new("pit", "Pit", 8, 8, "grass");
+        map.level.iter_mut().for_each(|l| *l = 1);
+        map.level[3 * 8 + 3] = 0;
+        (map, c)
+    }
+
+    fn cliffs(map: &WorldMap, c: &Content) -> Mesh {
+        ground_region(map, c, 2.0, whole(map), &Alone).1
+    }
+
+    /// Hundredths of a cell.
+    fn cents(v: f32) -> i32 {
+        (v * 100.0).round() as i32
+    }
+
+    /// Where the cliffs' mesh rises above the ground on level 1: the little ramps' lips (x, z
+    /// in hundredths, each once) and how high.
+    fn lips(map: &WorldMap, c: &Content) -> (Vec<(i32, i32)>, Vec<f32>) {
+        let up: Vec<Vec3> = cliffs(map, c).vertices.iter().map(|v| Vec3::from(v.pos)).filter(|p| p.y > 2.0 + KICK_RISE / 2.0).collect();
+        let mut at: Vec<(i32, i32)> = up.iter().map(|p| (cents(p.x), cents(p.z))).collect();
+        at.sort();
+        at.dedup();
+        (at, up.iter().map(|p| p.y).collect())
+    }
+
+    /// The little ramp's vertices: the ones `with` has that `plain` hasn't (pushed one after
+    /// another where the cell's own go).
+    fn added(plain: &Mesh, with: &Mesh) -> Vec<Vertex> {
+        let n = with.vertices.len() - plain.vertices.len();
+        let k = plain.vertices.iter().zip(&with.vertices).position(|(a, b)| a.pos != b.pos).unwrap_or(plain.vertices.len());
+        with.vertices[k..k + n].to_vec()
+    }
+
+    #[test]
+    fn a_jump_s_ends_have_little_ramps_poking_out_towards_each_other() {
+        let (mut map, c) = pit();
+        assert!(lips(&map, &c).0.is_empty(), "nothing rises above the ground without a jump");
+        let plain = cliffs(&map, &c);
+        // over the pit from 2, 3 to 4, 3: a little ramp at each end's edge, its lip poking out
+        // over the pit towards the other end, narrower than the cell, a little up
+        map.jumps.push(Jump { from: [2, 3], to: [4, 3], one_way: false });
+        assert_eq!(cliffs(&map, &c).vertices.len() - plain.vertices.len(), 40, "two little ramps of five faces");
+        let (near, far, a, b) = (cents(3.0 + KICK_OUT), cents(4.0 - KICK_OUT), cents(3.5 - KICK_HALF), cents(3.5 + KICK_HALF));
+        let (at, high) = lips(&map, &c);
+        assert_eq!(at, [(near, a), (near, b), (far, a), (far, b)], "each just past its own cell's edge, over the cell between");
+        assert!(high.iter().all(|y| (y - 2.0 - KICK_RISE).abs() < 1e-4), "{high:?}");
+        // one way: at the end it's jumped from only
+        map.jumps[0].one_way = true;
+        assert_eq!(cliffs(&map, &c).vertices.len() - plain.vertices.len(), 20);
+        assert_eq!(lips(&map, &c).0, [(near, a), (near, b)]);
+        // along z, the other way round: its lip past the north edge of 3, 4
+        map.jumps[0] = Jump { from: [3, 4], to: [3, 2], one_way: true };
+        assert_eq!(lips(&map, &c).0, [(a, far), (b, far)]);
+    }
+
+    #[test]
+    fn a_little_ramp_rises_from_on_its_cell_and_its_faces_face_out() {
+        let (mut map, c) = pit();
+        let plain = cliffs(&map, &c);
+        map.jumps.push(Jump { from: [2, 3], to: [4, 3], one_way: true });
+        let ramp = added(&plain, &cliffs(&map, &c));
+        assert_eq!(ramp.len(), 20);
+        let at: Vec<Vec3> = ramp.iter().map(|v| Vec3::from(v.pos)).collect();
+        // from on the cell's top (a little in from its edge) out past it, its lip a little up,
+        // a little of it under the ground
+        let (lo, hi) = at.iter().fold((Vec3::MAX, Vec3::MIN), |(lo, hi), p| (lo.min(*p), hi.max(*p)));
+        assert!((lo.x - (3.0 - KICK_BACK)).abs() < 1e-4 && (hi.x - (3.0 + KICK_OUT)).abs() < 1e-4, "{lo} {hi}");
+        assert!((lo.y - (2.0 - KICK_UNDER)).abs() < 1e-4 && (hi.y - (2.0 + KICK_RISE)).abs() < 1e-4, "{lo} {hi}");
+        // its top rises towards the other end: its back on the ground, its lip up
+        let top: Vec<Vec3> = ramp.iter().filter(|v| v.normal[1] > 0.5).map(|v| Vec3::from(v.pos)).collect();
+        assert_eq!(top.len(), 4);
+        for p in &top {
+            let rise = if p.x > 3.0 { 2.0 + KICK_RISE } else { 2.004 };
+            assert!((p.y - rise).abs() < 1e-4, "{p}");
+        }
+        // each face looks out of it
+        let middle = at.iter().sum::<Vec3>() / at.len() as f32;
+        for quad in ramp.chunks(4) {
+            let centre = quad.iter().map(|v| Vec3::from(v.pos)).sum::<Vec3>() / 4.0;
+            let n = Vec3::from(quad[0].normal);
+            assert!(n.dot(centre - middle) > 0.0, "a face looking in: {n} at {centre}");
+            assert!(quad.iter().all(|v| v.normal == quad[0].normal), "one normal a face");
+        }
     }
 }

@@ -358,7 +358,7 @@ impl MapEditor {
     /// uneven).
     pub(super) fn ramp_hooks(&mut self) {
         crate::platform::set_hook("ramps", &self.map.ramps.len().to_string());
-        crate::platform::set_hook("groundmode", if self.ramp.on { "ramps" } else if self.floorer.on { "floors" } else { "paint" });
+        crate::platform::set_hook("groundmode", if self.ramp.on { "ramps" } else if self.floorer.on { "floors" } else if self.jump.on { "jumps" } else { "paint" });
         let picked = self.ramp.selected.and_then(|i| self.map.ramps.get(i)).map(|r| format!("{},{};{};{};{:.2}", r.at[0], r.at[1], r.length(), r.up, r.rough));
         crate::platform::set_hook("ramp", &picked.unwrap_or_default());
         // what lies along ramps: the prop, the ramp's corner, how many copies laid on it;

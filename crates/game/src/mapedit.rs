@@ -20,6 +20,7 @@ mod dock;
 mod events;
 mod floors;
 mod growth;
+mod jumps;
 mod models;
 mod post;
 mod publish;
@@ -207,6 +208,8 @@ pub struct MapEditor {
     ramp: ramps::RampTool,
     /// the Ground tool's Floors tab: flooring out of doors
     floorer: floors::Floorer,
+    /// the Ground tool's Jumps tab: jumps between two cells, over the one between
+    jump: jumps::JumpTool,
     /// where new games start, being picked on the map (the map panel's New game)
     start_pick: welcome::StartPick,
     /// signed in with GitHub, and what's published as a pull request (the top bar's Publish)
@@ -469,6 +472,7 @@ impl MapEditor {
             set_level: true,
             ramp: ramps::RampTool::default(),
             floorer: floors::Floorer::default(),
+            jump: jumps::JumpTool::default(),
             start_pick: Default::default(),
             publisher: Default::default(),
             autosave: Default::default(),
@@ -1166,6 +1170,12 @@ impl MapEditor {
                 self.stroke_ground = true;
             }
             if self.set_level && self.map.level[i] != self.level {
+                // a jump's ends keep their level (one level, the two of them): their ground
+                // paints, no more
+                if self.map.jump_end(x, z) {
+                    self.status = "A jump's ends keep their level: take the jump away to raise or sink them (their ground still paints)".into();
+                    continue;
+                }
                 self.map.level[i] = self.level;
                 self.need_ground = true;
                 // what stood on the old ground keeps standing on it
@@ -1534,7 +1544,7 @@ impl MapEditor {
             if let Some(set) = world::floors::set_of(&self.content, &id).map(str::to_string) {
                 // a set of floor tiles: the Ground tool's Floors tab lays it
                 self.tool = Tool::Ground;
-                (self.ramp.on, self.floorer.on, self.ramp.drag) = (false, true, None);
+                (self.ramp.on, self.floorer.on, self.jump.on, self.ramp.drag) = (false, true, false, None);
                 self.floorer.brush = format!("{}{set}", floors::SET);
                 self.status = format!("{}: the Floors tab lays it out of doors (in a building, the Build tool's Flooring)", floors::set_name(&set));
             } else {
@@ -1609,6 +1619,7 @@ impl MapEditor {
         }
         crate::platform::set_hook("tool", self.tool.key());
         self.ramp_hooks();
+        self.jump_hooks();
         back
     }
 
@@ -1803,11 +1814,12 @@ impl MapEditor {
 
     fn ground_panel(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            let tab = if self.ramp.on { 1 } else if self.floorer.on { 2 } else { 0 };
+            let tab = if self.ramp.on { 1 } else if self.floorer.on { 2 } else if self.jump.on { 3 } else { 0 };
             let tabs = [
                 (0, "Paint", "Paint terrain and levels", "uiGroundPaint"),
                 (1, "Ramps", "Ramps down a level, along the top of a step in the ground", "uiGroundRamps"),
                 (2, "Floors", "Flooring on the ground: a pavement, a plaza (a set of tiles laid to fit)", "uiGroundFloors"),
+                (3, "Jumps", "Jumps between two cells on one level, over the cell between them", "uiGroundJumps"),
             ];
             for (k, name, about, key) in tabs {
                 let r = ui.selectable_label(tab == k, name).on_hover_text(about);
@@ -1815,12 +1827,18 @@ impl MapEditor {
                 if r.clicked() {
                     self.ramp.on = k == 1;
                     self.floorer.on = k == 2;
+                    self.jump.on = k == 3;
                     self.ramp.drag = None;
+                    self.jump.first = None;
                 }
             }
         });
         if self.ramp.on {
             self.ramp_panel(ui);
+            return;
+        }
+        if self.jump.on {
+            self.jump_panel(ui);
             return;
         }
         if self.floorer.on {
@@ -2211,6 +2229,11 @@ impl MapEditor {
             } else if self.tool == Tool::Ground && self.ramp.on && (self.ramp.selected.is_some() || self.ramp.drag.is_some()) {
                 self.ramp.selected = None;
                 self.ramp.drag = None;
+            } else if self.tool == Tool::Ground && self.jump.on && (self.jump.first.is_some() || self.jump.selected.is_some()) {
+                // the first end let go of, then the jump picked
+                if self.jump.first.take().is_none() {
+                    self.jump.selected = None;
+                }
             } else {
                 self.selected = None;
             }
@@ -2220,6 +2243,8 @@ impl MapEditor {
                 self.build_keys(0.0, true);
             } else if let (Tool::Ground, true, Some(i)) = (self.tool, self.ramp.on, self.ramp.selected) {
                 self.remove_ramp(i);
+            } else if let (Tool::Ground, true, Some(i)) = (self.tool, self.jump.on, self.jump.selected) {
+                self.remove_jump(i);
             } else if let Some(i) = self.selected_building.take() {
                 self.checkpoint();
                 self.map.buildings.remove(i);
@@ -2366,6 +2391,10 @@ impl MapEditor {
                 }
                 if self.floorer.on {
                     self.floor_input(response.hovered(), primary_pressed, primary_down);
+                    return;
+                }
+                if self.jump.on {
+                    self.jump_input(response.hovered(), primary_pressed);
                     return;
                 }
                 // a stroke starts on the map (not on a map around it), on the cell under the
@@ -2588,6 +2617,7 @@ impl MapEditor {
         match self.tool {
             Tool::Ground if self.ramp.on => self.ramp_shapes(&mut shapes),
             Tool::Ground if self.floorer.on => self.floor_shapes(&mut shapes),
+            Tool::Ground if self.jump.on => self.jump_shapes(&mut shapes),
             Tool::Ground | Tool::Trees => {
                 // on the cell under the pointer, on its own ground
                 if let Some((x, z)) = self.ground_hit {
@@ -2601,6 +2631,11 @@ impl MapEditor {
                         let (cx, y, cz, h, t) = (x as f32 + 0.5, self.level as f32 * lh + 0.04, z as f32 + 0.5, size / 2.0, 0.08);
                         for (ox, oz, w, d) in [(0.0, -h, size + t, t), (0.0, h, size + t, t), (-h, 0.0, t, size - t), (h, 0.0, t, size - t)] {
                             overlays.push(rect_at(cx + ox, y, cz + oz, w, d, [1.0, 1.0, 1.0, 0.55]));
+                        }
+                        // a jump's ends keep their level: crimson
+                        for (jx, jz) in self.brush_cells((x, z)).into_iter().filter(|&(jx, jz)| self.map.jump_end(jx, jz)) {
+                            let y = self.map.level_at(jx, jz).unwrap_or(0) as f32 * lh + 0.05;
+                            shapes.push(rect_at(jx as f32 + 0.5, y, jz as f32 + 0.5, 0.94, 0.94, [1.0, 0.35, 0.3, 0.45]));
                         }
                     }
                 }

@@ -412,6 +412,11 @@ impl Feed<'_> {
                 for (_, d) in ramps.iter().filter(|(q, _)| overlaps(q, region(s), 3)) {
                     d.hash(&mut h);
                 }
+                // the jumps with an end on it (their little ramps)
+                let r = region(s);
+                for j in m.jumps.iter().filter(|j| [j.from, j.to].iter().any(|c| c[0] >= r[0] && c[1] >= r[1] && c[0] < r[2] && c[1] < r[3])) {
+                    (j.from, j.to, j.one_way).hash(&mut h);
+                }
                 (s, h.finish())
             })
             .collect()

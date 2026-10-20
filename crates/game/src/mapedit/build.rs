@@ -391,11 +391,16 @@ impl MapEditor {
         true
     }
 
-    /// Levels the ground under a building to its floor and clears tree areas from it.
+    /// Levels the ground under a building to its floor and clears tree areas from it (and
+    /// the jumps with an end there).
     pub(super) fn settle(&mut self, i: usize) {
         let b = &self.map.buildings[i];
         let level = b.level;
-        for (x, z) in b.map_cells() {
+        let cells = b.map_cells();
+        if self.jumps_under(&cells) > 0 {
+            self.status = format!("{}: the jump with an end under it is gone", self.map.buildings[i].name);
+        }
+        for (x, z) in cells {
             if let Some(c) = self.map.index(x, z) {
                 if self.map.level[c] != level || self.map.area[c] != 0 {
                     self.map.level[c] = level;

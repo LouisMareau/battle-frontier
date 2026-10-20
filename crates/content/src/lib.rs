@@ -750,6 +750,27 @@ impl Content {
         out
     }
 
+    /// A map's jumps on its cells: both ends on one level, neither on water.
+    fn check_jumps(&self, at: &str, m: &Map, cells: &Cells) -> Vec<String> {
+        let (w, h) = (m.width as i32, m.height as i32);
+        let index = |c: [i32; 2]| (c[0] >= 0 && c[1] >= 0 && c[0] < w && c[1] < h).then(|| (c[1] * w + c[0]) as usize);
+        let water = |i: usize| cells.terrain.get(i).and_then(|&t| cells.terrains.get(t as usize)).and_then(|id| self.terrains.get(id)).map(|t| t.walk == "water").unwrap_or(false);
+        let mut out = vec![];
+        for j in &m.jumps {
+            let (Some(a), Some(b)) = (index(j.from), index(j.to)) else { continue };
+            let (la, lb) = (cells.level.get(a).copied().unwrap_or(0), cells.level.get(b).copied().unwrap_or(0));
+            if la != lb {
+                out.push(format!("{at}: the jump from {}, {} to {}, {}: its ends are on levels {la} and {lb} (one level)", j.from[0], j.from[1], j.to[0], j.to[1]));
+            }
+            for (i, c) in [(a, j.from), (b, j.to)] {
+                if water(i) {
+                    out.push(format!("{at}: the jump from {}, {} to {}, {}: {}, {} is water", j.from[0], j.from[1], j.to[0], j.to[1], c[0], c[1]));
+                }
+            }
+        }
+        out
+    }
+
     fn check_map(&self, m: &Map, world: &Settings) -> Vec<String> {
         let at = format!("maps/{}", m.id);
         let mut out = vec![];
@@ -908,6 +929,29 @@ impl Content {
         }
         if !m.chunked() && !m.ramps.is_empty() {
             out.extend(self.check_ramps(&at, m, &m.cells(&[])));
+        }
+        // the jumps: ends in a line with one cell between, on the map, on no ramp nor under a
+        // building, each once (on one level, not water: `check_jumps`)
+        for (k, j) in m.jumps.iter().enumerate() {
+            let name = format!("the jump from {}, {} to {}, {}", j.from[0], j.from[1], j.to[0], j.to[1]);
+            if !Jump::spans(j.from, j.to) {
+                out.push(format!("{at}: {name}: its ends are in a line with one cell between them (two cells apart, along x or z)"));
+            }
+            for c in [j.from, j.to] {
+                if c[0] < 0 || c[1] < 0 || c[0] >= m.width as i32 || c[1] >= m.height as i32 {
+                    out.push(format!("{at}: {name}: {}, {} is off the map", c[0], c[1]));
+                } else if let Some(r) = m.ramps.iter().find(|r| r.has(c[0], c[1])) {
+                    out.push(format!("{at}: {name}: {}, {} is on the ramp at {}, {}", c[0], c[1], r.at[0], r.at[1]));
+                } else if let Some(b) = m.buildings.iter().find(|b| b.covers((c[0], c[1]))) {
+                    out.push(format!("{at}: {name}: {}, {} is under building \"{}\"", c[0], c[1], b.id));
+                }
+            }
+            if m.jumps[..k].iter().any(|o| o.joins(j.from, j.to)) {
+                out.push(format!("{at}: {name} is there twice"));
+            }
+        }
+        if !m.chunked() && !m.jumps.is_empty() {
+            out.extend(self.check_jumps(&at, m, &m.cells(&[])));
         }
         // where props stand within their cells
         for p in &m.props {
@@ -1278,9 +1322,11 @@ pub mod disk {
                     out.push(format!("{at}: chunk {name} names a zone the map doesn't have"));
                 }
             }
-            if !m.ramps.is_empty() {
+            if !m.ramps.is_empty() || !m.jumps.is_empty() {
                 if let Ok(chunks) = read_chunks(root, e.space, m) {
-                    out.extend(content.check_ramps(&at, m, &m.cells(&chunks)));
+                    let cells = m.cells(&chunks);
+                    out.extend(content.check_ramps(&at, m, &cells));
+                    out.extend(content.check_jumps(&at, m, &cells));
                 }
             }
         }
@@ -1429,6 +1475,72 @@ mod tests {
         assert_eq!(problems.len(), 4, "{problems:?}");
         // a map without them says nothing of them
         assert!(!to_text(&Map::default()).contains("ramps"));
+    }
+
+    #[test]
+    fn a_jump_goes_over_one_cell_between_two_on_one_level() {
+        // its ends, two cells apart along x or z; jumped both ways, or from `from` only
+        let j = Jump { from: [2, 3], to: [4, 3], one_way: false };
+        assert!(Jump::spans([2, 3], [4, 3]) && Jump::spans([1, 5], [1, 3]));
+        assert!(!Jump::spans([2, 3], [3, 3]) && !Jump::spans([2, 3], [5, 3]) && !Jump::spans([2, 3], [4, 5]));
+        assert_eq!((j.between(), j.way_from([2, 3]), j.way_from([4, 3])), ([3, 3], (1, 0), (-1, 0)));
+        assert_eq!((j.from_cell([2, 3]), j.from_cell([4, 3]), j.from_cell([3, 3])), (Some([4, 3]), Some([2, 3]), None));
+        let one = Jump { one_way: true, ..j.clone() };
+        assert_eq!((one.from_cell([2, 3]), one.from_cell([4, 3])), (Some([4, 3]), None));
+        assert!(j.joins([4, 3], [2, 3]) && j.has([4, 3]) && !j.has([3, 3]));
+        // both ways: nothing said of its way in its record
+        assert!(!to_text(&j).contains("one_way") && to_text(&one).contains("one_way"));
+        assert!(!to_text(&Map::default()).contains("jumps"));
+    }
+
+    #[test]
+    fn jumps_are_checked_where_they_go() {
+        let mut c = Content::default();
+        c.terrains.put(Terrain { id: "grass".into(), walk: "walk".into(), ..Default::default() }, Space::Content);
+        c.terrains.put(Terrain { id: "pond".into(), walk: "water".into(), pattern: "water".into(), ..Default::default() }, Space::Content);
+        // the ramps' hill: a plateau on 2 up north (z 0, 1), a tower on 3 at its east end, the
+        // lowland on 1, a pond at its south-west corner, a ramp down the plateau's edge at 1, 1
+        // and a hut at 4, 2
+        let mut legend = BTreeMap::new();
+        legend.insert("g".to_string(), "grass".to_string());
+        legend.insert("w".to_string(), "pond".to_string());
+        let mut terrain = vec!["gggggg".to_string(); 6];
+        terrain[5] = "wwgggg".into();
+        let levels = ["222233", "222233", "111111", "111111", "111111", "111111"].map(String::from).to_vec();
+        let ramps = vec![Ramp { at: [1, 1], size: [2, 1], up: "n".into(), ..Default::default() }];
+        let buildings = vec![Building { id: "hut".into(), name: "Hut".into(), at: [4, 2], level: 1, cells: vec!["#".into()], floors: vec![Floor::default()], ..Default::default() }];
+        let jump = |from: [i32; 2], to: [i32; 2]| Jump { from, to, one_way: false };
+        let jumps = vec![
+            // over the lowland: fine
+            jump([0, 3], [2, 3]),
+            // three cells apart
+            jump([0, 2], [3, 2]),
+            // from the plateau onto the tower
+            jump([3, 0], [5, 0]),
+            // from the ramp
+            jump([1, 1], [3, 1]),
+            // into the pond
+            jump([1, 5], [3, 5]),
+            // off the map
+            jump([5, 4], [7, 4]),
+            // the first one again, the other way round
+            jump([2, 3], [0, 3]),
+            // out of the hut
+            jump([4, 2], [4, 4]),
+        ];
+        let m = Map { id: "hill".into(), name: "Hill".into(), width: 6, height: 6, legend, terrain, levels, ramps, buildings, jumps, ..Default::default() };
+        c.maps.put(m, Space::Content);
+        let problems: Vec<String> = c.validate().into_iter().filter(|p| p.contains("jump")).collect();
+        let has = |what: &str| problems.iter().any(|p| p.contains(what));
+        assert!(!problems.iter().any(|p| p.starts_with("maps/hill: the jump from 0, 3 to 2, 3")), "{problems:?}");
+        assert!(has("the jump from 0, 2 to 3, 2: its ends are in a line with one cell between them"), "{problems:?}");
+        assert!(has("the jump from 3, 0 to 5, 0: its ends are on levels 2 and 3 (one level)"), "{problems:?}");
+        assert!(has("the jump from 1, 1 to 3, 1: 1, 1 is on the ramp at 1, 1"), "{problems:?}");
+        assert!(has("the jump from 1, 5 to 3, 5: 1, 5 is water"), "{problems:?}");
+        assert!(has("the jump from 5, 4 to 7, 4: 7, 4 is off the map"), "{problems:?}");
+        assert!(has("the jump from 2, 3 to 0, 3 is there twice"), "{problems:?}");
+        assert!(has("the jump from 4, 2 to 4, 4: 4, 2 is under building \"hut\""), "{problems:?}");
+        assert_eq!(problems.len(), 7, "{problems:?}");
     }
 
     #[test]

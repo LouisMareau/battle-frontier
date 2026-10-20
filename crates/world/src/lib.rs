@@ -102,6 +102,8 @@ pub struct WorldMap {
     pub ramps: Vec<Ramp>,
     /// cells laid with flooring out of doors: each one's tile and turn (`floors`)
     pub floors: Vec<content::CellTile>,
+    /// jumps between two cells with one between them (`jumps`)
+    pub jumps: Vec<content::Jump>,
     /// 0: none, else 1 + the index in `zones`
     pub zone: Vec<u8>,
     pub zones: Vec<Zone>,
@@ -135,6 +137,7 @@ impl WorldMap {
             buildings: vec![],
             ramps: vec![],
             floors: vec![],
+            jumps: vec![],
             zone: vec![0; width * height],
             zones: vec![],
             links: vec![],
@@ -169,6 +172,7 @@ impl WorldMap {
             buildings: m.buildings.clone(),
             ramps: m.ramps.clone(),
             floors: m.floors.clone(),
+            jumps: m.jumps.clone(),
             zone: cells.zone,
             zones: m.zones.clone(),
             links: m.links.clone(),
@@ -207,6 +211,7 @@ impl WorldMap {
             buildings: self.buildings.clone(),
             ramps: self.ramps.clone(),
             floors: self.floors.clone(),
+            jumps: self.jumps.clone(),
             zones: self.zones.clone(),
             links: self.links.clone(),
             actors: self.actors.clone(),
@@ -278,6 +283,20 @@ impl WorldMap {
         self.ramps.retain(|r| r.at[0] + r.size[0] as i32 <= width as i32 && r.at[1] + r.size[1] as i32 <= height as i32);
         self.props.retain(|p| p.at[0] < width as f64 && p.at[1] < height as f64);
         self.floors.retain(|t| t.cell[0] < width as i32 && t.cell[1] < height as i32);
+        // a jump whose end the map no longer holds goes
+        self.jumps.retain(|j| [j.from, j.to].iter().all(|c| c[0] < width as i32 && c[1] < height as i32));
+    }
+
+    /// Where one lands jumping from a cell the way `d` (a cell at a time), if a jump goes from
+    /// there that way.
+    pub fn jump_from(&self, from: (i32, i32), d: (i32, i32)) -> Option<(i32, i32)> {
+        let c = [from.0, from.1];
+        self.jumps.iter().filter(|j| j.way_from(c) == d).find_map(|j| j.from_cell(c)).map(|t| (t[0], t[1]))
+    }
+
+    /// Whether a cell is a jump's end (its level stays as it is).
+    pub fn jump_end(&self, x: i32, z: i32) -> bool {
+        self.jumps.iter().any(|j| j.has([x, z]))
     }
 
     /// A cell's flooring out of doors, if it's laid with one.
@@ -713,5 +732,22 @@ mod tests {
         let again = WorldMap::from_record(&r);
         let same = (0..150 * 100).all(|i| again.terrains[again.terrain[i] as usize] == m.terrains[m.terrain[i] as usize]);
         assert!(same, "the rows hold the same terrains (their numbers may differ: the legend orders them)");
+    }
+
+    #[test]
+    fn jumps_land_on_their_other_end_and_go_with_the_cells_they_need() {
+        let mut m = WorldMap::new("gap", "Gap", 8, 6, "grass");
+        m.jumps.push(content::Jump { from: [2, 3], to: [4, 3], one_way: false });
+        m.jumps.push(content::Jump { from: [5, 1], to: [5, 3], one_way: true });
+        // from either end of the first, the way of its other end; from the second's first only
+        assert_eq!((m.jump_from((2, 3), (1, 0)), m.jump_from((4, 3), (-1, 0))), (Some((4, 3)), Some((2, 3))));
+        assert_eq!((m.jump_from((2, 3), (-1, 0)), m.jump_from((2, 3), (0, 1))), (None, None));
+        assert_eq!((m.jump_from((5, 1), (0, 1)), m.jump_from((5, 3), (0, -1))), (Some((5, 3)), None));
+        assert!(m.jump_end(4, 3) && m.jump_end(5, 1) && !m.jump_end(3, 3));
+        // kept in the record, and back
+        assert_eq!(WorldMap::from_record(&m.to_record()).jumps, m.jumps);
+        // the map cut down to 5 wide: the jump whose end it no longer holds goes
+        m.resize(5, 6, "grass");
+        assert_eq!(m.jumps.iter().map(|j| j.from).collect::<Vec<_>>(), [[2, 3]]);
     }
 }

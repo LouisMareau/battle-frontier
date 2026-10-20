@@ -844,6 +844,59 @@ impl Default for Grower {
     }
 }
 
+/// A jump between two cells in a line with one cell between them, on one level: the player
+/// jumps from one to the other over the cell between (both ways, unless `one_way`: from `from`
+/// to `to` only). Each end it's jumped from has a little ramp at its edge poking out towards
+/// the other; its ends keep their level while it's there.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Jump {
+    pub from: [i32; 2],
+    pub to: [i32; 2],
+    /// jumped from `from` to `to` only, never back
+    #[serde(skip_serializing_if = "is_default")]
+    pub one_way: bool,
+}
+
+impl Jump {
+    /// Whether two cells can be a jump's ends: in a line (along x or z) with one cell between.
+    pub fn spans(a: [i32; 2], b: [i32; 2]) -> bool {
+        matches!(((b[0] - a[0]).abs(), (b[1] - a[1]).abs()), (2, 0) | (0, 2))
+    }
+
+    /// The cell between its ends.
+    pub fn between(&self) -> [i32; 2] {
+        [(self.from[0] + self.to[0]) / 2, (self.from[1] + self.to[1]) / 2]
+    }
+
+    /// Whether a cell is one of its ends.
+    pub fn has(&self, c: [i32; 2]) -> bool {
+        self.from == c || self.to == c
+    }
+
+    /// Where one lands jumping from `c` (one of its ends), if it's jumped from there.
+    pub fn from_cell(&self, c: [i32; 2]) -> Option<[i32; 2]> {
+        if c == self.from {
+            Some(self.to)
+        } else if c == self.to && !self.one_way {
+            Some(self.from)
+        } else {
+            None
+        }
+    }
+
+    /// The way from one end to the other, a cell at a time (east: 1, 0).
+    pub fn way_from(&self, c: [i32; 2]) -> (i32, i32) {
+        let other = if c == self.from { self.to } else { self.from };
+        ((other[0] - c[0]).signum(), (other[1] - c[1]).signum())
+    }
+
+    /// The same two cells, whichever way round.
+    pub fn joins(&self, a: [i32; 2], b: [i32; 2]) -> bool {
+        (self.from == a && self.to == b) || (self.from == b && self.to == a)
+    }
+}
+
 /// The kinds of water (`Terrain::water`).
 pub const WATERS: [&str; 2] = ["inland", "oceanic"];
 
@@ -1368,6 +1421,9 @@ pub struct Map {
     /// a set's laid to fit (`world::floors`), on the cell's ground
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub floors: Vec<crate::building::CellTile>,
+    /// jumps between two cells with one between them, on one level (see `Jump`)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub jumps: Vec<Jump>,
     /// the zone each cell belongs to (its `mark`), '.' for none
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub zone_cells: Vec<String>,
