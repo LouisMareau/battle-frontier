@@ -19,6 +19,12 @@ use super::{gpu, models, MapEditor};
 
 /// One cell's walk, in milliseconds.
 const STEP_MS: f64 = 210.0;
+/// One cell's run (Shift held, or B on a controller), in milliseconds.
+pub(super) const RUN_MS: f64 = 120.0;
+/// A jump down a ledge (to the cell next to it a level lower), in milliseconds, and how high
+/// it hops at least over the line down (cells; half the drop more).
+pub(super) const LEDGE_MS: f64 = 340.0;
+const LEDGE_HOP: f32 = 0.3;
 /// A jump over the cell between its ends, in milliseconds, and how high it goes at least
 /// (cells: over the cell between too, when that's higher).
 pub(super) const JUMP_MS: f64 = 430.0;
@@ -313,11 +319,25 @@ impl MapEditor {
         let held = |b: crate::input::Button| !typing && !frozen && crate::input::held(ctx, b);
         let (right, forward) = self.cam.ground_axes();
         let snap = |v: Vec3| if v.x.abs() > v.z.abs() { (v.x.signum() as i32, 0) } else { (0, v.z.signum() as i32) };
+        // running held; the way pressed this frame (not only held from before)
+        let running = !typing && !frozen && crate::input::running(ctx);
+        let pressed = |b: crate::input::Button| !typing && !frozen && crate::input::pressed_now(ctx, b);
+        let fresh = [
+            (crate::input::Button::Up, forward),
+            (crate::input::Button::Down, -forward),
+            (crate::input::Button::Left, -right),
+            (crate::input::Button::Right, right),
+        ]
+        .into_iter()
+        .find(|&(b, _)| pressed(b))
+        .map(|(_, v)| snap(v));
         let w = self.walker.as_ref().unwrap();
         let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
         let pos = w.from.lerp(w.to, t);
         let upstairs = w.upstairs;
         let routed = w.route.front().map(|&n| (n.0 - w.cell.0, n.1 - w.cell.1));
+        // a step's time: running, the player's own steps (a script's walk at its own pace)
+        let pace = if running && routed.is_none() { RUN_MS } else { STEP_MS };
         let dir = if let Some(d) = routed {
             if t >= 1.0 { Some(d) } else { None }
         } else if held(crate::input::Button::Up) {
@@ -356,7 +376,7 @@ impl MapEditor {
             w.facing = facing_of(d);
             w.route.pop_front();
             if free {
-                w.go(pos, to, now, STEP_MS, 0.0);
+                w.go(pos, to, now, pace, 0.0);
                 w.cell = next;
             }
         } else if let (Some(d), true, Some(land)) = (dir, t >= 1.0, self.jump_landing(w.cell, dir, routed.is_some())) {
@@ -385,7 +405,7 @@ impl MapEditor {
                             if let Some(delta) = self.step_into(&id) {
                                 let to = self.cell_pos(there);
                                 let w = self.walker.as_mut().unwrap();
-                                w.go(pos - delta, to, now, STEP_MS, 0.0);
+                                w.go(pos - delta, to, now, pace, 0.0);
                                 w.cell = there;
                                 self.cam.target = w.from;
                                 self.extra_changed = true;
@@ -411,6 +431,10 @@ impl MapEditor {
             });
             let free = (self.map.can_step(self.blocked.as_ref().unwrap(), cell, next) || routed.is_some() && self.map.index(next.0, next.1).is_some()) && !someone && !on_stairs.unwrap_or(false);
             let to = self.cell_pos(next);
+            // down a ledge a level high: facing it already, its way pressed again, running held
+            // (a script's route never jumps)
+            let was_facing = self.walker.as_ref().is_some_and(|w| (w.facing - facing).abs() < 0.5);
+            let ledge = (!free && routed.is_none() && running && was_facing && fresh == Some(d)).then(|| self.ledge_below(cell, d)).flatten();
             let w = self.walker.as_mut().unwrap();
             w.facing = facing;
             if routed.is_some() {
@@ -422,8 +446,12 @@ impl MapEditor {
                     w.route.pop_front();
                 }
             }
-            if free {
-                w.go(pos, to, now, STEP_MS, 0.0);
+            if ledge.is_some() {
+                // up a little and down a level, onto its middle
+                w.go(pos, to, now, LEDGE_MS, LEDGE_HOP + (pos.y - to.y).max(0.0) * 0.5);
+                w.cell = next;
+            } else if free {
+                w.go(pos, to, now, pace, 0.0);
                 w.cell = next;
             }
         }
@@ -484,6 +512,27 @@ impl MapEditor {
         // (as it's drawn: up in the air through a jump; the camera stays level)
         crate::platform::set_hook("walkery", &format!("{:.2}", self.walker.as_ref().map_or(pos.y, |w| w.pos(now).y)));
         crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
+    }
+
+    /// The cell a ledge drops to from `cell` the way `d`, when it can be jumped down: the cell
+    /// next to it on this map exactly a level lower (never two), out of doors on both (not
+    /// upstairs, no building on either, no ramp), nothing blocking it, nobody standing there.
+    fn ledge_below(&self, cell: (i32, i32), d: (i32, i32)) -> Option<(i32, i32)> {
+        if self.walker.as_ref()?.upstairs.is_some() {
+            return None;
+        }
+        let next = (cell.0 + d.0, cell.1 + d.1);
+        let (here, there) = (self.map.level_at(cell.0, cell.1)?, self.map.level_at(next.0, next.1)?);
+        if here != there + 1 {
+            return None;
+        }
+        let indoors = |c: (i32, i32)| self.map.buildings.iter().any(|b| b.covers(c));
+        if indoors(cell) || indoors(next) || self.map.ramp_at(cell.0, cell.1).is_some() || self.map.ramp_at(next.0, next.1).is_some() {
+            return None;
+        }
+        let i = self.map.index(next.0, next.1)?;
+        let blocked = self.blocked.as_ref().is_some_and(|b| b.get(i).copied().unwrap_or(true));
+        (!blocked && self.actor_at(next).is_none()).then_some(next)
     }
 
     /// Where a jump from `cell` the way `dir` lands, when one can be jumped now: the player's

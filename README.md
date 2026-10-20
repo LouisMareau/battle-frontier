@@ -47,7 +47,8 @@ The Editor's icon is the one exception: the editor is made for a mouse.
 overworld, the battles), read by [gilrs](https://gitlab.com/gilrs-project/gilrs): the
 system's own way on the desktop (Windows.Gaming.Input on Windows), the Gamepad API in the
 browser, where a controller shows once one of its buttons is pressed. As they come: A is the
-lower face button (A, Cross), B the right one (B, Circle), the d-pad or the left stick moves,
+lower face button (A, Cross), B the right one (B, Circle; held walking, it runs, as Shift
+does on the keyboard), the d-pad or the left stick moves,
 LB and RB are L and R, Start (Menu, Options, Plus) puts the ring on the overworld's buttons as
 Esc does. The game
 listens to one device at a time: a controller connected (or there at the start) takes over,
@@ -539,7 +540,11 @@ removes it; unstackable props never overlap anything. Then "Confirm the building
 building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag
 it onto free cells), delete. **Walk** puts a stand-in character on the map: the
 arrows move it cell by cell, and A speaks to what's in front (an actor, a sign: its events)
-while cells stepped on set off theirs. Walking into a building, the floors above and the
+while cells stepped on set off theirs. Shift held (B on a controller) runs, a cell in just over
+half the time. Facing a ledge a level high (the cell next to it exactly a level lower: never
+two, never up; nothing in the way there), its arrow pressed again with Shift held (B) jumps
+down it, up a little first, onto the middle of the cell below; a script's route never does.
+Walking into a building, the floors above and the
 roof fade away over half a second (a blended pass drawn after everything else, each pixel
 once), and so do the walls facing the camera on that floor, down to their foot (a stub
 showing where the room ends and where its doors are; their doors, windows and what hangs on

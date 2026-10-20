@@ -190,7 +190,7 @@ try {
   await state('explore', 'the new game');
   await sleep(1500);
   check('A on New game: the overworld', (await data('state')) === 'explore', await data('state'));
-  check("  its keys name the controller's buttons", (await data('walkhint')) === 'D-pad moves  ·  A speaks  ·  Menu: the buttons', await data('walkhint'));
+  check("  its keys name the controller's buttons", (await data('walkhint')) === 'D-pad moves  ·  B runs  ·  A speaks  ·  Menu: the buttons', await data('walkhint'));
   const start = (await data('walker')).split(',').map(Number);
   await pads(`set(0, ${B.up}, true)`);
   await sleep(700);

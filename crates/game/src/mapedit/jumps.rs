@@ -258,7 +258,7 @@ impl MapEditor {
 mod tests {
     use std::sync::Arc;
 
-    use super::super::walk::{JUMP_HIGH, JUMP_MS};
+    use super::super::walk::{JUMP_HIGH, JUMP_MS, LEDGE_MS, RUN_MS};
     use super::*;
 
     /// An editor on a field 12 x 10 on level 1, seen from the south: a ditch a level down along
@@ -381,15 +381,93 @@ mod tests {
 
     /// One frame of walking with `key` pressed (let go of the frame after).
     fn walk_pressing(ed: &mut MapEditor, ctx: &egui::Context, key: egui::Key, now: f64) {
-        for pressed in [true, false] {
-            let events = vec![egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE }];
-            let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
-                if pressed {
-                    ed.walk(ui.ctx(), now);
-                }
-            });
+        walk_keys(ed, ctx, Some(key), false, true, now);
+    }
+
+    /// A frame of walking with `key` pressed (none: only what's held), Shift held with it when
+    /// `shift`; let go of the frame after when `release`.
+    fn walk_keys(ed: &mut MapEditor, ctx: &egui::Context, key: Option<egui::Key>, shift: bool, release: bool, now: f64) {
+        let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        let event = |key, pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers };
+        // held modifiers come as a change of them (as the window sends them)
+        let events = std::iter::once(egui::Event::ModifiersChanged(modifiers)).chain(key.map(|k| event(k, true))).collect();
+        let mut out = ctx.run_ui(egui::RawInput { events, ..Default::default() }, |ui| {
+            ed.walk(ui.ctx(), now);
+        });
+        out.textures_delta.clear();
+        if let (Some(k), true) = (key, release) {
+            let mut out = ctx.run_ui(egui::RawInput { events: vec![event(k, false)], ..Default::default() }, |_| {});
             out.textures_delta.clear();
         }
+    }
+
+    /// A frame of walking with `key` pressed and running held (Shift), let go of after.
+    fn walk_running(ed: &mut MapEditor, ctx: &egui::Context, key: egui::Key, now: f64) {
+        walk_keys(ed, ctx, Some(key), true, true, now);
+    }
+
+    #[test]
+    fn a_ledge_a_level_high_is_jumped_down_facing_it_its_way_pressed_again_running() {
+        let mut ed = editor();
+        let ctx = egui::Context::default();
+        let lh = ed.level_height;
+        let cell = |ed: &MapEditor| ed.walker.as_ref().unwrap().cell;
+        // the ditch's edge at 4, 3 (a level down east of it): facing it, only turned
+        ed.walk_to(4, 3);
+        walk_pressing(&mut ed, &ctx, egui::Key::ArrowRight, 1000.0);
+        assert_eq!(cell(&ed), (4, 3));
+        // its way pressed again, running held: down into the ditch, up a little first, landing on
+        // its middle
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 2000.0);
+        assert_eq!(cell(&ed), (5, 3));
+        let w = ed.walker.as_ref().unwrap();
+        let top = w.pos(2000.0 + LEDGE_MS / 2.0);
+        assert!(top.y > lh && (top.x - 5.0).abs() < 1e-3, "{top}");
+        assert!((w.pos(2000.0 + LEDGE_MS) - ed.cell_pos((5, 3))).length() < 1e-4);
+        // up the other side: never
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 3000.0);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 4000.0);
+        assert_eq!(cell(&ed), (5, 3));
+        // not facing it yet: the first press turns, the next jumps
+        ed.walk_to(4, 4);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 5000.0);
+        assert_eq!(cell(&ed), (4, 4), "turned to face it first");
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 6000.0);
+        assert_eq!(cell(&ed), (5, 4));
+        // two levels down (the rise at 6, 6 over the ditch): never
+        ed.walk_to(6, 6);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowLeft, 7000.0);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowLeft, 8000.0);
+        assert_eq!(cell(&ed), (6, 6));
+        // a level down from it, the other way: as any other
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 9000.0);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowRight, 10000.0);
+        assert_eq!(cell(&ed), (7, 6));
+        // without running held: never
+        ed.walk_to(4, 5);
+        walk_pressing(&mut ed, &ctx, egui::Key::ArrowRight, 11000.0);
+        walk_pressing(&mut ed, &ctx, egui::Key::ArrowRight, 12000.0);
+        assert_eq!(cell(&ed), (4, 5));
+        // its way held from before, running held after: not pressed again, no jump
+        walk_keys(&mut ed, &ctx, Some(egui::Key::ArrowRight), false, false, 13000.0);
+        walk_keys(&mut ed, &ctx, None, true, false, 14000.0);
+        assert_eq!(cell(&ed), (4, 5), "held from before, not pressed again");
+    }
+
+    #[test]
+    fn running_held_takes_a_step_in_less_time() {
+        let mut ed = editor();
+        let ctx = egui::Context::default();
+        ed.walk_to(7, 3);
+        walk_running(&mut ed, &ctx, egui::Key::ArrowDown, 1000.0);
+        let w = ed.walker.as_ref().unwrap();
+        assert_eq!(w.cell, (7, 4));
+        assert!((w.pos(1000.0 + RUN_MS) - ed.cell_pos((7, 4))).length() < 1e-4, "there in a run's time");
+        // walking: still on its way then
+        walk_pressing(&mut ed, &ctx, egui::Key::ArrowDown, 2000.0);
+        let w = ed.walker.as_ref().unwrap();
+        assert_eq!(w.cell, (7, 5));
+        assert!((w.pos(2000.0 + RUN_MS) - ed.cell_pos((7, 5))).length() > 0.1, "a walk takes longer");
     }
 
     #[test]

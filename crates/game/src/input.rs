@@ -3,6 +3,7 @@
 //! hold-and-release, a rhythm of beats. The keys and the controller's buttons are the
 //! player's (the Options' Controls); as they come:
 //!   A: Z, Space, Enter, left click; South (A, Cross)    B: X, Escape, Backspace; East (B, Circle)
+//!   running, walking: Shift; B held on a controller
 //!   d-pad: arrows / WASD; the d-pad or the left stick   L / R: Q / E (Page Up / Page Down); LB / RB
 
 use std::collections::BTreeMap;
@@ -44,7 +45,7 @@ impl Button {
     pub fn about(self) -> &'static str {
         match self {
             Button::A => "Confirm, talk, hit and block",
-            Button::B => "Back, cancel",
+            Button::B => "Back, cancel; held while walking, run",
             Button::Up => "Up",
             Button::Down => "Down",
             Button::Left => "Left",
@@ -211,6 +212,15 @@ pub fn held(ctx: &egui::Context, b: Button) -> bool {
     }
     let keys = bindings();
     ctx.input(|i| keys.keys(b).iter().any(|&k| i.key_down(k) || i.key_pressed(k)))
+}
+
+/// Running held, walking (as the old handhelds ran): Shift on the keyboard, B on a controller
+/// (East: B, Circle), on the device listened to.
+pub fn running(ctx: &egui::Context) -> bool {
+    if crate::pads::on_pad() {
+        return crate::pads::held(Button::B);
+    }
+    ctx.input(|i| i.modifiers.shift)
 }
 
 /// The button pressed this frame, on the device listened to.

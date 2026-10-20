@@ -497,7 +497,9 @@ pub fn walk_hint(keys: &Bindings, pad: Option<Family>) -> String {
     let moves = along(keys, pad, &[Button::Up, Button::Down, Button::Left, Button::Right]);
     let menu = pad.map_or("Esc", |f| PadButton::Start.label(f));
     let verb = if moves == "D-pad" { "moves" } else { "move" };
-    format!("{moves} {verb}  ·  {} speaks  ·  {menu}: the buttons", names(keys, pad, Button::A, 1, ""))
+    // running: Shift on the keyboard (input::running), B on a controller
+    let run = if pad.is_some() { names(keys, pad, Button::B, 1, "") } else { "Shift".to_string() };
+    format!("{moves} {verb}  ·  {run} runs  ·  {} speaks  ·  {menu}: the buttons", names(keys, pad, Button::A, 1, ""))
 }
 
 /// The HUD's buttons while the ring is on them: what moves it, what presses, what goes back.
@@ -1144,8 +1146,8 @@ mod tests {
         let d = Bindings::default();
         assert_eq!(buttons_text(&d, None), "A: Z / Space / Enter · B: X / Esc / Backspace · d-pad: arrows · L / R: Q / E");
         assert_eq!(buttons_text(&d, Some(Family::Xbox)), "A: A · B: B · d-pad: d-pad, left stick · L / R: LB / RB");
-        assert_eq!(walk_hint(&d, None), "Arrows move  ·  Z speaks  ·  Esc: the buttons");
-        assert_eq!(walk_hint(&d, Some(Family::PlayStation)), "D-pad moves  ·  Cross speaks  ·  Options: the buttons");
+        assert_eq!(walk_hint(&d, None), "Arrows move  ·  Shift runs  ·  Z speaks  ·  Esc: the buttons");
+        assert_eq!(walk_hint(&d, Some(Family::PlayStation)), "D-pad moves  ·  Circle runs  ·  Cross speaks  ·  Options: the buttons");
         // the ring on the HUD's buttons
         assert_eq!(hud_hint(&d, None), "Arrows: choose  ·  Z: press  ·  X: back");
         assert_eq!(hud_hint(&d, Some(Family::Xbox)), "D-pad: choose  ·  A: press  ·  B: back");

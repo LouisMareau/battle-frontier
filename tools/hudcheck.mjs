@@ -147,7 +147,7 @@ try {
   check('Settings and Exit top right, Settings on the left', sx < ex && sy === ey && sy < 120 && ex > W - 120, `${sx},${sy} ${ex},${ey}`);
   check('  the Team bottom left', tx < 120 && ty > H - 120, `${tx},${ty}`);
   check('  frosted: the world blurred behind them', (await data('frost')) === '1');
-  check('  the map named top left, the keys under it', (await data('hudhint')) === 'Arrows move  ·  Z speaks  ·  Esc: the buttons', await data('hudhint'));
+  check('  the map named top left, the keys under it', (await data('hudhint')) === 'Arrows move  ·  Shift runs  ·  Z speaks  ·  Esc: the buttons', await data('hudhint'));
   await shot('1-overworld');
 
   // 2. Esc doesn't leave: it puts the ring on the buttons (Settings), the arrows move it, the
@@ -326,7 +326,7 @@ try {
   await pads(`connect(0, ${JSON.stringify(XBOX)})`);
   await sleep(500);
   check('a controller connected: listened to', (await data('device')) === 'pad', await data('device'));
-  check("  the keys named as it has them", (await data('walkhint')) === 'D-pad moves  ·  A speaks  ·  Menu: the buttons', await data('walkhint'));
+  check("  the keys named as it has them", (await data('walkhint')) === 'D-pad moves  ·  B runs  ·  A speaks  ·  Menu: the buttons', await data('walkhint'));
   await tap(B.start);
   check('  Start: the ring on Settings', (await data('hudring')) === 'uiHudSettings', await data('hudring'));
   await tap(B.down);
