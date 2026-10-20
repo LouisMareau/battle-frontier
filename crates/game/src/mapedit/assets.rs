@@ -22,9 +22,9 @@ use super::{badge, hint, mark, requests, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
-const CATEGORIES: [&str; 20] = [
-    "decoration", "furniture", "wall_decoration", "stairs", "flora", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor", "roof",
-    "railing", "ramp", "sign", "light", "other",
+const CATEGORIES: [&str; 21] = [
+    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor",
+    "roof", "railing", "ramp", "sign", "light", "other",
 ];
 
 /// A prop given a category: made to lie along ramps when it's "ramp" (as it was, or the
@@ -750,6 +750,10 @@ impl MapEditor {
         if after != p {
             self.change_prop(id, move |q| *q = after);
             self.need_props = true;
+        }
+        // a grass prop: the tall ground it grows through
+        if self.content.props.get(id).is_some_and(|q| q.category == "grass") {
+            self.grows_in(ui, id);
         }
     }
 

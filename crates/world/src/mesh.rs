@@ -932,6 +932,67 @@ fn tall_grass(grass: &mut Mesh, t: &content::Terrain, x: i32, z: i32, foot: &dyn
     }
 }
 
+/// A grass prop grown through tall ground (`content::Growth`): where it stands (its foot),
+/// turned (degrees, clockwise seen from above) and sized.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Tuft {
+    pub prop: String,
+    pub at: Vec3,
+    pub turn: f32,
+    pub scale: f32,
+}
+
+/// The grass props grown through a tall cell (its terrain's `growth`): so many to it on
+/// average, fewer where the ground thins in patches, spread over it each in its own part of
+/// it (standing where `foot` says: none where it's cut away), picked by their weights, each
+/// turned and sized its own way; the same every time.
+fn grow(g: &content::Growth, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> Option<f32>, out: &mut Vec<Tuft>) {
+    let total: f64 = g.props.iter().map(|p| p.weight.max(0.0)).sum();
+    if total <= 0.0 {
+        return;
+    }
+    // the ground thinning in patches a few cells across (bare in the thinnest, all patchy)
+    let k = ((noise3(Vec3::new(x as f32 + 0.5, 0.0, z as f32 + 0.5), 3.5, 41) - 0.3) / 0.4).clamp(0.0, 1.0);
+    let thin = 1.0 - g.patchy.clamp(0.0, 1.0) as f32 * k * k * (3.0 - 2.0 * k);
+    let n = (g.density.clamp(0.0, content::Growth::MOST) as f32 * thin + hash(x, z, 91)).floor() as i32;
+    // each somewhere in its own part of the cell (a grid as fine as they need)
+    let side = (n as f32).sqrt().ceil().max(1.0) as i32;
+    let (lo, hi) = (g.scale[0].min(g.scale[1]), g.scale[0].max(g.scale[1]));
+    for k in 0..n {
+        let r = |i: i32| hash(x, z, 100 + k * 7 + i);
+        let (u, v) = (((k % side) as f32 + 0.1 + 0.8 * r(0)) / side as f32, ((k / side) as f32 + 0.1 + 0.8 * r(1)) / side as f32);
+        let Some(y) = foot(u, v) else { continue };
+        let mut pick = r(2) as f64 * total;
+        let prop = g
+            .props
+            .iter()
+            .find(|p| {
+                pick -= p.weight.max(0.0);
+                pick < 0.0
+            })
+            .unwrap_or(&g.props[g.props.len() - 1]);
+        out.push(Tuft {
+            prop: prop.prop.clone(),
+            at: Vec3::new(x as f32 + u, y, z as f32 + v),
+            turn: if g.turn { r(3) * 360.0 } else { 0.0 },
+            scale: (lo + (hi - lo) * r(4) as f64) as f32,
+        });
+    }
+}
+
+/// Grass props grown through tall ground (`ground_region_grown`'s tufts) as their props'
+/// models (their real ones once loaded), where they stand.
+pub fn grown(tufts: &[Tuft], content: &Content, models: &Models) -> Scene {
+    let mut cache: HashMap<&str, Scene> = HashMap::new();
+    let mut out = Scene::default();
+    for t in tufts {
+        let Some(prop) = content.props.get(&t.prop) else { continue };
+        let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
+        out.append(scene, placement(t.at, t.turn, t.scale));
+    }
+    out
+}
+
 /// The cell tops, the cliff faces and the tall grass of a region's cells. Every edge of a
 /// step in the ground is bevelled: the top edge (the higher cell's rim goes down), the foot
 /// (the lower cell's rim comes up, unless it's water), and an outer corner standing on one
@@ -945,6 +1006,14 @@ fn tall_grass(grass: &mut Mesh, t: &content::Terrain, x: i32, z: i32, foot: &dyn
 /// to a ramp on its level, or a level down, meets it unbevelled (its top, its foot, the walls
 /// between), and higher ground has its cliff down onto it.
 pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond) -> (Mesh, Mesh, Mesh) {
+    let (tops, cliffs, grass, _) = ground_region_grown(map, content, level_height, region, beyond);
+    (tops, cliffs, grass)
+}
+
+/// `ground_region`, with the grass props grown through its tall cells whose terrain lists them
+/// (`content::Growth`, in place of the engine's own blades there): `grown` makes them.
+pub fn ground_region_grown(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond) -> (Mesh, Mesh, Mesh, Vec<Tuft>) {
+    let mut tufts = vec![];
     let mut tops = Mesh::default();
     let mut cliffs = Mesh::default();
     let mut grass = Mesh::default();
@@ -1044,7 +1113,12 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             }
             // (none through what lies along it)
             if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall" && !even(r)) {
-                tall_grass(&mut grass, t, x, z, &|u, v| Some(at(fx + u, fz + v)));
+                let foot = |u: f32, v: f32| Some(at(fx + u, fz + v));
+                if t.growth.is_empty() {
+                    tall_grass(&mut grass, t, x, z, &foot);
+                } else {
+                    grow(&t.growth, x, z, &foot, &mut tufts);
+                }
             }
             continue;
         }
@@ -1114,12 +1188,18 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
             ];
             top_piece(&mut tops, &floor, [fx + dx as f32 + 0.5, fz + dz as f32 + 0.5]);
         }
-        // tall grass: tufts of blades, standing on the top (on its rim too)
+        // tall grass: tufts of blades (or the grass props its terrain grows), standing on the
+        // top (on its rim too)
         if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
-            tall_grass(&mut grass, t, x, z, &|u, v| (!e.cut_away(u, v)).then(|| y + e.height(u, v)));
+            let foot = |u: f32, v: f32| (!e.cut_away(u, v)).then(|| y + e.height(u, v));
+            if t.growth.is_empty() {
+                tall_grass(&mut grass, t, x, z, &foot);
+            } else {
+                grow(&t.growth, x, z, &foot, &mut tufts);
+            }
         }
     }
-    (tops, cliffs, grass)
+    (tops, cliffs, grass, tufts)
 }
 
 /// The props placed on the map.
@@ -1554,5 +1634,110 @@ mod wind_tests {
         assert_eq!((row2(at("sand"))[2], row2(at("sand"))[3]), (0, 255), "sand: a beach");
         assert_eq!(row2(at("water"))[2], 1, "water drawn as water: inland");
         assert_eq!(row2(at("sea"))[2], 2, "the sea: oceanic");
+    }
+}
+
+#[cfg(test)]
+mod growth_tests {
+    use content::{Content, Grower, Growth, Part, Prop, Space, Terrain};
+
+    use super::*;
+
+    /// Grass and tall grass, the tall growing two grass props (a tuft three times as often as
+    /// clover), and the props themselves (stand-ins).
+    fn meadow(growth: Growth) -> Content {
+        let mut c = Content::default();
+        c.terrains.put(Terrain { id: "grass".into(), pattern: "grass".into(), walk: "walk".into(), ..Default::default() }, Space::Content);
+        c.terrains.put(Terrain { id: "tall".into(), pattern: "tall".into(), walk: "walk".into(), color: "#3f9a3e".into(), color2: "#2e7430".into(), growth, ..Default::default() }, Space::Content);
+        for id in ["tuft", "clover"] {
+            let parts = vec![Part { shape: "cone".into(), size: [0.2, 0.4, 0.2], color: "#4a8a3a".into(), ..Default::default() }];
+            c.props.put(Prop { id: id.into(), name: id.into(), category: "grass".into(), footprint: [1, 1], height: 0.4, parts, ..Default::default() }, Space::Content);
+        }
+        c
+    }
+
+    fn grows(density: f64, patchy: f64) -> Growth {
+        Growth { props: vec![Grower { prop: "tuft".into(), weight: 3.0 }, Grower { prop: "clover".into(), weight: 1.0 }], density, scale: [0.5, 1.5], patchy, turn: true }
+    }
+
+    /// 10 x 10 of tall grass on level 0 but a column of short grass (x 0), and a plateau a
+    /// level up north of z 3 (its rim bevelled, its corners cut).
+    fn field() -> WorldMap {
+        let mut map = WorldMap::new("field", "Field", 10, 10, "tall");
+        let grass = map.terrain_index("grass");
+        for z in 0..10 {
+            map.terrain[z * 10] = grass;
+            for x in 0..10 {
+                if z < 3 && (2..8).contains(&x) {
+                    map.level[z * 10 + x] = 1;
+                }
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn grass_props_grow_through_tall_ground_in_place_of_the_blades() {
+        let content = meadow(grows(8.0, 0.0));
+        let map = field();
+        let (_, _, blades, tufts) = ground_region_grown(&map, &content, 2.0, whole(&map), &Alone);
+        assert!(blades.vertices.is_empty(), "the engine's blades no longer, where grass props grow");
+        // eight to a cell (fewer where a corner is cut away), each in its cell, on its ground
+        let tall_cells = 90;
+        assert!(tufts.len() <= tall_cells * 8 && tufts.len() >= tall_cells * 8 - 40, "{}", tufts.len());
+        for t in &tufts {
+            let (cx, cz) = (t.at.x.floor() as i32, t.at.z.floor() as i32);
+            assert!(cx >= 1, "none on the short grass: {t:?}");
+            let level = map.level_at(cx, cz).unwrap() as f32 * 2.0;
+            assert!((t.at.y - level).abs() <= CHAMFER + 1e-4, "on its cell's ground: {t:?}");
+            assert!((0.5..=1.5).contains(&t.scale) && (0.0..360.0).contains(&t.turn), "{t:?}");
+        }
+        // picked by their weights: about three tufts to a clover
+        let n = tufts.iter().filter(|t| t.prop == "tuft").count() as f32 / tufts.len() as f32;
+        assert!((n - 0.75).abs() < 0.06, "{n}");
+        // the same every time
+        assert_eq!(ground_region_grown(&map, &content, 2.0, whole(&map), &Alone).3, tufts);
+        // a tall terrain growing nothing: the blades, and no props
+        let plain = meadow(Growth::default());
+        let (_, _, blades, none) = ground_region_grown(&field(), &plain, 2.0, whole(&map), &Alone);
+        assert!(!blades.vertices.is_empty() && none.is_empty());
+    }
+
+    #[test]
+    fn patchy_ground_thins_out_in_places() {
+        // 30 x 30 of tall grass, eight to a cell: as thick everywhere, or thinning in patches
+        let count = |patchy: f64| {
+            let c = meadow(grows(8.0, patchy));
+            let map = WorldMap::new("wide", "Wide", 30, 30, "tall");
+            let tufts = ground_region_grown(&map, &c, 2.0, whole(&map), &Alone).3;
+            let mut by: HashMap<(i32, i32), usize> = HashMap::new();
+            for t in &tufts {
+                *by.entry((t.at.x.floor() as i32, t.at.z.floor() as i32)).or_default() += 1;
+            }
+            let cells: Vec<usize> = (0..30).flat_map(|x| (0..30).map(move |z| (x, z))).map(|c| by.get(&c).copied().unwrap_or(0)).collect();
+            (tufts.len(), *cells.iter().min().unwrap(), *cells.iter().max().unwrap())
+        };
+        let ((all, least, most), (thinned, bare, thickest)) = (count(0.0), count(1.0));
+        assert_eq!((least, most), (8, 8), "as thick everywhere");
+        assert!(thinned < all * 7 / 10 && bare == 0 && thickest == 8, "{thinned} of {all}, the barest cell {bare}, the thickest {thickest}");
+        // half as patchy: thinner in places, bare nowhere
+        let (half, least_half, _) = count(0.5);
+        assert!(half > thinned && half < all && least_half >= 4, "{half}, the barest {least_half}");
+    }
+
+    #[test]
+    fn grown_props_stand_where_their_tufts_are() {
+        let content = meadow(grows(2.0, 0.0));
+        let map = field();
+        let tufts = ground_region_grown(&map, &content, 2.0, whole(&map), &Alone).3;
+        let scene = grown(&tufts, &content, &Models::new());
+        let each = prop_model(content.props.get("tuft").unwrap()).vertices.len();
+        assert_eq!(scene.plain.vertices.len(), tufts.len() * each, "each tuft its prop's stand-in");
+        // the first tuft's model stands on its foot
+        let lowest = scene.plain.vertices[..each].iter().map(|v| v.pos[1]).fold(f32::MAX, f32::min);
+        assert!((lowest - tufts[0].at.y).abs() < 0.05, "{lowest} {:?}", tufts[0]);
+        // a prop not there any more: left out
+        let gone = vec![Tuft { prop: "nothing".into(), ..tufts[0].clone() }];
+        assert!(grown(&gone, &content, &Models::new()).is_empty());
     }
 }

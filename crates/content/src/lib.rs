@@ -608,6 +608,29 @@ impl Content {
             if !t.water.is_empty() && !model::WATERS.contains(&t.water.as_str()) {
                 out.push(format!("terrains/{}: water \"{}\" ({})", t.id, t.water, model::WATERS.join(" or ")));
             }
+            let g = &t.growth;
+            for p in &g.props {
+                if !self.props.contains(&p.prop) {
+                    out.push(format!("terrains/{}: growth: no prop {}", t.id, p.prop));
+                }
+                if p.weight.is_nan() || p.weight <= 0.0 {
+                    out.push(format!("terrains/{}: growth: {} weighs {} (more than 0)", t.id, p.prop, p.weight));
+                }
+            }
+            if !g.is_empty() {
+                if t.pattern != "tall" {
+                    out.push(format!("terrains/{}: growth on ground that isn't tall (pattern \"{}\"): nothing grows there", t.id, t.pattern));
+                }
+                if !(0.0..=model::Growth::MOST).contains(&g.density) {
+                    out.push(format!("terrains/{}: growth: density {} (0 to {})", t.id, g.density, model::Growth::MOST));
+                }
+                if g.scale.iter().any(|v| v.is_nan()) || g.scale[0] <= 0.0 || g.scale[0] > g.scale[1] {
+                    out.push(format!("terrains/{}: growth: scale {} to {} (more than 0, the least first)", t.id, g.scale[0], g.scale[1]));
+                }
+                if !(0.0..=1.0).contains(&g.patchy) {
+                    out.push(format!("terrains/{}: growth: patchy {} (0 to 1)", t.id, g.patchy));
+                }
+            }
         }
         for s in self.settings.iter() {
             out.extend(s.toon.problems().into_iter().map(|e| format!("settings/{}: toon: {e}", s.id)));
@@ -1327,6 +1350,33 @@ pub fn from_bundles(bundles: &[&str]) -> Content {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A tall terrain growing grass props: none said of it when all is well; a prop that isn't
+    /// there, a weight of nothing, sizes the wrong way round, too thick, and growth on ground
+    /// that isn't tall, each said; and a terrain growing nothing keeps the word out of its file.
+    #[test]
+    fn what_grows_through_tall_ground_is_checked() {
+        let mut c = Content::default();
+        c.props.put(Prop { id: "tuft".into(), name: "Tuft".into(), category: "grass".into(), footprint: [1, 1], height: 0.4, ..Default::default() }, Space::Content);
+        let growth = Growth { props: vec![Grower { prop: "tuft".into(), weight: 1.0 }], ..Default::default() };
+        let with = |t: Terrain| {
+            let mut c = c.clone();
+            c.terrains.put(t, Space::Content);
+            c.validate().into_iter().filter(|p| p.contains("growth")).collect::<Vec<_>>()
+        };
+        let tall = Terrain { id: "tall".into(), pattern: "tall".into(), walk: "walk".into(), growth: growth.clone(), ..Default::default() };
+        assert!(with(tall.clone()).is_empty(), "{:?}", with(tall.clone()));
+        let mut bad = tall.clone();
+        bad.growth.props.push(Grower { prop: "nothing".into(), weight: 0.0 });
+        bad.growth.scale = [1.5, 0.5];
+        bad.growth.density = 40.0;
+        let said = with(bad);
+        for word in ["no prop nothing", "weighs 0", "scale 1.5 to 0.5", "density 40"] {
+            assert!(said.iter().any(|p| p.contains(word)), "{word}: {said:?}");
+        }
+        assert_eq!(with(Terrain { pattern: "grass".into(), ..tall.clone() }).len(), 1, "growth on ground that isn't tall");
+        assert!(!to_text(&Terrain { growth: Growth::default(), ..tall }).contains("growth"));
+    }
 
     #[test]
     fn a_new_games_start_is_on_a_map() {

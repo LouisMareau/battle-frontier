@@ -83,9 +83,10 @@ pub(super) fn browser_save_record<T: content::Record>(space: content::Space, rec
 
 impl MapEditor {
     /// Whether anything's changed and not saved yet: the map (its creatures with it), the
-    /// world, the props, the world settings, the abilities, the FX, the templates.
+    /// world, the props, the world settings, the abilities, the FX, the templates, the
+    /// terrains.
     pub(super) fn unsaved(&self) -> bool {
-        self.dirty || self.worlds.dirty || self.assets.changed() > 0 || self.post_changed() || !self.abilities.dirty.is_empty() || !self.tl.fx_dirty.is_empty() || !self.tpl.dirty.is_empty()
+        self.dirty || self.worlds.dirty || self.assets.changed() > 0 || self.post_changed() || !self.abilities.dirty.is_empty() || !self.tl.fx_dirty.is_empty() || !self.tpl.dirty.is_empty() || !self.terrains_dirty.is_empty()
     }
 
     /// Saving by itself, each frame: what's changed, a moment after the last press, with

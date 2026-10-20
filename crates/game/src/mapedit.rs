@@ -19,6 +19,7 @@ mod builds;
 mod dock;
 mod events;
 mod floors;
+mod growth;
 mod models;
 mod post;
 mod publish;
@@ -214,6 +215,8 @@ pub struct MapEditor {
     /// the browser)
     autosave: saving::Autosave,
     kept_window: saving::KeptWindow,
+    /// the terrains changed here (what grows through tall ground: `growth.rs`), to save
+    terrains_dirty: std::collections::BTreeSet<String>,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -470,6 +473,7 @@ impl MapEditor {
             publisher: Default::default(),
             autosave: Default::default(),
             kept_window: Default::default(),
+            terrains_dirty: Default::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -905,7 +909,7 @@ impl MapEditor {
 
     /// Saves the map (`map`: Ctrl+S always does; saving by itself when it's changed) with its
     /// creatures, then whatever else has changed: the props, the world settings, the
-    /// abilities, the FX, the templates. What was saved goes in the status line.
+    /// abilities, the FX, the templates, the terrains. What was saved goes in the status line.
     fn save_some(&mut self, map: bool) {
         let mut said = vec![];
         if map {
@@ -923,6 +927,7 @@ impl MapEditor {
             (!self.abilities.dirty.is_empty(), Self::save_abilities),
             (!self.tl.fx_dirty.is_empty(), Self::save_fx),
             (!self.tpl.dirty.is_empty(), Self::save_templates),
+            (!self.terrains_dirty.is_empty(), Self::save_terrains),
         ];
         for (changed, save) in parts {
             if changed {
@@ -1835,6 +1840,7 @@ impl MapEditor {
                 }
             });
         }
+        self.growth_section(ui);
         section(ui, "Brush");
         ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
         ui.checkbox(&mut self.set_level, format!("Set the level to {}", self.level)).on_hover_text("Painted cells rise or sink to the chosen level; off: only the terrain changes");

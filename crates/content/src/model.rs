@@ -788,6 +788,60 @@ pub struct Terrain {
     /// where water meets it, the water washes up onto it and back, as onto sand
     #[serde(skip_serializing_if = "is_default")]
     pub beach: bool,
+    /// tall ground (`pattern` "tall"): grass props grown through its cells in place of the
+    /// engine's own blades (none listed: the blades)
+    #[serde(skip_serializing_if = "Growth::is_empty")]
+    pub growth: Growth,
+}
+
+/// What grows through a tall terrain's cells in place of the engine's own blades: grass props
+/// (the "grass" category), each picked as often as its weight says among them; so many to a
+/// cell on average, fewer where the ground thins in patches; each turned and sized its own
+/// way, the same each time.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Growth {
+    /// the grass props, with how often each is picked
+    pub props: Vec<Grower>,
+    /// how many to a cell, on average (0 to 32)
+    pub density: f64,
+    /// how much smaller and how much bigger than its prop each one can be
+    pub scale: [f64; 2],
+    /// how much the ground thins in patches (0: as thick everywhere; 1: bare in places)
+    pub patchy: f64,
+    /// each turned its own way (else all as their props are made)
+    pub turn: bool,
+}
+
+impl Default for Growth {
+    fn default() -> Self {
+        Growth { props: vec![], density: 4.0, scale: [0.8, 1.25], patchy: 0.35, turn: true }
+    }
+}
+
+impl Growth {
+    /// Nothing listed to grow: the engine's own blades instead.
+    pub fn is_empty(&self) -> bool {
+        self.props.is_empty()
+    }
+
+    /// The most to a cell.
+    pub const MOST: f64 = 32.0;
+}
+
+/// A grass prop grown through tall ground, and how often it's picked (its weight against the
+/// others').
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grower {
+    pub prop: String,
+    pub weight: f64,
+}
+
+impl Default for Grower {
+    fn default() -> Self {
+        Grower { prop: String::new(), weight: 1.0 }
+    }
 }
 
 /// The kinds of water (`Terrain::water`).
@@ -828,7 +882,8 @@ pub struct Part {
 pub struct Prop {
     pub id: String,
     pub name: String,
-    /// "tree", "flora", "rock", "decoration", "fence", "furniture", "stairs", "ramp" (what
+    /// "tree", "flora", "grass" (grown through tall ground too: `Growth`), "rock",
+    /// "decoration", "fence", "furniture", "stairs", "ramp" (what
     /// lies along ramps), and building pieces: "door", "window", "wall", "pillar", "floor",
     /// "roof", "wall_decoration"
     pub category: String,

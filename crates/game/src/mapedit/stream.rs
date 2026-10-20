@@ -72,6 +72,8 @@ pub(super) struct GpuState {
     lit_buildings: u64,
     lit_ramps: Vec<content::Ramp>,
     ramp_ground_changed: bool,
+    /// what the grass props grown through tall ground were last built from (`growth_digest`)
+    lit_growth: u64,
     /// the props layer's vertices, by square (a hook for the checks: it grows when a model
     /// comes late)
     props_vertices: BTreeMap<(i32, i32), usize>,
@@ -244,6 +246,20 @@ fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> 
         .collect()
 }
 
+/// What the grass props grown through tall ground are made from: each tall terrain's growth,
+/// with its props' records and their models' generations (a model arriving shows on them).
+fn growth_digest(content: &content::Content, versions: &HashMap<String, u64>) -> u64 {
+    let mut h = Quick::default();
+    for t in content.terrains.iter().filter(|t| t.pattern == "tall" && !t.growth.is_empty()) {
+        (&t.id, format!("{:?}", t.growth)).hash(&mut h);
+        for g in &t.growth.props {
+            content.props.get(&g.prop).map(|p| format!("{p:?}")).hash(&mut h);
+            versions.get(&g.prop).hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
 /// A building's digest: its record and the records of the props it's made of.
 fn building_digest(b: &Building, records: &QuickMap<&str, u64>) -> u64 {
     let mut h = Quick::default();
@@ -354,16 +370,26 @@ impl Feed<'_> {
         if edges {
             due.extend(squares.iter().filter(|s| s.0 == 0 || s.1 == 0 || s.0 == gx - 1 || s.1 == gz - 1));
         }
+        // the terrains grass props grow through (by their place in the map's list)
+        let growing: Vec<u16> = (0..m.terrains.len() as u16).filter(|&k| self.content.terrains.get(&m.terrains[k as usize]).is_some_and(|t| t.pattern == "tall" && !t.growth.is_empty())).collect();
         for s in due.into_iter().filter(|s| (0..gx).contains(&s.0) && (0..gz).contains(&s.1)) {
             let r = region(s);
             let mut h = Quick::default();
+            let mut grows = false;
             for z in r[1] - 2..(r[3] + 2).min(m.height as i32 + 2) {
                 for x in r[0] - 2..(r[2] + 2).min(m.width as i32 + 2) {
                     match m.index(x, z) {
-                        Some(i) => (m.level[i], m.terrain[i]).hash(&mut h),
+                        Some(i) => {
+                            (m.level[i], m.terrain[i]).hash(&mut h);
+                            grows |= x >= r[0] && z >= r[1] && x < r[2] && z < r[3] && growing.contains(&m.terrain[i]);
+                        }
                         None => (self.beyond.level(x, z), self.beyond.terrain(x, z)).hash(&mut h),
                     }
                 }
+            }
+            // grass props grow through its cells: built again when they change
+            if grows {
+                gpu.lit_growth.hash(&mut h);
             }
             gpu.ground_cells.insert(s, h.finish());
         }
@@ -515,10 +541,13 @@ impl Feed<'_> {
         let (reg, lh, id) = (region(s), self.level_height, self.id);
         match layer {
             "ground" => {
-                let (tops, cliffs, grass) = mesh::ground_region(self.map, self.content, lh, reg, self.beyond);
+                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond);
                 r.set_chunk(device, id, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
                 r.set_chunk(device, id, CLIFFS, s, &[(WHITE.to_string(), gpu(&cliffs.vertices), cliffs.indices)]);
-                r.set_chunk(device, id, "grass", s, &models::batches(&Scene::from(grass)));
+                // the engine's blades, and the grass props grown through tall ground
+                let mut grass = Scene::from(grass);
+                grass.append(&mesh::grown(&tufts, self.content, self.models), Mat4::IDENTITY);
+                r.set_chunk(device, id, "grass", s, &models::batches(&grass));
             }
             "props" => {
                 let mut scene = mesh::props_region(self.map, self.content, lh, self.models, reg);
@@ -579,9 +608,16 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         *f.gpu = GpuState { around: f.gpu.around, ..Default::default() };
         need = Needs::all();
     }
+    // the grass props grown through tall ground: changed (their settings, a record, a model
+    // come), every square's ground looked at again (those they grow on are built again)
+    let growth = growth_digest(f.content, f.model_versions);
+    let grew = std::mem::replace(&mut f.gpu.lit_growth, growth) != growth;
+    if grew {
+        f.gpu.ground_due.extend(squares_of(f.map));
+    }
     // the ground's squares again (props too can change the ground: what lies along a ramp
     // makes it straight); what changed in the cells looked for once, for them and the texture
-    let ground = need.ground || edges || (need.props && !f.map.ramps.is_empty());
+    let ground = need.ground || edges || (need.props && !f.map.ramps.is_empty()) || grew;
     if whole || need.cells || edges || ground {
         f.cells_changed();
         tick = cost("cellschanged", tick);

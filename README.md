@@ -203,7 +203,17 @@ maps).
   cobbles, rock, water) are procedural for now. Raised cells get cliff faces of rock (layered
   slabs, cracks, lumps; in the terrain's side colour), every edge bevelled: the top edge
   goes down, the ground at the foot comes up into it (not water), and an outer corner
-  standing on one level all round is cut off down its height.
+  standing on one level all round is cut off down its height. Tall grass is tufts of the
+  engine's own blades, or grass props grown through it: a tall terrain's `growth` lists props
+  of category `grass`, each with its `weight` (how often it's picked against the others), and
+  says how they grow: `density` (how many to a cell on average, up to 32), `scale` (the
+  smallest and the biggest, against the prop as made), `patchy` (how much it thins out in
+  patches a few cells across: 1, bare in places) and `turn` (each turned its own way). They
+  stand on the cells' ground (down their bevels, not on a corner cut away), the same each
+  time, moving in the wind as their props do. The Ground tool's **Grows here**, with a tall
+  terrain picked to paint, sets it (and says about how many vertices a cell it costs); a
+  grass prop's inspector has **Grows in**, the tall terrains it grows through. A grass prop is
+  still placed by itself like any other.
 - **Water** is a terrain's `water`: `inland` (lakes, ponds, rivers; what's drawn as water is
   inland unless it says otherwise) or `oceanic` (the Sea terrain). Inland water ripples the
   way the wind blows (barely when it's calm; from a cell or so out, clear of the shore's own
