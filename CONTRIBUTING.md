@@ -18,7 +18,8 @@ Then commit those files on a branch of your fork and open a pull request (below)
 reviewed and merged, everyone plays it.
 
 Or let the editor do it, in the desktop app or the browser: **Sign in** (the editor's top
-bar) with your GitHub account, then **Publish** lists every file of `content/` you've changed
+bar) with your GitHub account (a code typed on GitHub, or a token pasted: the browser starts
+with the token), then **Publish** lists every file of `content/` you've changed
 (in the browser, what you've saved there), to tick or leave out; with a title and your word
 that it's yours to send, it opens the pull request from your fork, its commit signed off as
 you (below).

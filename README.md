@@ -88,7 +88,7 @@ node tools/floorcheck.mjs              # floors laid with a set of tiles: a hous
 node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/levelcheck.mjs              # painting levels: the brush on the cell under the pointer, on its own ground, whatever the level picked (raised from the lowland, sunk from a hill's top), a stroke held still painting its own cells and no more, ground raised to meet a hill's top joining it with no seam, saved
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
-node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (signed in by a code, the start saved sent as a pull request from a fork, signed out)
+node tools/menucheck.mjs               # the main menu: Continue, New game (and its question), the Options kept, the Editor's welcome and Menu, where new games start ("Start new games here", picked on the map: clicked, dragged to face a way, turned, marked, in the World view), Publish in the browser against a stand-in GitHub (its sign-in starting with a token, signed in by a code instead, the start saved sent as a pull request from a fork, signed out; a code GitHub keeps turning away given up on, a token pasted)
 node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad API): taking over and handing back, the menu, the Options, the overworld
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, always a main, the last battles, View all's board of cards (its order, sorts, a type, a card's pin, a creature's details and moves, one lost for good), a controller; the pixelation (as dense as asked, with the camera's zoom: hook `pixelzoom`) and LCD, an Options category closed and opened
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
@@ -591,7 +591,8 @@ changed there (the Blender add-on's Add to project, a re-export) shows within a 
 request, for its maintainers to look at: only those who can write to the repository merge one,
 so nothing gets into the game unreviewed. **Sign in** comes first (Publish waits for it), with
 a GitHub account: a code typed on github.com/login/device, or a token pasted (classic, with the
-`public_repo` scope). The sign-in is kept, until **Sign out**, in the user's own settings folder
+`public_repo` scope; "Make one on GitHub" opens GitHub's page for one, the scope ticked). The
+desktop starts with the code, the browser with the token (below). The sign-in is kept, until **Sign out**, in the user's own settings folder
 on the desktop (`%APPDATA%\BattleFrontier\github.json`; `~/.config/BattleFrontier/` elsewhere),
 never in the project; in the browser in the site's storage. Publish lists every file of
 `content/` changed, in groups (maps and their events, props, creatures, models...), each
@@ -606,13 +607,18 @@ off as you, as the checks ask of every commit). Sent: on the desktop the names c
 (`tools/check-names.py`, when Python is there), then your fork (made when you can't write to
 the repository, and brought up to date), the files, a tree on the copy's, a commit on its
 commit, a branch `publish/<title>-<time>`, and the pull request against main, its link shown
-(`data-signedin`, `data-signing`, `data-signincode`, `data-publish`, `data-publishfiles` and
+(`data-signedin`, `data-signing`, `data-signincode`, `data-signinerror`, `data-publish`, `data-publishfiles` and
 `data-published` for the checks; `github:BASE` points it at a stand-in). GitHub's calls are the
 same on both: on a thread of their own on the desktop, the page's fetch in the browser. The
 API answers other sites, but github.com's sign-in doesn't, so in the browser its two calls go
 through the site's own address: a Cloudflare Pages Function (`functions/github/login/`, only
 those two, nothing kept; `_routes.json`, written by `tools/cloudflare-build.sh`, keeps every
-other address plain files). Signing in by code goes through the repository's own OAuth App,
+other address plain files). github.com turns those calls away at times (429: it limits the
+shared addresses Cloudflare's Functions go out from), so the Function asks for a code up to
+three times; the editor asks whether it's been typed less and less often while turned away
+(the waits doubling) and gives up after four refusals in a row, saying what to do instead; and
+the browser's sign-in starts with a token, which goes from the page straight to GitHub's API.
+Signing in by code goes through the repository's own OAuth App,
 "Battle Frontier editor" (its owner's: on GitHub, Settings, Developer settings, OAuth Apps; its
 "Enable Device Flow" ticked; no client secret, as the device flow needs none), its Client ID
 (public) in `CLIENT_ID` (`crates/game/src/mapedit/publish.rs`); `GITHUB_CLIENT_ID` where the

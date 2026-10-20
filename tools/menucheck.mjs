@@ -6,8 +6,9 @@
 // Menu (the main menu, the content, the test battles) and where new games start: "Start new
 // games here", then picked on the map (a cell clicked, then dragged from the way the player
 // faces), marked there, turned, and in the World view; then Publish in the browser, against a
-// stand-in for GitHub on the page's own address: signed in by a code, the start saved sent as
-// a pull request from a fork.
+// stand-in for GitHub on the page's own address: its sign-in starting with a token, signed in
+// by a code instead, the start saved sent as a pull request from a fork; then a code GitHub
+// keeps turning away, given up on, and a token pasted.
 // Screenshots to screenshots/menu-*.png. Exits 1 when something fails.
 //     node tools/menucheck.mjs
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
@@ -35,6 +36,8 @@ const BASE = '1111111111111111111111111111111111111111';
 const asked = [];
 let polls = 0;
 let codeAsks = 0;
+// every poll turned away (the second sign-in by a code)
+let refusing = false;
 // how github.com turns the site's sign-in away for a moment (the editor asks again)
 const turnedAway = { code: '429', message: 'Access to this site has been restricted. Please wait a few minutes before you try again.' };
 const reply = (res, status, body) => {
@@ -57,7 +60,7 @@ const github = async (req, res, path) => {
   if (at === 'login/device/code') return ++codeAsks === 1 ? reply(res, 429, turnedAway) : reply(res, 200, { device_code: 'dc', user_code: 'WDJB-MJHT', verification_uri: 'https://github.com/login/device', interval: 1, expires_in: 900 });
   if (at === 'login/oauth/access_token') {
     polls++;
-    if (polls === 1) return reply(res, 429, turnedAway);
+    if (refusing || polls === 1) return reply(res, 429, turnedAway);
     return reply(res, 200, polls === 2 ? { error: 'authorization_pending' } : { access_token: 'gho_check', token_type: 'bearer' });
   }
   if (at === 'api/user') return reply(res, 200, { login: 'player', id: 42, name: 'Pat Player', email: null });
@@ -320,10 +323,12 @@ try {
   check('  marked in the World view', /^\d+,\d+$/.test(await data('worldstart')), await data('worldstart'));
   await shot('11-start-world');
 
-  // 9. Publish in the browser, against the stand-in: it waits for Sign in; signed in by a code
-  // (let through the second time it's asked); the start saved above is what's changed
-  // (world.json, against the site's bundle); sent: a fork, the file, a tree, a commit signed
-  // off, a branch and the pull request; then signed out
+  // 9. Publish in the browser, against the stand-in: it waits for Sign in, which starts with a
+  // token in the browser (nothing asked of the site); signed in by a code instead (let through
+  // the second time it's asked, its first poll turned away); the start saved above is what's
+  // changed (world.json, against the site's bundle); sent: a fork, the file, a tree, a commit
+  // signed off, a branch and the pull request; signed out; then a code whose askings GitHub
+  // keeps turning away, given up on after four, and a token pasted instead
   await cmd('github:stand-in');
   const [sx] = await at('uiSignIn');
   const [px] = await at('uiPublish');
@@ -331,11 +336,15 @@ try {
   await press('uiPublish');
   check('  Publish waits for Sign in', (await data('publish')) === '' && (await data('signedin')) === '', `${await data('publish')}|${await data('signedin')}`);
   await press('uiSignIn');
-  await browser.waitFor('document.body.dataset.signincode === "WDJB-MJHT"', { timeout: 15000, what: 'the code to type' });
-  check('  Sign in: the code to type on GitHub, from the site\'s own address (asked again once turned away)', codeAsks === 2 && asked.some((a) => a.method === 'POST' && a.at === 'login/device/code' && String(a.body).includes('scope=public_repo')), `${codeAsks} asks`);
+  await sleep(400);
+  check('  Sign in: a token first in the browser, nothing asked of the site', (await data('signing')) === 'open' && codeAsks === 0 && (await at('uiSignInToken'))[0] > 0 && (await at('uiSignInMake'))[0] > 0, `${await data('signing')}, ${codeAsks} asks`);
   await shot('12-sign-in');
+  await press('uiSignInCode');
+  await browser.waitFor('document.body.dataset.signincode === "WDJB-MJHT"', { timeout: 15000, what: 'the code to type' });
+  check('  a code instead: to type on GitHub, from the site\'s own address (asked again once turned away)', codeAsks === 2 && asked.some((a) => a.method === 'POST' && a.at === 'login/device/code' && String(a.body).includes('scope=public_repo')), `${codeAsks} asks`);
+  await shot('13-sign-in-code');
   await browser.waitFor('document.body.dataset.signedin === "player"', { timeout: 20000, what: 'signed in' });
-  check('  signed in once GitHub let it through (asked again until then, a turning away no end)', polls >= 3 && (await data('signing')) === '', `${polls} polls`);
+  check('  signed in once GitHub let it through (asked again after a turning away)', polls >= 3 && (await data('signing')) === '', `${polls} polls`);
   await press('uiPublish');
   await browser.waitFor('(document.body.dataset.publishfiles ?? "") !== ""', { timeout: 20000, what: 'what was saved' });
   const files = await data('publishfiles');
@@ -344,7 +353,7 @@ try {
   await press('uiPublishTitle');
   await browser.type('A start by the pond');
   await press('uiPublishCertify');
-  await shot('13-publish');
+  await shot('14-publish');
   await press('uiPublishSend');
   await browser.waitFor('(document.body.dataset.published ?? "") !== ""', { timeout: 30000, what: 'the pull request' });
   check('  the pull request opened', (await data('published')) === 'https://github.com/LouisMareau/battle-frontier/pull/9', await data('published'));
@@ -357,11 +366,27 @@ try {
   check('  committed on the site\'s commit, signed off as the user', commit?.parents?.[0] === BASE && commit?.message?.endsWith('Signed-off-by: Pat Player <42+player@users.noreply.github.com>'), JSON.stringify(commit));
   const pr = asked.find((a) => a.at.endsWith('/pulls'))?.body;
   check('  from the fork\'s branch to main', /^player:publish\/a-start-by-the-pond-\d+$/.test(pr?.head ?? '') && pr?.base === 'main' && pr?.title === 'A start by the pond', JSON.stringify(pr));
-  await shot('14-published');
+  await shot('15-published');
   await press('uiPublishClose');
   await press('uiSignIn');
   await press('uiSignOut');
   check('  signed out: the sign-in forgotten here too', (await data('signedin')) === '' && (await browser.evaluate('localStorage.getItem("github_signin")')) === null);
+  refusing = true;
+  const before = polls;
+  await press('uiSignIn');
+  await press('uiSignInCode');
+  await browser.waitFor('(document.body.dataset.signinerror ?? "") !== ""', { timeout: 45000, what: 'the code given up on' });
+  const gaveUp = await data('signinerror');
+  check('  a code whose askings GitHub keeps turning away: given up on after four, a token suggested', polls - before === 4 && /keeps turning/.test(gaveUp) && /paste a token/.test(gaveUp), `${polls - before} polls: ${gaveUp}`);
+  await shot('16-sign-in-given-up');
+  await press('uiSignInToken');
+  await browser.type('ghp_pasted');
+  await press('uiSignInPaste');
+  await browser.waitFor('document.body.dataset.signedin === "player"', { timeout: 20000, what: 'signed in by a token' });
+  const keptToken = await browser.evaluate('JSON.parse(localStorage.getItem("github_signin") || "{}").token ?? ""');
+  check('  a token pasted instead: GitHub asked with it, the sign-in kept', asked.some((a) => a.at === 'api/user' && a.auth === 'Bearer ghp_pasted') && keptToken === 'ghp_pasted', keptToken);
+  await press('uiSignIn');
+  await press('uiSignOut');
 
   if (browser.errors.length) {
     failed++;

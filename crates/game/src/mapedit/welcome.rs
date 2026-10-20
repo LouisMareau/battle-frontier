@@ -121,7 +121,8 @@ impl MapEditor {
             };
             ui.label(RichText::new(keep).size(13.0).color(MUTED));
             ui.add_space(4.0);
-            ui.hyperlink_to(RichText::new("How to contribute").size(13.5), CONTRIBUTING);
+            // a tab of its own: in the browser the editor's stays as it is
+            ui.add(egui::Hyperlink::from_label_and_url(RichText::new("How to contribute").size(13.5), CONTRIBUTING).open_in_new_tab(true));
             ui.add_space(14.0);
             ui.horizontal(|ui| {
                 let hide = ui.checkbox(&mut self.welcome_hide, "Don't show this again");

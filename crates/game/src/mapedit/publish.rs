@@ -412,13 +412,14 @@ pub(super) struct DeviceCode {
 }
 
 /// Whether the code's been typed: the token, not yet, or not so often; or the asking turned
-/// away for now (asked again as often as before).
+/// away for now (asked again later, less and less often), with what's said if signing in is
+/// given up on.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Poll {
     Token(String),
     Wait,
     SlowDown,
-    Busy,
+    Busy(String),
 }
 
 /// A form's value, percent-encoded.
@@ -436,6 +437,26 @@ fn busy(status: u16) -> bool {
 /// How long the first asking again waits (ms; each after waits that much more): short in the
 /// tests.
 const AGAIN_MS: u32 = if cfg!(test) { 10 } else { 1500 };
+
+/// A second, as signing in by a code waits between askings (ms): short in the tests.
+const SECOND_MS: u32 = if cfg!(test) { 10 } else { 1000 };
+
+/// Askings turned away in a row before signing in by a code is given up on: about a minute at
+/// GitHub's pace, the waits before them doubling (5, 10, 20, 30 s).
+const AWAY_TIMES: u32 = 4;
+
+/// Where a token is made: a classic one, its scope ticked already and its note filled in.
+const TOKEN_PAGE: &str = "https://github.com/settings/tokens/new?scopes=public_repo&description=Battle%20Frontier%20editor";
+
+/// Signing in by a code given up on while GitHub turns its calls away (`why`: its last
+/// answer), and what to do instead.
+fn turned_away(why: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("GitHub keeps turning the site's sign-in calls away ({why}). It limits the shared addresses they go out from, so it isn't you: paste a token above instead (it goes from this browser straight to GitHub), or ask for a new code in a few minutes.")
+    } else {
+        format!("GitHub keeps turning the sign-in away ({why}): ask for a new code in a few minutes, or paste a token below.")
+    }
+}
 
 /// What GitHub said no with, in words: its own message, else the status's.
 fn failure(status: u16, text: &str, body: &Value, what: &str) -> String {
@@ -518,7 +539,7 @@ impl Hub {
                     tries += 1;
                     pause(AGAIN_MS * tries).await;
                 }
-                s if busy(s) => return Err(format!("GitHub is turning sign-ins away just now (it answered {s}): try again in a few minutes, or paste a token")),
+                s if busy(s) => return Err(turned_away(&format!("it answered {s}"))),
                 s => return Err(failure(s, &text, &v, path)),
             }
         };
@@ -533,14 +554,15 @@ impl Hub {
     }
 
     /// Whether the code's been typed (and the sign-in let through): the token, once it is.
-    /// Turned away for now (or no answer): busy, asked again at the next turn.
+    /// Turned away for now (or no answer): busy, and what's said if it stays so.
     pub async fn poll(&self, client: &str, device_code: &str) -> Result<Poll, String> {
         let path = "/login/oauth/access_token";
-        let Ok((status, text, v)) = self.form(path, &[("client_id", client), ("device_code", device_code), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code")]).await else {
-            return Ok(Poll::Busy);
+        let (status, text, v) = match self.form(path, &[("client_id", client), ("device_code", device_code), ("grant_type", "urn:ietf:params:oauth:grant-type:device_code")]).await {
+            Ok(answer) => answer,
+            Err(e) => return Ok(Poll::Busy(format!("{e}: ask for a new code once it can be, or paste a token"))),
         };
         if busy(status) {
-            return Ok(Poll::Busy);
+            return Ok(Poll::Busy(turned_away(&format!("it answered {status}"))));
         }
         if !(200..300).contains(&status) {
             return Err(failure(status, &text, &v, path));
@@ -837,10 +859,13 @@ pub(super) enum Said {
     Opened(Result<String, String>),
 }
 
-/// Signing in: the code to type (once it's come), a token pasted instead, what went wrong.
+/// Signing in: the code to type (once it's come; asked for at all), a token pasted instead,
+/// what went wrong; GitHub being asked for the code or about the token (not while the code's
+/// waited for: a token can be pasted meanwhile); the code's waiting stopped.
 #[derive(Default)]
 pub(super) struct Signing {
     pub code: Option<DeviceCode>,
+    pub asked: bool,
     pub pasted: String,
     pub error: Option<String>,
     pub busy: bool,
@@ -977,7 +1002,7 @@ impl Publisher {
             match said {
                 Said::Code(c) => {
                     if let Some(s) = &mut self.signing {
-                        s.code = Some(c);
+                        (s.code, s.busy) = (Some(c), false);
                     }
                 }
                 Said::In(u) => {
@@ -1014,7 +1039,9 @@ impl Publisher {
     }
 
     /// Signing in by the device flow: its code asked for, then GitHub asked whether it's
-    /// been typed until it has (or it's stopped, or out of time).
+    /// been typed until it has (or it's stopped, or out of time), at GitHub's pace; while it
+    /// turns the asking away, less and less often, given up on after `AWAY_TIMES` in a row.
+    /// Nothing's said once it's stopped.
     pub fn start_device(&mut self, ctx: &egui::Context) {
         let client = client_id();
         let s = self.signing.get_or_insert_with(Default::default);
@@ -1024,26 +1051,29 @@ impl Publisher {
         }
         s.stop.store(true, Ordering::Relaxed);
         let stop = Arc::new(AtomicBool::new(false));
-        (s.stop, s.busy, s.error, s.code) = (stop.clone(), true, None, None);
+        (s.stop, s.busy, s.asked, s.error, s.code) = (stop.clone(), true, true, None, None);
         let (hub, tx, ctx) = (self.hub(""), self.tx.clone(), ctx.clone());
         spawn(async move {
             let said = |s: Said| {
-                let _ = tx.send(s);
-                ctx.request_repaint();
+                if !stop.load(Ordering::Relaxed) {
+                    let _ = tx.send(s);
+                    ctx.request_repaint();
+                }
             };
             let code = match hub.device_code(&client).await {
                 Ok(c) => c,
                 Err(e) => return said(Said::NotIn(e)),
             };
             said(Said::Code(code.clone()));
-            let mut wait = code.interval.max(1);
+            let mut every = code.interval.max(1);
+            let (mut wait, mut away) = (every, 0);
             let until = now_secs() + code.expires_in;
             loop {
                 for _ in 0..wait * 10 {
                     if stop.load(Ordering::Relaxed) {
                         return;
                     }
-                    pause(100).await;
+                    pause(SECOND_MS / 10).await;
                 }
                 if now_secs() > until {
                     return said(Said::NotIn("The code ran out of time: sign in again".into()));
@@ -1056,22 +1086,34 @@ impl Publisher {
                             Err(e) => Said::NotIn(e),
                         });
                     }
-                    Ok(Poll::Wait | Poll::Busy) => {}
-                    Ok(Poll::SlowDown) => wait = (wait + 5).min(30),
+                    Ok(Poll::Wait) => (wait, away) = (every, 0),
+                    Ok(Poll::SlowDown) => {
+                        every = (every + 5).min(30);
+                        (wait, away) = (every, 0);
+                    }
+                    Ok(Poll::Busy(why)) => {
+                        away += 1;
+                        if away >= AWAY_TIMES {
+                            return said(Said::NotIn(why));
+                        }
+                        wait = (wait * 2).min(30);
+                    }
                     Err(e) => return said(Said::NotIn(e)),
                 }
             }
         });
     }
 
-    /// Signing in with a token pasted: who it is, asked of GitHub.
+    /// Signing in with a token pasted: who it is, asked of GitHub. A code being waited for is
+    /// given up (one way at a time).
     pub fn start_token(&mut self, ctx: &egui::Context) {
         let Some(s) = &mut self.signing else { return };
         let token = s.pasted.trim().to_string();
         if token.is_empty() {
             return;
         }
-        (s.busy, s.error) = (true, None);
+        s.stop.store(true, Ordering::Relaxed);
+        (s.busy, s.error, s.code) = (true, None, None);
         let (hub, tx, ctx) = (self.hub(&token), self.tx.clone(), ctx.clone());
         spawn(async move {
             let said = match hub.who().await {
@@ -1151,6 +1193,47 @@ fn badge(ui: &mut egui::Ui, how: How) {
     ui.label(RichText::new(text).size(11.0).color(color));
 }
 
+/// The code to type on github.com while it's waited for, and a way there (a tab of its own:
+/// the editor's stays as it is).
+fn code_shown(ui: &mut egui::Ui, code: &DeviceCode) {
+    ui.label(RichText::new("Type this code on GitHub's page (an account there is needed):").color(TEXT));
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(&code.user_code).monospace().size(24.0).strong().color(TEXT));
+        if ui.button("Copy").clicked() {
+            ui.ctx().copy_text(code.user_code.clone());
+        }
+    });
+    ui.add(egui::Hyperlink::from_label_and_url(format!("Open {}", code.verification_uri), &code.verification_uri).open_in_new_tab(true));
+    ui.horizontal(|ui| {
+        ui.spinner();
+        hint(ui, "Waiting for GitHub to let you in…");
+    });
+}
+
+/// A token to paste: what it is, where one's made (a tab of its own) and where it's kept.
+/// True when it's to be tried.
+fn token_part(ui: &mut egui::Ui, s: &mut Signing) -> bool {
+    hint(
+        ui,
+        if cfg!(target_arch = "wasm32") {
+            "A token of yours (a classic one, with the public_repo scope; an account on GitHub is needed): it goes from this browser straight to GitHub, and it's kept in this browser's storage for the site, never in the project."
+        } else {
+            "A token of yours (a classic one, with the public_repo scope): it's kept in your own settings folder, never in the project."
+        },
+    );
+    let made = ui.add(egui::Hyperlink::from_label_and_url("Make one on GitHub (its scope ticked already)", TOKEN_PAGE).open_in_new_tab(true));
+    mark("uiSignInMake", &made);
+    let mut go = false;
+    ui.horizontal(|ui| {
+        let t = ui.add(egui::TextEdit::singleline(&mut s.pasted).password(true).desired_width(260.0).hint_text("ghp_…"));
+        mark("uiSignInToken", &t);
+        let b = ui.add_enabled(!s.pasted.trim().is_empty() && !s.busy, egui::Button::new("Sign in"));
+        mark("uiSignInPaste", &b);
+        go = b.clicked();
+    });
+    go
+}
+
 /// A size, short.
 fn size(n: u64) -> String {
     match n {
@@ -1187,7 +1270,11 @@ impl MapEditor {
                 mark("uiSignIn", &s);
                 if s.clicked() && p.signing.is_none() {
                     p.signing = Some(Default::default());
-                    p.start_device(&ctx);
+                    // the browser starts with a token: the code's calls go through the site,
+                    // which github.com turns away at times
+                    if !cfg!(target_arch = "wasm32") {
+                        p.start_device(&ctx);
+                    }
                 }
             }
         }
@@ -1368,7 +1455,7 @@ impl Publisher {
             match &p.opened {
                 Some(Ok(url)) => {
                     ui.label(RichText::new("The pull request is open:").color(Color32::from_rgb(130, 210, 140)));
-                    ui.hyperlink_to(url.as_str(), url.as_str());
+                    ui.add(egui::Hyperlink::from_label_and_url(url.as_str(), url.as_str()).open_in_new_tab(true));
                 }
                 Some(Err(e)) => warn(ui, e),
                 None => {}
@@ -1412,36 +1499,28 @@ impl Publisher {
         }
     }
 
-    /// Signing in: the code to type on github.com (and a button to go there), or a token to
-    /// paste; what went wrong.
+    /// Signing in: on the desktop the code to type on github.com first, a token to paste
+    /// instead; in the browser the token first (it goes from the page straight to GitHub's
+    /// API, while the code's calls go through the site, which github.com turns away at times),
+    /// the code a button away; what went wrong.
     fn sign_in_window(&mut self, ctx: &egui::Context) {
         let p = self;
         crate::platform::set_hook("signing", if p.signing.is_some() { "open" } else { "" });
         crate::platform::set_hook("signincode", p.signing.as_ref().and_then(|s| s.code.as_ref()).map(|c| c.user_code.as_str()).unwrap_or(""));
+        crate::platform::set_hook("signinerror", p.signing.as_ref().and_then(|s| s.error.as_deref()).unwrap_or(""));
         let Some(s) = &mut p.signing else { return };
-        let mut stop = false;
-        let mut paste = false;
-        let mut again = false;
-        let where_kept = if cfg!(target_arch = "wasm32") { "this browser's storage for the site" } else { "your own settings folder" };
+        let browser = cfg!(target_arch = "wasm32");
+        let (mut stop, mut paste, mut code) = (false, false, false);
         let modal = egui::Modal::new(egui::Id::new("editor-sign-in")).frame(crate::title::dialog_frame()).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.label(RichText::new("Sign in with GitHub").size(20.0).color(TEXT));
             ui.add_space(6.0);
+            if browser {
+                paste = token_part(ui, s);
+                ui.add_space(4.0);
+            }
             match &s.code {
-                Some(code) => {
-                    ui.label(RichText::new("Type this code on GitHub's page (an account there is needed):").color(TEXT));
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new(&code.user_code).monospace().size(24.0).strong().color(TEXT));
-                        if ui.button("Copy").clicked() {
-                            ui.ctx().copy_text(code.user_code.clone());
-                        }
-                    });
-                    ui.hyperlink_to(format!("Open {}", code.verification_uri), &code.verification_uri);
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        hint(ui, "Waiting for GitHub to let you in…");
-                    });
-                }
+                Some(c) => code_shown(ui, c),
                 None if s.busy => {
                     ui.horizontal(|ui| {
                         ui.spinner();
@@ -1452,25 +1531,20 @@ impl Publisher {
             }
             if let Some(e) = &s.error {
                 warn(ui, e);
-                if client_id().is_empty() {
-                    hint(ui, "A classic token with the public_repo scope (github.com/settings/tokens) works too.");
-                } else {
-                    let a = ui.button("Ask for a new code");
-                    mark("uiSignInAgain", &a);
-                    again = a.clicked();
+            }
+            if s.code.is_none() && !s.busy {
+                ui.add_space(4.0);
+                let a = ui.button(if s.asked { "Ask for a new code" } else { "Sign in with a code instead" });
+                mark("uiSignInCode", &a);
+                code = a.clicked();
+                if browser && !s.asked {
+                    hint(ui, "A code to type on github.com: its calls go through the site, which GitHub turns away at times.");
                 }
             }
-            ui.add_space(8.0);
-            ui.collapsing("Or paste a token", |ui| {
-                hint(ui, &format!("A token of yours (github.com/settings/tokens, with the public_repo scope): it's kept in {where_kept}, never in the project."));
-                ui.horizontal(|ui| {
-                    let t = ui.add(egui::TextEdit::singleline(&mut s.pasted).password(true).desired_width(260.0).hint_text("ghp_…"));
-                    mark("uiSignInToken", &t);
-                    let go = ui.add_enabled(!s.pasted.trim().is_empty() && !s.busy, egui::Button::new("Sign in"));
-                    mark("uiSignInPaste", &go);
-                    paste = go.clicked();
-                });
-            });
+            if !browser {
+                ui.add_space(8.0);
+                ui.collapsing("Or paste a token", |ui| paste = token_part(ui, s));
+            }
             ui.add_space(6.0);
             let c = ui.button("Cancel");
             mark("uiSignInCancel", &c);
@@ -1478,7 +1552,7 @@ impl Publisher {
         });
         if paste {
             p.start_token(ctx);
-        } else if again {
+        } else if code {
             p.start_device(ctx);
         }
         if stop || modal.should_close() {
@@ -1803,7 +1877,7 @@ mod tests {
 
     /// GitHub turning the sign-in's calls away for now (429: it limits the addresses the site's
     /// calls come from): the code asked for again, a little later; a poll turned away is busy
-    /// (asked again at the next turn), not the end of signing in; past four tries, said so.
+    /// (asked again later), not the end of signing in; past four tries, said so.
     #[test]
     fn signing_in_asked_again_while_github_turns_it_away() {
         let (codes, polls) = (Arc::new(Mutex::new(0)), Arc::new(Mutex::new(0)));
@@ -1833,17 +1907,82 @@ mod tests {
         let hub = Hub { api: web.clone(), web, token: String::new() };
         let code = block_on(hub.device_code("client")).unwrap();
         assert_eq!((code.user_code.as_str(), *codes.lock().unwrap()), ("ABCD-1234", 2), "asked again once turned away");
-        assert_eq!(block_on(hub.poll("client", "dc")).unwrap(), Poll::Busy);
+        assert!(matches!(block_on(hub.poll("client", "dc")).unwrap(), Poll::Busy(m) if m.contains("answered 429")));
         assert_eq!(block_on(hub.poll("client", "dc")).unwrap(), Poll::Token("gho_x".into()));
         // a GitHub that never lets it through: said so, with what to do instead
         let (never, _) = stand_in(|_, _, _| (429, json!({ "message": "Access to this site has been restricted." })));
         let hub = Hub { api: never.clone(), web: never, token: String::new() };
         let e = block_on(hub.device_code("client")).unwrap_err();
-        assert!(e.contains("turning sign-ins away") && e.contains("paste a token"), "{e}");
+        assert!(e.contains("keeps turning") && e.contains("paste a token"), "{e}");
         // a refusal that isn't for now: GitHub's words
         let (wrong, _) = stand_in(|_, _, _| (404, json!({ "error": "Not Found" })));
         let hub = Hub { api: wrong.clone(), web: wrong, token: String::new() };
         assert!(block_on(hub.device_code("nobody")).unwrap_err().contains("answered 404"));
+    }
+
+    /// Signing in by a code while GitHub turns the asking away: asked less and less often, and
+    /// as before once let through (three refusals, "not yet", three more: still going, then the
+    /// token); given up on after four in a row, said so with what to do instead; a token pasted
+    /// while the code's waited for (it can be): that one tried, the code's waiting stopped.
+    #[test]
+    fn signing_in_by_a_code_while_github_turns_it_away_then_given_up() {
+        let away = || (429, json!({ "message": "Access to this site has been restricted." }));
+        let pending = || (200, json!({ "error": "authorization_pending" }));
+        // a stand-in answering each poll in turn (the last answer kept for the ones after)
+        let answering = |list: Vec<(u16, Value)>| {
+            let polls = Arc::new(Mutex::new(0usize));
+            let n = polls.clone();
+            let (web, _) = stand_in(move |method, path, _| match (method, path) {
+                ("POST", "/login/device/code") => (200, json!({ "device_code": "dc", "user_code": "ABCD-1234", "verification_uri": "https://github.com/login/device", "interval": 1, "expires_in": 900 })),
+                ("POST", "/login/oauth/access_token") => {
+                    let mut k = n.lock().unwrap();
+                    *k += 1;
+                    list[(*k - 1).min(list.len() - 1)].clone()
+                }
+                ("GET", "/user") => (200, json!({ "login": "player" })),
+                _ => (404, json!({ "message": "Not Found" })),
+            });
+            let mut p = Publisher { kept: None, api: web.clone(), web, ..Default::default() };
+            p.signing = Some(Signing::default());
+            (p, polls)
+        };
+        // the editor's frames until `done` (or a few seconds)
+        let until = |p: &mut Publisher, done: &dyn Fn(&Publisher) -> bool| {
+            for _ in 0..500 {
+                p.take();
+                if done(p) {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            panic!("not done in time");
+        };
+        let ended = |p: &Publisher| p.user.is_some() || p.signing.as_ref().is_some_and(|s| s.error.is_some());
+        let ctx = egui::Context::default();
+        let (mut p, polls) = answering(vec![away(), away(), away(), pending(), away(), away(), away(), (200, json!({ "access_token": "gho_x" }))]);
+        p.start_device(&ctx);
+        until(&mut p, &ended);
+        assert_eq!(p.user.as_ref().map(|u| u.login.as_str()), Some("player"), "{:?}", p.signing.as_ref().and_then(|s| s.error.clone()));
+        assert_eq!(*polls.lock().unwrap(), 8);
+        // turned away for good: given up on after four in a row, and said so
+        let (mut p, polls) = answering(vec![away()]);
+        p.start_device(&ctx);
+        until(&mut p, &ended);
+        let e = p.signing.as_ref().and_then(|s| s.error.clone()).unwrap_or_default();
+        assert!(e.contains("keeps turning") && e.contains("answered 429") && e.contains("paste a token"), "{e}");
+        assert_eq!(*polls.lock().unwrap(), AWAY_TIMES as usize);
+        assert!(p.signing.as_ref().is_some_and(|s| s.code.is_none() && !s.busy && s.asked), "a new code can be asked for");
+        // a token pasted while the code's waited for
+        let (mut p, polls) = answering(vec![pending()]);
+        p.start_device(&ctx);
+        until(&mut p, &|p| p.signing.as_ref().is_some_and(|s| s.code.is_some()));
+        assert!(!p.signing.as_ref().unwrap().busy, "nothing asked of GitHub but whether the code's been typed");
+        p.signing.as_mut().unwrap().pasted = "ghp_pasted".into();
+        p.start_token(&ctx);
+        until(&mut p, &|p| p.user.is_some());
+        let n = *polls.lock().unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert_eq!(*polls.lock().unwrap(), n, "the code's waiting stopped");
     }
 
     /// The sign-in window (a code to type) and the Publish window (a few changes in groups, one

@@ -12,9 +12,11 @@ export async function onRequestPost({ request, params }) {
   if (!PASSED.has(path)) return new Response('Not found', { status: 404 });
   const body = await request.text();
   if (body.length > 4096) return new Response('Too long', { status: 413 });
-  // github.com sometimes turns these calls away for a moment (429: the addresses they come from
-  // are shared with many other sites): asked again, a little later each time, before passing
-  // the refusal on (the editor asks again too)
+  // github.com turns these calls away at times (429: the addresses they go out from are shared
+  // with many other sites). Asking for a code is asked again, a little later each time, before
+  // the refusal is passed on; whether the code's been typed is passed on as it comes (the
+  // editor asks that again itself, less and less often, and gives up after a few in a row)
+  const tries = path === 'device/code' ? 3 : 1;
   let answer;
   for (let attempt = 1; ; attempt++) {
     answer = await fetch(`https://github.com/login/${path}`, {
@@ -22,7 +24,7 @@ export async function onRequestPost({ request, params }) {
       headers: { Accept: 'application/json', 'Content-Type': 'application/x-www-form-urlencoded', 'User-Agent': 'battle-frontier-site' },
       body,
     });
-    if (!(answer.status === 429 || answer.status >= 500) || attempt >= 3) break;
+    if (!(answer.status === 429 || answer.status >= 500) || attempt >= tries) break;
     await new Promise((resolve) => setTimeout(resolve, 400 * attempt));
   }
   return new Response(await answer.text(), {
