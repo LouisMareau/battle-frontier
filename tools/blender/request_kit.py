@@ -66,6 +66,8 @@ class Job:
         self.record = mr.load(self.root, self.id)
         # a set of floor tiles' tiles, as floor_tile makes them
         self.tiles = []
+        # the props this run's variants became, as finish_variant adds them
+        self.variants_made = []
 
     @property
     def creature(self):
@@ -75,6 +77,26 @@ class Job:
     def floor(self):
         """A set of floor tiles (requests.md, "A set of floor tiles")."""
         return self.record["kind"] == "floor"
+
+    @property
+    def grass(self):
+        """Grass, filling its cells to their edges (requests.md, "Grass")."""
+        return self.record["kind"] == "grass"
+
+    @property
+    def environment(self):
+        """An asset that dresses the outdoors (requests.md, "Environment")."""
+        return self.record["kind"] == "environment"
+
+    @property
+    def cells(self):
+        """Grass's cells, across x and deep y (Blender's): (1, 1) unless the request says."""
+        return tuple(int(c) for c in self.record["cells"])
+
+    @property
+    def variants(self):
+        """How many variants of it to make besides it (requests.md, "Variants")."""
+        return int(self.record["variants"] or 0)
 
     @property
     def smooth(self):
@@ -1000,6 +1022,37 @@ def fit(objects, height):
     return s
 
 
+def fit_cells(objects, cells=(1, 1), height=None):
+    """Grass fitted to tile (requests.md, "Grass"): scaled each way on its own so its bounds are
+    exactly `cells` (across Blender's x, deep its y) and `height` cells tall (else as tall as it
+    is), centred on the origin, standing on it: copies in cells side by side meet edge to edge,
+    without a gap. Returns the scale each way."""
+    lo, hi = bounds(objects)
+    size = hi - lo
+    sx, sy = cells[0] / max(size.x, 1e-6), cells[1] / max(size.y, 1e-6)
+    sz = height / max(size.z, 1e-6) if height else 1.0
+    m = Matrix.Diagonal((sx, sy, sz, 1.0)) @ Matrix.Translation(-Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)))
+    for o in objects:
+        if o.type == "MESH":
+            o.data.transform(o.matrix_world)
+            o.matrix_world = Matrix.Identity(4)
+            o.data.transform(m)
+            o.data.update()
+        else:
+            o.location = m @ o.location
+    return sx, sy, sz
+
+
+def drop(objects):
+    """Objects taken out of the scene, their meshes with them: a variant once it's added (the
+    next one built where it stood)."""
+    for o in list(objects):
+        data = o.data if o.type == "MESH" else None
+        bpy.data.objects.remove(o, do_unlink=True)
+        if data is not None and data.users == 0:
+            bpy.data.meshes.remove(data)
+
+
 def light(at, color="#ffc46b", intensity=1.0, reach=6.0, kind="point", cone=100.0, aim=(0, 0, -1)):
     """A lamp's light on the model, which becomes the prop's `light` (lit at night): a point or
     a spot, 1000 W for an intensity of 1, `reach` in cells."""
@@ -1431,6 +1484,24 @@ def previews(job, objects, size=640):
     return files
 
 
+def variant_preview(job, objects, k, size=640):
+    """Variant `k`'s render into the request's folder, seen as the model's three-quarter one
+    (variant_k.png): its file, for `finish` with the model's own renders."""
+    scene = bpy.context.scene
+    _workbench(scene, size)
+    lo, hi = bounds([o for o in objects if o.type == "MESH"])
+    cam = bpy.data.objects.new("variant camera", bpy.data.cameras.new("variant camera"))
+    bpy.context.collection.objects.link(cam)
+    scene.camera = cam
+    _, direction, ortho = next(v for v in VIEWS if v[0] == "three_quarter")
+    _view(scene, cam, lo, hi, direction, ortho)
+    name = f"variant_{k}.png"
+    _render(scene, job.dir / name)
+    bpy.data.objects.remove(cam, do_unlink=True)
+    print(f"rendered {name} in {job.dir}", flush=True)
+    return name
+
+
 def _pixels(path, height):
     """A picture's pixels (rows bottom up, as Blender keeps them), `height` high (narrower
     when it's very wide); None when Blender can't read it."""
@@ -1616,11 +1687,53 @@ def engine_check(root, glb):
     return (run.stdout or run.stderr).strip()
 
 
-def finish(job, objects, files, reply=None, category=None, blocks=True, unstackable=False):
+def _facts(job, category, blocks):
+    """A prop's category and whether it blocks the way, unless said: by the request's kind (a
+    character; grass, never in the way; else a decoration, in the way)."""
+    kind = {"creature": "character", "grass": "grass"}.get(job.record["kind"], "decoration")
+    return category or kind, (not job.grass) if blocks is None else blocks
+
+
+def _fills(job, objects):
+    """Grass that doesn't fill its cells, said (copies side by side would show a gap)."""
+    if not job.grass:
+        return
+    lo, hi = bounds([o for o in objects if o.type == "MESH"])
+    w, d = job.cells
+    if abs(hi.x - lo.x - w) > 0.01 or abs(hi.y - lo.y - d) > 0.01:
+        print(f"the grass doesn't fill its cells: {hi.x - lo.x:.3f} x {hi.y - lo.y:.3f}, not {w} x {d} (kit.fit_cells fits it)", flush=True)
+
+
+def finish_variant(job, k, objects, category=None, blocks=None, unstackable=False):
+    """With `-- --finish`: variant `k` of the model (2 on: the model itself is the first) added
+    to the project as a prop of its own (requests.md, "Variants"), as `finish` adds the model:
+    its id the model's prop's (else the request's) with "_variant_k", named "Name (variant k)",
+    in the model's space, its category and whether it blocks as the model's (by its kind,
+    unless said). Without it, only says how. Returns the model's path."""
+    if not job.finishing:
+        print(f"Variant {k} rendered only: run again with `-- --finish` to add it to the project.", flush=True)
+        return None
+    record = mr.load(job.root, job.id)
+    space = "content" if record["mine"] else "temporary"
+    pid = mr.variant_id(dict(record, prop=record["prop"] or free_prop_id(job.root, record["id"])), k)
+    category, blocks = _facts(job, category, blocks)
+    facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable}
+    _fills(job, objects)
+    glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
+    if pid not in job.variants_made:
+        job.variants_made.append(pid)
+    print(f"Done: {pid} in {space}/ ({Path(glb).relative_to(job.root)}, {Path(path).relative_to(job.root)})" + (f"; {'; '.join(notes)}" if notes else ""), flush=True)
+    print(f"The engine reads {pid}: {engine_check(job.root, glb)}", flush=True)
+    return glb
+
+
+def finish(job, objects, files, reply=None, category=None, blocks=None, unstackable=False):
     """With `-- --finish`: the model added to the project through the add-on's write_prop,
     into temporary/ unless the request says the design is the user's (content/), as the prop
     the request already made, or one of its id (numbered when that's another prop's); the
-    request done, with its renders, the prop and `reply`. Without it, only says how."""
+    request done, with its renders, the prop and `reply`, and the props of the variants this
+    run added (finish_variant). Its category and whether it blocks by its kind, unless said.
+    Without it, only says how."""
     if not job.finishing:
         print("Rendered only: look at compare.png; run again with `-- --finish` to add it to the project.", flush=True)
         return None
@@ -1628,13 +1741,17 @@ def finish(job, objects, files, reply=None, category=None, blocks=True, unstacka
     record = mr.load(job.root, job.id)
     space = "content" if record["mine"] else "temporary"
     pid = record["prop"] or free_prop_id(job.root, record["id"])
-    facts = {"name": record["name"], "category": category or ("character" if job.creature else "decoration"), "blocks": blocks, "unstackable": unstackable}
+    category, blocks = _facts(job, category, blocks)
+    facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable}
+    _fills(job, objects)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
     other = "temporary" if space == "content" else "content"
     if (job.root / other / "data" / "props" / f"{pid}.json").is_file():
         notes.append(f"{other}/ has a {pid} too, from when the design was marked otherwise: delete it by hand if it shouldn't be there")
     check = engine_check(job.root, glb)
-    mr.finish(job.root, job.id, pid, files, reply)
+    # the variants this run made; none made when none's asked for: none any more
+    made = job.variants_made if job.variants_made or not record["variants"] else None
+    mr.finish(job.root, job.id, pid, files, reply, made)
     print(f"Done: {pid} in {space}/ ({Path(glb).relative_to(job.root)}, {Path(path).relative_to(job.root)})" + (f"; {'; '.join(notes)}" if notes else ""), flush=True)
     print(f"The engine reads: {check}", flush=True)
     return glb

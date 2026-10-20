@@ -88,9 +88,35 @@ pub(super) enum Kind {
     #[default]
     Creature,
     Prop,
+    /// a patch of grass filling its cells to their edges (`cells`), so copies side by side join
+    /// without a gap: a grass prop (one tall ground can grow too)
+    Grass,
+    /// what dresses the outdoors: rocks, bushes, flowers, logs, trees
+    Environment,
     /// a set of floor tiles, each a cell, laid to fit by wave function collapse (`world::floors`)
     Floor,
 }
+
+impl Kind {
+    /// Its name in the window.
+    pub(super) fn name(self) -> &'static str {
+        match self {
+            Kind::Creature => "creature",
+            Kind::Prop => "prop",
+            Kind::Grass => "grass",
+            Kind::Environment => "environment",
+            Kind::Floor => "floor set",
+        }
+    }
+
+    /// Its settings ask for variants of it (each a prop of its own) from the first run on.
+    pub(super) fn varies(self) -> bool {
+        matches!(self, Kind::Grass | Kind::Environment)
+    }
+}
+
+/// The most variants a request asks for.
+pub(super) const VARIANTS_CAP: u32 = 12;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -199,6 +225,8 @@ pub(super) struct ModelRequest {
     pub kind: Kind,
     /// how tall it stands, in cells
     pub height: f64,
+    /// grass: the cells it fills to their edges, across x and z
+    pub cells: [u32; 2],
     pub style: Style,
     /// with the accurate style: how to build it, what matters most (the fur, a texture, a
     /// detail to get exactly right)
@@ -209,6 +237,12 @@ pub(super) struct ModelRequest {
     pub shapes: Shapes,
     /// what to know: colours, what the pictures don't show, what matters most
     pub notes: String,
+    /// how many variants of it to make besides it, each a prop of its own (with several of
+    /// them, of each drawing): grass and environment from the first run, any made one by
+    /// "Make variants"
+    pub variants: u32,
+    /// how the variants differ from it (its size, its colours...): "" leaves it to Claude
+    pub vary: String,
     /// the design is the user's own, or licensed to them: its model goes to content/ (the
     /// public game); else to temporary/ (never committed)
     pub mine: bool,
@@ -232,6 +266,8 @@ pub(super) struct ModelRequest {
     pub previews: Vec<String>,
     /// once done, the prop it became
     pub prop: String,
+    /// once its variants are made, the props they became
+    pub variant_props: Vec<String>,
     /// what the modeller says back: what it guessed, what to look at
     pub reply: String,
     /// what the user says of the model the last run made, for the next run: what to look for,
@@ -256,11 +292,14 @@ impl Default for ModelRequest {
             name: String::new(),
             kind: Kind::Creature,
             height: 1.0,
+            cells: [1, 1],
             style: Style::Smooth,
             details: String::new(),
             pose: Pose::TPose,
             shapes: Shapes::default(),
             notes: String::new(),
+            variants: 0,
+            vary: String::new(),
             mine: false,
             check_lines: false,
             status: Status::Waiting,
@@ -270,6 +309,7 @@ impl Default for ModelRequest {
             lines: vec![],
             previews: vec![],
             prop: String::new(),
+            variant_props: vec![],
             reply: String::new(),
             comments: String::new(),
             earlier: vec![],
@@ -289,6 +329,12 @@ impl ModelRequest {
     /// look right: go on".
     pub(super) fn lines_ready(&self) -> bool {
         self.status == Status::Waiting && self.progress.step == LINES_READY
+    }
+
+    /// Variants of it can be made from its model now: made, a model of its own (not a set of
+    /// floor tiles, which varies by its tiles), not being made.
+    pub(super) fn can_vary(&self) -> bool {
+        self.status == Status::Done && !self.prop.is_empty() && self.kind != Kind::Floor
     }
 }
 
@@ -395,7 +441,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
-    use super::{bone_colour, bone_names, Bone, Kind, ModelRequest, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP};
+    use super::{bone_colour, bone_names, Bone, Kind, ModelRequest, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -1254,12 +1300,14 @@ mod desk {
             match how {
                 How::GoOn => args.push("--go-on".into()),
                 How::Again => args.push("--again".into()),
+                How::Variants => args.push("--variants".into()),
                 How::Whole => {}
             }
-            let note = if how == How::Again {
-                self.list.iter().find(|r| r.id == id).map(|r| r.comments.trim().to_string()).unwrap_or_default()
-            } else {
-                self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default()
+            let note = match how {
+                How::Again => self.list.iter().find(|r| r.id == id).map(|r| r.comments.trim().to_string()).unwrap_or_default(),
+                // (the variants run reads how many and how they differ in the request)
+                How::Variants => String::new(),
+                _ => self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default(),
             };
             if !note.is_empty() {
                 args.extend(["--note".into(), note]);
@@ -1269,7 +1317,7 @@ mod desk {
             }
             match self.launch(&args) {
                 Ok(()) => {
-                    if how != How::Again {
+                    if matches!(how, How::Whole | How::GoOn) {
                         self.lines_notes.remove(id);
                     }
                     self.starting = Some((id.to_string(), now_secs()));
@@ -1280,6 +1328,7 @@ mod desk {
                     match how {
                         How::GoOn => format!("Claude Code goes on with {id} from its lines: the console shows everything it does"),
                         How::Again => format!("Claude Code makes {id} again from its last model, with your comments: the console shows everything it does"),
+                        How::Variants => format!("Claude Code makes variants of {id} from its model: the console shows everything it does"),
                         How::Whole => format!("Claude Code is starting on {id}: the console shows everything it does"),
                     }
                 }
@@ -1319,6 +1368,7 @@ mod desk {
                 How::Whole => r.status != Status::InProgress && !r.lines_ready() && r.children.is_empty() && (matches!(r.status, Status::Waiting | Status::Failed) || r.status == q.from),
                 How::GoOn => r.lines_ready(),
                 How::Again => r.status == Status::Done,
+                How::Variants => r.can_vary() && r.variants > 0,
             })
         }
 
@@ -1798,6 +1848,7 @@ mod desk {
                         How::Whole => "",
                         How::GoOn => " · go on",
                         How::Again => " · again",
+                        How::Variants => " · variants",
                     };
                     let row = ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{}.", k + 1)).size(11.5).color(Color32::from_gray(150)));
@@ -1831,6 +1882,7 @@ mod desk {
                         How::Whole => "its whole recipe, from its pictures",
                         How::GoOn => "on from the lines you checked",
                         How::Again => "made again with your comments",
+                        How::Variants => "its variants, from its model",
                     };
                     let row = row.response.on_hover_text(format!("{name}: {how_long}"));
                     mark(&format!("uiQueued_{}", q.id), &row);
@@ -2004,6 +2056,12 @@ mod desk {
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.kind, Kind::Creature, "creature").on_hover_text("Rigged: a spine, a head, limbs and a tail, and an idle animation");
                     ui.selectable_value(&mut r.kind, Kind::Prop, "prop");
+                    let grass = ui.selectable_value(&mut r.kind, Kind::Grass, "grass").on_hover_text(
+                        "A patch of grass filling its cells to their edges, so copies side by side join without a gap: a grass prop (tall ground can grow it too)",
+                    );
+                    mark("uiRequestKindGrass", &grass);
+                    let environment = ui.selectable_value(&mut r.kind, Kind::Environment, "environment").on_hover_text("What dresses the outdoors: rocks, bushes, flowers, logs, trees");
+                    mark("uiRequestKindEnvironment", &environment);
                     let floor = ui.selectable_value(&mut r.kind, Kind::Floor, "floor set").on_hover_text(
                         "A set of floor tiles, each a cell, laid to fit (by wave function collapse): a pavement, old ruins, marble, a wood tiling. Laid in buildings (the Build tool's Flooring) and out of doors (the Ground tool's Floors tab)",
                     );
@@ -2013,6 +2071,18 @@ mod desk {
                 if r.kind != Kind::Floor {
                     ui.label("Height");
                     ui.add(egui::DragValue::new(&mut r.height).speed(0.05).range(0.1..=40.0).suffix(" cells").max_decimals(2)).on_hover_text("How tall it stands (a cell is a metre; the player is about 1.5)");
+                    ui.end_row();
+                }
+                if r.kind == Kind::Grass {
+                    ui.label("Cells");
+                    ui.horizontal(|ui| {
+                        let across = ui.add(egui::DragValue::new(&mut r.cells[0]).range(1..=8)).on_hover_text("Across (x)");
+                        mark("uiRequestCellsX", &across);
+                        ui.label("×");
+                        let deep = ui.add(egui::DragValue::new(&mut r.cells[1]).range(1..=8)).on_hover_text("Deep (z)");
+                        mark("uiRequestCellsZ", &deep);
+                        hint(ui, "filled to their edges, so copies side by side join without a gap");
+                    });
                     ui.end_row();
                 }
                 ui.label("Style");
@@ -2058,6 +2128,34 @@ mod desk {
                 let notes = ui.add(egui::TextEdit::multiline(&mut r.notes).desired_rows(3).desired_width(330.0).hint_text("Colours, what the pictures don't show, what matters most"));
                 mark("uiRequestNotes", &notes);
                 ui.end_row();
+                // grass and environment from the first run on; any other once it's made
+                // (Make variants, below)
+                if r.kind.varies() || r.can_vary() {
+                    ui.label("Variants");
+                    ui.horizontal(|ui| {
+                        let count = ui.add(egui::DragValue::new(&mut r.variants).range(0..=VARIANTS_CAP)).on_hover_text(
+                            "How many variants of it to make besides it, each a prop of its own (with Several of them: of each drawing)",
+                        );
+                        mark("uiRequestVariants", &count);
+                        hint(ui, &match (r.variants, r.several && r.parent.is_empty()) {
+                            (0, _) => "none: only it".to_string(),
+                            (n, true) => format!("besides each drawing's own: {n} more of each"),
+                            (n, false) => format!("besides it: {n} more, {} in all", n + 1),
+                        });
+                    });
+                    ui.end_row();
+                    if r.variants > 0 {
+                        ui.label("What changes");
+                        let vary = ui.add(
+                            egui::TextEdit::multiline(&mut r.vary)
+                                .desired_rows(2)
+                                .desired_width(330.0)
+                                .hint_text("How the variants differ (optional): size, colours, how the blades lean, a flower or none"),
+                        );
+                        mark("uiRequestVary", &vary);
+                        ui.end_row();
+                    }
+                }
                 ui.label("");
                 let mine = ui.checkbox(&mut r.mine, "This design is mine or licensed").on_hover_text(
                     "Then its model goes into content/, the public game. Off: into temporary/, never committed (a design of someone else's stays a placeholder)",
@@ -2254,6 +2352,20 @@ mod desk {
                     }
                 });
             }
+            // the variants it was made into, each to put down
+            if set.is_none() && !r.variant_props.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Its variants");
+                    for v in r.variant_props.clone() {
+                        let known = content.props.entry(&v).is_some();
+                        let pick = ui.add_enabled(known, egui::Button::new(RichText::new(&v).monospace().size(11.5))).on_hover_text("The Place tool puts it down").on_disabled_hover_text("Not in the project");
+                        mark(&format!("uiRequestUseVariant_{v}"), &pick);
+                        if pick.clicked() {
+                            use_prop = Some(v.clone());
+                        }
+                    }
+                });
+            }
             if !r.reply.is_empty() && !r.lines_ready() {
                 section(ui, "What Claude says");
                 ui.label(RichText::new(&r.reply).size(12.0));
@@ -2301,6 +2413,39 @@ mod desk {
                 mark("uiRequestAgain", &again);
                 if again.clicked() {
                     asked = Some(if other.is_some() { Run::Queue(r.id.clone(), How::Again) } else { Run::Again(r.id.clone()) });
+                }
+            }
+            // made: variants of it, as many as its Variants says, each a prop of its own
+            if r.can_vary() {
+                section(ui, "Make variants");
+                hint(ui, "From the model made, as many variants as Variants above says, each a prop of its own, as What changes says (else as Claude sees fit); the style, the notes and the rest as they are, the model itself kept.");
+                let busy = self.busy();
+                let mine = busy.as_deref() == Some(r.id.as_str());
+                let other = busy.filter(|_| !mine);
+                let queued = self.queue.place(&r.id).is_some();
+                let n = r.variants;
+                let label = match (&other, n) {
+                    (_, 0) => "Make variants".to_string(),
+                    (Some(_), _) => format!("Queue it to make {n} variant{}", if n == 1 { "" } else { "s" }),
+                    (None, _) => format!("Make {n} variant{}", if n == 1 { "" } else { "s" }),
+                };
+                let about = match &other {
+                    Some(b) => format!("{b} is being made: Claude Code makes these on its own once it (and the queue before it) has ended"),
+                    None => "Claude Code starts from the model made and makes its variants, keeping the model itself as it is".into(),
+                };
+                let vary = ui
+                    .add_enabled(n > 0 && !queued && !mine, egui::Button::new(RichText::new(label).strong()))
+                    .on_hover_text(about)
+                    .on_disabled_hover_text(if mine {
+                        "Being made now"
+                    } else if queued {
+                        "In the queue already"
+                    } else {
+                        "Say how many in Variants above first"
+                    });
+                mark("uiRequestMakeVariants", &vary);
+                if vary.clicked() {
+                    asked = Some(if other.is_some() { Run::Queue(r.id.clone(), How::Variants) } else { Run::Variants(r.id.clone()) });
                 }
             }
             ui.add_space(8.0);
@@ -2577,13 +2722,10 @@ mod desk {
         }
     }
 
-    /// What it is, in a line: "creature · 1.2 cells · smooth · mine · lines checked first".
+    /// What it is, in a line: "creature · 1.2 cells · smooth · mine · lines checked first";
+    /// grass, the cells it fills and how tall; its variants, how many.
     pub(super) fn about(r: &ModelRequest) -> String {
-        let kind = match r.kind {
-            Kind::Creature => "creature",
-            Kind::Prop => "prop",
-            Kind::Floor => "floor set",
-        };
+        let kind = r.kind.name();
         let style = match r.style {
             Style::Smooth => "smooth",
             Style::LowPoly => "low-poly",
@@ -2595,7 +2737,15 @@ mod desk {
             return format!("{kind} · {style}{mine}");
         }
         let check = if r.check_lines { " · lines checked first" } else { "" };
-        format!("{kind} · {} cells · {style}{mine}{check}", r.height)
+        let variants = match r.variants {
+            0 => String::new(),
+            1 => " · 1 variant".to_string(),
+            n => format!(" · {n} variants"),
+        };
+        if r.kind == Kind::Grass {
+            return format!("{kind} · {} × {} cells, {} tall · {style}{variants}{mine}{check}", r.cells[0], r.cells[1], r.height);
+        }
+        format!("{kind} · {} cells · {style}{variants}{mine}{check}", r.height)
     }
 
     /// Where a value sits on the meter's track (0 to 1), from 1 to `top`.
@@ -2671,6 +2821,9 @@ mod desk {
         /// "Make it again with these comments": from the model the last run made, changed as
         /// the user's comments say
         Again(String),
+        /// "Make variants": from the model made, as many variants of it as the request says,
+        /// each a prop of its own
+        Variants(String),
         /// "Make them all": the requests a request was split into, one after another
         MakeAll(String),
         Cancel(String),
@@ -2687,8 +2840,8 @@ mod desk {
     }
 
     /// How a run goes: the whole recipe from the pictures (Start), on from the model on the
-    /// lines the user checked (GoOn), or the last run's model made again with the user's
-    /// comments on it (Again).
+    /// lines the user checked (GoOn), the last run's model made again with the user's comments
+    /// on it (Again), or variants of the model made (Variants).
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
     #[serde(rename_all = "snake_case")]
     pub(in super::super) enum How {
@@ -2696,6 +2849,7 @@ mod desk {
         Whole,
         GoOn,
         Again,
+        Variants,
     }
 
     impl Requests {
@@ -2790,6 +2944,7 @@ mod desk {
                     Some(Run::Start(id)) => said = Some(d.start_run(&id, How::Whole)),
                     Some(Run::GoOn(id)) => said = Some(d.start_run(&id, How::GoOn)),
                     Some(Run::Again(id)) => said = Some(d.start_run(&id, How::Again)),
+                    Some(Run::Variants(id)) => said = Some(d.start_run(&id, How::Variants)),
                     Some(Run::MakeAll(id)) => said = Some(d.make_all(&id)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
                     Some(Run::Queue(id, how)) => said = Some(d.enqueue(&id, how)),
@@ -2910,6 +3065,11 @@ mod tests {
             "the comments for the next run after the reply, then several of them, as model_requests.py has them: {text}"
         );
         assert!(text.starts_with("{\n  \"id\": \"moss_toad\",\n  \"name\": \"Moss toad\",\n"), "the fields in their order: {text}");
+        // grass's cells after the height, the variants after the notes, the props they became
+        // after its own, as model_requests.py has them
+        assert!(text.contains("  \"height\": 0.8,\n  \"cells\": [1, 1],\n  \"style\""), "{text}");
+        assert!(text.contains("  \"notes\": \"Green back, cream belly\",\n  \"variants\": 0,\n  \"vary\": \"\",\n  \"mine\""), "{text}");
+        assert!(text.contains("  \"prop\": \"\",\n  \"variant_props\": [],\n  \"reply\""), "{text}");
         let back: ModelRequest = serde_json::from_str(&text).unwrap();
         assert_eq!(back, r);
         // a short record by hand: the rest are the defaults
@@ -2922,6 +3082,11 @@ mod tests {
 "));
         assert_eq!(about(&floor), "floor set · smooth");
         assert_eq!(about(&short), "prop · 1 cells · smooth");
+        let grass: ModelRequest = serde_json::from_str(r#"{ "id": "tuft", "kind": "grass", "height": 0.4, "cells": [2, 1], "variants": 2 }"#).unwrap();
+        assert_eq!((grass.kind, about(&grass)), (Kind::Grass, "grass · 2 × 1 cells, 0.4 tall · smooth · 2 variants".to_string()));
+        let rock: ModelRequest = serde_json::from_str(r#"{ "kind": "environment", "variants": 1 }"#).unwrap();
+        assert_eq!(about(&rock), "environment · 1 cells · smooth · 1 variant");
+        assert!(content::to_text(&grass).contains("  \"kind\": \"grass\",\n") && content::to_text(&rock).contains("  \"kind\": \"environment\",\n"));
         assert!(!short.check_lines && !short.lines_ready(), "no check unless asked");
         let ready: ModelRequest = serde_json::from_str(r#"{ "check_lines": true, "status": "waiting", "progress": { "step": "lines ready: check them" } }"#).unwrap();
         assert!(ready.check_lines && ready.lines_ready());
@@ -3437,6 +3602,92 @@ mod tests {
     }
 
     #[test]
+    fn grass_and_environment_ask_for_variants_and_one_made_makes_them() {
+        let root = scratch("variants");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Meadow tuft.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("meadow_tuft".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        // a creature not made yet: no variants
+        assert!(marked("uiRequestVariants").is_none() && marked("uiRequestCellsX").is_none());
+        // grass: the cells it fills to the edges, and its variants
+        click(&ctx, &mut req, "uiRequestKindGrass");
+        assert_eq!(read(&root, "meadow_tuft").unwrap().kind, Kind::Grass);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestCellsX").is_some() && marked("uiRequestCellsZ").is_some() && marked("uiRequestVariants").is_some());
+        assert!(marked("uiRequestVary").is_none(), "how they differ, once there are some");
+        let mut grass = read(&root, "meadow_tuft").unwrap();
+        grass.variants = 2;
+        save(&root, &grass).unwrap();
+        req.watch(1.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestVary");
+        frame_with(&ctx, &mut req, vec![egui::Event::Text("taller, yellower".into())]);
+        assert_eq!(read(&root, "meadow_tuft").unwrap().vary, "taller, yellower", "kept as it's typed");
+        // an environment asset: its variants, no cells
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestKindEnvironment");
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestVariants").is_some() && marked("uiRequestCellsX").is_none());
+        assert!(marked("uiRequestMakeVariants").is_none(), "not made: nothing to make variants of");
+        // made, a prop asking for none: its variants to say, Make variants waiting for a count
+        let mut made = read(&root, "meadow_tuft").unwrap();
+        (made.kind, made.status, made.prop, made.variants) = (Kind::Prop, Status::Done, "meadow_tuft".into(), 0);
+        made.variant_props = vec!["meadow_tuft_variant_2".into()];
+        save(&root, &made).unwrap();
+        req.watch(2.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestVariants").is_some(), "any request made can have some");
+        assert!(marked("uiRequestUseVariant_meadow_tuft_variant_2").is_some(), "the variants made, listed");
+        wheel(&ctx, &mut req, marked("uiRequestName").unwrap(), 10.0);
+        click(&ctx, &mut req, "uiRequestMakeVariants");
+        assert!(req.desk().launched.is_empty(), "none asked for: nothing started");
+        // three: run_claude.py on it, from its model
+        made.variants = 3;
+        save(&root, &made).unwrap();
+        req.watch(3.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestMakeVariants");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "meadow_tuft", "--variants"]]);
+        assert_eq!(req.desk().busy().as_deref(), Some("meadow_tuft"), "being started: one at a time");
+        assert!(req.said.take().unwrap().contains("makes variants of meadow_tuft from its model"));
+        // another made one while that runs: queued, to make its variants once it's ended
+        let mut rock = create(&root, "Flat rock.png").unwrap();
+        (rock.kind, rock.status, rock.prop, rock.variants) = (Kind::Environment, Status::Done, "flat_rock".into(), 2);
+        save(&root, &rock).unwrap();
+        req.watch(4.0e9);
+        req.desk().selected = Some("flat_rock".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        wheel(&ctx, &mut req, marked("uiRequestName").unwrap(), 10.0);
+        click(&ctx, &mut req, "uiRequestMakeVariants");
+        assert_eq!(req.desk().launched.len(), 1, "nothing started while another runs");
+        let queue = req.desk().queue.clone();
+        assert_eq!((queue.ids(), queue.runs[0].how), (vec!["flat_rock"], How::Variants));
+        // a set of floor tiles varies by its tiles: none
+        let mut floor = create(&root, "Ruins.png").unwrap();
+        (floor.kind, floor.status, floor.prop, floor.variants) = (Kind::Floor, Status::Done, "ruins_slab".into(), 2);
+        save(&root, &floor).unwrap();
+        req.watch(5.0e9);
+        req.desk().selected = Some("ruins".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiRequestVariants").is_none() && marked("uiRequestMakeVariants").is_none());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
     fn several_drawings_are_split_then_made_one_after_another() {
         let root = scratch("several");
         let ctx = egui::Context::default();
@@ -3850,6 +4101,62 @@ mod tests {
         }
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots/requests-queue.png");
         shooter.shoot(&ctx, out.unwrap().shapes, [1400, 900], &path).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A look by eye at a grass request's panel (its cells, its variants, how they differ) and
+    /// at a made one's Make variants: build/shots/requests-grass.png and
+    /// requests-variants.png. It needs a GPU, so it's run by hand:
+    ///     cargo test -p engine-game -- --ignored shot
+    #[test]
+    #[ignore]
+    fn shot_of_grass_and_variants() {
+        let root = scratch("shot-grass");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Meadow tuft.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        (r.kind, r.height, r.variants, r.vary) = (Kind::Grass, 0.4, 2, "one taller, one a little yellower".into());
+        save(&root, &r).unwrap();
+        let mut rock = create(&root, "Flat rock.png").unwrap();
+        add_picture(&root, &mut rock, "front.png", &png(60, 40, 5)).unwrap();
+        (rock.kind, rock.status, rock.prop, rock.variants, rock.vary) = (Kind::Environment, Status::Done, "flat_rock".into(), 3, "smaller, mossier".into());
+        rock.variant_props = vec!["flat_rock_variant_2".into()];
+        rock.reply = "A flat grey rock, its top worn smooth.".into();
+        save(&root, &rock).unwrap();
+        req.desk().reload();
+        let mut shooter = crate::shot::Shooter::new().unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let content = content::Content::default();
+        let run = |req: &mut Requests, shooter: &mut crate::shot::Shooter, events: Vec<egui::Event>| {
+            crate::platform::clear_hooks();
+            let mut o = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
+                shown(ui, req, &content);
+            });
+            shooter.textures(&mut o.textures_delta);
+            o
+        };
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots");
+        req.desk().selected = Some("meadow_tuft".into());
+        let mut out = None;
+        for _ in 0..40 {
+            out = Some(run(&mut req, &mut shooter, vec![]));
+        }
+        shooter.shoot(&ctx, out.take().unwrap().shapes, [1400, 900], &dir.join("requests-grass.png")).unwrap();
+        // the made one, scrolled down to Make variants
+        req.desk().selected = Some("flat_rock".into());
+        for _ in 0..10 {
+            run(&mut req, &mut shooter, vec![]);
+        }
+        let at = marked("uiRequestName").unwrap();
+        let turn = egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Page, delta: egui::vec2(0.0, -10.0), phase: egui::TouchPhase::Move, modifiers: egui::Modifiers::NONE };
+        run(&mut req, &mut shooter, vec![egui::Event::PointerMoved(at), turn]);
+        for _ in 0..40 {
+            out = Some(run(&mut req, &mut shooter, vec![]));
+        }
+        shooter.shoot(&ctx, out.take().unwrap().shapes, [1400, 900], &dir.join("requests-variants.png")).unwrap();
         std::fs::remove_dir_all(&root).ok();
     }
 

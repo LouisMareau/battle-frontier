@@ -10,7 +10,8 @@ lines and the front and the side and stops there (a request that checks its line
 which a run with --go-on then finishes); a request made once is made again with the user's
 comments on it (--again); a request whose picture has several drawings is split, each one a
 request of its own; a set of floor tiles: laid by the engine's rules (floor_wfc.py), and its
-run's own recipe. Then the bones the user has drawn over the pictures: in the
+run's own recipe; grass filling its cells, an environment asset, variants made with the model and
+variants of a model made (--variants). Then the bones the user has drawn over the pictures: in the
 record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
 Exits 1 when a check fails.
 """
@@ -63,6 +64,8 @@ if mode in ("hang", "cancel"):
 if mode == "error":
     print("something broke", file=sys.stderr, flush=True)
     sys.exit(3)
+if mode == "variants":
+    mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png", "variant_2.png", "variant_3.png"], "made two variants", ["test_prop_variant_2", "test_prop_variant_3"])
 if mode == "finish":
     for piece in ("model", ".py ", "being written"):
         say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
@@ -336,6 +339,63 @@ if _Image is not None:
     code, out, rec, log = run("test_split_none", "quit")
     check("  a split run that makes none: failed, and why", rec["status"] == "failed" and "without splitting it" in rec["progress"]["step"], rec["progress"]["step"])
     check("  in the record's layout: several, parent and children last", list(mr.FIELDS)[-3:] == ["several", "parent", "children"])
+
+# 9f. grass (requests.md, "Grass"): it fills its cells to the edges, as a tile does; asked for
+# variants (requests.md, "Variants"), they're made with it, each a prop of its own; an environment
+# asset; a split one's requests keep its variants
+fresh("test_grass", kind="grass", cells=[2, 1], height=0.4, variants=2, vary="one taller\none yellower")
+grass = mr.load(SCRATCH, "test_grass")
+asked = rc.prompt(grass)
+check("grass: it fills its cells to the edges, fitted to them, a grass prop", "grass filling 2 x 1 cells to the edges, 0.4 cells tall" in asked
+      and "kit.fit_cells(parts, (2, 1), job.height) in place of kit.fit" in asked and 'kit.finish\'s category "grass", never blocking the way' in asked, asked[:1800])
+check("  its variants made with it, two besides it, as the user says they differ, each a prop of its own",
+      "Variants: make 2 besides it, each a prop of its own" in asked and "- its variants, 2 besides it" in asked
+      and "they differ as the user says:\n    one taller\n    one yellower\n  model.py builds the model from a function" in asked
+      and "from 2 to 3" in asked and "kit.finish_variant(job, k, its parts" in asked and "kit.drop(its parts)" in asked
+      and asked.index("- its variants") < asked.index("- add it to the project"), asked[asked.find("Variants:"):][:1500])
+check("  and its estimate longer for them", mr.estimate(grass) > mr.estimate(mr.normal(dict(grass, variants=0))))
+check("  in the record's layout: its cells after its height, its variants after the notes, the props they became after its own",
+      list(mr.FIELDS)[3:5] == ["height", "cells"] and list(mr.FIELDS)[9:12] == ["notes", "variants", "vary"]
+      and list(mr.FIELDS)[20:22] == ["prop", "variant_props"], str(list(mr.FIELDS)))
+fresh("test_env", kind="environment", height=1.2)
+asked = rc.prompt(mr.load(SCRATCH, "test_env"))
+check("environment: what dresses the outdoors, its category the one that fits; no variants unless asked", "an environment asset 1.2 cells tall" in asked
+      and "Environment: an asset that dresses the outdoors" in asked and "(tree, flora, rock, grass, decoration)" in asked
+      and "- its variants" not in asked and "Variants:" not in asked, asked[:1500])
+if _Image is not None:
+    fresh("test_split_vary", several=True, images=["front.png"], kind="grass", variants=3, vary="greener")
+    pic.save(mr.folder(SCRATCH, "test_split_vary") / "front.png")
+    split_asked = rc.prompt(mr.load(SCRATCH, "test_split_vary"))
+    tuft = mr.split(SCRATCH, "test_split_vary", "front.png", [0, 0, 100, 100], "Tuft", 0.4)
+    check("  split, its drawings' requests keep its kind, its cells and its variants", tuft["kind"] == "grass" and tuft["variants"] == 3 and tuft["vary"] == "greener"
+          and "Variants: each of its drawings' requests makes 3 besides it" in split_asked and "- its variants" not in split_asked
+          and "- its variants, 3 besides it" in rc.prompt(tuft), json.dumps({k: tuft[k] for k in ("kind", "cells", "variants", "vary")}))
+
+# 9g. variants of a model made (the editor's "Make variants", --variants): from what the last run
+# made, the model itself kept, as many as the request says; nothing run when it isn't made or asks
+# for none
+fresh("test_vary", status="done", prop="test_prop", reply="A flat grey rock.", variants=2, vary="smaller, mossier", variant_props=["test_prop_variant_2"],
+      style="low_poly", notes="grey stone")
+(mr.folder(SCRATCH, "test_vary") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
+asked = rc.prompt(mr.load(SCRATCH, "test_vary"), variants=True)
+code, out, rec, log = run("test_vary", "variants", "--variants")
+ran = log.split("a run starts")[-1]
+check("variants of a model made: done, the props they became", code == 0 and rec["status"] == "done" and rec["variant_props"] == ["test_prop_variant_2", "test_prop_variant_3"]
+      and "Done: the prop test_prop, and its variants test_prop_variant_2, test_prop_variant_3" in ran, f"{code} {rec['status']} {rec['variant_props']}")
+check("  its prompt: from what the last run made, the model itself kept, how many and how they differ, the rest as before",
+      "variants of the model made" in asked and "Variants of a model made" in asked and "game as the prop test_prop (with its variants test_prop_variant_2)" in asked
+      and "    A flat grey rock." in asked and "make its variants now, 2 besides it" in asked and "they differ as the user says:\n    smaller, mossier" in asked
+      and "Keep the model itself as the last run made it" in asked and "Style: low-poly" in asked and "Notes from the user: grey stone" in asked
+      and "run_request.py test_vary --finish" in asked and "draw the design's lines over each picture" not in asked, asked[:3200])
+check("  the log says so; its part and its estimate", "This run makes 2 variants of it from its model, the model itself kept: smaller, mossier" in ran
+      and rc.part_of(rec, variants=True) == "variants" and 1 <= mr.estimate(rec, "variants") < mr.estimate(rec))
+fresh("test_vary_none", variants=2)
+code, out, rec, log = run("test_vary_none", "variants", "--variants")
+check("  not made yet: nothing run, the request as it was", rec["status"] == "waiting" and "Nothing to make variants of" in log and "Claude Code: " not in log, rec["status"])
+fresh("test_vary_zero", status="done", prop="test_prop")
+(mr.folder(SCRATCH, "test_vary_zero") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
+code, out, rec, log = run("test_vary_zero", "variants", "--variants")
+check("  no variants asked for: nothing run, still done", rec["status"] == "done" and "No variants asked for" in log and "Claude Code: " not in log, rec["status"])
 
 # 9e. a set of floor tiles (requests.md, "A set of floor tiles"): laid as the engine lays them
 # (floor_wfc.py, its rules in plain Python), every two cells side by side agreeing; its run the

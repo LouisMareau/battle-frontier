@@ -136,6 +136,13 @@ panel's **Make it again with these comments** runs `run_claude.py ID --again`: C
 from what the last run made (its `model.py`, its lines and renders, what it said back) and
 changes what the user's comments say, keeping the rest; the comments are kept in
 `request.json` (`comments`, then `earlier` once made, which the runs after it are told too).
+A **grass** request (`"kind": "grass"`) fills its cells to the edges (`cells`; `kit.fit_cells`),
+so copies side by side join without a gap; an **environment** one dresses the outdoors (rocks,
+bushes, flowers, logs, trees). Asked for **variants** (`variants`, `vary`: how they differ), a
+run makes them with the model, each a prop of its own (`kit.variant_preview`,
+`kit.finish_variant`, `kit.drop`; requests.md, "Variants"); once made, any request's **Make
+variants** runs `run_claude.py ID --variants`: from the model made, kept as it is, the variants
+added, everything else as it was.
 A picture with several drawings of the same kind of asset (trees, bushes, rocks) makes as many
 assets: with **"Several of them: one asset per drawing"** ticked, Start has Claude make each
 drawing a request of its own (`model_requests.py split`: its crop, its name and height, the
@@ -147,7 +154,8 @@ and rendered from above (`kit.layout`, `floor_wfc.py`), and added as `floor` pro
 (`kit.finish_floor_set`), which the Build tool's Flooring and the Ground tool's Floors tab lay
 by wave function collapse.
 `test_run_claude.py` checks the runs against a stand-in for Claude, both halves of a checked
-one and one made again included, and a floor set's laying and its recipe.
+one and one made again included, grass and its variants, the variants of a model made, and a
+floor set's laying and its recipe.
 
 ## Without the add-on
 

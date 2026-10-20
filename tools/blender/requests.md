@@ -30,11 +30,14 @@ Rules that hold all the way:
   "name": "Round stone lantern",
   "kind": "prop",
   "height": 1.2,
+  "cells": [1, 1],
   "style": "smooth",
   "details": "",
   "pose": "t_pose",
   "shapes": { "min": 8, "max": 30, "unlimited": false },
   "notes": "Warm grey stone, the base a little darker...",
+  "variants": 0,
+  "vary": "",
   "mine": false,
   "check_lines": false,
   "status": "waiting",
@@ -44,6 +47,7 @@ Rules that hold all the way:
   "lines": [],
   "previews": [],
   "prop": "",
+  "variant_props": [],
   "reply": "",
   "comments": "",
   "earlier": [],
@@ -56,12 +60,20 @@ Rules that hold all the way:
 (`shapes` and `progress` are laid out over several lines in the file, as the project's records
 are.)
 
-- `kind`: `creature` (rigged, with an idle animation), `prop`, or `floor` (the window's
-  **floor set**: a set of floor tiles, each a cell, laid to fit; below, "A set of floor
-  tiles"; its `height` and `check_lines` go unused); `height` in cells (a cell is a metre; the
-  player is about 1.5); `style`: `smooth`, `low_poly` or `accurate` (as close to
-  the pictures as it can be, whatever it takes: see "Accurate" below), and with it `details`,
-  the user's word on how to build it.
+- `kind`: `creature` (rigged, with an idle animation), `prop`, `grass` (a patch of grass
+  filling its `cells` to the edges, so copies side by side join without a gap: below,
+  "Grass"), `environment` (what dresses the outdoors: rocks, bushes, flowers, logs, trees;
+  below, "Environment"), or `floor` (the window's **floor set**: a set of floor tiles, each a
+  cell, laid to fit; below, "A set of floor tiles"; its `height` and `check_lines` go
+  unused); `height` in cells (a cell is a metre; the player is about 1.5); `cells` (grass):
+  the cells it fills, across x and deep z; `style`: `smooth`, `low_poly` or `accurate` (as
+  close to the pictures as it can be, whatever it takes: see "Accurate" below), and with it
+  `details`, the user's word on how to build it.
+- `variants` (the window's **Variants**, grass and environment, and any request once it's
+  made): how many variants of it to make besides it, each a prop of its own; `vary` (**What
+  changes**): how they differ (its size, its colours...), else as Claude sees fit; with
+  `several`, each drawing's request makes that many of its own. `variant_props`: the props
+  they became (below, "Variants").
 - `pose` (creatures): `t_pose`, the rest pose a rigger wants whatever the pictures show (two
   legs: standing straight, arms straight out to the sides at shoulder height; four legs:
   standing straight on straight legs, head forward, tail straight back; more legs: each leg
@@ -235,7 +247,25 @@ split ("split into N requests"), its panel listing them under **Its requests**, 
 ended (one at a time, as always; one whose lines wait for the user's check is left to them).
 Each is a request as any other, made by the whole recipe: its own log, its renders, **Make it
 again**, and a **Show it** back to the request it came from. Started again once split, the
-request runs nothing.
+request runs nothing. Its variants settings go to each (`variants`, `vary`): each drawing's
+request makes that many variants of its own.
+
+### Variants of a model made
+
+Once a run has made a request's model (any kind but a set of floor tiles), its panel has
+**Variants** and **What changes** with its settings, and **Make variants** under Make it
+again, which runs
+
+```bash
+python tools/blender/run_claude.py ID --variants
+```
+
+Claude starts from what the last run made, as a run made again does (its `model.py`, the
+renders, the drawings, what it said back), keeps the model itself exactly as it was made, and
+adds as many variants as `variants` says, as `vary` says they differ ("Variants" below): the
+style, the notes and the rest as they were. Variants an earlier run made are made again,
+numbered from 2 again; `variant_props` lists the ones this run made. A request not made yet, or
+with no variants asked for, runs nothing.
 
 Claude Code must be logged in for this, once (the desktop app's own login isn't the command
 line's): until then a run fails at once with "Claude Code isn't logged in", naming the
@@ -245,7 +275,8 @@ type `/login` there, then Start again. `python tools/blender/test_run_claude.py`
 it against a stand-in for Claude: a run that finishes, one that ends without the model, one
 that crashes, one not logged in, one gone silent, one cancelled, one that stops after the
 lines for the user's check, one that goes on from them with the user's note, one made again
-with the user's comments, and one split into a request per drawing; and a set of floor tiles,
+with the user's comments, one split into a request per drawing, grass with its variants, and
+the variants of a model made; and a set of floor tiles,
 laid by the engine's rules (`floor_wfc.py`: every two cells side by side agreeing, rims all
 round, the same seed the same floor), its run the floor recipe.
 
@@ -694,6 +725,68 @@ most fitting tool for each part rather than the quickest:
 It may take a long time, and that's fine; the editor's bar runs on a longer estimate, and the
 run keeps going while Claude writes a long script.
 
+## Grass
+
+A request of the kind `grass` is a patch of grass (or of any low growth: clover, moss, a
+flowerbed) made to tile: laid in cells side by side, its copies join without a gap. So it fills
+its cells (`cells`, 1 x 1 unless the request says; `job.cells`) to the edges, exactly:
+
+- fit it with `kit.fit_cells(parts, job.cells, job.height)` in place of `kit.fit`: scaled each
+  way so its bounds are its cells exactly (Blender's X and Y from -0.5 to 0.5 for one cell),
+  `job.height` tall, standing on the origin;
+- its blades (or leaves) evenly dense right up to the borders: as many near an edge as in the
+  middle, none poking past it (they'd make its footprint a cell bigger), no bare margin, no
+  soil, base or stones showing at an edge (the neighbour's grass meets it there); clumps cut
+  by an edge as if the next cell carried them on;
+- the wind paints it (`kit.plant_wind`, rooted at the ground: blades sway from their foot);
+- a grass prop: `kit.finish(..., category="grass")` (its default for the kind), never blocking
+  the way. Tall ground can grow it too (a terrain's Grows here, in the editor).
+
+`kit.finish` says when a grass model doesn't fill its cells.
+
+## Environment
+
+A request of the kind `environment` is an asset that dresses the outdoors: a rock, a bush, a
+flowerbed, a log, a stump, a tree. Made as a prop is, with what the outdoors asks: its
+category the one that fits (`tree`, `flora`, `rock`, `grass`, `decoration`) in `kit.finish`,
+blocking the way when it's big enough to walk round (a rock, a tree, a log), not when it's
+walked through (flowers, a low bush); what the wind moves painted for it ("The wind").
+
+## Variants
+
+A request's `variants` (grass and environment ask from the first run, any made one through
+**Make variants**) is how many variants of it to make besides it: the same kind of thing, in the
+same style, each a prop of its own, as `vary` says they differ (else each a little different,
+as the same kind of thing differs in nature: its size, its shape, how its parts sit, its colours
+a shade apart; never another kind of thing). Build the model from a function of its settings,
+the model itself one call of it and each variant another:
+
+```python
+def bush(seed, spread=1.0, tall=1.0, tint=0.0):
+    """The bush, from its settings: every part, as the model's own are made."""
+    ...
+    return made
+
+
+files = []
+for k, (seed, spread, tall, tint) in enumerate([(211, 1.15, 0.9, 0.04), (377, 0.9, 1.12, -0.03)], start=2):
+    made = bush(seed, spread, tall, tint)
+    kit.fit(made, job.height * tall)                  # (grass: kit.fit_cells)
+    kit.plant_wind(made[:2], root=(0, 0, 0), seed=seed)
+    files.append(kit.variant_preview(job, made, k))   # variant_2.png...
+    kit.finish_variant(job, k, made, category="flora", blocks=False)
+    kit.drop(made)
+made = bush(5)                                        # the model itself
+kit.fit(made, job.height)
+kit.plant_wind(made[:2], root=(0, 0, 0))
+files = kit.previews(job, kit.parts()) + files
+kit.finish(job, kit.parts(), files, category="flora", blocks=False, reply="...")
+```
+
+Each variant is a prop of its own, its id the model's with `_variant_2`, `_variant_3`..., named
+"Name (variant 2)"; the window shows its render with the model's, and lists them (Its
+variants). Look at each beside the model and the pictures when you render.
+
 ## A set of floor tiles
 
 A request of kind `floor` (the window's **floor set**) makes no single prop but a set of floor
@@ -755,7 +848,8 @@ import request_kit as kit  # noqa: E402
 job = kit.start(__file__)   # the request, the scene emptied, the request in progress
 ```
 
-`job.record` is the request; `job.creature`, `job.floor` (a set of floor tiles), `job.smooth`, `job.height`, `job.pictures()`.
+`job.record` is the request; `job.creature`, `job.floor` (a set of floor tiles), `job.grass` (and
+`job.cells`), `job.environment`, `job.variants`, `job.smooth`, `job.height`, `job.pictures()`.
 Positions are in Blender units (one is a cell), Z up, the front toward -Y; rotations in
 degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 
@@ -788,6 +882,7 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `modifier(obj, kind, **settings)` | any of Blender's modifiers, applied |
 | `sculpt(obj, brush, at, radius, strength=, direction=, region=, times=)` | grab, inflate, smooth, flatten, pinch or crease, with a smooth falloff |
 | `fit([objects], height)` | scaled to `height` cells, standing on the origin |
+| `fit_cells([objects], cells, height)` | grass ("Grass"): scaled each way so its bounds are exactly its `cells` (across X, deep Y) and `height` tall, standing on the origin: copies side by side join without a gap |
 | `light(at, color, intensity, reach, kind="point")` | a lamp's light, which becomes the prop's (lit at night) |
 | `rig(parts, {chain: [points]}, parents=)` | an armature, each part skinned as it asked (whole to its `bone`, bone heat among its `bones`, else among every bone); a chain hangs from the bone nearest its first point, or the chain or bone `parents` names |
 | `idle(arm, seconds=2.0, amount=1.0, blink=)` | a looping "idle" action from the bones' names: spine breathes, neck and head nod and look, tail/ear/antenna sway, arms and fins swing, wings stir, the jaw barely moves, the eyes glance, the lids blink (`blink`: the degrees that close them), legs stay |
@@ -795,7 +890,10 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `job.profiles()` | the front and the side from `lines.json`, in cells as the model stands (above, "Lines and profiles") |
 | `job.chains()` | the user's bones carried into the front and the side (`bone CHAIN` lines) as the rig's chains, in cells, the body's first (above, "The user's bones") |
 | `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
-| `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done |
+| `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done (its category and blocking by its kind unless said: a character; grass, never in the way; else a decoration); the variants this run added listed |
+| `variant_preview(job, objects, k)` | variant `k`'s render, seen as the model's three-quarter one: `variant_k.png`, for `finish`'s files ("Variants") |
+| `finish_variant(job, k, objects, category=, blocks=)` | with `-- --finish`: variant `k` (2 on) into the project as a prop of its own, `<prop>_variant_k`, "Name (variant k)" |
+| `drop([objects])` | out of the scene, their meshes with them (a variant once it's added) |
 | A set of floor tiles | |
 | `floor_tile(job, name, objects, [north, east, south, west], weight=1.0, turns=False)` | one tile of a `floor` request's set: its meshes, modelled a cell wide on the origin, and its edges' words; kept on the job (`job.tiles`) |
 | `layout(job, cells=(8, 6))` | the set laid by the game's rules (`floor_wfc.py`), rendered from above and slanting (`layout.png`, `layout_side.png`), each edge that doesn't fit printed; returns the files |

@@ -680,11 +680,15 @@ pictures of a creature, a prop or a floor go for Claude to model in Blender: dro
 on the window while it's open (models dropped meanwhile still go to the asset browser, and
 pictures go to it only while it's open). The first drop starts a request named after the
 first picture; the next ones add to the selected request ("New request" starts another). A
-request has a name (its id follows it while it waits), a kind (creature, prop, or floor set:
-a set of floor tiles, each a cell, laid to fit), its height in cells (not a floor set's), a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
+request has a name (its id follows it while it waits), a kind (creature, prop, grass: a patch
+filling its cells to the edges, as many as **Cells** says, so copies side by side join without
+a gap, a grass prop; environment: what dresses the outdoors, rocks, bushes, flowers, logs,
+trees; or floor set: a set of floor tiles, each a cell, laid to fit), its height in cells (not a floor set's), a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
 it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
 to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
-100), notes, and "This design is mine or licensed" (off by default: the model of someone else's
+100), notes, grass's and environment's **Variants** (how many more of it, each a prop of its
+own, with several of them of each drawing) and **What changes** (how they differ: its size,
+its colours...; else as Claude sees fit), and "This design is mine or licensed" (off by default: the model of someone else's
 design goes to `temporary/`, never `content/`). A creature's **Draw the bones…** opens one of its
 pictures large to draw its bones over it, a colour per part (leg, arm, torso, head, ear, horn,
 tail, wing, and misc for a piece you name yourself): a click adds each joint, chained from the
@@ -704,7 +708,10 @@ the renders of its model and the prop it became ("Use it" puts it in the Place t
 **Make it again**: a box for what to look for and what to change, and **Make it again with
 these comments**, a run that starts from the model the last one made (its script, its lines,
 what it said) and changes what you say, keeping the rest; the comments are kept with the
-request, and the runs after it are told them too. A tree's cells are its trunk's foot (what
+request, and the runs after it are told them too. Any done one (but a floor set) has
+Variants and What changes too, and **Make variants**: a run from the model made that keeps it as
+it is and adds that many variants, the style, the notes and the rest as they were (queued
+while another is being made); its panel lists the variants made. A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Several of them: one asset
 per drawing" and Start has each drawing made a request of its own (its crop, its name and

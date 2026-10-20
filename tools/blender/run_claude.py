@@ -3,6 +3,7 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
 
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
     python tools/blender/run_claude.py ID --again [--note "what to change"]
+    python tools/blender/run_claude.py ID --variants
 
 A request whose pictures hold several drawings of the same kind of asset ("several": trees,
 bushes, rocks...) is split by its first run: Claude finds each drawing and makes it a request
@@ -35,6 +36,13 @@ again with these comments": request.json's "comments", or --note): --again has C
 from what the last run made (its model.py, its lines, its renders, what it said back) and
 change what the comments say, keeping the rest. Once it's done, the comments join "earlier",
 which the runs made again after that are told too.
+
+A request of grass fills its cells to their edges (request.json's "cells"), so copies side by
+side join without a gap. One whose settings ask for variants ("variants": how many besides it,
+"vary": how they differ; grass and environment) has them made with the model, each a prop of
+its own. Any request made can have variants made from its model later (the editor's "Make
+variants"): --variants has Claude start from what the last run made, keep the model itself, and
+add the variants the request asks for, its style, notes and the rest as they are.
 """
 import json
 import os
@@ -156,7 +164,41 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   chains added (and the eyes' and the lids' when they move); give it its idle and its roar
   (kit.idle, kit.action), render again and look at preview_idle.png and preview_roar.png:
   nothing torn, the jaw turning the right way, the lips meeting at rest (requests.md, step 9);
-- add it to the project: python tools/blender/run_request.py {id} --finish
+{variants}- add it to the project: python tools/blender/run_request.py {id} --finish
+- check: cargo run -q -p engine-content --bin content -- check
+"""
+# a request whose settings ask for variants: made with the model, each a prop of its own
+# ({count}: how many; {vary}: how they differ; {last}: the last one's number)
+VARIANT_STEP = """- its variants, {count} besides it, each a prop of its own (requests.md, "Variants"): {vary}
+  model.py builds the model from a function of its settings (a seed, sizes, colours, how its
+  parts sit), the model itself one call of it and each variant another, in the same style,
+  with the same parts, paint and wind as the model. First each variant k from 2 to {last}:
+  build it, fit it as the model is fitted, files += [kit.variant_preview(job, its parts, k)]
+  (variant_k.png), kit.finish_variant(job, k, its parts, ...) (the category and settings the
+  model's kit.finish gets), then kit.drop(its parts); then the model itself, its previews,
+  and kit.finish(job, kit.parts(), files + the variants' renders, ...). When you render, look
+  at each variant_k.png beside the model and the pictures;
+"""
+# a request a run made, its variants made from that model (the editor's "Make variants"): the
+# model itself kept ({made}: the variants an earlier run made)
+VARIED = """- the last run made it: private/requests/{id}/model.py built it (its parts listed at its top,
+  with the design and the drawing sorted as comments; design.py too when there is one, which
+  model.py runs first) on lines.json (drawn over the pictures in lines_PICTURE.png, the front
+  and the side in profiles.png). Its renders are preview_*.png and compare.png, and it's in the
+  game as the prop {prop}{made}. What it said back:
+{reply}
+  Read model.py, and look at the renders and the drawings, before changing anything;
+- make its variants now, {count} besides it, each a prop of its own (requests.md, "Variants of a
+  model made"): {vary}
+  Keep the model itself as the last run made it, the same shapes and the same seed: if
+  model.py builds it in one go, make that a function of its settings first, the model itself
+  the same call as before; then the variants as "Variants" says (kit.variant_preview,
+  kit.finish_variant and kit.drop for each, the model itself after them, kit.finish with every
+  render). Variants an earlier run made are made again by these, numbered from 2 again;
+- render it: python tools/blender/run_request.py {id}, and look at each variant_k.png beside
+  the model and the pictures: each the same kind of thing, in the same style, as different as
+  that says; change model.py and render again until they are;
+- add them to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """
 # a request that checks its lines first: where its first run stops
@@ -270,6 +312,10 @@ AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made
              + MODEL.replace("- write private/requests/{id}/model.py with", "- change private/requests/{id}/model.py, the last run's, with", 1)
              + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
                                       "you left as it was."))
+VARIANTS_RUN = (HEAD + "Follow tools/blender/requests.md for this one request: variants of the model made (requests.md,\n"
+                "\"Variants of a model made\"; it's started already):\n" + READ + VARIED
+                + RULES.replace("{end}", "End with a few lines for the user: the variants you made, and how each differs from the\n"
+                                         "model."))
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
@@ -363,6 +409,23 @@ def settings_lines(record):
         out.append(LINES.get(record["style"], LINES["smooth"]))
     if record["kind"] == "creature":
         out.append(POSES.get(record["pose"], POSES["t_pose"]))
+    if record["kind"] == "grass":
+        w, d = record["cells"]
+        out.append(f"Grass: it fills {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, as a tile does (requests.md, \"Grass\"): fit it with "
+                   f"kit.fit_cells(parts, ({w}, {d}), job.height) in place of kit.fit, so its bounds are exactly its cells; its blades (or "
+                   "leaves) evenly dense right up to the borders, none past them, no bare margin and no soil or base showing at an edge: "
+                   "copies in the cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way.")
+    elif record["kind"] == "environment":
+        out.append("Environment: an asset that dresses the outdoors (requests.md, \"Environment\"): a rock, a bush, flowers, a log, a "
+                   "tree... kit.finish's category the one that fits (tree, flora, rock, grass, decoration), blocking the way when it's big "
+                   "enough to walk round (a rock, a tree, a log), not when it's walked through (flowers, a low bush); what the wind moves "
+                   "painted for it.")
+    if record["kind"] != "floor" and record["variants"] > 0:
+        n = record["variants"]
+        how = record["vary"].strip()
+        whose = "each of its drawings' requests makes" if record["several"] and not record["parent"] else "make"
+        out.append(f"Variants: {whose} {n} besides it, each a prop of its own (requests.md, \"Variants\")"
+                   + (f"; how they differ, as the user says: {how}" if how else "") + ".")
     shapes = record["shapes"]
     if floor:
         out.append(f"Shapes: each tile as many as its design needs, up to about {mr.SHAPES_CAP} for the most detailed." if shapes["unlimited"] else
@@ -376,11 +439,14 @@ def settings_lines(record):
     return "\n".join(out)
 
 
-def part_of(record, go_on=False, again=False):
+def part_of(record, go_on=False, again=False, variants=False):
     """Which part of the recipe a run does: "all" of it; "lines", up to the front and the side,
     for a request that checks its lines first; "model", from the model on, once they're checked;
-    "again", the model the last run made, made again with the user's comments on it; "split",
-    a request whose pictures hold several of the same kind of asset, each made a request."""
+    "again", the model the last run made, made again with the user's comments on it;
+    "variants", the model made kept and its variants made; "split", a request whose pictures
+    hold several of the same kind of asset, each made a request."""
+    if variants:
+        return "variants"
     if again:
         return "again"
     if go_on:
@@ -398,10 +464,22 @@ def indented(text):
     return "\n".join("    " + line.rstrip() for line in text.strip().splitlines())
 
 
-def prompt(record, go_on=False, note="", again=False):
+def vary_text(record):
+    """How the variants differ, in the prompt: as the user says, else as the same kind of thing
+    differs."""
+    said = record["vary"].strip()
+    if said:
+        return "they differ as the user says:\n" + indented(said)
+    return ("each a little different from it, as the same kind of thing differs in nature: its size,\n"
+            "  its shape, how its parts sit, its colours a shade apart; never another kind of thing.")
+
+
+def prompt(record, go_on=False, note="", again=False, variants=False):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
     user says is off in the lines (`note`, from the window's check) fixed first; made again
-    (`again`), what the user says of the last run's model (`note`, else the record's comments)."""
+    (`again`), what the user says of the last run's model (`note`, else the record's comments);
+    `variants`, its variants made from its model. A request that asks for variants has them
+    made with its model."""
     rid = record["id"]
     note = (note.strip() or record["comments"].strip()) if again else note.strip()
     said = indented(note)
@@ -425,13 +503,28 @@ def prompt(record, go_on=False, note="", again=False):
     told = [c.strip() for c in record["earlier"] if str(c).strip()]
     earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
-    part = part_of(record, go_on, again)
+    part = part_of(record, go_on, again, variants)
     template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_FLOOR_RUN if record["kind"] == "floor" else AGAIN_RUN,
-                "split": SPLIT_RUN, "floor": FLOOR_RUN}[part]
-    what = "a set of floor tiles, each a cell, laid to fit by wave function collapse" if record["kind"] == "floor" else f"a {record['kind']} {record['height']} cells tall"
-    return template.format(id=rid, name=record["name"], what=what, height=record["height"], notes=record["notes"].strip() or "(none)",
+                "variants": VARIANTS_RUN, "split": SPLIT_RUN, "floor": FLOOR_RUN}[part]
+    kind, height = record["kind"], record["height"]
+    if kind == "floor":
+        what = "a set of floor tiles, each a cell, laid to fit by wave function collapse"
+    elif kind == "grass":
+        w, d = record["cells"]
+        what = f"grass filling {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, {height} cells tall"
+    elif kind == "environment":
+        what = f"an environment asset {height} cells tall"
+    else:
+        what = f"a {kind} {height} cells tall"
+    count = record["variants"]
+    vary = vary_text(record)
+    # the variants made with the model (a run that makes it), as the settings ask
+    step = VARIANT_STEP.format(count=count, vary=vary, last=count + 1) if count > 0 and kind != "floor" else ""
+    made = f" (with its variants {', '.join(record['variant_props'])})" if record["variant_props"] else ""
+    return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
-                           prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said)
+                           prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
+                           variants=step, count=count, vary=vary, made=made)
 
 
 def bones_drawn(drawn):
@@ -542,17 +635,18 @@ def stop_tree(proc):
             proc.kill()
 
 
-def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
     the lines the user checked, `note` saying what's off in them. `again`: the model the last
-    run made, made again as the user's comments say (`note`, else the record's)."""
+    run made, made again as the user's comments say (`note`, else the record's). `variants`:
+    variants of the model made, as many as the request says, the model itself kept."""
     record = mr.load(root, rid)
     here = mr.folder(root, rid)
     stop = here / "stop"
     if stop.exists():
         stop.unlink()
     began = time.time()
-    part = part_of(record, go_on, again)
+    part = part_of(record, go_on, again, variants)
     if again:
         note = note.strip() or record["comments"].strip()
 
@@ -566,6 +660,13 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
     if again and not note:
         return mr.fail(root, rid, "nothing to change: say what in the comments first")["status"]
+    if variants and not ((here / "model.py").is_file() and record["prop"]):
+        # (made or not, the request stays as it is)
+        say("Nothing to make variants of: no model made yet (Start makes it first)")
+        return record["status"]
+    if variants and record["variants"] < 1:
+        say("No variants asked for: say how many in Variants first")
+        return record["status"]
     if part == "split" and record["children"]:
         say(f"Split already, into {len(record['children'])} requests: nothing to run (the editor's Make them all makes them)")
         return record["status"]
@@ -582,7 +683,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    text = prompt(record, go_on, note, again)
+    text = prompt(record, go_on, note, again, variants)
     mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
@@ -592,6 +693,10 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
     elif part == "again":
         say(f"This run makes it again from the last run's model, with the user's comments: {note}")
+    elif part == "variants":
+        how = record["vary"].strip()
+        say(f"This run makes {record['variants']} variant{'' if record['variants'] == 1 else 's'} of it from its model, the model itself kept: "
+            + (how if how else "as Claude sees fit"))
     elif part == "split":
         say("This run splits the request: each drawing on its pictures made a request of its own (\"Several of them\")")
     if part not in ("model", "again") and note.strip():
@@ -674,7 +779,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False):
         say(f"Split into {len(record['children'])} requests: {', '.join(record['children'])}")
         return "done"
     if record["status"] == "done":
-        say(f"Done: the prop {record['prop']}")
+        say(f"Done: the prop {record['prop']}" + (f", and its variants {', '.join(record['variant_props'])}" if record["variant_props"] else ""))
         if again:
             # the comments made: told to the runs made again after this one; the field emptied
             # unless the user has written others meanwhile
@@ -717,7 +822,7 @@ def main(argv):
     if "--note" in argv:
         note = argv[argv.index("--note") + 1]
     root = mr.find_root(Path.cwd())
-    status = run(root, rid, model, quiet, "--go-on" in argv, note, "--again" in argv)
+    status = run(root, rid, model, quiet, "--go-on" in argv, note, "--again" in argv, "--variants" in argv)
     print(f"{rid}: {status}" + (f", {mr.LINES_READY}" if status == "waiting" and mr.lines_ready(mr.load(root, rid)) else ""))
     return 0 if status in ("done", "waiting") else 1
 

@@ -527,6 +527,43 @@ check("a design of the user's goes to content/", (scratch / "content" / "data" /
 check("  low-poly: flat shaded, few faces", not any(p.use_smooth for p in pot.data.polygons) and len(pot.data.polygons) <= 800, f"{len(pot.data.polygons)} faces")
 clear()
 
+# grass (requests.md, "Grass"): fitted to fill its cells exactly, so copies side by side join; a
+# variant of it (requests.md, "Variants") rendered and added as a prop of its own, listed in the
+# request; a grass prop, out of the way
+mr.new(scratch, "Test tuft", [scratch / "critter.png"], kind="grass", height=0.3, cells=[2, 1], variants=1)
+job = kit.start(scratch / "private" / "requests" / "test_tuft" / "model.py")
+job.finishing = True
+
+
+def tuft(seed):
+    blades = [kit.capsule((x, y, 0.0), (x * 1.1, y * 1.1, 0.5 + 0.1 * (seed % 3)), 0.03, "blade") for x, y in ((-0.4, -0.2), (0.0, 0.1), (0.35, -0.1))]
+    return [kit.part("blades", blades, {"blade": "#4a8a3a"}, remesh=False)]
+
+
+made = tuft(2)
+kit.fit_cells(made, job.cells, job.height)
+lo, hi = kit.bounds(made)
+check("grass fitted to its cells exactly and its height, on the origin", job.grass and job.cells == (2, 1) and abs(hi.x - lo.x - 2) < 1e-4 and abs(hi.y - lo.y - 1) < 1e-4
+      and abs(hi.z - 0.3) < 1e-4 and abs(lo.z) < 1e-4 and abs(lo.x + hi.x) < 1e-4 and abs(lo.y + hi.y) < 1e-4, f"{lo[:]} {hi[:]}")
+files = [kit.variant_preview(job, made, 2)]
+kit.finish_variant(job, 2, made)
+kit.drop(made)
+check("  its variant rendered and added as a prop of its own, out of the scene after", files == ["variant_2.png"] and (job.dir / "variant_2.png").is_file()
+      and (scratch / "temporary" / "data" / "props" / "test_tuft_variant_2.json").is_file() and not kit.parts(), f"{files} {kit.parts()}")
+made = tuft(1)
+kit.fit_cells(made, job.cells, job.height)
+kit.finish(job, made, files)
+done = mr.load(scratch, "test_tuft")
+props_dir = scratch / "temporary" / "data" / "props"
+tuft_record = json.loads((props_dir / "test_tuft.json").read_text(encoding="utf-8")) if (props_dir / "test_tuft.json").is_file() else {}
+variant_record = json.loads((props_dir / "test_tuft_variant_2.json").read_text(encoding="utf-8")) if (props_dir / "test_tuft_variant_2.json").is_file() else {}
+check("  the model a grass prop out of the way, filling its 2 x 1 cells; its variant named so, the same", tuft_record.get("category") == "grass" and not tuft_record.get("blocks", False)
+      and tuft_record.get("footprint") == [2, 1] and variant_record.get("name") == "Test tuft (variant 2)" and variant_record.get("category") == "grass"
+      and not variant_record.get("blocks", False) and variant_record.get("footprint") == [2, 1], json.dumps([tuft_record, variant_record]))
+check("  the request done, its variant listed, its render with the model's", done["status"] == "done" and done["prop"] == "test_tuft" and done["variant_props"] == ["test_tuft_variant_2"]
+      and done["previews"] == files, json.dumps({k: done[k] for k in ("status", "prop", "variant_props", "previews")}))
+clear()
+
 # 5e. a model painted for the wind: painted from its height (a stem and its leaves, each its
 # own phase), added to the project (its paint the second colour layer, marked so; the meshes
 # left as they were), read by the engine, and back from its .glb with its "wind" layer

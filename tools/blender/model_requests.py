@@ -27,10 +27,11 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
-    python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2]
-                                              [--style low_poly|accurate] [--details "..."]
-                                              [--pose as_is] [--shapes 8-30|unlimited]
-                                              [--notes "..."] [--mine] [--check-lines]
+    python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop|grass|environment]
+                                              [--height 1.2] [--cells 1x1] [--style low_poly|accurate]
+                                              [--details "..."] [--pose as_is] [--shapes 8-30|unlimited]
+                                              [--notes "..."] [--variants 2] [--vary "size, colours"]
+                                              [--mine] [--check-lines]
 
 request.json is laid out as the project's records are (content::to_text): the editor and this
 file write the same text for the same request. Each request's log.txt (what its runs did,
@@ -51,11 +52,17 @@ FIELDS = {
     "name": "",
     "kind": "creature",
     "height": 1.0,
+    # grass: the cells it fills to their edges (across x, deep z)
+    "cells": [1, 1],
     "style": "smooth",
     "details": "",
     "pose": "t_pose",
     "shapes": {"min": 8, "max": 30, "unlimited": False},
     "notes": "",
+    # how many variants of it to make besides it, each a prop of its own (with several of them, of
+    # each drawing), and how they differ ("": as Claude sees fit)
+    "variants": 0,
+    "vary": "",
     "mine": False,
     "check_lines": False,
     "status": "waiting",
@@ -65,6 +72,8 @@ FIELDS = {
     "lines": [],
     "previews": [],
     "prop": "",
+    # once its variants are made, the props they became
+    "variant_props": [],
     "reply": "",
     # what the user says of the model the last run made, for the next one (the editor's "Make it
     # again with these comments"), and what the runs made again before were told, oldest first
@@ -77,8 +86,13 @@ FIELDS = {
     "parent": "",
     "children": [],
 }
-# a creature (rigged), a prop, or a set of floor tiles (laid by wave function collapse)
-KINDS = ("creature", "prop", "floor")
+# a creature (rigged), a prop, grass (filling its cells to their edges), an environment asset
+# (rocks, bushes, flowers, logs, trees), or a set of floor tiles (laid by wave function collapse)
+KINDS = ("creature", "prop", "grass", "environment", "floor")
+# the kinds whose settings ask for variants from the first run on (any made one can have some)
+VARYING = ("grass", "environment")
+# the most variants a request asks for (the editor's VARIANTS_CAP)
+VARIANTS_CAP = 12
 STYLES = ("smooth", "low_poly", "accurate")
 POSES = ("t_pose", "as_is")
 # "unlimited" shapes stop at about this many
@@ -271,7 +285,8 @@ def estimate(record, part="all"):
     up to the front and the side (a run that stops for the user's check), "model" the rest,
     "again" a model made again from the last one, with the user's comments (about as long),
     "split" the drawings found and made requests of their own (a few minutes, whatever the
-    style)."""
+    style), "variants" variants of the model made (a part of the model's time each). A run
+    that makes the model makes its variants too: a part more for each."""
     if part == "split":
         return 3.0
     # what the first runs took: a creature about 10 minutes, a small one 2
@@ -279,7 +294,12 @@ def estimate(record, part="all"):
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
+    variants = int(record.get("variants") or 0) if record["kind"] != "floor" else 0
+    if part == "variants":
+        return float(max(1, round(minutes * (1.0 - LINES_PART) * (0.3 + 0.25 * max(variants, 1)))))
     minutes *= {"lines": LINES_PART, "model": 1.0 - LINES_PART, "again": 1.0 - LINES_PART}.get(part, 1.0)  # ("floor": the whole run)
+    if part != "lines":
+        minutes *= 1.0 + 0.25 * variants
     return float(max(1, round(minutes)))
 
 
@@ -325,8 +345,9 @@ def fail(root, rid, reason):
     return update(root, rid, status="failed", progress=p)
 
 
-def finish(root, rid, prop, previews, reply=None):
-    """Done: the prop it became, its renders, and how long it took."""
+def finish(root, rid, prop, previews, reply=None, variant_props=None):
+    """Done: the prop it became, its renders, how long it took, and (when the run made any) the
+    props its variants became."""
     record = load(root, rid)
     p = dict(record["progress"])
     took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else p["minutes"]
@@ -334,7 +355,15 @@ def finish(root, rid, prop, previews, reply=None):
     fields = {"status": "done", "progress": p, "prop": prop, "previews": list(previews)}
     if reply is not None:
         fields["reply"] = reply
+    if variant_props is not None:
+        fields["variant_props"] = list(variant_props)
     return update(root, rid, **fields)
+
+
+def variant_id(record, k):
+    """The prop the request's variant `k` (2 on: the model itself is the first) becomes: its own
+    prop's id (else the request's), "_variant_k"."""
+    return f"{record['prop'] or record['id']}_variant_{k}"
 
 
 def bar_text(record, now=None):
@@ -412,7 +441,7 @@ def split(root, rid, picture, box, name, height=None, notes=""):
     img.crop((x0, y0, x1, y1)).convert("RGBA" if img.mode in ("RGBA", "LA", "P") else "RGB").save(d / out)
     whence = (f"{name} is one of the drawings on {parent['name']}'s picture (private/requests/{rid}/{picture}, from ({x0}, {y0}) to "
               f"({x1}, {y1})): model this one only; the whole picture shows the style it shares with the others.")
-    kept = {k: parent[k] for k in ("kind", "style", "details", "pose", "shapes", "mine", "check_lines")}
+    kept = {k: parent[k] for k in ("kind", "cells", "style", "details", "pose", "shapes", "variants", "vary", "mine", "check_lines")}
     record = dict(FIELDS, id=cid, name=name, images=[out], parent=rid, height=float(height) if height else parent["height"],
                   notes=" ".join(t for t in (parent["notes"].strip(), notes.strip(), whence) if t), **kept)
     save(root, normal(record))
@@ -685,8 +714,10 @@ def main(argv):
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
         print("\n".join(colours(root, argv[0], argv[1], box, int(count))))
     elif verb == "new":
-        fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "style": option("--style", "smooth"), "notes": option("--notes", ""),
-                  "details": option("--details", ""), "pose": option("--pose", "t_pose")}
+        cells = option("--cells", "1x1").lower().split("x")
+        fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "cells": [int(cells[0]), int(cells[-1])], "style": option("--style", "smooth"),
+                  "notes": option("--notes", ""), "details": option("--details", ""), "pose": option("--pose", "t_pose"),
+                  "variants": max(0, min(VARIANTS_CAP, int(option("--variants", "0")))), "vary": option("--vary", "")}
         shapes = option("--shapes", "8-30")
         lo, _, hi = shapes.partition("-")
         fields["shapes"] = {"min": 1, "max": SHAPES_CAP, "unlimited": True} if shapes == "unlimited" else {"min": int(lo), "max": int(hi or lo), "unlimited": False}
