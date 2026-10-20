@@ -316,6 +316,10 @@ impl Requests {
             about += &format!("\n{waiting} waiting");
         }
         #[cfg(not(target_arch = "wasm32"))]
+        if !self.desk.queue.runs.is_empty() {
+            about += &format!("\n{} queued{}", self.desk.queue.runs.len(), if self.desk.queue.paused { " (the queue paused)" } else { "" });
+        }
+        #[cfg(not(target_arch = "wasm32"))]
         let working = self.desk.working();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((name, _, text)) = &working {
@@ -918,8 +922,11 @@ mod desk {
         children: Vec<std::process::Child>,
         /// what the user says is off in a request's lines, by id, for its next run
         pub lines_notes: HashMap<String, String>,
-        /// the requests to make one after another ("Make them all"), the next first
-        pub queue: Vec<String>,
+        /// the runs to make one after another (the queue, "Make them all"), the next first
+        pub queue: Queue,
+        /// a request split into several by a run from the queue: its own requests go next,
+        /// once it's split
+        splitting: Option<String>,
         /// the Bones window: the user drawing the body's bones over a picture
         pub bones: Sketch,
         /// the runs that would have started (the tests start none)
@@ -942,6 +949,71 @@ mod desk {
         pub name: String,
         /// the line being drawn: its joints so far, in the picture's pixels
         pub drawing: Vec<[i32; 2]>,
+    }
+
+    /// A run waiting its turn in the queue: the request, how it goes (its whole recipe, on
+    /// from its lines, made again) and, going on from its lines, what the user said is off in
+    /// them.
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(default)]
+    pub(in super::super) struct Queued {
+        pub id: String,
+        pub how: How,
+        #[serde(skip_serializing_if = "String::is_empty")]
+        pub note: String,
+        /// how the request stood when it was queued (made, to make again from its pictures)
+        pub from: Status,
+    }
+
+    /// The queue: runs made one after another, each once the last has ended (the first first),
+    /// unless it's paused; kept in private/requests/queue.json between runs of the editor.
+    #[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+    #[serde(default)]
+    pub(in super::super) struct Queue {
+        pub runs: Vec<Queued>,
+        pub paused: bool,
+    }
+
+    impl Queue {
+        /// The requests queued, in their order.
+        pub(in super::super) fn ids(&self) -> Vec<&str> {
+            self.runs.iter().map(|q| q.id.as_str()).collect()
+        }
+
+        /// Where a request is in it (0: next).
+        pub(in super::super) fn place(&self, id: &str) -> Option<usize> {
+            self.runs.iter().position(|q| q.id == id)
+        }
+    }
+
+    fn queue_path(root: &Path) -> PathBuf {
+        folder(root).join("queue.json")
+    }
+
+    /// The queue as kept (none, or unreadable: empty).
+    pub(in super::super) fn load_queue(root: &Path) -> Queue {
+        std::fs::read_to_string(queue_path(root)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+    }
+
+    /// A small button with an arrow drawn on it, up or down (the fonts have no arrows).
+    fn arrow(ui: &mut egui::Ui, up: bool, enabled: bool) -> egui::Response {
+        let r = ui.add_enabled(enabled, egui::Button::new(" ").small().min_size(egui::vec2(18.0, 16.0)));
+        let (c, s) = (r.rect.center(), if up { -1.0 } else { 1.0 });
+        let colour = if enabled { ui.visuals().text_color() } else { ui.visuals().weak_text_color() };
+        let tip = c + egui::vec2(0.0, 3.0 * s);
+        ui.painter().add(egui::Shape::convex_polygon(vec![c + egui::vec2(-4.0, -2.5 * s), c + egui::vec2(4.0, -2.5 * s), tip], colour, egui::Stroke::NONE));
+        r
+    }
+
+    /// "1st", "2nd", "3rd", "4th"...
+    fn nth(n: usize) -> String {
+        let end = match (n % 10, n % 100) {
+            (1, k) if k != 11 => "st",
+            (2, k) if k != 12 => "nd",
+            (3, k) if k != 13 => "rd",
+            _ => "th",
+        };
+        format!("{n}{end}")
     }
 
     /// Where a point of the canvas (`rect`, showing a picture `size` pixels across and down)
@@ -1029,6 +1101,9 @@ mod desk {
 
         pub(in super::super) fn reload(&mut self) {
             let root = self.root();
+            if !self.loaded {
+                self.queue = load_queue(&root);
+            }
             (self.list, self.problems) = load_all(&root);
             self.seen = snapshot(&root);
             self.loaded = true;
@@ -1148,6 +1223,10 @@ mod desk {
                     if let Some(note) = self.lines_notes.remove(id) {
                         self.lines_notes.insert(new.clone(), note);
                     }
+                    if let Some(k) = self.queue.place(id) {
+                        self.queue.runs[k].id = new.clone();
+                        self.keep_queue();
+                    }
                     Some(format!("{}: now private/requests/{new}/", r.name))
                 }
                 Ok(None) => None,
@@ -1194,6 +1273,7 @@ mod desk {
                         self.lines_notes.remove(id);
                     }
                     self.starting = Some((id.to_string(), now_secs()));
+                    self.unqueue(id);
                     self.selected = Some(id.to_string());
                     self.console_open = true;
                     self.failed_silent.remove(id);
@@ -1213,28 +1293,133 @@ mod desk {
         pub(in super::super) fn make_all(&mut self, id: &str) -> String {
             let Some(parent) = self.list.iter().find(|r| r.id == id) else { return format!("{id} isn't there any more") };
             let name = parent.name.clone();
-            let todo: Vec<String> = parent.children.iter().filter(|c| self.list.iter().any(|r| &r.id == *c && matches!(r.status, Status::Waiting | Status::Failed) && !r.lines_ready())).cloned().collect();
+            let todo: Vec<String> = parent.children.iter().filter(|c| self.to_make(c) && self.queue.place(c).is_none()).cloned().collect();
             if todo.is_empty() {
-                return format!("{name}: its requests are all made (or being made)");
+                return format!("{name}: its requests are all made (or being made, or queued)");
             }
             let n = todo.len();
-            self.queue = todo;
+            self.queue.runs.extend(todo.into_iter().map(|id| Queued { id, ..Default::default() }));
+            self.keep_queue();
             let first = self.next_in_queue();
-            format!("{name}: {n} to make, one after another{}", first.map(|s| format!(". {s}")).unwrap_or_default())
+            format!("{name}: {n} queued, to be made one after another{}", first.map(|s| format!(". {s}")).unwrap_or_default())
         }
 
-        /// The next request in the queue started, when nothing is being made.
+        /// Whether a request is still to be made: waiting (or failed), not split already, its
+        /// lines not waiting for the user's check.
+        fn to_make(&self, id: &str) -> bool {
+            self.list.iter().find(|r| r.id == id).is_some_and(|r| matches!(r.status, Status::Waiting | Status::Failed) && !r.lines_ready() && r.children.is_empty())
+        }
+
+        /// Whether a queued run can go now: its whole recipe while the request is still to be
+        /// made, or still as it was when queued (made, to make it again from its pictures); on
+        /// from lines that wait for the user's check; made again once made. Never while it's
+        /// being made.
+        fn can_run(&self, q: &Queued) -> bool {
+            self.list.iter().find(|r| r.id == q.id).is_some_and(|r| match q.how {
+                How::Whole => r.status != Status::InProgress && !r.lines_ready() && r.children.is_empty() && (matches!(r.status, Status::Waiting | Status::Failed) || r.status == q.from),
+                How::GoOn => r.lines_ready(),
+                How::Again => r.status == Status::Done,
+            })
+        }
+
+        /// The queue written (what goes wrong said in the window's problems).
+        fn keep_queue(&mut self) {
+            let path = queue_path(&self.root());
+            let written = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|()| std::fs::write(&path, content::to_text(&self.queue)));
+            if let Err(e) = written {
+                self.problems.push(format!("the queue isn't kept: {}: {e}", path.display()));
+            }
+        }
+
+        /// A run put in the queue, after the others (a request already in it isn't put twice);
+        /// with nothing being made, it starts now. What to say.
+        pub(in super::super) fn enqueue(&mut self, id: &str, how: How) -> String {
+            let name = self.list.iter().find(|r| r.id == id).map(|r| r.name.clone()).unwrap_or_else(|| id.to_string());
+            if self.busy().as_deref() == Some(id) {
+                return format!("{name} is being made now");
+            }
+            if let Some(k) = self.queue.place(id) {
+                return format!("{name} is {} in the queue already", nth(k + 1));
+            }
+            let note = if how == How::GoOn { self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default() } else { String::new() };
+            let from = self.list.iter().find(|r| r.id == id).map(|r| r.status).unwrap_or_default();
+            self.queue.runs.push(Queued { id: id.to_string(), how, note, from });
+            self.keep_queue();
+            if let Some(s) = self.next_in_queue() {
+                return s;
+            }
+            let k = self.queue.runs.len();
+            format!("{name} queued, {}: it starts once {}", nth(k), if self.queue.paused { "the queue goes on" } else if k == 1 { "the one being made has ended" } else { "those before it have" })
+        }
+
+        /// Every request waiting to be made and not queued yet put in the queue, in the list's
+        /// order. What to say.
+        pub(in super::super) fn enqueue_waiting(&mut self) -> String {
+            let busy = self.busy();
+            let todo: Vec<String> = self.list.iter().filter(|r| r.status == Status::Waiting && Some(&r.id) != busy.as_ref() && self.to_make(&r.id) && self.queue.place(&r.id).is_none()).map(|r| r.id.clone()).collect();
+            if todo.is_empty() {
+                return "Nothing waiting to be made that isn't queued already".into();
+            }
+            let n = todo.len();
+            self.queue.runs.extend(todo.into_iter().map(|id| Queued { id, ..Default::default() }));
+            self.keep_queue();
+            let first = self.next_in_queue();
+            format!("{n} queued, to be made one after another{}", first.map(|s| format!(". {s}")).unwrap_or_default())
+        }
+
+        /// A queued run taken out of the queue.
+        pub(in super::super) fn unqueue(&mut self, id: &str) {
+            if let Some(k) = self.queue.place(id) {
+                self.queue.runs.remove(k);
+                self.keep_queue();
+            }
+        }
+
+        /// A queued run moved a place up (`by` -1) or down (1).
+        pub(in super::super) fn move_queued(&mut self, id: &str, by: i32) {
+            if let Some(k) = self.queue.place(id) {
+                let to = (k as i32 + by).clamp(0, self.queue.runs.len() as i32 - 1) as usize;
+                let q = self.queue.runs.remove(k);
+                self.queue.runs.insert(to, q);
+                self.keep_queue();
+            }
+        }
+
+        /// The queue emptied.
+        pub(in super::super) fn clear_queue(&mut self) {
+            self.queue.runs.clear();
+            self.keep_queue();
+        }
+
+        /// The queue paused (nothing more starts, the run going on ends as it would) or going on.
+        pub(in super::super) fn pause_queue(&mut self, paused: bool) -> Option<String> {
+            self.queue.paused = paused;
+            self.keep_queue();
+            if paused { None } else { self.next_in_queue() }
+        }
+
+        /// The next run in the queue started, when nothing is being made and the queue isn't
+        /// paused; one that can't go (made meanwhile, being made, gone) taken out on the way.
         fn next_in_queue(&mut self) -> Option<String> {
-            if self.busy().is_some() {
+            if self.busy().is_some() || self.queue.paused || self.queue.runs.is_empty() {
                 return None;
             }
-            while !self.queue.is_empty() {
-                let id = self.queue.remove(0);
-                let ready = self.list.iter().any(|r| r.id == id && matches!(r.status, Status::Waiting | Status::Failed) && !r.lines_ready());
-                if ready {
-                    return Some(self.start_run(&id, How::Whole));
+            while !self.queue.runs.is_empty() {
+                let q = self.queue.runs.remove(0);
+                if !self.can_run(&q) {
+                    continue;
                 }
+                if q.how == How::GoOn && !q.note.is_empty() {
+                    self.lines_notes.insert(q.id.clone(), q.note.clone());
+                }
+                // split into several by this run: its own requests next
+                if self.list.iter().any(|r| r.id == q.id && r.several && r.parent.is_empty()) {
+                    self.splitting = Some(q.id.clone());
+                }
+                self.keep_queue();
+                return Some(self.start_run(&q.id, q.how));
             }
+            self.keep_queue();
             None
         }
 
@@ -1348,12 +1533,22 @@ mod desk {
                 }
                 self.reload();
             }
-            // making them all: the next, once the last has ended (and its start was seen, which
-            // can be a look after its files changed)
-            if !self.queue.is_empty() {
-                if let Some(s) = self.next_in_queue() {
-                    said = Some(s);
+            // a request the queue had split: once it's split (its run over), its requests next,
+            // in the drawings' order
+            if self.busy().is_none() {
+                if let Some(id) = self.splitting.take() {
+                    let children = self.list.iter().find(|r| r.id == id).map(|r| r.children.clone()).unwrap_or_default();
+                    let todo: Vec<String> = children.into_iter().filter(|c| self.to_make(c) && self.queue.place(c).is_none()).collect();
+                    for (k, c) in todo.into_iter().enumerate() {
+                        self.queue.runs.insert(k, Queued { id: c, ..Default::default() });
+                    }
+                    self.keep_queue();
                 }
+            }
+            // the queue: the next, once the last has ended (and its start was seen, which can
+            // be a look after its files changed)
+            if let Some(s) = self.next_in_queue() {
+                said = Some(s);
             }
             said
         }
@@ -1519,6 +1714,20 @@ mod desk {
                 return cancel.clicked().then(|| Run::Cancel(r.id.clone()));
             }
             let busy = self.busy();
+            if let Some(k) = self.queue.place(&r.id) {
+                let out = ui.button(format!("Queued, {}", nth(k + 1))).on_hover_text("In the queue: it starts on its own once those before it have been made. Click to take it out");
+                mark(&format!("uiRequestUnqueue_{}", r.id), &out);
+                return out.clicked().then(|| Run::Unqueue(r.id.clone()));
+            }
+            if busy.is_some() {
+                let label = match (r.status, short) {
+                    (Status::Done, false) => "Queue it to make again",
+                    _ => "Queue",
+                };
+                let queue = ui.button(label).on_hover_text(format!("{} is being made: this one starts on its own once it (and the queue before it) has ended", busy.unwrap_or_default()));
+                mark(&format!("uiRequestQueue_{}", r.id), &queue);
+                return queue.clicked().then(|| Run::Queue(r.id.clone(), How::Whole));
+            }
             let label = match (r.status, short) {
                 (Status::Failed, false) => "Start again",
                 (Status::Done, false) => "Make it again",
@@ -1541,8 +1750,105 @@ mod desk {
             start.clicked().then(|| Run::Start(r.id.clone()))
         }
 
-        fn list_column(&mut self, ui: &mut egui::Ui) -> Option<Run> {
+        /// The queue, over the list: the one being made, then each queued run in its order (a
+        /// place up or down, or out), Pause or Go on, Clear, and "Queue all waiting".
+        fn queue_column(&mut self, ui: &mut egui::Ui) -> Option<Run> {
             let mut asked = None;
+            let busy = self.busy();
+            let waiting = self.list.iter().filter(|r| r.status == Status::Waiting && self.to_make(&r.id) && self.queue.place(&r.id).is_none() && Some(&r.id) != busy.as_ref()).count();
+            egui::Frame::new().fill(Color32::from_gray(22)).stroke(egui::Stroke::new(1.0, Color32::from_gray(58))).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    let state = if self.queue.paused { " · paused" } else { "" };
+                    ui.label(RichText::new(format!("Queue ({}){state}", self.queue.runs.len())).strong());
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if !self.queue.runs.is_empty() {
+                            let clear = ui.small_button("Clear").on_hover_text("Empties the queue (the run being made goes on)");
+                            mark("uiQueueClear", &clear);
+                            if clear.clicked() {
+                                asked = Some(Run::QueueClear);
+                            }
+                        }
+                        let (label, about) = if self.queue.paused { ("Go on", "The queue goes on: its next starts once nothing's being made") } else { ("Pause", "Nothing more starts from the queue until it goes on (the run being made ends as it would)") };
+                        let pause = ui.small_button(label).on_hover_text(about);
+                        mark("uiQueuePause", &pause);
+                        if pause.clicked() {
+                            asked = Some(Run::QueuePause(!self.queue.paused));
+                        }
+                    });
+                });
+                if let Some(r) = self.in_progress().cloned() {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("now").size(11.0).color(crate::hud::MUTED));
+                        ui.label(RichText::new(&r.name).size(12.5));
+                    });
+                    bar(ui, &r, ui.available_width(), 4.0);
+                } else if let Some((id, _)) = &self.starting {
+                    hint(ui, &format!("now: {id}, starting"));
+                }
+                if self.queue.runs.is_empty() {
+                    hint(ui, "Queued requests are made one after another, each once the last has ended: Queue on a request (while another is being made), or all of those waiting.");
+                }
+                let runs = self.queue.runs.clone();
+                let last = runs.len().saturating_sub(1);
+                for (k, q) in runs.iter().enumerate() {
+                    let r = self.list.iter().find(|r| r.id == q.id);
+                    let name = r.map(|r| r.name.clone()).unwrap_or_else(|| q.id.clone());
+                    let how = match q.how {
+                        How::Whole => "",
+                        How::GoOn => " · go on",
+                        How::Again => " · again",
+                    };
+                    let row = ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}.", k + 1)).size(11.5).color(Color32::from_gray(150)));
+                        if let Some(r) = r {
+                            chip(ui, r);
+                        }
+                        // the name in what the buttons leave, cut short
+                        let room = (ui.available_width() - 70.0).max(40.0);
+                        ui.allocate_ui(egui::vec2(room, ui.spacing().interact_size.y), |ui| {
+                            ui.add(egui::Label::new(RichText::new(format!("{name}{how}")).size(12.5)).truncate());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let out = ui.small_button("×").on_hover_text("Out of the queue");
+                            mark(&format!("uiQueueOut_{}", q.id), &out);
+                            if out.clicked() {
+                                asked = Some(Run::Unqueue(q.id.clone()));
+                            }
+                            let down = arrow(ui, false, k < last).on_hover_text("A place later");
+                            mark(&format!("uiQueueDown_{}", q.id), &down);
+                            if down.clicked() {
+                                asked = Some(Run::QueueMove(q.id.clone(), 1));
+                            }
+                            let up = arrow(ui, true, k > 0).on_hover_text("A place sooner");
+                            mark(&format!("uiQueueUp_{}", q.id), &up);
+                            if up.clicked() {
+                                asked = Some(Run::QueueMove(q.id.clone(), -1));
+                            }
+                        });
+                    });
+                    let how_long = match q.how {
+                        How::Whole => "its whole recipe, from its pictures",
+                        How::GoOn => "on from the lines you checked",
+                        How::Again => "made again with your comments",
+                    };
+                    let row = row.response.on_hover_text(format!("{name}: {how_long}"));
+                    mark(&format!("uiQueued_{}", q.id), &row);
+                }
+                let all = ui.add_enabled(waiting > 0, egui::Button::new(format!("Queue all waiting ({waiting})"))).on_hover_text("Every request waiting to be made goes in the queue, in the list's order").on_disabled_hover_text("Nothing waiting that isn't queued (or being made) already");
+                mark("uiQueueWaiting", &all);
+                if all.clicked() {
+                    asked = Some(Run::QueueWaiting);
+                }
+            });
+            crate::platform::set_hook("requestqueue", &self.queue.ids().join(";"));
+            crate::platform::set_hook("requestqueuepaused", if self.queue.paused { "1" } else { "" });
+            ui.add_space(6.0);
+            asked
+        }
+
+        fn list_column(&mut self, ui: &mut egui::Ui) -> Option<Run> {
+            let mut asked = self.queue_column(ui);
             let list = self.list.clone();
             if list.is_empty() && self.problems.is_empty() {
                 hint(ui, "No requests yet.");
@@ -1664,13 +1970,21 @@ mod desk {
                 );
                 mark("uiRequestLinesNote", &field);
                 let busy = self.busy();
+                // (it being made itself: nothing more)
+                let mine = busy.as_deref() == Some(r.id.as_str());
+                let other = busy.filter(|_| !mine);
+                let label = if other.is_some() { "The lines look right: queue it to go on" } else { "The lines look right: go on" };
+                let about = match &other {
+                    Some(b) => format!("{b} is being made: Claude goes on from these lines on its own once it (and the queue before it) has ended"),
+                    None => "Claude keeps these lines (fixing first what you say is off) and goes on to build the model from them: the long part".into(),
+                };
                 let go = ui
-                    .add_enabled(busy.is_none(), egui::Button::new(RichText::new("The lines look right: go on").strong()))
-                    .on_hover_text("Claude keeps these lines (fixing first what you say is off) and goes on to build the model from them: the long part")
-                    .on_disabled_hover_text(format!("One at a time: {} is being made", busy.unwrap_or_default()));
+                    .add_enabled(!mine && self.queue.place(&r.id).is_none(), egui::Button::new(RichText::new(label).strong()))
+                    .on_hover_text(about)
+                    .on_disabled_hover_text(if mine { "Being made now" } else { "In the queue already" });
                 mark("uiRequestGoOn", &go);
                 if go.clicked() {
-                    asked = Some(Run::GoOn(r.id.clone()));
+                    asked = Some(if other.is_some() { Run::Queue(r.id.clone(), How::GoOn) } else { Run::GoOn(r.id.clone()) });
                 }
                 ui.add_space(6.0);
             }
@@ -1805,21 +2119,18 @@ mod desk {
                         }
                     });
                 }
-                let busy = self.busy();
-                let left = r.children.iter().filter(|c| self.list.iter().any(|q| &q.id == *c && matches!(q.status, Status::Waiting | Status::Failed) && !q.lines_ready())).count();
+                let left = r.children.iter().filter(|c| self.to_make(c) && self.queue.place(c).is_none()).count();
                 let all = ui
-                    .add_enabled(busy.is_none() && left > 0, egui::Button::new(RichText::new(format!("Make them all ({left})")).strong()))
-                    .on_hover_text("Claude Code makes each one not made yet, one after another: the next starts once the last has ended")
-                    .on_disabled_hover_text(match busy {
-                        Some(b) => format!("One at a time: {b} is being made"),
-                        None => "All made (or waiting for your check of their lines)".into(),
-                    });
+                    .add_enabled(left > 0, egui::Button::new(RichText::new(format!("Make them all ({left})")).strong()))
+                    .on_hover_text("Each one not made yet goes in the queue, to be made one after another: the next starts once the last has ended")
+                    .on_disabled_hover_text("All made, being made or queued (or waiting for your check of their lines)");
                 mark("uiRequestMakeAll", &all);
                 if all.clicked() {
                     asked = Some(Run::MakeAll(r.id.clone()));
                 }
-                if !self.queue.is_empty() {
-                    hint(ui, &format!("{} more to make after this one", self.queue.len()));
+                let queued = r.children.iter().filter(|c| self.queue.place(c).is_some()).count();
+                if queued > 0 {
+                    hint(ui, &format!("{queued} of them queued"));
                 }
             }
             if r.status == Status::InProgress {
@@ -1968,17 +2279,28 @@ mod desk {
                 );
                 mark("uiRequestComments", &field);
                 let busy = self.busy();
+                let mine = busy.as_deref() == Some(r.id.as_str());
+                let other = busy.filter(|_| !mine);
                 let said_what = !r.comments.trim().is_empty();
+                let queued = self.queue.place(&r.id).is_some();
+                let label = if other.is_some() { "Queue it to make again with these comments" } else { "Make it again with these comments" };
+                let about = match &other {
+                    Some(b) => format!("{b} is being made: Claude Code makes this one again on its own once it (and the queue before it) has ended"),
+                    None => "Claude Code starts from the model the last run made and changes what you say, keeping the rest".into(),
+                };
                 let again = ui
-                    .add_enabled(busy.is_none() && said_what, egui::Button::new(RichText::new("Make it again with these comments").strong()))
-                    .on_hover_text("Claude Code starts from the model the last run made and changes what you say, keeping the rest")
-                    .on_disabled_hover_text(match busy {
-                        Some(b) => format!("One at a time: {b} is being made"),
-                        None => "Say what to look for or change first".into(),
+                    .add_enabled(said_what && !queued && !mine, egui::Button::new(RichText::new(label).strong()))
+                    .on_hover_text(about)
+                    .on_disabled_hover_text(if mine {
+                        "Being made now"
+                    } else if queued {
+                        "In the queue already"
+                    } else {
+                        "Say what to look for or change first"
                     });
                 mark("uiRequestAgain", &again);
                 if again.clicked() {
-                    asked = Some(Run::Again(r.id.clone()));
+                    asked = Some(if other.is_some() { Run::Queue(r.id.clone(), How::Again) } else { Run::Again(r.id.clone()) });
                 }
             }
             ui.add_space(8.0);
@@ -1996,6 +2318,7 @@ mod desk {
                             Ok(()) => format!("Deleted the request {}{}", r.name, if r.prop.is_empty() { String::new() } else { format!(" (the prop {} stays)", r.prop) }),
                             Err(e) => e,
                         });
+                        self.unqueue(&r.id);
                         self.deleting = false;
                         self.selected = None;
                         self.reload();
@@ -2351,13 +2674,25 @@ mod desk {
         /// "Make them all": the requests a request was split into, one after another
         MakeAll(String),
         Cancel(String),
+        /// put in the queue (a run asked for while another is being made, or "Queue")
+        Queue(String, How),
+        /// out of the queue, or a place up (-1) or down (1) in it
+        Unqueue(String),
+        QueueMove(String, i32),
+        /// every request waiting to be made, queued
+        QueueWaiting,
+        QueueClear,
+        /// the queue paused, or going on
+        QueuePause(bool),
     }
 
     /// How a run goes: the whole recipe from the pictures (Start), on from the model on the
     /// lines the user checked (GoOn), or the last run's model made again with the user's
     /// comments on it (Again).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+    #[serde(rename_all = "snake_case")]
     pub(in super::super) enum How {
+        #[default]
         Whole,
         GoOn,
         Again,
@@ -2457,6 +2792,12 @@ mod desk {
                     Some(Run::Again(id)) => said = Some(d.start_run(&id, How::Again)),
                     Some(Run::MakeAll(id)) => said = Some(d.make_all(&id)),
                     Some(Run::Cancel(id)) => said = Some(d.cancel_run(&id)),
+                    Some(Run::Queue(id, how)) => said = Some(d.enqueue(&id, how)),
+                    Some(Run::Unqueue(id)) => d.unqueue(&id),
+                    Some(Run::QueueMove(id, by)) => d.move_queued(&id, by),
+                    Some(Run::QueueWaiting) => said = Some(d.enqueue_waiting()),
+                    Some(Run::QueueClear) => d.clear_queue(),
+                    Some(Run::QueuePause(paused)) => said = d.pause_queue(paused),
                     None => {}
                 }
                 if let Some(s) = d.bones_window(ui.ctx()) {
@@ -3029,14 +3370,15 @@ mod tests {
         save(&root, &other).unwrap();
         req.watch(2.0e9);
         frame_with(&ctx, &mut req, vec![]);
+        // "The lines look right" while another runs: nothing started, it waits its turn in the
+        // queue, the note with it
         click(&ctx, &mut req, "uiRequestGoOn");
         assert_eq!(req.desk().launched.len(), 1, "nothing started while another runs");
+        assert_eq!(req.desk().queue.ids(), ["moss_toad"]);
         other.status = Status::Done;
         save(&root, &other).unwrap();
+        // the other made: run_claude.py again, from the model, with the note
         req.watch(3.0e9);
-        frame_with(&ctx, &mut req, vec![]);
-        // "The lines look right: go on": run_claude.py again, from the model, with the note
-        click(&ctx, &mut req, "uiRequestGoOn");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--go-on", "--note", "the tail is longer"]);
         assert_eq!(req.desk().busy().as_deref(), Some("moss_toad"), "being started: one at a time");
         assert!(!req.desk().lines_notes.contains_key("moss_toad"), "the note went with it");
@@ -3045,6 +3387,7 @@ mod tests {
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestGoOn");
         assert_eq!(req.desk().launched.len(), 2);
+        assert!(req.desk().queue.runs.is_empty(), "nor queued");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -3136,7 +3479,7 @@ mod tests {
         // Make them all: the first one now, the next once it has ended
         click(&ctx, &mut req, "uiRequestMakeAll");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "shrubs_tall_one"]);
-        assert_eq!(req.desk().queue, ["shrubs_low_one"]);
+        assert_eq!(req.desk().queue.ids(), ["shrubs_low_one"]);
         let mut first = read(&root, "shrubs_tall_one").unwrap();
         first.status = Status::Done;
         first.progress = Progress { step: "done".into(), done: 1.0, started: now_secs(), minutes: 9.0 };
@@ -3144,13 +3487,152 @@ mod tests {
         req.watch(2.0e9);
         req.watch(2.5e9);
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "shrubs_low_one"], "the next one, once the first was made");
-        assert!(req.desk().queue.is_empty());
+        assert!(req.desk().queue.runs.is_empty());
         // one of them shows where it came from
         req.desk().selected = Some("shrubs_low_one".into());
         frame_with(&ctx, &mut req, vec![]);
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestParent");
         assert_eq!(req.desk().selected.as_deref(), Some("shrubs"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A request's run seen to begin and end with its model made (as run_claude.py leaves it).
+    fn made(root: &Path, id: &str) {
+        let mut r = read(root, id).unwrap();
+        r.status = Status::Done;
+        r.progress = Progress { step: "done".into(), done: 1.0, started: now_secs(), minutes: 9.0 };
+        save(root, &r).unwrap();
+    }
+
+    /// Requests for the queue's tests, each with a picture.
+    fn requests_named(root: &Path, names: &[&str]) {
+        for name in names {
+            let mut r = create(root, &format!("{name}.png")).unwrap();
+            add_picture(root, &mut r, "front.png", &png(30, 30, 1)).unwrap();
+            save(root, &r).unwrap();
+        }
+    }
+
+    /// One being made, three queued on their rows' buttons (Queue, while another is made),
+    /// shown in the queue over the list and one moved a place sooner; kept for the editor's
+    /// next run; each made once the last has ended, in the queue's order; paused, nothing more
+    /// starts until it goes on; one made some other way meanwhile isn't made again.
+    #[test]
+    fn queued_requests_are_made_one_after_another() {
+        let root = scratch("queue");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        requests_named(&root, &["Ant", "Bee", "Cat", "Dog"]);
+        req.desk().reload();
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiQueueWaiting").is_some(), "the queue over the list");
+        click(&ctx, &mut req, "uiRequestStart_ant");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "ant"]]);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestStart_bee").is_none(), "another being made: Queue, not Start");
+        for id in ["bee", "cat", "dog"] {
+            click(&ctx, &mut req, &format!("uiRequestQueue_{id}"));
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert_eq!(req.desk().queue.ids(), ["bee", "cat", "dog"]);
+        assert_eq!(crate::platform::hook("requestqueue").as_deref(), Some("bee;cat;dog"));
+        assert!(marked("uiRequestUnqueue_cat").is_some(), "a queued one's row says where it is");
+        click(&ctx, &mut req, "uiQueueUp_dog");
+        assert_eq!(req.desk().queue.ids(), ["bee", "dog", "cat"]);
+        // kept: the editor's next run reads it back
+        let mut next_run = Requests::at(&root);
+        next_run.desk().reload();
+        assert_eq!(next_run.desk().queue.ids(), ["bee", "dog", "cat"]);
+        // the ant made: the bee next, on its own
+        made(&root, "ant");
+        req.watch(1.0e9);
+        req.watch(1.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "bee"]);
+        assert_eq!(req.desk().queue.ids(), ["dog", "cat"]);
+        // paused: the bee made, nothing more
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiQueuePause");
+        assert!(req.desk().queue.paused);
+        made(&root, "bee");
+        req.watch(2.0e9);
+        req.watch(2.5e9);
+        assert_eq!(req.desk().launched.len(), 2, "nothing starts while it's paused");
+        // the dog made some other way meanwhile; going on, the cat (the dog isn't made again)
+        made(&root, "dog");
+        req.watch(3.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiQueuePause");
+        assert!(!req.desk().queue.paused);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "cat"]);
+        assert!(req.desk().queue.runs.is_empty());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// "Queue all waiting": the requests waiting to be made, in the list's order (not one made,
+    /// nor one whose lines wait for the user's check), the first started at once; one split
+    /// into several from the queue has its own requests made next, before the rest; going on
+    /// from checked lines, asked while another is made, waits its turn with the user's note.
+    #[test]
+    fn all_waiting_queued_and_a_split_one_s_requests_go_next() {
+        let root = scratch("queue-all");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        requests_named(&root, &["Ant", "Bushes", "Cat", "Dog", "Eel"]);
+        let mut bushes = read(&root, "bushes").unwrap();
+        bushes.several = true;
+        save(&root, &bushes).unwrap();
+        made(&root, "cat");
+        let mut dog = read(&root, "dog").unwrap();
+        dog.progress.step = LINES_READY.into();
+        save(&root, &dog).unwrap();
+        req.desk().reload();
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        click(&ctx, &mut req, "uiQueueWaiting");
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "ant"]], "the first at once");
+        assert_eq!(req.desk().queue.ids(), ["bushes", "eel"], "not the cat (made) nor the dog (its lines wait)");
+        // the dog's lines checked while the ant is made: it waits its turn, the note with it
+        req.desk().lines_notes.insert("dog".into(), "the tail longer".into());
+        req.desk().selected = Some("dog".into());
+        frame_with(&ctx, &mut req, vec![]);
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestGoOn");
+        assert_eq!(req.desk().queue.ids(), ["bushes", "eel", "dog"]);
+        // the ant made: the bushes, whose run splits them in two
+        made(&root, "ant");
+        req.watch(1.0e9);
+        req.watch(1.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "bushes"]);
+        for (id, name) in [("bushes_tall", "Tall"), ("bushes_low", "Low")] {
+            save(&root, &ModelRequest { id: id.into(), name: name.into(), kind: Kind::Prop, parent: "bushes".into(), images: vec!["drawing.png".into()], ..Default::default() }).unwrap();
+        }
+        let mut split = read(&root, "bushes").unwrap();
+        split.status = Status::Done;
+        split.progress = Progress { step: "split into 2 requests".into(), done: 1.0, started: now_secs(), minutes: 2.0 };
+        split.children = vec!["bushes_tall".into(), "bushes_low".into()];
+        save(&root, &split).unwrap();
+        req.watch(2.0e9);
+        req.watch(2.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "bushes_tall"], "its own requests next");
+        assert_eq!(req.desk().queue.ids(), ["bushes_low", "eel", "dog"]);
+        // and so on to the dog, gone on from its lines with the note
+        for (k, id) in ["bushes_tall", "bushes_low", "eel"].iter().enumerate() {
+            made(&root, id);
+            req.watch(3.0e9 + k as f64 * 1.0e9);
+            req.watch(3.5e9 + k as f64 * 1.0e9);
+        }
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "dog", "--go-on", "--note", "the tail longer"]);
+        assert!(req.desk().queue.runs.is_empty());
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -3323,6 +3805,51 @@ mod tests {
         req.open = false;
         frame_with(&ctx, &mut req, vec![]);
         assert!(!req.desk().bones.open);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A look by eye at the queue over the list: one being made, three queued (one gone on from
+    /// its lines, one made again), one waiting; written to build/shots/requests-queue.png. It
+    /// needs a GPU, so it's run by hand:
+    ///     cargo test -p engine-game -- --ignored shot
+    #[test]
+    #[ignore]
+    fn shot_of_the_queue() {
+        let root = scratch("shot-queue");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        requests_named(&root, &["Moss toad", "Tall tree", "Shrubs", "Stone lantern", "Reed bed"]);
+        let mut toad = read(&root, "moss_toad").unwrap();
+        toad.status = Status::InProgress;
+        toad.progress = Progress { step: "building the model".into(), done: 0.45, started: now_secs() - 240.0, minutes: 12.0 };
+        save(&root, &toad).unwrap();
+        let mut shrubs = read(&root, "shrubs").unwrap();
+        shrubs.progress.step = LINES_READY.into();
+        save(&root, &shrubs).unwrap();
+        made(&root, "stone_lantern");
+        req.desk().reload();
+        let d = req.desk();
+        d.queue.runs = vec![
+            Queued { id: "tall_tree".into(), ..Default::default() },
+            Queued { id: "shrubs".into(), how: How::GoOn, ..Default::default() },
+            Queued { id: "stone_lantern".into(), how: How::Again, from: Status::Done, ..Default::default() },
+        ];
+        let mut shooter = crate::shot::Shooter::new().unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let content = content::Content::default();
+        let mut out = None;
+        for _ in 0..40 {
+            crate::platform::clear_hooks();
+            let mut o = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| {
+                shown(ui, &mut req, &content);
+            });
+            shooter.textures(&mut o.textures_delta);
+            out = Some(o);
+        }
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots/requests-queue.png");
+        shooter.shoot(&ctx, out.unwrap().shapes, [1400, 900], &path).unwrap();
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -676,7 +676,16 @@ request, and the runs after it are told them too. A tree's cells are its trunk's
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Several of them: one asset
 per drawing" and Start has each drawing made a request of its own (its crop, its name and
-height, the request's settings); **Make them all** then has them made one after another. A
+height, the request's settings); **Make them all** then queues them, to be made one after
+another. **The queue**, over the list, makes requests one after another with no Start for each:
+while one is being made, the others' Start is **Queue** (the lines' "go on" and "Make it
+again" are queued too, the note or comments going with them), and **Queue all waiting** puts
+every request waiting to be made in it, in the list's order; it shows the one being made, then
+each queued in its order (a place sooner or later, or out with ×), with **Pause** and
+**Clear**. Each starts once the last has ended (made, failed, or stopped for a check of its
+lines), and only while it's still to be made (one made meanwhile isn't made again); a request
+split into several from the queue has its own requests made next. It's kept in
+`private/requests/queue.json` for the editor's next run (`data-requestqueue` for the checks). A
 floor set's pictures (a pavement, old ruins, marble, a wood tiling) become a set of floor
 tiles: Claude breaks the pattern into cells, each tile's edges saying what fits beside it,
 lays the set out by the game's rules to compare it with the pictures, and adds each tile to
