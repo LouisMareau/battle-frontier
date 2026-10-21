@@ -270,6 +270,9 @@ pub struct MapEditor {
     /// with another (a square built before the file came) is built again
     model_versions: std::collections::HashMap<String, u64>,
     model_failed: std::collections::HashSet<String>,
+    /// the grass props' models in levels for their copies (`world::grass`), kept while they
+    /// stay as they were
+    grass_levels: std::cell::RefCell<world::grass::Cache>,
     /// the building being drawn or designed
     draft: Option<build::Draft>,
     selected_building: Option<usize>,
@@ -511,6 +514,7 @@ impl MapEditor {
             models: world::mesh::Models::new(),
             model_versions: Default::default(),
             model_failed: std::collections::HashSet::new(),
+            grass_levels: Default::default(),
             draft: None,
             selected_building: None,
             focus_sent: None,

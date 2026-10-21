@@ -4,13 +4,15 @@
 //! it faces) to a second target, then what's see-through; then blitted into whatever pass
 //! the host gives (egui's, in the game), with the toon look's ink lines found in the looks,
 //! and the pixelation and an old handheld's LCD colours if the game asks; a small blurred
-//! copy of the picture besides, for frosted glass over it (`frost_view`).
+//! copy of the picture besides, for frosted glass over it (`frost_view`). The grass grown
+//! through tall ground is drawn as copies of its models, culled each frame (`grass`).
 
 use std::collections::{BTreeMap, HashMap};
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
+use crate::grass::{Grass, GrassCopy, GrassModel};
 use crate::map::{build_meshes, MapScene, MapVertex, Spot};
 
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
@@ -142,6 +144,14 @@ pub struct DrawStats {
     pub culled: u32,
     /// how big the pixelation's pixels were, in the screen's a side (1: none)
     pub pixel: u32,
+    /// grass copies drawn (as last known: culled on the GPU, they're read back a few frames
+    /// late), their vertices at the levels they're drawn at, and whether they're culled on the
+    /// GPU (else on the CPU)
+    pub grass: u32,
+    pub grass_vertices: u64,
+    pub grass_on_gpu: bool,
+    /// the grass copies drawn at each level (0 the finest: up close)
+    pub grass_levels: [u32; crate::grass::MOST_LEVELS],
 }
 
 /// A view's six planes (from its view-projection; depth 0 to 1, as wgpu has it).
@@ -776,6 +786,8 @@ pub struct SceneRenderer {
     extra: Vec<(String, GpuMesh)>,
     /// things fading (a building's upper floors): drawn see-through, by their vertex alpha
     fade: Vec<(String, GpuMesh)>,
+    /// the grass grown through tall ground: copies of its models
+    grass: Grass,
     textures: HashMap<String, Texture>,
     meshes: Vec<Mesh>,
     pub map_name: Option<String>,
@@ -1073,6 +1085,18 @@ impl SceneRenderer {
         let through_pipeline = pipeline("see-through", &main_layout, "vs_map", "fs_map_through", &map_buffers, solid(true), Some(depth(true)));
         let opaque_through_pipeline = pipeline("opaque see-through", &main_layout, "vs_map", "fs_map_opaque_through", &map_buffers, solid(true), Some(depth(true)));
         let map_shadow_pipeline = pipeline("map shadow", &shadow_pass_layout, "vs_map_shadow", "fs_map_shadow", &map_buffers, vec![], Some(shadow_depth.clone()));
+        // the grass's copies: a model's vertices, and a copy an instance
+        let copy_attrs = wgpu::vertex_attr_array![6 => Float32x3, 7 => Float32, 8 => Float32, 9 => Float32];
+        let grass_buffers = [
+            map_buffers[0].clone(),
+            Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<GrassCopy>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &copy_attrs }),
+        ];
+        let grass = Grass::new(
+            device,
+            pipeline("grass", &main_layout, "vs_grass", "fs_map_opaque", &grass_buffers, solid(true), Some(depth(true))),
+            pipeline("grass cut-out", &main_layout, "vs_grass", "fs_map", &grass_buffers, solid(true), Some(depth(true))),
+            pipeline("grass shadow", &shadow_pass_layout, "vs_grass_shadow", "fs_map_shadow", &grass_buffers, vec![], Some(shadow_depth.clone())),
+        );
         let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
         let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
         // depth only, in the see-through pass: a colour target it never writes to
@@ -1097,7 +1121,7 @@ impl SceneRenderer {
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, through_pipeline, opaque_through_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
             frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0, wind_clock: WindClock::default(),
-            ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![],
+            ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![], grass,
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
             sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
             output_srgb: output.is_srgb(),
@@ -1170,6 +1194,8 @@ impl SceneRenderer {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
+            pass.set_vertex_buffer(1, zeros.slice(..));
+            self.grass.warm_up(&mut pass, true);
             pass.set_bind_group(2, &self.empty_bind, &[]);
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_shadow_pipeline);
@@ -1185,6 +1211,8 @@ impl SceneRenderer {
                 pass.set_pipeline(p);
                 pass.draw(0..3, 0..1);
             }
+            pass.set_vertex_buffer(1, zeros.slice(..));
+            self.grass.warm_up(&mut pass, false);
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_pipeline);
             pass.draw(0..3, 0..1);
@@ -1465,7 +1493,10 @@ impl SceneRenderer {
         let (cells, shore, bind) = self.data_bind(device, queue, g, &shore);
         let (tops, layers, place) = match self.worlds.remove(map) {
             Some(w) if w.size == g.size => (w.tops, w.layers, w.place),
-            Some(w) => (BTreeMap::new(), BTreeMap::new(), w.place),
+            Some(w) => {
+                self.grass.drop_map(map);
+                (BTreeMap::new(), BTreeMap::new(), w.place)
+            }
             None => (BTreeMap::new(), BTreeMap::new(), Place::default()),
         };
         self.worlds.insert(map.to_string(), WorldGpu { tops, layers, cells, shore, water, shore_cells: g.cells.to_vec(), size: g.size, bind, level_height: g.level_height, place });
@@ -1514,6 +1545,31 @@ impl SceneRenderer {
         if let Some(w) = self.worlds.get_mut(map) {
             w.place = place;
         }
+        self.grass.place(map, place.offset, place.dim);
+    }
+
+    /// A grass model to draw copies of (`set_grass`), by its key (a grass prop's id), with
+    /// what it was made from (`version`: sent again when that changes): its levels, the
+    /// first as made, each next thinner (`world::grass::thin`), drawn at the finest a copy's
+    /// cells look big enough for.
+    pub fn set_grass_model(&mut self, device: &wgpu::Device, key: &str, version: u64, model: &GrassModel) {
+        self.grass.set_model(device, key, version, model);
+    }
+
+    /// What a grass model held was made from (`set_grass_model`).
+    pub fn grass_model_version(&self, key: &str) -> Option<u64> {
+        self.grass.version(key)
+    }
+
+    /// One square's grass copies on a world map (after `set_world_ground`), by model, in the
+    /// map's own space, replacing what that square held (none: they go).
+    pub fn set_grass(&mut self, map: &str, square: (i32, i32), copies: Vec<(String, Vec<GrassCopy>)>) {
+        self.grass.set_copies(map, square, copies);
+    }
+
+    /// Whether the grass's copies are culled on the GPU (else on the CPU: no compute shaders).
+    pub fn grass_on_gpu(&self) -> bool {
+        self.grass.culled_on_gpu()
     }
 
     /// One square of one layer of a world map (after `set_world_ground`), replacing what
@@ -1534,6 +1590,7 @@ impl SceneRenderer {
 
     /// Drops a world map's squares that `keep` doesn't want, in every layer.
     pub fn keep_chunks(&mut self, map: &str, keep: &dyn Fn((i32, i32)) -> bool) {
+        self.grass.keep(map, keep);
         let Some(w) = self.worlds.get_mut(map) else { return };
         w.tops.retain(|s, _| keep(*s));
         for squares in w.layers.values_mut() {
@@ -1544,6 +1601,7 @@ impl SceneRenderer {
     /// Forgets the world maps `keep` doesn't name.
     pub fn keep_worlds(&mut self, keep: &dyn Fn(&str) -> bool) {
         self.worlds.retain(|id, _| keep(id));
+        self.grass.keep_maps(keep);
     }
 
     /// The world maps on the GPU.
@@ -1566,6 +1624,7 @@ impl SceneRenderer {
         self.worlds.clear();
         self.extra.clear();
         self.fade.clear();
+        self.grass.clear();
     }
 
     /// Forgets the battle map.
@@ -1633,7 +1692,7 @@ impl SceneRenderer {
         let clock = self.wind_clock;
         // the ink lines cost a look at every pixel's neighbours: only when something toon
         // is drawn
-        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).any(|s| s.toon) || self.extra.iter().chain(&self.fade).any(|(_, m)| m.toon);
+        let toon_seen = frame.billboards.iter().any(|b| b.toon) || frame.animated.iter().any(|a| self.skinned.get(&a.key).map(|p| p.iter().any(|(_, m)| m.toon)).unwrap_or(false)) || self.worlds.values().flat_map(|w| w.layers.values()).flat_map(|l| l.values()).any(|s| s.toon) || self.extra.iter().chain(&self.fade).any(|(_, m)| m.toon) || self.grass.toon();
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
@@ -1842,7 +1901,10 @@ impl SceneRenderer {
             queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
         }
 
-        let mut stats = DrawStats { pixel: pixel.unwrap_or(1), ..Default::default() };
+        // the grass's copies culled, each its level picked (on the GPU, a pass before these)
+        self.grass.prepare(device, queue, encoder, &frame.view_proj, size);
+        let (grass, grass_vertices, grass_levels) = self.grass.drawn();
+        let mut stats = DrawStats { pixel: pixel.unwrap_or(1), grass, grass_vertices, grass_on_gpu: self.grass.culled_on_gpu(), grass_levels, ..Default::default() };
         let eye = Frustum::new(&frame.view_proj);
         let sun = Frustum::new(&light_view_proj);
 
@@ -1902,6 +1964,7 @@ impl SceneRenderer {
                 stats.shadow_triangles += m.count / 3;
             }
             pass.set_bind_group(0, &self.globals_bind, &[0]);
+            self.grass.draw(&mut pass, true, &|k| &self.textures.get(k).unwrap_or(&self.textures[WHITE]).bind, &mut stats);
             pass.set_pipeline(&self.sprite_shadow_pipeline);
             pass.set_vertex_buffer(0, sprite_buffer.slice(..));
             for d in &self.sprite_draws {
@@ -2006,6 +2069,9 @@ impl SceneRenderer {
                     }
                 }
             }
+            // the grass's copies (in the scene's space: its own placement), over the ground
+            pass.set_bind_group(0, &self.globals_bind, &[0]);
+            self.grass.draw(&mut pass, false, &|k| &self.textures.get(k).unwrap_or(&self.textures[WHITE]).bind, &mut stats);
             // the ground last, its cliffs too: what stands on it hides most of it, and its
             // shader is the costliest
             pass.set_pipeline(&self.ground_pipeline);
@@ -2419,6 +2485,111 @@ mod tests {
         c.step(t + 30.0, north, 0.2);
         assert!((c.clouds - before).length() <= 0.05 + 1e-4, "a pause of 30 s counts as a quarter of one");
         assert!(c.sway < std::f64::consts::TAU && c.flutter < std::f64::consts::TAU && c.ripple < 1.0 && c.lap < 1.0);
+    }
+
+    /// A grass model in levels of `blades`, each blade a quad a cell's fiftieth wide.
+    fn grass_levels(blades: &[usize]) -> Vec<crate::grass::GrassLevel> {
+        blades
+            .iter()
+            .map(|&n| {
+                let (mut v, mut i) = (vec![], vec![]);
+                for k in 0..n {
+                    let x = (k % 20) as f32 * 0.05 - 0.5;
+                    let base = v.len() as u32;
+                    for (dx, y) in [(0.0, 0.0), (0.02, 0.0), (0.02, 0.6), (0.0, 0.6)] {
+                        v.push(MapVertex { pos: [x + dx, y, (k / 20) as f32 * 0.04 - 0.5], normal: [0.0, 0.0, 1.0], uv: [0.5, 0.5], color: [0.3, 0.6, 0.2, 1.0], toon: 1.0, wind: [(y / 0.6 * 255.0) as u8, 40, 90, 2] });
+                    }
+                    i.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+                vec![(WHITE.to_string(), v, i)]
+            })
+            .collect()
+    }
+
+    /// A field of grass copies, 96 x 96 cells a copy each, in two squares of a map placed 10
+    /// cells east: gathered into the scene's space, culled and their levels picked on the GPU
+    /// as on the CPU (`grass::pick`; a float's rounding may tip a copy or two over), drawn with
+    /// no error from the GPU; and where there are no compute shaders, on the CPU, the same.
+    #[test]
+    fn grass_copies_cull_on_the_gpu_as_on_the_cpu() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU here: the grass's culling not checked");
+            return;
+        };
+        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let levels = grass_levels(&[500, 250, 125, 62]);
+        let (lo, hi) = (Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.6, 0.5));
+        r.set_grass_model(&device, "tuft", 1, &GrassModel { levels: &levels, cells: 1.0, lo, hi });
+        let copies = |x0: i32| (x0..x0 + 48).flat_map(|x| (0..96).map(move |z| GrassCopy { at: [x as f32 + 0.5, 0.0, z as f32 + 0.5], turn: (x * 7 + z) as f32 * 0.3, scale: 1.0, ..Default::default() })).collect::<Vec<_>>();
+        r.set_grass("field", (0, 0), vec![("tuft".into(), copies(0))]);
+        r.set_grass("field", (1, 0), vec![("tuft".into(), copies(48))]);
+        r.set_world_place("field", Place { offset: Vec3::new(10.0, 0.0, 0.0), ..Default::default() });
+        let mut frame = frame_of(vec![]);
+        let eye = Vec3::new(58.0, 18.0, 110.0);
+        frame.view_proj = Mat4::perspective_rh(30f32.to_radians(), 1.6, 0.1, 600.0) * Mat4::look_at_rh(eye, Vec3::new(58.0, 0.0, 48.0), Vec3::Y);
+        frame.camera_pos = eye;
+        let size = [640, 400];
+        let run = |r: &mut SceneRenderer| {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            r.prepare(&device, &queue, &mut encoder, &frame, size);
+            queue.submit([encoder.finish()]);
+            let error = block_on(scope.pop());
+            assert!(error.is_none(), "{error:?}");
+        };
+        run(&mut r);
+        let gathered = r.grass.copies("tuft");
+        assert_eq!(gathered.len(), 96 * 96);
+        assert!(gathered.iter().all(|c| c.at[0] >= 10.0), "in the scene's space: their map's placement added");
+        // the CPU's picks of the same
+        let cull = crate::grass::Cull::new(frame.view_proj, size);
+        let shape = crate::grass::Shape::of(lo, hi, 1.0);
+        let costs: Vec<f32> = levels.iter().map(|l| l[0].1.len() as f32).collect();
+        let mut want = vec![0u32; 4];
+        let mut lists: Vec<Vec<[i32; 2]>> = vec![vec![]; 4];
+        for (i, c) in gathered.iter().enumerate() {
+            if let Some(l) = crate::grass::pick(&cull, &shape, &costs, c, i as u32) {
+                want[l] += 1;
+                lists[l].push([c.at[0] as i32, c.at[2] as i32]);
+            }
+        }
+        // each level's copies themselves, as the draws read them (in whatever order)
+        let cells = |list: &[GrassCopy]| {
+            let mut out: Vec<[i32; 2]> = list.iter().map(|c| [c.at[0] as i32, c.at[2] as i32]).collect();
+            out.sort();
+            out
+        };
+        for l in &mut lists {
+            l.sort();
+        }
+        let drawn: u32 = want.iter().sum();
+        assert!(drawn > 1000 && drawn < 96 * 96 && want.iter().filter(|&&n| n > 0).count() >= 2, "some out of sight, the rest at more than one level: {want:?}");
+        assert_eq!(r.grass.first_list("tuft"), Some((0, 4)));
+        if r.grass_on_gpu() {
+            let got = r.grass.counts_now(&device, &queue);
+            let read = r.grass.lists_now(&device, &queue, "tuft");
+            for l in 0..4 {
+                let (g, w) = (got[l] as i64, want[l] as i64);
+                assert!((g - w).abs() <= (w / 100).max(3), "level {l}: the GPU's {got:?}, the CPU's {want:?}");
+                let same = cells(&read[l]).iter().filter(|c| lists[l].binary_search(c).is_ok()).count() as i64;
+                assert!(same >= w - (w / 100).max(3), "level {l}: {same} of the GPU's {g} copies are the CPU's {w}");
+            }
+        }
+        // on the CPU
+        r.grass.on_cpu();
+        run(&mut r);
+        assert_eq!(r.grass.counts_now(&device, &queue), want);
+        let read = r.grass.lists_now(&device, &queue, "tuft");
+        for l in 0..4 {
+            assert_eq!(cells(&read[l]), lists[l], "level {l}'s copies as the draws read them");
+        }
+        assert_eq!(r.stats().grass, drawn);
+        assert_eq!(r.stats().grass_vertices, want.iter().zip(&costs).map(|(&n, &v)| n as u64 * v as u64).sum::<u64>(), "each copy its level's vertices");
+        assert_eq!(r.stats().grass_levels[..4], want[..], "the copies at each level");
+        // the square gone, its copies with it
+        r.set_grass("field", (1, 0), vec![]);
+        run(&mut r);
+        assert_eq!(r.grass.copies("tuft").len(), 48 * 96);
     }
 
     #[test]

@@ -2,6 +2,7 @@
 //! world maps and the placeholder battle maps, sprites as billboards, effects, the sun's shadow,
 //! day and night. It knows nothing of battles: the game hands it a `Frame` each frame.
 
+pub mod grass;
 pub mod map;
 pub mod scene;
 pub mod shore;

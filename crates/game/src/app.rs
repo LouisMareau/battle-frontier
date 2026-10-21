@@ -1169,6 +1169,10 @@ impl GameApp {
             platform::set_hook("tris", &d.triangles.to_string());
             platform::set_hook("shadowtris", &d.shadow_triangles.to_string());
             platform::set_hook("culled", &d.culled.to_string());
+            platform::set_hook("grass", &d.grass.to_string());
+            platform::set_hook("grassverts", &d.grass_vertices.to_string());
+            platform::set_hook("grasslevels", &d.grass_levels.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(","));
+            platform::set_hook("grassgpu", if d.grass_on_gpu { "1" } else { "0" });
             if self.cli.stats {
                 let state = match &self.screen {
                     Screen::Battle(d, _) => format!("battle round {}", d.battle.round),

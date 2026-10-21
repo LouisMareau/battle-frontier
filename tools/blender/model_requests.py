@@ -104,10 +104,13 @@ KINDS = ("creature", "prop", "grass", "environment", "floor")
 VARYING = ("grass", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
 VARIANTS_CAP = 12
-# grass is tiled over whole fields (the engine grows it through tall ground, one to a cell): the
-# most vertices it may have a cell, as the engine counts them (its .glb's: flat faces and seams
-# split vertices), the engine's world::mesh::GROWN_MOST; more and it doesn't grow
-GRASS_MOST = 1000
+# grass is grown over whole fields (the engine grows it through tall ground, one to a cell) and
+# drawn thinner further off by leaving out whole pieces of it (world::grass): the most vertices
+# it may have a cell as made, and at its thinnest (a piece, with any mat as wide as its cells),
+# as the engine counts them (its .glb's: flat faces and seams split vertices); the engine's
+# world::mesh::GROWN_HEAVIEST and GROWN_MOST: more and it doesn't grow
+GRASS_MOST = 60000
+GRASS_THINNEST = 1000
 STYLES = ("smooth", "low_poly", "accurate")
 POSES = ("t_pose", "as_is")
 # "unlimited" shapes stop at about this many
@@ -375,14 +378,76 @@ def finish(root, rid, prop, previews, reply=None, variant_props=None):
     return update(root, rid, **fields)
 
 
-def glb_vertices(path):
-    """A .glb's vertices as the engine reads them: each node's mesh, every primitive of it."""
+def _glb(path):
+    """A .glb's JSON and its binary chunk."""
     data = Path(path).read_bytes()
     size = int.from_bytes(data[12:16], "little")
     gltf = json.loads(data[20:20 + size].decode("utf-8"))
+    rest = 20 + size
+    blob = data[rest + 8:rest + 8 + int.from_bytes(data[rest:rest + 4], "little")] if len(data) > rest + 8 else b""
+    return gltf, blob
+
+
+def glb_vertices(path):
+    """A .glb's vertices as the engine reads them: each node's mesh, every primitive of it."""
+    gltf, _ = _glb(path)
     accessors, meshes = gltf.get("accessors", []), gltf.get("meshes", [])
     return sum(accessors[p["attributes"]["POSITION"]]["count"] for node in gltf.get("nodes", []) if "mesh" in node
                for p in meshes[node["mesh"]]["primitives"] if "POSITION" in p.get("attributes", {}))
+
+
+def glb_pieces(path, cells=(1, 1)):
+    """A .glb's pieces as the engine thins it (world::grass): each primitive's triangles joined
+    through the points they share (welded where they stand), each piece's vertices and whether
+    it's a mat (half its cells wide or more each way, the node's scale in: on every level)."""
+    import numpy as np
+
+    gltf, blob = _glb(path)
+    accessors, views = gltf.get("accessors", []), gltf.get("bufferViews", [])
+    kinds = {5126: np.float32, 5125: np.uint32, 5123: np.uint16, 5121: np.uint8}
+
+    def read(k, width):
+        a = accessors[k]
+        v = views[a["bufferView"]]
+        dtype = np.dtype(kinds[a["componentType"]])
+        start = v.get("byteOffset", 0) + a.get("byteOffset", 0)
+        stride = v.get("byteStride") or dtype.itemsize * width
+        rows = np.frombuffer(blob, dtype=np.uint8, count=stride * a["count"] - (stride - dtype.itemsize * width), offset=start)
+        rows = np.lib.stride_tricks.as_strided(rows, shape=(a["count"], dtype.itemsize * width), strides=(stride, 1))
+        return np.ascontiguousarray(rows).view(dtype).reshape(a["count"], width)
+
+    out = []
+    for node in (n for n in gltf.get("nodes", []) if "mesh" in n):
+        scale = np.array(node.get("scale", [1.0, 1.0, 1.0]), dtype=np.float64)
+        for p in gltf["meshes"][node["mesh"]]["primitives"]:
+            if "POSITION" not in p.get("attributes", {}) or "indices" not in p:
+                continue
+            pos = read(p["attributes"]["POSITION"], 3).astype(np.float64) * scale
+            tris = read(p["indices"], 1).reshape(-1, 3).astype(np.int64)
+            _, weld = np.unique(np.round(pos * 1e4).astype(np.int64), axis=0, return_inverse=True)
+            weld = weld.reshape(-1)
+            parent = np.arange(weld.max() + 1)
+
+            def root(i):
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+
+            for a, b, c in weld[tris]:
+                ra = root(a)
+                for x in (b, c):
+                    rx = root(x)
+                    if rx != ra:
+                        parent[rx] = ra
+            used = np.unique(tris.reshape(-1))
+            roots = np.array([root(w) for w in weld[used]])
+            for r in np.unique(roots):
+                mine = used[roots == r]
+                # (glTF is y-up: x across, z deep)
+                size = pos[mine].max(axis=0) - pos[mine].min(axis=0)
+                out.append((int(len(mine)), bool(size[0] >= 0.5 * cells[0] and size[2] >= 0.5 * cells[1])))
+    return out
 
 
 def variant_id(record, k):

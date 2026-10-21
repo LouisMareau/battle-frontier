@@ -942,11 +942,16 @@ pub struct Tuft {
     pub scale: f32,
 }
 
-/// The most vertices grass grown through tall ground may cost a cell. A grass prop that would
-/// cost more (`grown_cost`) grows nowhere, the engine's blades in its place: a square of the
-/// editor's (`content::CHUNK` cells a side) all of tall ground then stays well within a GPU
-/// buffer, and the frame within what it can draw. (Grass requests are made within it.)
+/// The most vertices grass grown through tall ground may cost a cell at its thinnest (the
+/// renderer draws copies of a grass model, each at the level as fine as its cells look big:
+/// `world::grass`; the far ones at its thinnest). A grass prop that would cost more there
+/// (`grown_cost`; a model of one piece can't be thinned) grows nowhere, the engine's blades in
+/// its place: what the far field costs stays within what a frame can draw.
 pub const GROWN_MOST: usize = 1_000;
+
+/// The most vertices a grass prop may have a cell as made, to grow (more takes too long to
+/// thin and too much of the GPU to hold).
+pub const GROWN_HEAVIEST: usize = 60_000;
 
 /// What a grass prop whose model has `vertices` costs each cell it grows through as `g` grows
 /// it: scattered, its vertices as many times as grow to a cell; tiled, its vertices shared by
@@ -968,7 +973,8 @@ pub fn prop_vertices(prop: &Prop, models: &Models) -> usize {
 }
 
 /// What a tall terrain grows (`content::Growth`), as it can: the grass props it lists that are
-/// there, weigh something and are light enough (`GROWN_MOST`, their vertices from `weigh`),
+/// there, weigh something and are light enough (`GROWN_MOST`, their vertices at their thinnest
+/// from `weigh`),
 /// each with its footprint (cells along x and z); tiled, their footprints with how often each
 /// is picked (the weights of its props together), and the blocks they're laid in.
 struct Growing<'a> {
@@ -1259,9 +1265,10 @@ pub fn ground_region(map: &WorldMap, content: &Content, level_height: f32, regio
 }
 
 /// `ground_region`, with the grass props grown through its tall cells whose terrain lists them
-/// (`content::Growth`, in place of the engine's own blades there): `grown` makes them. `weigh`
-/// says a prop's vertices as it's drawn (`prop_vertices`): one too heavy to grow
-/// (`GROWN_MOST`) doesn't, and where none of a terrain's can, the blades grow.
+/// (`content::Growth`, in place of the engine's own blades there): `grown` makes them, or the
+/// renderer draws them as copies. `weigh` says a prop's vertices at its thinnest (its model in
+/// levels, `world::grass`; as it's drawn, `prop_vertices`, where it isn't thinned): one too
+/// heavy to grow (`GROWN_MOST`) doesn't, and where none of a terrain's can, the blades grow.
 pub fn ground_region_grown(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond, weigh: &dyn Fn(&Prop) -> usize) -> (Mesh, Mesh, Mesh, Vec<Tuft>) {
     // what each tall terrain grows, as it can
     let growing: HashMap<&str, Growing> = content.terrains.iter().filter(|t| t.pattern == "tall" && !t.growth.is_empty()).map(|t| (t.id.as_str(), Growing::of(&t.growth, content, weigh))).collect();

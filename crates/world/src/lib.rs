@@ -10,6 +10,7 @@ pub mod fx;
 pub mod timeline;
 pub mod gltf_in;
 pub mod gltf_out;
+pub mod grass;
 pub mod lights;
 pub mod mesh;
 pub mod railings;

@@ -760,12 +760,16 @@ its cells (`cells`, 1 x 1 unless the request says; `job.cells`) to the edges, ex
 - a grass prop: `kit.finish(..., category="grass")` (its default for the kind), never blocking
   the way. Tall ground can grow it too (a terrain's Grows here, in the editor), tiled: each whole
   over its cells, lined up with them, one copy to its cells across a whole field;
-- light, then: at most 1,000 vertices a cell (`mr.GRASS_MOST`, the engine's own most: more and
-  it doesn't grow), as the engine counts them in its .glb, where flat faces and seams split
-  vertices. Fewer, simpler blades (a strip of 2 or 3 segments each, a leaf a few quads) rather
-  than many fine ones; nothing nobody sees (no faces under the ground, no inner shells).
+- in pieces: the engine draws a field's copies thinner the further off they are, by leaving
+  out whole pieces (what's joined together: a blade, a leaf, a stalk with its seeds; those it
+  keeps a little wider), so each blade or leaf is a piece of its own, none heavy, never one mesh
+  joined up. At its thinnest (its biggest piece, with any mat under them as wide as its cells,
+  kept at every level) at most 1,000 vertices a cell (`mr.GRASS_THINNEST`), and at most 60,000 a
+  cell in all (`mr.GRASS_MOST`): the engine's own most, as it counts them in its .glb, where flat
+  faces and seams split vertices. Within that, as dense and as fine as the pictures want; nothing
+  nobody sees (no faces under the ground, no inner shells).
 
-`kit.finish` says when a grass model doesn't fill its cells, and refuses one too heavy to grow
+`kit.finish` says when a grass model doesn't fill its cells, and refuses one that can't grow
 (counted in a .glb written to the run's folder first: nothing goes into the project).
 
 ## Environment

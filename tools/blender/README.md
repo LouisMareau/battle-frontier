@@ -137,9 +137,10 @@ from what the last run made (its `model.py`, its lines and renders, what it said
 changes what the user's comments say, keeping the rest; the comments are kept in
 `request.json` (`comments`, then `earlier` once made, which the runs after it are told too).
 A **grass** request (`"kind": "grass"`) fills its cells to the edges (`cells`; `kit.fit_cells`),
-so copies side by side join without a gap, and stays light enough to tile whole fields: at most
-1,000 vertices a cell as the engine counts them (`model_requests.GRASS_MOST`; `kit.finish`
-refuses more, counted in a .glb written to the run's folder first); an **environment** one dresses the outdoors (rocks,
+so copies side by side join without a gap, and comes in pieces (each blade or leaf its own) the
+engine can thin further off: at most 60,000 vertices a cell as made and 1,000 at its thinnest,
+as the engine counts them (`model_requests.GRASS_MOST`, `GRASS_THINNEST`; `kit.finish` refuses
+more, counted in a .glb written to the run's folder first); an **environment** one dresses the outdoors (rocks,
 bushes, flowers, logs, trees). Asked for **variants** (`variants`, `vary`: how they differ), a
 run makes them with the model, each a prop of its own (`kit.variant_preview`,
 `kit.finish_variant`, `kit.drop`; requests.md, "Variants"); once made, any request's **Make

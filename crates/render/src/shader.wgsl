@@ -217,6 +217,11 @@ fn swayed(p: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
 
 @vertex
 fn vs_map(v: MapIn) -> MapOut {
+    return mapped(v);
+}
+
+// a vertex of the map, placed, moved by the wind
+fn mapped(v: MapIn) -> MapOut {
     var o: MapOut;
     let pos = swayed(v.pos + place.offset.xyz, v.wind);
     o.clip = g.view_proj * vec4<f32>(pos, 1.0);
@@ -932,6 +937,11 @@ fn fs_map_shadow(i: MapOut) {
 
 @vertex
 fn vs_map_shadow(v: MapIn) -> MapOut {
+    return shadowed(v);
+}
+
+// a vertex of the map as the sun sees it
+fn shadowed(v: MapIn) -> MapOut {
     var o: MapOut;
     let pos = swayed(v.pos + place.offset.xyz, v.wind);
     o.clip = g.light_view_proj * vec4<f32>(pos, 1.0);
@@ -942,6 +952,43 @@ fn vs_map_shadow(v: MapIn) -> MapOut {
     o.color = v.color;
     o.toon = v.toon;
     return o;
+}
+
+// ---------------------------------------------------------------- grass copies
+
+// a copy of a grass model (`grass.rs`), one to an instance: where its foot stands (the
+// scene's space: drawn with the scene's own placement), its turn (radians about y, as
+// `Mat4::from_rotation_y` turns), its size, and how dimmed its map is (0: not at all)
+struct CopyIn {
+    @location(6) at: vec3<f32>,
+    @location(7) turn: f32,
+    @location(8) scale: f32,
+    @location(9) dim: f32,
+};
+
+// a vertex of the model as the copy has it: turned, sized and put down, its height above
+// its foot as big as the copy (the wind bends a bigger one further), its colour dimmed with
+// its map
+fn copied(v: MapIn, c: CopyIn) -> MapIn {
+    let s = sin(c.turn);
+    let k = cos(c.turn);
+    let p = v.pos * c.scale;
+    var o = v;
+    o.pos = c.at + vec3<f32>(k * p.x + s * p.z, p.y, k * p.z - s * p.x);
+    o.normal = vec3<f32>(k * v.normal.x + s * v.normal.z, v.normal.y, k * v.normal.z - s * v.normal.x);
+    o.wind = vec4<f32>(v.wind.xyz, min(v.wind.w * c.scale, 1.0));
+    o.color = vec4<f32>(v.color.rgb * (1.0 - c.dim), v.color.a);
+    return o;
+}
+
+@vertex
+fn vs_grass(v: MapIn, c: CopyIn) -> MapOut {
+    return mapped(copied(v, c));
+}
+
+@vertex
+fn vs_grass_shadow(v: MapIn, c: CopyIn) -> MapOut {
+    return shadowed(copied(v, c));
 }
 
 // ---------------------------------------------------------------- skinned models

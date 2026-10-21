@@ -258,6 +258,7 @@ impl MapEditor {
                     content: &self.content,
                     models: &self.models,
                     model_versions: &self.model_versions,
+                    grass: &self.grass_levels,
                     level_height: self.level_height,
                     beyond: &next,
                     target: t - offset,

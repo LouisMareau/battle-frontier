@@ -1706,25 +1706,35 @@ def _fills(job, objects):
 
 
 def _weighed(job, pid, objects, facts):
-    """Grass too heavy to grow (more than mr.GRASS_MOST vertices a cell, as the engine counts
-    them in its .glb) refused before anything goes into the project: written to the run's own
-    folder first and counted there, then thrown away."""
+    """Grass that can't grow refused before anything goes into the project (written to the run's
+    own folder first and counted there, as the engine counts it, then thrown away): heavier
+    than mr.GRASS_MOST vertices a cell as made, or than mr.GRASS_THINNEST at its thinnest (the
+    engine draws it thinner further off by leaving out whole pieces: its biggest piece and any
+    mat under them as wide as its cells, kept at every level)."""
     if not job.grass:
         return
     w, d = job.cells
     cells = f"{w} x {d} cell{'' if w * d == 1 else 's'}"
-    most = mr.GRASS_MOST * w * d
+    most, thinnest = mr.GRASS_MOST * w * d, mr.GRASS_THINNEST * w * d
     trial = job.dir / "weighed"
     try:
         glb, _, _, _ = bf.write_prop(bpy.context, str(trial), "temporary", pid, [o for o in objects if not bf.is_bounds(o)], facts)
         n = mr.glb_vertices(glb)
+        pieces = mr.glb_pieces(glb, (w, d))
     finally:
         shutil.rmtree(trial, ignore_errors=True)
+    mats = sum(v for v, mat in pieces if mat)
+    least = mats + max((v for v, mat in pieces if not mat), default=0)
     if n > most:
         raise ValueError(f"too heavy to grow: {n} vertices for its {cells}, at most {most} ({mr.GRASS_MOST} a cell, as the engine counts "
-                         "them in its .glb: flat faces and seams split vertices). Grass is tiled over whole fields: fewer blades or "
-                         "leaves, fewer segments each (a blade a strip of 2 or 3), nothing nobody sees; then finish again")
-    print(f"Light enough to grow: {n} vertices for its {cells} (at most {most})", flush=True)
+                         "them in its .glb: flat faces and seams split vertices): fewer or simpler blades or leaves; then finish again")
+    if least > thinnest:
+        raise ValueError(f"too heavy to grow at its thinnest: {least} vertices for its {cells} (its biggest piece, {least - mats}, with "
+                         f"{mats} of mats under it), at most {thinnest} ({mr.GRASS_THINNEST} a cell). The engine draws grass thinner further "
+                         "off by leaving out whole pieces (what's joined together): each blade or leaf a piece of its own, none heavy, "
+                         "not one mesh joined up; then finish again")
+    print(f"Light enough to grow: {n} vertices in {len(pieces)} pieces for its {cells} (at most {most}); at its thinnest about {least} "
+          f"(at most {thinnest})", flush=True)
 
 
 def finish_variant(job, k, objects, category=None, blocks=None, unstackable=False):

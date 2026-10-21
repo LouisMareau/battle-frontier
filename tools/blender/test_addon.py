@@ -562,27 +562,43 @@ check("  the model a grass prop out of the way, filling its 2 x 1 cells; its var
       and not variant_record.get("blocks", False) and variant_record.get("footprint") == [2, 1], json.dumps([tuft_record, variant_record]))
 check("  the request done, its variant listed, its render with the model's", done["status"] == "done" and done["prop"] == "test_tuft" and done["variant_props"] == ["test_tuft_variant_2"]
       and done["previews"] == files, json.dumps({k: done[k] for k in ("status", "prop", "variant_props", "previews")}))
-check("  light enough to grow: its .glb's vertices within its cells' most", 0 < mr.glb_vertices(scratch / "temporary" / "assets" / "models" / "test_tuft.glb") <= 2 * mr.GRASS_MOST)
+tuft_glb = scratch / "temporary" / "assets" / "models" / "test_tuft.glb"
+tuft_pieces = mr.glb_pieces(tuft_glb, (2, 1))
+check("  in pieces the engine can thin (its three blades' capsules), none heavy", 0 < mr.glb_vertices(tuft_glb) <= 2 * mr.GRASS_MOST and len(tuft_pieces) >= 3
+      and max(v for v, _ in tuft_pieces) <= 2 * mr.GRASS_THINNEST and not any(mat for _, mat in tuft_pieces), str(tuft_pieces))
 clear()
 
-# grass too heavy to grow over a field (more than mr.GRASS_MOST vertices a cell, as the engine
-# counts them): refused, nothing written to the project, the request not done
-mr.new(scratch, "Heavy sod", [scratch / "critter.png"], kind="grass", height=0.3)
-job = kit.start(scratch / "private" / "requests" / "heavy_sod" / "model.py")
+# grass that can't grow over a field: in one piece too heavy to thin (a standing sheet of 1,681
+# vertices, its blades as if joined into one mesh), refused, nothing written to the project, the
+# request not done; blades apart, a hundred of them, made
+mr.new(scratch, "Joined sod", [scratch / "critter.png"], kind="grass", height=0.3)
+job = kit.start(scratch / "private" / "requests" / "joined_sod" / "model.py")
 job.finishing = True
 Matrix = __import__("mathutils").Matrix
-dense = solid("dense sod", lambda bm: [bmesh.ops.create_cone(bm, cap_ends=True, segments=32, radius1=0.04, radius2=0.0, depth=0.3,
-                                                             matrix=Matrix.Translation((-0.45 + 0.1 * (i % 10), -0.45 + 0.3 * (i // 10), 0.15))) for i in range(40)],
-              colour=(0.3, 0.6, 0.3, 1))
-kit.fit_cells([dense], job.cells, job.height)
+
+
+def cones(bm, n):
+    for i in range(n):
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=32, radius1=0.04, radius2=0.0, depth=0.3,
+                              matrix=Matrix.Translation((-0.45 + 0.1 * (i % 10), -0.45 + 0.1 * (i // 10 % 10), 0.15)))
+
+
+joined = solid("joined sod", lambda bm: bmesh.ops.create_grid(bm, x_segments=40, y_segments=40, size=0.1, matrix=Matrix.Translation((0.0, 0.0, 0.15)) @ Matrix.Rotation(1.5708, 4, "X")),
+               colour=(0.3, 0.6, 0.3, 1))
 try:
-    kit.finish(job, [dense], [])
+    kit.finish(job, [joined], [])
     refused = ""
 except ValueError as e:
     refused = str(e)
-check("grass too heavy to grow refused, with its count; nothing written, not done", "too heavy to grow" in refused and "at most 1000" in refused
-      and not (scratch / "temporary" / "data" / "props" / "heavy_sod.json").exists() and not (scratch / "temporary" / "assets" / "models" / "heavy_sod.glb").exists()
-      and not (job.dir / "weighed").exists() and mr.load(scratch, "heavy_sod")["status"] != "done", refused)
+check("grass that can't be thinned refused, with its count; nothing written, not done", "too heavy to grow at its thinnest" in refused and "at most 1000" in refused
+      and not (scratch / "temporary" / "data" / "props" / "joined_sod.json").exists() and not (scratch / "temporary" / "assets" / "models" / "joined_sod.glb").exists()
+      and not (job.dir / "weighed").exists() and mr.load(scratch, "joined_sod")["status"] != "done", refused)
+clear()
+apart = solid("sod apart", lambda bm: cones(bm, 100), colour=(0.3, 0.6, 0.3, 1))
+kit.fit_cells([apart], job.cells, job.height)
+kit.finish(job, [apart], [])
+check("  the same blades apart, a hundred of them, made", mr.load(scratch, "joined_sod")["status"] == "done"
+      and len(mr.glb_pieces(scratch / "temporary" / "assets" / "models" / "joined_sod.glb")) == 100)
 clear()
 
 # 5e. a model painted for the wind: painted from its height (a stem and its leaves, each its

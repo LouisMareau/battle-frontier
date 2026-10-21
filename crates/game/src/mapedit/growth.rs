@@ -4,13 +4,17 @@
 //! cell, their sizes, patches; turned their own ways), and the asset browser's "Grows in" for
 //! a grass prop (the tall terrains it grows through). Both change the terrain's record, saved
 //! with the rest (Ctrl+S, or by itself); the map's squares show it as it changes (`stream`).
-//! A prop too heavy to grow (`world::mesh::GROWN_MOST` vertices a cell) is said so, and the
-//! engine's blades grow in its place. Grass props are still placed one by one as any prop.
+//! The renderer draws a grass prop's copies thinner the further off they are (its model in
+//! levels, `world::grass`): one too heavy to grow even at its thinnest
+//! (`world::mesh::GROWN_MOST` vertices a cell), or as made (`GROWN_HEAVIEST`), is said so, and
+//! the engine's blades grow in its place. Grass props are still placed one by one as any prop.
 
 use std::sync::Arc;
 
 use content::{Growth, Grower, Terrain};
-use world::mesh::{grown_cost, prop_vertices, GROWN_MOST};
+use world::mesh::{grown_cost, GROWN_HEAVIEST, GROWN_MOST};
+
+use super::stream::{grass_version, grass_weight};
 
 use super::{hint, mark, section, warn, MapEditor};
 
@@ -47,10 +51,23 @@ impl MapEditor {
         self.terrains_dirty.insert(id.to_string());
     }
 
-    /// What a grass prop costs each cell it grows through as `g` grows it, in vertices (its
-    /// real model's once loaded, else its stand-in's).
+    /// What a grass prop costs each cell it grows through as `g` grows it, in vertices, at its
+    /// thinnest (what says whether it grows: more than anything when it's too heavy as made);
+    /// its real model's once loaded, else its stand-in's.
     fn grown_cost(&self, g: &Growth, id: &str) -> usize {
-        self.content.props.get(id).map(|p| grown_cost(g, p, prop_vertices(p, &self.models))).unwrap_or(0)
+        self.content.props.get(id).map(|p| grown_cost(g, p, grass_weight(&self.grass_levels, p, &self.models, &self.model_versions))).unwrap_or(0)
+    }
+
+    /// The same as made: up close.
+    fn near_cost(&self, g: &Growth, id: &str) -> usize {
+        self.content
+            .props
+            .get(id)
+            .map(|p| {
+                let levels = self.grass_levels.borrow_mut().levels(p, &self.models, grass_version(p, &self.model_versions));
+                grown_cost(g, p, levels.vertices.first().copied().unwrap_or(0))
+            })
+            .unwrap_or(0)
     }
 
     /// Whether a prop's model fills its footprint's cells, as grass made to tile them is (a
@@ -120,23 +137,34 @@ impl MapEditor {
             }
             let turn = ui.checkbox(&mut g.turn, "Each turned its own way").on_hover_text(if g.tiled { "By quarter turns (half turns when it's longer than wide), so it still lies over its cells" } else { "Any way round" });
             mark("uiGrowthTurn", &turn);
-            // what it costs, the vertices a cell: the props light enough to grow, as picked
+            // what it costs, the vertices a cell: up close (as made) and far off (at its
+            // thinnest), the props light enough to grow, as picked
             let costs: Vec<(&Grower, usize)> = g.props.iter().map(|p| (p, self.grown_cost(&g, &p.prop))).collect();
             let light: Vec<&(&Grower, usize)> = costs.iter().filter(|(_, c)| *c <= GROWN_MOST).collect();
             let total: f64 = light.iter().map(|(p, _)| p.weight.max(0.0)).sum();
-            let each: f64 = light.iter().map(|(p, c)| p.weight.max(0.0) / total.max(1e-9) * *c as f64).sum();
+            let share = |p: &Grower| p.weight.max(0.0) / total.max(1e-9);
+            let far: f64 = light.iter().map(|(p, c)| share(p) * *c as f64).sum();
+            let near: f64 = light.iter().map(|(p, _)| share(p) * self.near_cost(&g, &p.prop) as f64).sum();
             if !light.is_empty() {
-                hint(ui, &format!("About {} vertices a cell", each.round() as u64));
+                hint(ui, &format!("About {} vertices a cell up close, {} far off (drawn thinner the further off)", grouped(near.round() as usize), grouped(far.round() as usize)));
             }
             // too heavy to grow: said, with what they weigh (the blades grow in their place)
             let heavy: Vec<String> = costs
                 .iter()
                 .filter(|(_, c)| *c > GROWN_MOST)
-                .map(|(p, c)| format!("{} ({} a cell)", self.content.props.get(&p.prop).map(|q| q.name.as_str()).unwrap_or(&p.prop), grouped(*c)))
+                .map(|(p, c)| {
+                    let name = self.content.props.get(&p.prop).map(|q| q.name.as_str()).unwrap_or(&p.prop);
+                    if *c == usize::MAX { format!("{name} (more than {} a cell as made)", grouped(GROWN_HEAVIEST)) } else { format!("{name} ({} a cell at its thinnest)", grouped(*c)) }
+                })
                 .collect();
             if !heavy.is_empty() {
                 let instead = if light.is_empty() { "the engine's blades grow instead" } else { "the others grow without them" };
-                warn(ui, &format!("Too heavy to grow, at most {} vertices a cell: {}; {instead}. Make them again lighter (Model Requests: grass is made within it now).", grouped(GROWN_MOST), heavy.join(", ")));
+                warn(ui, &format!(
+                    "Too heavy to grow: {}; {instead}. Grass is drawn thinner further off by leaving out whole pieces (a blade, a leaf): at its thinnest at most {} vertices a cell, at most {} as made. Make it again in pieces (Model Requests).",
+                    heavy.join(", "),
+                    grouped(GROWN_MOST),
+                    grouped(GROWN_HEAVIEST)
+                ));
             }
             crate::platform::set_hook("growthheavy", &heavy.len().to_string());
         }
@@ -175,7 +203,8 @@ impl MapEditor {
             }
             let cost = self.grown_cost(&g, prop);
             if g.props.iter().any(|p| p.prop == prop) && cost > GROWN_MOST {
-                warn(ui, &format!("Too heavy to grow through {}: {} vertices a cell, at most {}", t.name, grouped(cost), grouped(GROWN_MOST)));
+                let weight = if cost == usize::MAX { format!("more than {} vertices a cell as made", grouped(GROWN_HEAVIEST)) } else { format!("{} vertices a cell at its thinnest, at most {}", grouped(cost), grouped(GROWN_MOST)) };
+                warn(ui, &format!("Too heavy to grow through {}: {weight}", t.name));
             }
             if g != t.growth {
                 changes.push((t.id.clone(), g));
@@ -278,11 +307,14 @@ mod tests {
         grows_here(ctx, ed, vec![button(false)]);
     }
 
-    /// The tuft's model as a grass request makes it: filling its cell, and `vertices` of them.
+    /// The tuft's model as a grass request makes it: filling its cell, and `vertices` of them
+    /// in one piece (a strip across it: nothing to thin).
     fn made_to_fill(ed: &mut MapEditor, vertices: usize) {
         let mut m = world::gltf_in::Model { min: glam::Vec3::new(-0.5, 0.0, -0.5), max: glam::Vec3::new(0.5, 0.4, 0.5), ..Default::default() };
-        m.scene.plain.vertices = vec![world::mesh::Vertex::default(); vertices];
+        m.scene.plain.vertices = (0..vertices).map(|k| world::mesh::Vertex { pos: [k as f32 / vertices as f32 - 0.5, (k % 2) as f32 * 0.4, 0.0], ..Default::default() }).collect();
+        m.scene.plain.indices = (0..vertices as u32 - 2).flat_map(|k| [k, k + 1, k + 2]).collect();
         ed.models.insert("tuft".into(), m);
+        *ed.model_versions.entry("tuft".into()).or_default() += 1;
     }
 
     /// Ticked first, a grass prop made to fill its cells tiles them (one that isn't, scattered);

@@ -15,8 +15,9 @@ use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 
-use content::{Building, Content, Placed, CHUNK};
+use content::{Building, Content, Placed, Prop, CHUNK};
 use glam::{Mat4, Vec3};
+use render::grass::{GrassCopy, GrassModel};
 use render::scene::{Place, SceneRenderer, WorldGround, CLIFFS, WHITE};
 use world::buildings::{building, Cut, Sides};
 use world::mesh::{self, placement, prop_scene, Beyond, Models, Scene};
@@ -184,6 +185,8 @@ pub(super) struct Feed<'a> {
     pub models: &'a Models,
     /// the models' generations (`MapEditor::model_versions`)
     pub model_versions: &'a HashMap<String, u64>,
+    /// the grass props' models in levels (`MapEditor::grass_levels`)
+    pub grass: &'a RefCell<world::grass::Cache>,
     pub level_height: f32,
     /// the maps next to it
     pub beyond: &'a dyn Beyond,
@@ -244,6 +247,26 @@ fn record_digests<'a>(content: &'a Content, versions: &HashMap<String, u64>) -> 
             (p.id.as_str(), h.finish())
         })
         .collect()
+}
+
+/// What a grass prop's model in levels is made from: its record, its model's generation.
+pub(super) fn grass_version(prop: &Prop, versions: &HashMap<String, u64>) -> u64 {
+    let mut h = Quick::default();
+    format!("{prop:?}").hash(&mut h);
+    versions.get(&prop.id).hash(&mut h);
+    h.finish()
+}
+
+/// A grass prop's weight for growing (`mesh::GROWN_MOST`): its vertices at its thinnest, or
+/// more than anything when its model is heavier than `mesh::GROWN_HEAVIEST` a cell as made.
+pub(super) fn grass_weight(cache: &RefCell<world::grass::Cache>, prop: &Prop, models: &Models, versions: &HashMap<String, u64>) -> usize {
+    let levels = cache.borrow_mut().levels(prop, models, grass_version(prop, versions));
+    let cells = prop.footprint[0].max(1) as usize * prop.footprint[1].max(1) as usize;
+    match levels.vertices.first() {
+        Some(&made) if made <= mesh::GROWN_HEAVIEST * cells => levels.thinnest(),
+        Some(_) => usize::MAX,
+        None => 0,
+    }
 }
 
 /// What the grass props grown through tall ground are made from: each tall terrain's growth,
@@ -546,13 +569,28 @@ impl Feed<'_> {
         let (reg, lh, id) = (region(s), self.level_height, self.id);
         match layer {
             "ground" => {
-                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond, &|p| mesh::prop_vertices(p, self.models));
+                let weigh = |p: &Prop| grass_weight(self.grass, p, self.models, self.model_versions);
+                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond, &weigh);
                 r.set_chunk(device, id, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
                 r.set_chunk(device, id, CLIFFS, s, &[(WHITE.to_string(), gpu(&cliffs.vertices), cliffs.indices)]);
-                // the engine's blades, and the grass props grown through tall ground
-                let mut grass = Scene::from(grass);
-                grass.append(&mesh::grown(&tufts, self.content, self.models), Mat4::IDENTITY);
-                r.set_chunk(device, id, "grass", s, &models::batches(&grass));
+                // the engine's blades; the grass props grown through tall ground as copies of
+                // their models, each model sent in levels when it's new or changed
+                r.set_chunk(device, id, "grass", s, &models::batches(&Scene::from(grass)));
+                let mut copies: BTreeMap<String, Vec<GrassCopy>> = BTreeMap::new();
+                for t in &tufts {
+                    copies.entry(t.prop.clone()).or_default().push(GrassCopy { at: t.at.to_array(), turn: -t.turn.to_radians(), scale: t.scale, ..Default::default() });
+                }
+                for key in copies.keys() {
+                    let Some(prop) = self.content.props.get(key) else { continue };
+                    let version = grass_version(prop, self.model_versions);
+                    if r.grass_model_version(key) != Some(version) {
+                        let levels = self.grass.borrow_mut().levels(prop, self.models, version);
+                        let batches: Vec<_> = levels.scenes.iter().map(models::batches).collect();
+                        let cells = prop.footprint[0].max(1) as f32 * prop.footprint[1].max(1) as f32;
+                        r.set_grass_model(device, key, version, &GrassModel { levels: &batches, cells, lo: levels.lo, hi: levels.hi });
+                    }
+                }
+                r.set_grass(id, s, copies.into_iter().collect());
             }
             "props" => {
                 let mut scene = mesh::props_region(self.map, self.content, lh, self.models, reg);
@@ -741,6 +779,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         for layer in [CLIFFS, "grass", "props", "trees", "buildings"] {
             r.set_chunk(&rs.device, f.id, layer, s, &[]);
         }
+        r.set_grass(f.id, s, vec![]);
         for layer in LAYERS {
             if let Some(b) = f.gpu.built.get_mut(layer) {
                 b.remove(&s);
@@ -831,6 +870,7 @@ impl MapEditor {
             content: &self.content,
             models: &self.models,
             model_versions: &self.model_versions,
+            grass: &self.grass_levels,
             level_height: self.level_height,
             beyond: &next,
             target: self.cam.target,
