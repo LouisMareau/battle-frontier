@@ -4,7 +4,9 @@
 //! again (a record the site has just the same is dropped: the game has it now); Publish sends
 //! them as a pull request; the editor's "Saved in this browser" lists them, downloads them as
 //! one zip, or forgets them. With `?saves=downloads` in the address (the checks that read
-//! downloads), or a browser that keeps nothing, saving downloads each file instead.
+//! downloads), or a browser that keeps nothing, saving downloads each file instead. The model
+//! requests' folders are kept here too (private/requests/: their window reads and writes
+//! them as the desktop's does the project's), never laid over the game nor published.
 
 // what's here is the browser's (the desktop saves into the project's folders); the tests use
 // the parts that aren't
@@ -67,6 +69,8 @@ pub fn lay_over(content: &mut Content, files: &crate::platform::Files, kept: &BT
                     same.push(path.clone());
                 }
             }
+            // (the model requests' own files aren't the game's: their window reads them here)
+            (None, Kept::File(_)) if path.starts_with("private/") => {}
             (None, Kept::File(bytes)) => files.insert(path, bytes.to_vec()),
             (None, Kept::Removed) => {}
         }
@@ -122,7 +126,7 @@ pub fn zip(kept: &BTreeMap<String, Kept>) -> Vec<u8> {
 }
 
 #[cfg(target_arch = "wasm32")]
-pub use store::{files, forget, forget_all, keep, keep_removed, keeping, note, start, take_trouble};
+pub use store::{files, forget, forget_all, get, keep, keep_removed, keeping, note, start, take_trouble, under};
 
 /// The browser's IndexedDB: the database "battle-frontier", its store "files", each value
 /// [path, bytes] (null bytes: removed) under its path; and what's in it, held here too.
@@ -271,6 +275,22 @@ mod store {
     /// What's kept (and, when saving downloads, what was saved since the page opened).
     pub fn files() -> BTreeMap<String, Kept> {
         STATE.with(|s| s.borrow().files.clone())
+    }
+
+    /// A file kept here: its bytes (None: not kept, or removed).
+    pub fn get(path: &str) -> Option<Arc<Vec<u8>>> {
+        STATE.with(|s| match s.borrow().files.get(path) {
+            Some(Kept::File(b)) => Some(b.clone()),
+            _ => None,
+        })
+    }
+
+    /// The files kept under `prefix` (a folder's, its path and a slash), in order.
+    pub fn under(prefix: &str) -> Vec<String> {
+        STATE.with(|s| {
+            let s = s.borrow();
+            s.files.range(prefix.to_string()..).take_while(|(p, _)| p.starts_with(prefix)).filter(|(_, k)| matches!(k, Kept::File(_))).map(|(p, _)| p.clone()).collect()
+        })
     }
 
     /// What went wrong writing since it was last asked.

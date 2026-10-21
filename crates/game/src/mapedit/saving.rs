@@ -167,7 +167,7 @@ impl MapEditor {
             ui.label(RichText::new("Saved in this browser").size(20.0).color(crate::hud::TEXT));
             ui.add_space(4.0);
             match &keeping {
-                Keeping::Ready => super::hint(ui, "What you save is kept here, each file at its place in the project: laid over the site's content whenever the editor opens, until the game has the same (then it's dropped) or you forget it. Publish sends it as a pull request."),
+                Keeping::Ready => super::hint(ui, "What you save is kept here, each file at its place in the project: laid over the site's content whenever the editor opens, until the game has the same (then it's dropped) or you forget it. Publish sends the game's own (content/) as a pull request; the model requests' folders (private/) and the placeholders' (temporary/) stay here."),
                 Keeping::Loading => super::hint(ui, "Reading what's kept…"),
                 Keeping::No(why) => super::warn(ui, &format!("Nothing's kept here ({why}): saving downloads each file.")),
             }

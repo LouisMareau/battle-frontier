@@ -211,8 +211,10 @@ pub(super) fn masked(key: &str) -> String {
 pub(super) struct Claude {
     pub signed: Signed,
     pub open: bool,
-    /// what to say, once
+    /// what to say on the status line, once
     pub said: Option<String>,
+    /// what the window says of the last thing done (a sign-in opened, a key turned away)
+    note: Option<String>,
     /// an ask on its way: its answer, when it's come
     #[cfg(not(target_arch = "wasm32"))]
     asked: Option<std::sync::Arc<std::sync::Mutex<Option<Signed>>>>,
@@ -247,6 +249,7 @@ impl Default for Claude {
             signed,
             open: false,
             said: None,
+            note: None,
             #[cfg(not(target_arch = "wasm32"))]
             asked: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -262,6 +265,12 @@ impl Default for Claude {
 }
 
 impl Claude {
+    /// Said on the status line, and in the window until the next thing.
+    fn tell(&mut self, text: String) {
+        self.note = Some(text.clone());
+        self.said = Some(text);
+    }
+
     /// Each frame: an answer taken in; on the desktop, Claude Code asked again when it's time
     /// (every few seconds while a sign-in is underway).
     pub fn poll(&mut self, ctx: &egui::Context, now: f64) {
@@ -271,7 +280,7 @@ impl Claude {
             if let Some(signed) = answer {
                 self.asked = None;
                 if signed.is_in() && self.signing_until > 0.0 {
-                    self.said = Some(signed.about());
+                    self.tell(signed.about());
                     self.signing_until = 0.0;
                 }
                 self.signed = signed;
@@ -300,12 +309,12 @@ impl Claude {
                     Ok(()) => match crate::platform::store_text(KEY_NAME, &typed) {
                         Ok(()) => {
                             self.signed = Signed::Api(format!("your API key ({}, kept in this browser)", masked(&typed)));
-                            self.said = Some(self.signed.about());
+                            self.tell(self.signed.about());
                             self.typed.clear();
                         }
-                        Err(e) => self.said = Some(format!("The key isn't kept: this browser keeps nothing ({e})")),
+                        Err(e) => self.tell(format!("The key isn't kept: this browser keeps nothing ({e})")),
                     },
-                    Err(e) => self.said = Some(e),
+                    Err(e) => self.tell(e),
                 }
             }
             crate::platform::set_hook("claude", if self.signed.is_in() { "in" } else { "out" });
@@ -345,7 +354,7 @@ impl Claude {
             }
             ui.add_space(6.0);
             self.ways(ui, now);
-            if let Some(said) = &self.said {
+            if let Some(said) = &self.note {
                 ui.add_space(4.0);
                 hint(ui, said);
             }
@@ -378,7 +387,7 @@ impl Claude {
             }
         }
         if let Some(console) = go {
-            self.said = Some(sign_in(console));
+            self.tell(sign_in(console));
             (self.signing_until, self.next_ask) = (now + SIGNING_MS, now + SIGNING_EVERY_MS);
         }
         let again = ui.button("Ask again").on_hover_text("Asks Claude Code whether it's signed in now");
@@ -414,7 +423,7 @@ impl Claude {
             if forget.clicked() {
                 crate::platform::forget_text(KEY_NAME);
                 self.signed = Signed::Out("No Claude API key in this browser".into());
-                self.said = Some("The key's forgotten here".into());
+                self.tell("The key's forgotten here".into());
             }
         } else {
             let checking = self.checking.is_some();
@@ -439,7 +448,7 @@ impl Claude {
         let typed = self.typed.trim().to_string();
         let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
         self.checking = Some((typed.clone(), slot.clone()));
-        self.said = None;
+        self.note = None;
         let ctx = ctx.clone();
         let mut req = ehttp::Request::get(format!("{RELAY}/v1/models?limit=1"));
         req.headers.insert("x-api-key", &typed);

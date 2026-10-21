@@ -3,8 +3,8 @@
 
     python tools/blender/run_request.py ID [--finish]
 
-Blender is BLENDER (the program's path), else the newest under Program Files, else `blender`
-on the PATH. Its output is passed on without the render's frame-by-frame lines; the exit code
+Blender is BLENDER (the program's path), else in the cloud the sandbox's (cloud_run.py's),
+else the newest under Program Files, else `blender` on the PATH. Its output is passed on without the render's frame-by-frame lines; the exit code
 is Blender's (1 when model.py fails). After a render, with lines.json, the lines are laid on
 the model (request_lines.py: fit_front.png, fit_side.png, match_<picture>.png, a row more in
 compare.png), with how far its outlines and the model overlap.
@@ -22,10 +22,13 @@ import model_requests as mr  # noqa: E402
 NOISE = ("Fra:", "Saved:", " Time:", "TBBmalloc")
 
 
-def find_blender():
+def find_blender(root=None):
     env = os.environ.get("BLENDER")
     if env and Path(env).is_file():
         return env
+    sandbox = mr.cloud(root) if root else None
+    if sandbox and Path(sandbox.get("blender", "")).is_file():
+        return sandbox["blender"]
     found = sorted(Path("C:/Program Files/Blender Foundation").glob("Blender */blender.exe")) if os.name == "nt" else []
     if found:
         return str(found[-1])
@@ -44,7 +47,7 @@ def main(argv):
     if not script.is_file():
         print(f"{script} isn't there yet: write it first (requests.md, step 6)")
         return 2
-    blender = find_blender()
+    blender = find_blender(root)
     if not blender:
         print("Blender not found: set BLENDER to blender.exe")
         return 2

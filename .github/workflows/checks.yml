@@ -52,6 +52,8 @@ jobs:
         run: cargo clippy --workspace -- -D warnings
       - name: Content check
         run: cargo run -p engine-content --bin content -- check
+      - name: The site's relay to Anthropic (the model requests' calls, on the user's own key)
+        run: node tools/relaycheck.mjs
       - name: The site, as Cloudflare Pages builds it
         run: bash tools/cloudflare-build.sh
       - name: Nothing from temporary/ in the site

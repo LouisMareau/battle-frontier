@@ -4,6 +4,8 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
     python tools/blender/run_claude.py ID --again [--note "what to change"]
     python tools/blender/run_claude.py ID --variants
+    python3 tools/blender/run_claude.py ID --prompt [--go-on] [--again] [--variants] [--note-file PATH]
+    python3 tools/blender/run_claude.py ID --settle [the same] [--reply "what was made"]
 
 A request whose pictures hold several drawings of the same kind of asset ("several", the
 editor's "Process multiple": trees, bushes, rocks...) is split by its first run: Claude finds
@@ -47,12 +49,19 @@ settings ask for variants ("variants": how many besides it,
 its own. Any request made can have variants made from its model later (the editor's "Make
 variants"): --variants has Claude start from what the last run made, keep the model itself, and
 add the variants the request asks for, its style, notes and the rest as they are.
+
+In the cloud (the web editor's runs, in a sandbox of Anthropic's on the user's own API key:
+cloud_run.py), it's Claude there that follows the prompt, not Claude Code here: --prompt starts
+the run as Start does (its checks, in progress from now, its log) and writes the prompt for it
+to read (its checks with no cargo there), and --settle ends it as a run here ends, by what's on
+disk (`--reply`: its one line on what it made).
 """
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -711,6 +720,97 @@ def stop_tree(proc):
             proc.kill()
 
 
+def unrunnable(root, rid, record, part, go_on, note, again, variants, say):
+    """What keeps a run from starting (the request's status then), or None: nothing to go on
+    from, to make again from, to change or to vary yet, or split already."""
+    here = mr.folder(root, rid)
+    if go_on and not (here / "lines.json").is_file():
+        return mr.fail(root, rid, "nothing to go on from: no lines.json yet (Start draws the lines first)")["status"]
+    if again and not (here / "model.py").is_file():
+        return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
+    if again and not note:
+        return mr.fail(root, rid, "nothing to change: say what in the comments first")["status"]
+    if variants and not ((here / "model.py").is_file() and record["prop"]):
+        # (made or not, the request stays as it is)
+        say("Nothing to make variants of: no model made yet (Start makes it first)")
+        return record["status"]
+    if variants and record["variants"] < 1:
+        say("No variants asked for: say how many in Variants first")
+        return record["status"]
+    if part == "split" and record["children"]:
+        say(f"Split already, into {len(record['children'])} requests: nothing to run (the editor's Make them all makes them)")
+        return record["status"]
+    return None
+
+
+def announce(record, part, note, say):
+    """What the run is, in its log: its part of the recipe, what the user said, their bones."""
+    if part == "lines":
+        say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
+    elif part == "model":
+        say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
+    elif part == "again":
+        say(f"This run makes it again from the last run's model, with the user's comments: {note}")
+    elif part == "variants":
+        how = record["vary"].strip()
+        say(f"This run makes {record['variants']} variant{'' if record['variants'] == 1 else 's'} of it from its model, the model itself kept: "
+            + (how if how else "as Claude sees fit"))
+    elif part == "split" and mr.outlined(record):
+        say(f"This run splits the request: the {len(mr.outlined(record))} drawings the user outlined, each a request of its own (\"Process multiple\"); the rest left out")
+    elif part == "split":
+        say("This run splits the request: each drawing on its pictures made a request of its own (\"Process multiple\")")
+    if part not in ("model", "again") and note.strip():
+        say(f"What the user says is off in the lines there: {note.strip()}")
+    drawn = rl.user_bones(record)
+    if drawn:
+        say(f"The user has drawn the creature's bones over {bones_drawn(drawn)}: Claude reads the pictures by them")
+
+
+def conclude(root, rid, part, began, again, note, result, returncode, error, claude, say):
+    """A run's end, by what's on disk and what Claude said last (`result`: its result event, or
+    {}; `error`: an error its messages had): done (split: its requests to make), waiting for the
+    user's check of its lines, or failed and why. The request's status."""
+    here = mr.folder(root, rid)
+    record = mr.load(root, rid)
+    last = str(result.get("result") or "").strip()
+    if part == "split" and record["children"] and returncode == 0 and not result.get("is_error"):
+        # split: done, its requests to make
+        p = dict(record["progress"])
+        took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
+        p.update(step=f"split into {len(record['children'])} requests", done=1.0, minutes=float(round(took, 1)))
+        mr.update(root, rid, status="done", progress=p, **({"reply": last} if last else {}))
+        say(f"Split into {len(record['children'])} requests: {', '.join(record['children'])}")
+        return "done"
+    if record["status"] == "done":
+        say(f"Done: the prop {record['prop']}" + (f", and its variants {', '.join(record['variant_props'])}" if record["variant_props"] else ""))
+        if again:
+            # the comments made: told to the runs made again after this one; the field emptied
+            # unless the user has written others meanwhile
+            fields = {"earlier": record["earlier"] + [note]}
+            if record["comments"].strip() in ("", note):
+                fields["comments"] = ""
+            mr.update(root, rid, **fields)
+        return "done"
+    if last:
+        # what it says back (for a check, what it guessed in the lines): the window shows it
+        mr.update(root, rid, reply=last)
+    if error == "authentication_failed" or "Not logged in" in last:
+        # the program by its path: it's often not on the PATH (the editor's "Log in" opens it)
+        reason = f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again'
+    elif returncode != 0 or result.get("is_error"):
+        reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {returncode})"
+    elif part == "lines" and drawn_since(here / "profiles.png", began):
+        # where it was asked to stop: the user's turn
+        return mr.wait_for_check(root, rid)["status"]
+    elif part == "lines":
+        reason = "Claude ended without drawing the front and the side (profiles.png)"
+    elif part == "split":
+        reason = "Claude ended without splitting it (no request made of a drawing)"
+    else:
+        reason = "Claude ended without adding the model"
+    return mr.fail(root, rid, reason)["status"]
+
+
 def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
     the lines the user checked, `note` saying what's off in them. `again`: the model the last
@@ -730,22 +830,9 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         mr.log(root, rid, text)
 
     say("———————— a run starts ————————")
-    if go_on and not (here / "lines.json").is_file():
-        return mr.fail(root, rid, "nothing to go on from: no lines.json yet (Start draws the lines first)")["status"]
-    if again and not (here / "model.py").is_file():
-        return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
-    if again and not note:
-        return mr.fail(root, rid, "nothing to change: say what in the comments first")["status"]
-    if variants and not ((here / "model.py").is_file() and record["prop"]):
-        # (made or not, the request stays as it is)
-        say("Nothing to make variants of: no model made yet (Start makes it first)")
-        return record["status"]
-    if variants and record["variants"] < 1:
-        say("No variants asked for: say how many in Variants first")
-        return record["status"]
-    if part == "split" and record["children"]:
-        say(f"Split already, into {len(record['children'])} requests: nothing to run (the editor's Make them all makes them)")
-        return record["status"]
+    ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say)
+    if ended is not None:
+        return ended
     claude = find_claude()
     if not claude:
         return mr.fail(root, rid, "Claude Code not found: install it, or set CLAUDE to the claude program")["status"]
@@ -767,25 +854,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
     say(f"On: {on}")
-    if part == "lines":
-        say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
-    elif part == "model":
-        say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
-    elif part == "again":
-        say(f"This run makes it again from the last run's model, with the user's comments: {note}")
-    elif part == "variants":
-        how = record["vary"].strip()
-        say(f"This run makes {record['variants']} variant{'' if record['variants'] == 1 else 's'} of it from its model, the model itself kept: "
-            + (how if how else "as Claude sees fit"))
-    elif part == "split" and mr.outlined(record):
-        say(f"This run splits the request: the {len(mr.outlined(record))} drawings the user outlined, each a request of its own (\"Process multiple\"); the rest left out")
-    elif part == "split":
-        say("This run splits the request: each drawing on its pictures made a request of its own (\"Process multiple\")")
-    if part not in ("model", "again") and note.strip():
-        say(f"What the user says is off in the lines there: {note.strip()}")
-    drawn = rl.user_bones(record)
-    if drawn:
-        say(f"The user has drawn the creature's bones over {bones_drawn(drawn)}: Claude reads the pictures by them")
+    announce(record, part, note, say)
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid)))
     say("Prompt:\n" + text)
@@ -849,45 +918,69 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         return mr.update(root, rid, status="waiting", progress=dict(mr.FIELDS["progress"]))["status"]
     if ended == "quiet":
         return mr.fail(root, rid, f"no word from Claude for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
+    return conclude(root, rid, part, began, again, note, state["result"] or {}, proc.returncode, state["error"], claude, say)
+
+
+# ---------------------------------------------------------------- in the cloud: the web editor's runs
+
+# the prompt's checks, which build the engine: in the cloud there's no Rust, the editor reads it
+CHECK = "- check: cargo run -q -p engine-content --bin content -- check"
+CLOUD_CHECK = "- check: none in the cloud (no Rust there): the web editor reads the model once it's back"
+CLOUD = """In the cloud: this is a sandbox of Anthropic's, the web editor's run, on the user's own API
+key: they pay for it, so no detours. Blender runs through run_request.py as below (on a virtual
+display), and there's no cargo and no Rust: skip any cargo step of requests.md (the editor
+reads the model once it's back).
+
+"""
+
+
+def prompt_file(rid):
+    """Where --prompt writes the prompt, for the sandbox's Claude to read."""
+    return Path(tempfile.gettempdir()) / f"bf-prompt-{rid}.txt"
+
+
+def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False):
+    """--prompt: the run's start in the cloud, as Start's here (its checks, in progress from
+    now, its log), and its prompt written for the sandbox's Claude to follow. The request's
+    status."""
     record = mr.load(root, rid)
-    result = state["result"] or {}
-    last = str(result.get("result") or "").strip()
-    if part == "split" and record["children"] and proc.returncode == 0 and not result.get("is_error"):
-        # split: done, its requests to make
-        p = dict(record["progress"])
-        took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
-        p.update(step=f"split into {len(record['children'])} requests", done=1.0, minutes=float(round(took, 1)))
-        mr.update(root, rid, status="done", progress=p, **({"reply": last} if last else {}))
-        say(f"Split into {len(record['children'])} requests: {', '.join(record['children'])}")
-        return "done"
-    if record["status"] == "done":
-        say(f"Done: the prop {record['prop']}" + (f", and its variants {', '.join(record['variant_props'])}" if record["variant_props"] else ""))
-        if again:
-            # the comments made: told to the runs made again after this one; the field emptied
-            # unless the user has written others meanwhile
-            fields = {"earlier": record["earlier"] + [note]}
-            if record["comments"].strip() in ("", note):
-                fields["comments"] = ""
-            mr.update(root, rid, **fields)
-        return "done"
-    if last:
-        # what it says back (for a check, what it guessed in the lines): the window shows it
-        mr.update(root, rid, reply=last)
-    if state["error"] == "authentication_failed" or "Not logged in" in last:
-        # the program by its path: it's often not on the PATH (the editor's "Log in" opens it)
-        reason = f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again'
-    elif proc.returncode != 0 or result.get("is_error"):
-        reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {proc.returncode})"
-    elif part == "lines" and drawn_since(here / "profiles.png", began):
-        # where it was asked to stop: the user's turn
-        return mr.wait_for_check(root, rid)["status"]
-    elif part == "lines":
-        reason = "Claude ended without drawing the front and the side (profiles.png)"
-    elif part == "split":
-        reason = "Claude ended without splitting it (no request made of a drawing)"
-    else:
-        reason = "Claude ended without adding the model"
-    return mr.fail(root, rid, reason)["status"]
+    part = part_of(record, go_on, again, variants)
+    if again:
+        note = note.strip() or record["comments"].strip()
+
+    def say(text):
+        mr.log(root, rid, text)
+
+    say("———————— a run starts ————————")
+    ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say)
+    if ended is not None:
+        print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
+        return ended
+    text = CLOUD + prompt(record, go_on, note, again, variants).replace(CHECK, CLOUD_CHECK)
+    mr.start(root, rid, mr.estimate(record, part))
+    mr.step(root, rid, "Claude is starting", 0.05)
+    say("In the cloud: Claude in a sandbox of Anthropic's, on the user's own API key (the web editor's run)")
+    announce(record, part, note, say)
+    say("Prompt:\n" + text)
+    path = prompt_file(rid)
+    path.write_text(text, encoding="utf-8")
+    print(f"Your instructions for {rid}: read {path} whole, then follow them, from {root}")
+    return "in_progress"
+
+
+def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False):
+    """--settle: the run's end in the cloud, as a run's here ends, by what's on disk (`reply`:
+    the sandbox's Claude's line on what it made). The request's status."""
+    record = mr.load(root, rid)
+    part = part_of(record, go_on, again, variants)
+    if again:
+        note = note.strip() or record["comments"].strip()
+
+    def say(text):
+        mr.log(root, rid, text)
+
+    began = record["progress"]["started"] or time.time()
+    return conclude(root, rid, part, began, again, note, {"result": reply} if reply.strip() else {}, 0, None, "claude", say)
 
 
 def main(argv):
@@ -903,10 +996,18 @@ def main(argv):
         quiet = float(argv[argv.index("--quiet") + 1])
     if "--note" in argv:
         note = argv[argv.index("--note") + 1]
+    if "--note-file" in argv:
+        note = Path(argv[argv.index("--note-file") + 1]).read_text(encoding="utf-8")
+    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv)
     root = mr.find_root(Path.cwd())
-    status = run(root, rid, model, quiet, "--go-on" in argv, note, "--again" in argv, "--variants" in argv)
+    if "--prompt" in argv:
+        status = start_in_cloud(root, rid, *how)
+    elif "--settle" in argv:
+        status = settle(root, rid, argv[argv.index("--reply") + 1] if "--reply" in argv else "", *how)
+    else:
+        status = run(root, rid, model, quiet, *how)
     print(f"{rid}: {status}" + (f", {mr.LINES_READY}" if status == "waiting" and mr.lines_ready(mr.load(root, rid)) else ""))
-    return 0 if status in ("done", "waiting") else 1
+    return 0 if status in ("done", "waiting", "in_progress") else 1
 
 
 if __name__ == "__main__":

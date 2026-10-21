@@ -1046,6 +1046,37 @@ impl MapEditor {
         crate::platform::set_hook("dropped", name);
     }
 
+    /// A file a request's run made in the cloud (the browser's): a prop's record into the
+    /// content (the same prop made again replaced, its model read again), a model into the
+    /// editor's files; saved with the rest, as a model dropped on the page is.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) fn take_made(&mut self, path: &str, bytes: Vec<u8>) {
+        // (a run's own: a prop's record or its model, nothing else of the game's)
+        if !requests::may_write(path) {
+            return;
+        }
+        if let Some((space, rel)) = crate::keep::record_of(path) {
+            if rel.starts_with("props/") {
+                match serde_json::from_slice::<Prop>(&bytes) {
+                    Ok(prop) => {
+                        let id = prop.id.clone();
+                        let mut c = (*self.content).clone();
+                        c.props.put(prop, space);
+                        c.sort();
+                        self.content = Arc::new(c);
+                        self.assets.dirty.insert(id.clone());
+                        self.models.remove(&id);
+                        self.model_failed.remove(&id);
+                    }
+                    Err(e) => self.status = format!("{path}: {e}"),
+                }
+            }
+            return;
+        }
+        self.files.insert(path, bytes.clone());
+        self.assets.new_models.push((path.to_string(), bytes));
+    }
+
     // ------------------------------------------------------------ watching the disk
 
     /// The desktop: what changed on disk among the props' records and models shows at once.

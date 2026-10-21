@@ -21,7 +21,9 @@ egui_extras = { version = "0.36", default-features = false, features = ["svg"] }
 # controllers: the system's own way on the desktop (Windows.Gaming.Input on Windows, evdev
 # on Linux: CI needs libudev-dev), the Gamepad API in the browser
 gilrs = "0.11"
-image.workspace = true
+# the Requests window's pictures: PNG, JPG and WebP (on both: the browser's window is the
+# desktop's)
+image = { workspace = true, features = ["jpeg", "webp"] }
 glam.workspace = true
 log = "0.4"
 serde.workspace = true
@@ -31,10 +33,11 @@ base64 = "0.22"
 # the browser's saves as one zip (Saved in this browser): each file's checksum
 crc32fast = "1"
 
-# The browser: assets fetched over HTTP, the page's clock, test hooks on <body data-*>, the
-# editor's saves kept in the browser (IndexedDB)
+# The browser: assets fetched over HTTP (a model request's run in the cloud followed as its
+# events stream in), the page's clock, test hooks on <body data-*>, the editor's saves kept in
+# the browser (IndexedDB)
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-ehttp = "0.7"
+ehttp = { version = "0.7", features = ["streaming"] }
 js-sys = "0.3"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
@@ -45,8 +48,6 @@ web-sys = { version = "0.3", features = ["AudioBuffer", "AudioBufferSourceNode",
 ehttp = "0.7"
 sha1_smol = "1"
 rodio = { version = "0.23.0", default-features = false, features = ["playback", "wav", "vorbis"] }
-# the Requests window's pictures: PNG, JPG and WebP
-image = { workspace = true, features = ["jpeg", "webp"] }
 
 # the local time of day (Windows has its own call)
 [target.'cfg(all(unix, not(target_arch = "wasm32")))'.dependencies]

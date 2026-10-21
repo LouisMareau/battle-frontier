@@ -41,6 +41,13 @@ const CLIENT_ID: &str = "Ov23liQZPiLKCAggEM69";
 const SCOPE: &str = "public_repo";
 /// What's published: the game's own content (never temporary/, never private/).
 const PUBLISHED: &str = "content";
+
+/// Whether a file's the game's own, to publish: content/'s (never temporary/'s, nor the model
+/// requests' private/ folders).
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+pub(super) fn published(path: &str) -> bool {
+    path.strip_prefix(PUBLISHED).is_some_and(|rest| rest.starts_with('/'))
+}
 /// The browser: the name the sign-in is kept under (`platform::store_text`).
 #[cfg(target_arch = "wasm32")]
 const SIGNIN: &str = "github_signin";
@@ -1310,11 +1317,12 @@ impl MapEditor {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            // the files besides records saved here (`crate::keep`)
+            // the files besides records saved here (`crate::keep`), the game's own (content/:
+            // never temporary/'s, never the model requests' private/ folders)
             let saved = crate::keep::files()
                 .into_iter()
                 .filter_map(|(path, k)| match k {
-                    crate::keep::Kept::File(b) if crate::keep::record_of(&path).is_none() => Some((path, b.to_vec())),
+                    crate::keep::Kept::File(b) if crate::keep::record_of(&path).is_none() && published(&path) => Some((path, b.to_vec())),
                     _ => None,
                 })
                 .collect();
@@ -2046,5 +2054,15 @@ mod tests {
         assert_eq!(again.user, p.user, "read back the next run");
         again.sign_out();
         assert!(!dir.join("github.json").exists(), "forgotten");
+    }
+
+    /// What the browser keeps besides records goes to Publish only when it's the game's own:
+    /// never temporary/'s, nor the model requests' folders.
+    #[test]
+    fn only_the_games_own_files_are_published() {
+        assert!(published("content/assets/models/moss_toad.glb") && published("content/data/maps/meadow/0_1.json"));
+        assert!(!published("temporary/assets/models/moss_toad.glb"), "a placeholder's model");
+        assert!(!published("private/requests/moss_toad/front.png"), "a request's picture");
+        assert!(!published("contents/assets/x.glb") && !published("content"));
     }
 }

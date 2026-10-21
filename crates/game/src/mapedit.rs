@@ -746,12 +746,6 @@ impl MapEditor {
         self.requests.open = true;
     }
 
-    /// Whether the requests wait for a Claude sign-in: on the desktop, Claude Code's (the
-    /// browser's requests are the desktop's to make, for now).
-    fn claude_needed(&self) -> bool {
-        !cfg!(target_arch = "wasm32")
-    }
-
     pub fn set_view(&mut self, args: &str) {
         let v: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse().ok()).collect();
         if v.len() >= 2 {
@@ -1439,16 +1433,14 @@ impl MapEditor {
         let mut back = None;
         self.take_drops(&ctx);
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.watch_assets(now);
-            self.requests.watch(now);
-        }
+        self.watch_assets(now);
+        self.requests.watch(now);
         self.claude.poll(&ctx, now);
         if let Some(said) = self.claude.said.take() {
             self.status = said;
         }
         // the requests wait for a sign-in: closed while there's none
-        if self.claude_needed() && matches!(self.claude.signed, claude::Signed::Out(_)) {
+        if matches!(self.claude.signed, claude::Signed::Out(_)) {
             self.requests.open = false;
         }
         self.keys(&ctx);
@@ -1504,9 +1496,7 @@ impl MapEditor {
                 // sent to the game's repository
                 group(ui, "uiGroupShare", |ui| self.publish_buttons(ui));
                 // signed in to Claude, which the model requests run on
-                if self.claude_needed() {
-                    group(ui, "uiGroupClaude", |ui| self.claude.button(ui));
-                }
+                group(ui, "uiGroupClaude", |ui| self.claude.button(ui));
                 // how it shows: the time of day, lamps, sounds, what moves, the grid, the view
                 group(ui, "uiGroupView", |ui| {
                     self.time_slider(ui);
@@ -1556,7 +1546,7 @@ impl MapEditor {
                     }
                 });
             });
-            let locked = if !self.claude_needed() || self.claude.signed.is_in() { vec![] } else { vec![(dock::Pane::Requests, claude::NEEDS)] };
+            let locked = if self.claude.signed.is_in() { vec![] } else { vec![(dock::Pane::Requests, claude::NEEDS)] };
             let toggled = dock::toggles(ui, first, &mut self.dock, &locked);
             if let Some(r) = toggled.get(&dock::Pane::Requests) {
                 self.requests.decorate(ui, r);
@@ -1633,6 +1623,17 @@ impl MapEditor {
         }
         if std::mem::take(&mut self.requests.sign_in) {
             self.claude.open = true;
+        }
+        // what a run made in the cloud (the browser's): its props and models, saved at once
+        #[cfg(target_arch = "wasm32")]
+        {
+            let made = self.requests.take_made();
+            if !made.is_empty() {
+                for (path, bytes) in made {
+                    self.take_made(&path, bytes);
+                }
+                self.save_assets();
+            }
         }
         let mut builds = self.dock.get(dock::Pane::Builds);
         if let Some(said) = self.builds.window(ui, &mut builds) {

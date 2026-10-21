@@ -1,7 +1,7 @@
 // The asset browser, driven in a headless Chrome: opens it, shows a folder, drags a prop's
-// row onto another folder (it's in both), makes a prop unstackable, opens the Requests window
-// (in the browser, a note: requests need the desktop; a picture dropped on it isn't kept),
-// closes it, drops a .glb from "Blender" on a folder (it becomes a prop there, its model
+// row onto another folder (it's in both), makes a prop unstackable, finds the Requests button
+// greyed out (no Claude sign-in: requestcheck.mjs makes a request, against a stand-in for
+// Anthropic), drops a .glb from "Blender" on a folder (it becomes a prop there, its model
 // loads, the Place tool puts it down), refuses an unstackable prop on another, and saves
 // (downloads) what changed.
 // Screenshots go to screenshots/assets-*.png.
@@ -102,18 +102,18 @@ try {
   await expect('still one prop changed', 'assetsdirty', 1);
   await shot('2-dragged');
 
-  // 3b. the Requests window: in the browser only a note (requests live on the desktop); a
-  // picture dropped while it's open is refused, and nothing becomes a prop
+  // 3b. the Requests window: with no Claude sign-in (no API key in this browser) its button is
+  // greyed out and opens nothing; a picture dropped meanwhile goes to the asset browser, which
+  // takes only models, and becomes no prop
   await press('uiRequests');
-  await expect('the Requests window opens, saying it needs the desktop', 'requests', 'note');
+  await expect('the Requests button greyed out: no Claude sign-in', 'requests', '');
+  await expect('  the sign-in says so', 'claude', 'out');
   const before = Number(await data('assets'));
   await browser.drop([picture], 700, 450);
-  for (let i = 0; i < 40 && !(await data('status')).includes('desktop editor'); i++) await sleep(100);
-  check('  a picture dropped on it is refused, and why', (await data('status')).includes('desktop editor'), await data('status'));
+  for (let i = 0; i < 40 && !(await data('status')).includes('only glTF models'); i++) await sleep(100);
+  check('  a picture dropped is no model, and why', (await data('status')).includes('only glTF models'), await data('status'));
   await expect('  and becomes no prop', 'assets', before);
   await shot('2b-requests');
-  await press('uiRequests');
-  await expect('closed again', 'requests', '');
 
   // 4. with the Requests window closed, a .glb dropped on the Buildings/Outside folder: a
   // prop, there, its model loading

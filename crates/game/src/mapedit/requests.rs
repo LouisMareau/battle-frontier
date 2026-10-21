@@ -4,12 +4,17 @@
 //! its pictures in the same folder; once done, renders of the model and the prop it became.
 //! private/ is never committed: the pictures are often other artists' work, and the model of
 //! a design that isn't the user's own (or licensed) goes to temporary/, never content/.
-//! The desktop only: the browser can't keep files there, so its window just says so.
-
-// the record is the desktop's: the browser's window only says it can't keep requests
-#![cfg_attr(target_arch = "wasm32", allow(dead_code))]
+//! On the desktop the runs are Claude Code's (run_claude.py); in the browser the folder is kept
+//! in the browser (`disk`), and the runs go in a sandbox of Anthropic's on the user's own Claude
+//! API key (`cloud`): the same window, the same recipe.
 
 use std::collections::BTreeMap;
+
+mod cloud;
+mod disk;
+
+#[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
+pub(super) use cloud::may_write;
 
 use serde::{Deserialize, Serialize};
 
@@ -376,7 +381,6 @@ impl ModelRequest {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 use desk::Desk;
 
 #[derive(Default)]
@@ -388,7 +392,6 @@ pub(super) struct Requests {
     pub said: Option<String>,
     /// the Claude sign-in asked for (a run failed for want of one): the editor opens its window
     pub sign_in: bool,
-    #[cfg(not(target_arch = "wasm32"))]
     desk: Desk,
 }
 
@@ -401,17 +404,13 @@ impl Requests {
         if waiting > 0 {
             about += &format!("\n{waiting} waiting");
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if !self.desk.queue.runs.is_empty() {
             about += &format!("\n{} queued{}", self.desk.queue.runs.len(), if self.desk.queue.paused { " (the queue paused)" } else { "" });
         }
-        #[cfg(not(target_arch = "wasm32"))]
         let working = self.desk.working();
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some((name, _, text)) = &working {
             about += &format!("\n{name}: {text}");
         }
-        #[cfg(not(target_arch = "wasm32"))]
         for r in self.desk.list.iter().filter(|r| r.lines_ready()) {
             about += &format!("\n{}: {LINES_READY}", r.name);
         }
@@ -423,7 +422,6 @@ impl Requests {
             p.circle_filled(at, 6.5, egui::Color32::from_rgb(255, 200, 90));
             p.text(at, egui::Align2::CENTER_CENTER, waiting.min(99).to_string(), egui::FontId::proportional(9.5), egui::Color32::BLACK);
         }
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some((_, fraction, _)) = working {
             let line = egui::Rect::from_min_size(r.rect.left_bottom() + egui::vec2(3.0, -2.0), egui::vec2(r.rect.width() - 6.0, 2.0));
             p.rect_filled(line, 1.0, egui::Color32::from_gray(60));
@@ -434,42 +432,7 @@ impl Requests {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-impl Requests {
-    /// Pictures dropped while the window is open: the browser can't keep them.
-    pub fn take(&mut self, files: Vec<egui::DroppedFileHandle>) {
-        self.said = Some(format!(
-            "{} picture{} not kept: requests live in private/requests/ on your computer, so they need the desktop editor (cargo run -p engine-game --release -- --requests)",
-            files.len(),
-            if files.len() == 1 { "" } else { "s" }
-        ));
-    }
-
-    pub fn waiting(&self) -> usize {
-        0
-    }
-
-    pub fn drawing_on_picture(&self) -> bool {
-        false
-    }
-
-    /// The panel (`st`: as the layout has it): a note.
-    pub fn window(&mut self, ui: &mut egui::Ui, st: &mut super::dock::PaneState, _content: &content::Content) -> Option<String> {
-        crate::platform::set_hook("requests", if self.open { "note" } else { "" });
-        st.open = self.open;
-        super::dock::show(ui, st, super::dock::Pane::Requests, "Model requests", |ui| {
-            ui.label("Drop pictures of a creature, a prop or a floor here, and Claude makes a base 3D model of it in Blender.");
-            ui.add_space(4.0);
-            super::warn(ui, "Requests need the desktop app: they're kept in private/requests/ on your computer, which the browser can't write to.");
-            super::hint(ui, "cargo run -p engine-game --release -- --requests opens the map editor with this window.");
-        });
-        self.open = st.open;
-        None
-    }
-}
-
-/// The desktop: the requests on disk, the window, the pictures' thumbnails.
-#[cfg(not(target_arch = "wasm32"))]
+/// The requests in their folder, the window, the pictures' thumbnails.
 mod desk {
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
@@ -481,6 +444,7 @@ mod desk {
 
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
+    use super::disk;
     use super::{bone_colour, bone_names, outline_colour, Bone, Kind, ModelRequest, Outline, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
     use crate::platform::{self, Dropped};
 
@@ -495,10 +459,13 @@ mod desk {
     const MODELS: [(&str, &str); 4] = [("", "default model"), ("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")];
     /// the console shows this many of the log's last lines (Copy takes them all)
     const CONSOLE_LINES: usize = 600;
+    /// Who makes the requests: Claude Code on the desktop; in the browser, Claude in a sandbox of
+    /// Anthropic's, on the user's own API key.
+    const MAKER: &str = if cfg!(target_arch = "wasm32") { "Claude" } else { "Claude Code" };
 
     /// Seconds since 1970, as the modeller writes them.
     pub(in super::super) fn now_secs() -> f64 {
-        SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
+        disk::now().duration_since(SystemTime::UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0)
     }
 
     // ------------------------------------------------------------ on disk
@@ -514,7 +481,7 @@ mod desk {
 
     pub(in super::super) fn read(root: &Path, id: &str) -> Result<ModelRequest, String> {
         let path = record_path(root, id);
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = disk::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let mut r: ModelRequest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         // the folder is the request's id, whatever the file says
         r.id = id.to_string();
@@ -525,19 +492,19 @@ mod desk {
     pub(in super::super) fn save(root: &Path, r: &ModelRequest) -> Result<(), String> {
         let path = record_path(root, &r.id);
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+            disk::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
-        std::fs::write(&path, content::to_text(r)).map_err(|e| format!("{}: {e}", path.display()))
+        disk::write(&path, content::to_text(r)).map_err(|e| format!("{}: {e}", path.display()))
     }
 
     /// Every request (waiting first, then in progress, then done; by name), and what
     /// couldn't be read.
     pub(in super::super) fn load_all(root: &Path) -> (Vec<ModelRequest>, Vec<String>) {
         let (mut out, mut problems) = (vec![], vec![]);
-        let Ok(list) = std::fs::read_dir(folder(root)) else { return (out, problems) };
-        for e in list.flatten() {
-            let id = e.file_name().to_string_lossy().to_string();
-            if !e.path().join("request.json").is_file() {
+        let Ok(list) = disk::read_dir(&folder(root)) else { return (out, problems) };
+        for e in list {
+            let id = e.name.clone();
+            if !disk::is_file(&e.path.join("request.json")) {
                 continue;
             }
             match read(root, &id) {
@@ -558,7 +525,7 @@ mod desk {
         };
         let mut id = base.clone();
         let mut n = 2;
-        while folder(root).join(&id).exists() {
+        while disk::exists(&folder(root).join(&id)) {
             id = format!("{base}_{n}");
             n += 1;
         }
@@ -614,7 +581,7 @@ mod desk {
         let (bytes, ext) = kept(name, bytes)?;
         let bytes = bytes.as_slice();
         let dir = folder(root).join(&r.id);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+        disk::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         let stem = name.rsplit_once('.').map(|(s, _)| s).unwrap_or(name);
         let base = match slug(stem) {
             s if s.is_empty() => "picture".to_string(),
@@ -624,10 +591,10 @@ mod desk {
         let mut n = 2;
         loop {
             let path = dir.join(&file);
-            if !path.exists() {
+            if !disk::exists(&path) {
                 break;
             }
-            if std::fs::read(&path).map(|b| b == bytes).unwrap_or(false) {
+            if disk::read(&path).map(|b| b == bytes).unwrap_or(false) {
                 if !r.images.contains(&file) {
                     r.images.push(file.clone());
                 }
@@ -637,7 +604,7 @@ mod desk {
             n += 1;
         }
         let path = dir.join(&file);
-        std::fs::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+        disk::write(&path, bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         r.images.push(file.clone());
         Ok(Added::New(file))
     }
@@ -652,10 +619,10 @@ mod desk {
         let drawn = [format!("bones_{stem}.png"), format!("lines_{stem}.png"), format!("match_{stem}.png"), format!("seen_{stem}.png")];
         r.lines.retain(|f| !drawn.contains(f));
         for f in &drawn {
-            std::fs::remove_file(dir.join(f)).ok();
+            disk::remove_file(dir.join(f)).ok();
         }
         let path = dir.join(file);
-        match std::fs::remove_file(&path) {
+        match disk::remove_file(&path) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(e) => Err(format!("{}: {e}", path.display())),
@@ -671,7 +638,7 @@ mod desk {
         }
         let id = free_id(root, &r.name);
         let (from, to) = (folder(root).join(&r.id), folder(root).join(&id));
-        std::fs::rename(&from, &to).map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))?;
+        disk::rename(&from, &to).map_err(|e| format!("{} to {}: {e}", from.display(), to.display()))?;
         r.id = id.clone();
         save(root, r)?;
         Ok(Some(id))
@@ -680,7 +647,7 @@ mod desk {
     /// The request and its folder gone (the prop it became stays in the project).
     pub(in super::super) fn delete(root: &Path, id: &str) -> Result<(), String> {
         let dir = folder(root).join(id);
-        std::fs::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
+        disk::remove_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))
     }
 
     /// The fields changed here (from `before` to `after`) put on what's on disk now, so a
@@ -701,12 +668,12 @@ mod desk {
     /// Every file under the requests, with when it last changed.
     pub(in super::super) fn snapshot(root: &Path) -> Vec<(PathBuf, SystemTime)> {
         let mut out = vec![];
-        let Ok(list) = std::fs::read_dir(folder(root)) else { return out };
-        for e in list.flatten() {
-            let Ok(files) = std::fs::read_dir(e.path()) else { continue };
-            for f in files.flatten() {
-                if let Ok(t) = f.metadata().and_then(|m| m.modified()) {
-                    out.push((f.path(), t));
+        let Ok(list) = disk::read_dir(&folder(root)) else { return out };
+        for e in list {
+            let Ok(files) = disk::read_dir(&e.path) else { continue };
+            for f in files {
+                if let Some(t) = disk::modified(&f.path) {
+                    out.push((f.path, t));
                 }
             }
         }
@@ -718,6 +685,7 @@ mod desk {
 
     /// Python: PYTHON names it, else `python` (or `python3`) on the PATH, never the Store's
     /// stand-ins in WindowsApps, else Windows' `py`.
+    #[cfg(not(target_arch = "wasm32"))]
     fn find_python() -> Option<PathBuf> {
         if let Ok(p) = std::env::var("PYTHON") {
             let p = PathBuf::from(p);
@@ -738,6 +706,7 @@ mod desk {
 
     /// One of the requests' Python tools started in the project's folder, on its own (no
     /// console window; it outlives the editor).
+    #[cfg(not(target_arch = "wasm32"))]
     fn python(root: &Path, args: &[&str]) -> Result<std::process::Child, String> {
         let python = find_python().ok_or("Python not found: set PYTHON to python.exe")?;
         let mut c = std::process::Command::new(&python);
@@ -750,9 +719,18 @@ mod desk {
         c.spawn().map_err(|e| format!("{}: {e}", python.display()))
     }
 
-    /// A short one, waited for: true when it worked.
+    /// A short one, waited for: true when it worked (in the browser, none: the window sets the
+    /// status itself).
     fn python_now(root: &Path, args: &[&str]) -> bool {
-        python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (root, args);
+            false
+        }
     }
 
     /// The newest time anything in a request's folder changed (its run writes there as it goes).
@@ -824,6 +802,7 @@ mod desk {
 
     /// Opens a file or a folder the way the system does (a picture in its viewer, a folder
     /// in the file manager).
+    #[cfg(not(target_arch = "wasm32"))]
     fn reveal(path: &Path) -> Result<(), String> {
         let program = if cfg!(windows) {
             "explorer"
@@ -835,12 +814,35 @@ mod desk {
         std::process::Command::new(program).arg(path).spawn().map(|_| ()).map_err(|e| format!("{program} {}: {e}", path.display()))
     }
 
+    /// The browser: a file downloaded (it opens no program), a folder as a zip of its files.
+    #[cfg(target_arch = "wasm32")]
+    fn reveal(path: &Path) -> Result<(), String> {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "request".into());
+        if disk::is_file(path) {
+            let bytes = disk::read(path).map_err(|e| e.to_string())?;
+            let kind = match name.rsplit_once('.').map(|(_, e)| e) {
+                Some("png") => "image/png",
+                Some("jpg") | Some("jpeg") => "image/jpeg",
+                Some("txt") | Some("py") | Some("json") => "text/plain",
+                _ => "application/octet-stream",
+            };
+            return platform::download_bytes(&name, &bytes, kind);
+        }
+        let mut files = std::collections::BTreeMap::new();
+        for e in disk::read_dir(path).map_err(|e| e.to_string())? {
+            if let Ok(bytes) = disk::read(&e.path) {
+                files.insert(format!("{name}/{}", e.name), crate::keep::Kept::File(Arc::new(bytes)));
+            }
+        }
+        platform::download_bytes(&format!("{name}.zip"), &crate::keep::zip(&files), "application/zip")
+    }
+
     // ------------------------------------------------------------ thumbnails
 
     /// A picture made small for the window: at most `max` pixels on its longer side (never
     /// enlarged), and the picture's own size in pixels.
     pub(in super::super) fn thumbnail(path: &Path, max: u32) -> Result<(egui::ColorImage, egui::Vec2), String> {
-        let bytes = std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = disk::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let img = image::load_from_memory(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
         let full = egui::vec2(img.width() as f32, img.height() as f32);
         let small = if img.width().max(img.height()) > max { img.thumbnail(max, max) } else { img }.to_rgba8();
@@ -861,6 +863,8 @@ mod desk {
         /// takes only its latest reading)
         asked: HashMap<(PathBuf, u32), u64>,
         asks: u64,
+        /// the thread's (the desktop's: the browser reads them as they're asked for)
+        #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
         jobs: Option<mpsc::Sender<(PathBuf, u32, u64)>>,
         done: Arc<Mutex<Vec<Read>>>,
     }
@@ -887,19 +891,29 @@ mod desk {
             if !self.asked.contains_key(&key) {
                 self.asks += 1;
                 self.asked.insert(key, self.asks);
-                let jobs = self.jobs.get_or_insert_with(|| {
-                    let (tx, rx) = mpsc::channel::<(PathBuf, u32, u64)>();
-                    let (done, ctx) = (self.done.clone(), ctx.clone());
-                    std::thread::spawn(move || {
-                        for (path, max, n) in rx {
-                            let made = thumbnail(&path, max);
-                            done.lock().unwrap().push((path, max, n, made));
-                            ctx.request_repaint();
-                        }
+                // (the browser has no threads: read now, taken in with the rest)
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let made = thumbnail(path, max);
+                    self.done.lock().unwrap().push((path.to_path_buf(), max, self.asks, made));
+                    ctx.request_repaint();
+                }
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let jobs = self.jobs.get_or_insert_with(|| {
+                        let (tx, rx) = mpsc::channel::<(PathBuf, u32, u64)>();
+                        let (done, ctx) = (self.done.clone(), ctx.clone());
+                        std::thread::spawn(move || {
+                            for (path, max, n) in rx {
+                                let made = thumbnail(&path, max);
+                                done.lock().unwrap().push((path, max, n, made));
+                                ctx.request_repaint();
+                            }
+                        });
+                        tx
                     });
-                    tx
-                });
-                let _ = jobs.send((path.to_path_buf(), max, self.asks));
+                    let _ = jobs.send((path.to_path_buf(), max, self.asks));
+                }
             }
             None
         }
@@ -978,6 +992,9 @@ mod desk {
         pub outlines: Outlining,
         /// the Claude sign-in asked for (a run failed for want of one)
         pub sign_in: bool,
+        /// the browser's runs, in the cloud
+        #[cfg(target_arch = "wasm32")]
+        pub cloud: super::cloud::Runner,
         /// the runs that would have started (the tests start none)
         #[cfg(test)]
         pub launched: Vec<Vec<String>>,
@@ -1054,7 +1071,7 @@ mod desk {
 
     /// The queue as kept (none, or unreadable: empty).
     pub(in super::super) fn load_queue(root: &Path) -> Queue {
-        std::fs::read_to_string(queue_path(root)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+        disk::read_to_string(queue_path(root)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
     }
 
     /// A small button with an arrow drawn on it, up or down (the fonts have no arrows).
@@ -1393,10 +1410,10 @@ mod desk {
                     self.console_open = true;
                     self.failed_silent.remove(id);
                     match how {
-                        How::GoOn => format!("Claude Code goes on with {id} from its lines: the console shows everything it does"),
-                        How::Again => format!("Claude Code makes {id} again from its last model, with your comments: the console shows everything it does"),
-                        How::Variants => format!("Claude Code makes variants of {id} from its model: the console shows everything it does"),
-                        How::Whole => format!("Claude Code is starting on {id}: the console shows everything it does"),
+                        How::GoOn => format!("{MAKER} goes on with {id} from its lines: the console shows everything it does"),
+                        How::Again => format!("{MAKER} makes {id} again from its last model, with your comments: the console shows everything it does"),
+                        How::Variants => format!("{MAKER} makes variants of {id} from its model: the console shows everything it does"),
+                        How::Whole => format!("{MAKER} is starting on {id}: the console shows everything it does"),
                     }
                 }
                 Err(e) => format!("Not started: {e}"),
@@ -1442,7 +1459,7 @@ mod desk {
         /// The queue written (what goes wrong said in the window's problems).
         fn keep_queue(&mut self) {
             let path = queue_path(&self.root());
-            let written = path.parent().map(std::fs::create_dir_all).unwrap_or(Ok(())).and_then(|()| std::fs::write(&path, content::to_text(&self.queue)));
+            let written = path.parent().map(disk::create_dir_all).unwrap_or(Ok(())).and_then(|()| disk::write(&path, content::to_text(&self.queue)));
             if let Err(e) = written {
                 self.problems.push(format!("the queue isn't kept: {}: {e}", path.display()));
             }
@@ -1548,12 +1565,18 @@ mod desk {
                 self.launched.push(args.to_vec());
                 Ok(())
             }
-            #[cfg(not(test))]
+            #[cfg(all(not(test), not(target_arch = "wasm32")))]
             {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
                 let child = python(&self.root(), &args)?;
                 self.children.push(child);
                 Ok(())
+            }
+            // the browser: in a sandbox of Anthropic's, on the user's own key
+            #[cfg(all(not(test), target_arch = "wasm32"))]
+            {
+                let root = self.root();
+                self.cloud.start(&root, args)
             }
         }
 
@@ -1561,7 +1584,7 @@ mod desk {
         /// again); with no run there to read it, the editor does that a few seconds later.
         pub(in super::super) fn cancel_run(&mut self, id: &str) -> String {
             let stop = folder(&self.root()).join(id).join("stop");
-            match std::fs::write(&stop, "") {
+            match disk::write(&stop, "") {
                 Ok(()) => {
                     self.cancelling = Some((id.to_string(), now_secs()));
                     format!("Cancelling {id}")
@@ -1601,13 +1624,18 @@ mod desk {
             let root = self.root();
             let mut said = None;
             self.children.retain_mut(|c| matches!(c.try_wait(), Ok(None)));
+            // the browser's run, in the cloud: its events into the request's files
+            #[cfg(target_arch = "wasm32")]
+            if let Some(s) = self.cloud.poll(&root) {
+                said = Some(s);
+            }
             if let Some((id, at)) = self.cancelling.clone() {
                 let stop = folder(&root).join(&id).join("stop");
-                if !stop.exists() {
+                if !disk::exists(&stop) {
                     self.cancelling = None;
                 } else if now_secs() - at > 6.0 {
                     // no run took it: nothing was running
-                    let _ = std::fs::remove_file(&stop);
+                    let _ = disk::remove_file(&stop);
                     let args = ["tools/blender/model_requests.py", "wait", id.as_str(), "--note", "Cancelled from the editor: nothing was running"];
                     self.settle(&id, &args, |r| {
                         r.status = Status::Waiting;
@@ -1627,7 +1655,7 @@ mod desk {
                 }
             }
             let mut seen = snapshot(&root);
-            let wall = SystemTime::now();
+            let wall = disk::now();
             for r in self.list.clone() {
                 let dir = folder(&root).join(&r.id);
                 if gone_silent(&r, last_word(&seen, &dir), wall) && self.failed_silent.insert(r.id.clone()) {
@@ -1673,9 +1701,9 @@ mod desk {
         /// A request's log.txt, read again when it changes.
         fn log_of(&mut self, id: &str) -> Option<Arc<String>> {
             let path = folder(&self.root()).join(id).join("log.txt");
-            let t = std::fs::metadata(&path).and_then(|m| m.modified()).ok()?;
+            let t = disk::modified(&path)?;
             if self.logs.get(id).map(|(at, _)| *at != t).unwrap_or(true) {
-                let text = std::fs::read_to_string(&path).ok()?;
+                let text = disk::read_to_string(&path).ok()?;
                 self.logs.insert(id.to_string(), (t, Arc::new(text)));
             }
             self.logs.get(id).map(|(_, s)| s.clone())
@@ -1686,6 +1714,8 @@ mod desk {
         fn console(&mut self, ui: &mut egui::Ui, id: Option<String>) -> Option<String> {
             let mut said = None;
             let log = id.as_deref().and_then(|id| self.log_of(id));
+            // (for the checks: the log's last lines)
+            platform::set_hook("requestlog", log.as_deref().map(|t| tail(t, 6).0.trim_end()).unwrap_or(""));
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 // a fold's triangle, painted (the fonts have no arrow glyphs), and its name
@@ -1704,7 +1734,7 @@ mod desk {
                 }
                 if let (Some(id), Some(text)) = (&id, &log) {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("Open log.txt").clicked() {
+                        if ui.small_button(if cfg!(target_arch = "wasm32") { "Download log.txt" } else { "Open log.txt" }).clicked() {
                             if let Err(e) = reveal(&folder(&self.root()).join(id).join("log.txt")) {
                                 said = Some(e);
                             }
@@ -1809,11 +1839,33 @@ mod desk {
                                 ui.selectable_value(&mut self.model, m.to_string(), label);
                             }
                         });
-                        pick.response.on_hover_text("The model Claude Code runs on for the next Start (the console says which it got)");
+                        pick.response.on_hover_text(format!("The model {MAKER} runs on for the next Start (the console says which it got)"));
                         hint(ui, "Claude:");
+                        #[cfg(target_arch = "wasm32")]
+                        self.cap(ui);
                     });
                 });
             });
+        }
+
+        /// The browser's runs: what one may cost at most (on the user's key; kept in this
+        /// browser), as the window's banner shows it.
+        #[cfg(target_arch = "wasm32")]
+        fn cap(&mut self, ui: &mut egui::Ui) {
+            const NAME: &str = "claude_run_cap";
+            if self.cloud.cap == 0 {
+                self.cloud.cap = platform::stored_text(NAME).and_then(|t| t.trim().parse().ok()).unwrap_or(super::cloud::CAP_CENTS);
+            }
+            let mut dollars = self.cloud.cap / 100;
+            let set = ui
+                .add(egui::DragValue::new(&mut dollars).range(1..=200).prefix("$"))
+                .on_hover_text("The most a run may cost, at the API's prices, on your key: it stops there (a request has cost $0.20 to $7.50 so far, about $2 typically)");
+            mark("uiRequestCap", &set);
+            if set.changed() {
+                self.cloud.cap = dollars * 100;
+                let _ = platform::store_text(NAME, &self.cloud.cap.to_string());
+            }
+            hint(ui, "at most");
         }
 
         /// A request's run button: Start (Start again, Make it again) or Cancel, and what was
@@ -1826,7 +1878,7 @@ mod desk {
             let starting = self.starting.as_ref().is_some_and(|(id, _)| *id == r.id);
             if r.status == Status::InProgress || starting {
                 let cancelling = self.cancelling.as_ref().is_some_and(|(id, _)| *id == r.id);
-                let cancel = ui.add_enabled(!starting && !cancelling, egui::Button::new(if cancelling { "Cancelling…" } else { "Cancel" })).on_hover_text("Stops Claude Code: the request waits again, its log kept");
+                let cancel = ui.add_enabled(!starting && !cancelling, egui::Button::new(if cancelling { "Cancelling…" } else { "Cancel" })).on_hover_text(format!("Stops {MAKER}: the request waits again, its log kept"));
                 mark(&format!("uiRequestCancel_{}", r.id), &cancel);
                 return cancel.clicked().then(|| Run::Cancel(r.id.clone()));
             }
@@ -1852,12 +1904,12 @@ mod desk {
                 _ => "Start",
             };
             let about = match (r.lines_ready(), r.check_lines) {
-                _ if r.several && r.parent.is_empty() => "Claude Code finds each drawing on the pictures and makes it a request of its own; Make them all then has them made one after another",
-                _ if r.status == Status::Done => "Claude Code makes it once more, from the pictures; to change the model it made instead, say what in \"Make it again\" below",
-                (true, true) => "Claude Code starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again",
-                (true, false) => "Claude Code starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time",
-                (false, true) => "Claude Code draws its lines over the pictures and the front and the side from them, then stops for you to check them; the console shows everything it does",
-                (false, false) => "Claude Code models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does",
+                _ if r.several && r.parent.is_empty() => format!("{MAKER} finds each drawing on the pictures and makes it a request of its own; Make them all then has them made one after another"),
+                _ if r.status == Status::Done => format!("{MAKER} makes it once more, from the pictures; to change the model it made instead, say what in \"Make it again\" below"),
+                (true, true) => format!("{MAKER} starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again"),
+                (true, false) => format!("{MAKER} starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time"),
+                (false, true) => format!("{MAKER} draws its lines over the pictures and the front and the side from them, then stops for you to check them; the console shows everything it does"),
+                (false, false) => format!("{MAKER} models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does"),
             };
             let start = ui
                 .add_enabled(busy.is_none(), egui::Button::new(label))
@@ -1973,6 +2025,9 @@ mod desk {
                 hint(ui, "No requests yet.");
             }
             for r in &list {
+                // (for the checks: its status, how far along, its step)
+                let status = serde_json::to_value(r.status).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+                platform::set_hook(&format!("request_{}", r.id), &format!("{status}|{:.2}|{}", r.progress.done, r.progress.step));
                 let chosen = self.selected.as_deref() == Some(r.id.as_str());
                 let (fill, edge) = if chosen { (Color32::from_rgb(38, 52, 76), Color32::from_rgb(84, 116, 164)) } else { (Color32::from_gray(28), Color32::from_gray(50)) };
                 // the card's click, under what's drawn on it (its size from the frame before)
@@ -2022,7 +2077,7 @@ mod desk {
                             mark(&format!("uiRequestMade_{}", r.id), &made);
                         }
                         if starting {
-                            hint(ui, "starting Claude Code…");
+                            hint(ui, &format!("starting {MAKER}…"));
                         } else if r.status == Status::Failed {
                             ui.label(RichText::new(&r.progress.step).size(11.5).color(FAILED));
                         } else if r.lines_ready() {
@@ -2101,7 +2156,7 @@ mod desk {
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("Drop pictures here").size(18.0).color(Color32::from_gray(170)));
                     hint(ui, "Front, side, back, close-ups of one creature or prop: one request.");
-                    hint(ui, "Then Start it: Claude Code models it in Blender by itself.");
+                    hint(ui, &format!("Then Start it: {MAKER} models it in Blender by itself."));
                 });
                 return (None, None, None);
             };
@@ -2109,7 +2164,7 @@ mod desk {
             let mut r = before.clone();
             let mut remove = None;
             // the drawings Claude works from, as it makes them: see how well the lines sit
-            let drawn: Vec<String> = r.lines.iter().filter(|f| self.picture_path(&r.id, f).is_file()).cloned().collect();
+            let drawn: Vec<String> = r.lines.iter().filter(|f| disk::is_file(&self.picture_path(&r.id, f))).cloned().collect();
             if r.lines_ready() {
                 // Claude stopped for the user's check ("Let me check the lines first"): the
                 // lines and what to do next first, in reach
@@ -2521,8 +2576,8 @@ mod desk {
                 let queued = self.queue.place(&r.id).is_some();
                 let label = if other.is_some() { "Queue it to make again with these comments" } else { "Make it again with these comments" };
                 let about = match &other {
-                    Some(b) => format!("{b} is being made: Claude Code makes this one again on its own once it (and the queue before it) has ended"),
-                    None => "Claude Code starts from the model the last run made and changes what you say, keeping the rest".into(),
+                    Some(b) => format!("{b} is being made: {MAKER} makes this one again on its own once it (and the queue before it) has ended"),
+                    None => format!("{MAKER} starts from the model the last run made and changes what you say, keeping the rest"),
                 };
                 let again = ui
                     .add_enabled(said_what && !queued && !mine, egui::Button::new(RichText::new(label).strong()))
@@ -2554,8 +2609,8 @@ mod desk {
                     (None, _) => format!("Make {n} variant{}", if n == 1 { "" } else { "s" }),
                 };
                 let about = match &other {
-                    Some(b) => format!("{b} is being made: Claude Code makes these on its own once it (and the queue before it) has ended"),
-                    None => "Claude Code starts from the model made and makes its variants, keeping the model itself as it is".into(),
+                    Some(b) => format!("{b} is being made: {MAKER} makes these on its own once it (and the queue before it) has ended"),
+                    None => format!("{MAKER} starts from the model made and makes its variants, keeping the model itself as it is"),
                 };
                 let vary = ui
                     .add_enabled(n > 0 && !queued && !mine, egui::Button::new(RichText::new(label).strong()))
@@ -2574,7 +2629,8 @@ mod desk {
             }
             ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button("Open the folder").on_hover_text("private/requests/<id>/ in the file manager").clicked() {
+                let (open, about) = if cfg!(target_arch = "wasm32") { ("Download the folder", "Its files as a zip") } else { ("Open the folder", "private/requests/<id>/ in the file manager") };
+                if ui.button(open).on_hover_text(about).clicked() {
                     if let Err(e) = reveal(&folder(&self.root()).join(&r.id)) {
                         said = Some(e);
                     }
@@ -3222,7 +3278,7 @@ mod desk {
     fn foot(ui: &mut egui::Ui, r: &ModelRequest, starting: bool) {
         let (at, words) = r.progress.at(now_secs());
         let (fraction, color, text) = match r.status {
-            _ if starting => (0.02, WORKING, "starting Claude Code".to_string()),
+            _ if starting => (0.02, WORKING, format!("starting {MAKER}")),
             Status::InProgress => (at, WORKING, words),
             Status::Done => (1.0, DONE, "made".to_string()),
             Status::Failed => (r.progress.done.clamp(0.02, 1.0) as f32, FAILED, r.progress.step.clone()),
@@ -3313,6 +3369,13 @@ mod desk {
             }
         }
 
+        /// What a run made in the cloud for the editor to take in: its props' records and
+        /// models, by their paths in the project.
+        #[cfg(target_arch = "wasm32")]
+        pub fn take_made(&mut self) -> Vec<(String, Vec<u8>)> {
+            std::mem::take(&mut self.desk.cloud.made)
+        }
+
         /// The panel (`st`: as the layout has it), when open (and the pictures dropped,
         /// whether or not); a prop to use when a done request's "Use it" is clicked.
         pub fn window(&mut self, ui: &mut egui::Ui, st: &mut super::super::dock::PaneState, content: &Content) -> Option<String> {
@@ -3326,6 +3389,7 @@ mod desk {
             }
             self.sign_in |= std::mem::take(&mut d.sign_in);
             let (mut use_prop, mut name_focused) = (None, false);
+            platform::set_hook("requests", if self.open { "open" } else { "" });
             if self.open {
                 let hovering = self.hovering;
                 st.open = true;

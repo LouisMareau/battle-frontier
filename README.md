@@ -96,8 +96,11 @@ node tools/padcheck.mjs                # controllers (stand-ins for the Gamepad 
 node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, the Team's list, always a main, the last battles, View all's board of cards (its order, sorts, a type, a card's pin, a creature's details and moves, one lost for good), a controller; the pixelation (as dense as asked, with the camera's zoom: hook `pixelzoom`) and LCD, an Options category closed and opened
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
 node tools/layoutcheck.mjs             # the editor's panels: as they first come, floated and docked again, closed and opened, pinged, the toggles' names folded, all kept after a reload; what's selected (props, the buildings, the map) fitting the Inspector
-node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests window's note
-python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; the user's bones
+node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests button greyed out with no Claude sign-in
+node tools/relaycheck.mjs              # the site's relay to Anthropic (functions/claude/), as Cloudflare runs it: only the requests' calls go on, only from the site's pages, only the API's headers (the user's key, no cookie), the answer streamed back as it is (CI runs it)
+node tools/requestcheck.mjs            # a model request in the browser against a stand-in for Anthropic: the Claude sign-in's key (a wrong one turned away, the right one kept), a picture dropped, Start in the cloud (the agent and its sandbox made once, the files mounted, the commands sent, the events followed into the bar and the console), its outputs back as a prop, kept after a reload
+python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; the user's bones; the user's own sign-in (a subscription before an API key in the environment)
+python tools/blender/test_cloud_run.py  # a run in the cloud's own steps: setup (the files, Blender's wrapper, the cloud's note), run_claude.py --prompt and --settle, the outputs and their manifest
 cargo test -p engine-game -- --ignored shot   # the desktop-only windows drawn on the GPU, no window opened (build/shots/requests-bones.png; SHOT_PICTURE: the picture)
 cargo test -p engine-game -- --ignored real_build   # the Builds panel's build for real: a debug desktop build into build/local/test, then one cancelled as it compiles (the folder as it was)
 node tools/worldcheck.mjs              # the World view: a piece dragged into place, the world saved, a walk across a seam into a chunked map
@@ -464,7 +467,7 @@ maps).
 The editor (the main menu's Editor, or `--maps`) opens on the map it last had, else the one
 games start on. Its top bar has its buttons in groups by kind, each in a border of its own
 (where it is: Maps and Menu; which map; Save, Auto-save, Undo and Redo; Sign in and Publish;
-on the desktop, Claude sign-in; how it shows: the time, Lamps, Sounds, Animate, Grid, Fit;
+Claude sign-in; how it shows: the time, Lamps, Sounds, Animate, Grid, Fit;
 Creatures, Debug and Walk; the panels' toggles at its right end), a whole group going on to
 the next row when one doesn't fit. Its
 **Menu** goes back to the main menu, to the **Content** (every
@@ -696,7 +699,7 @@ same on both: on a thread of their own on the desktop, the page's fetch in the b
 API answers other sites, but github.com's sign-in doesn't, so in the browser its two calls go
 through the site's own address: a Cloudflare Pages Function (`functions/github/login/`, only
 those two, nothing kept; `_routes.json`, written by `tools/cloudflare-build.sh`, keeps every
-other address plain files). github.com turns those calls away at times (429: it limits the
+other address plain files but those and the model requests' calls to Anthropic, `functions/claude/`). github.com turns those calls away at times (429: it limits the
 shared addresses Cloudflare's Functions go out from), so the Function asks for a code up to
 three times; the editor asks whether it's been typed less and less often while turned away
 (the waits doubling) and gives up after four refusals in a row, saying what to do instead; and
@@ -708,18 +711,47 @@ Signing in by code goes through the repository's own OAuth App,
 editor runs or is built overrides it (a fork's own app, say). A token pasted signs in too. For merging to stay the maintainers', keep the repository's collaborators few
 (a branch rule on main asking for a review stops anyone merging their own unreviewed).
 
-**Claude sign-in** (in the top bar, the desktop's) is what the model requests run on: Claude
-Code's own sign-in, as `claude auth status` tells (asked now and then, and while its window's
-open): a Claude subscription, or an Anthropic Console account (billed by the API). Its window
-opens Claude Code's login in a terminal of its own, which goes on in the browser (Anthropic's
-own sign-in: the editor never sees a password or a token), then asks every few seconds until
-it's done; the button says what it's signed in with ("Claude: Max"). Until then the
-**Requests** button is greyed out ("Only available with Claude subscription or API keys").
-A run goes on that sign-in: a subscription first, an `ANTHROPIC_API_KEY` in the environment
-left out then (it would bill the key instead), and without one, that key (`run_claude.py`
-logs what it's on).
+**Claude sign-in** (in the top bar) is what the model requests run on, each user's own: until
+there's one the **Requests** button is greyed out ("Only available with Claude subscription or
+API keys"), and the button says what it's signed in with ("Claude: Max", "Claude: API key").
+On the desktop it's Claude Code's own sign-in, as `claude auth status` tells (asked now and
+then, and while its window's open): a Claude subscription, or an Anthropic Console account
+(billed by the API). Its window opens Claude Code's login in a terminal of its own, which goes
+on in the browser (Anthropic's own sign-in: the editor never sees a password or a token), then
+asks every few seconds until it's done. A run goes on that sign-in: a subscription first, an
+`ANTHROPIC_API_KEY` in the environment left out then (it would bill the key instead), and
+without one, that key (`run_claude.py` logs what it's on). In the browser it's the user's own
+Claude API key (Anthropic lets no other site sign in with a subscription): typed in the window,
+checked with Anthropic, kept in this browser only (forgotten there with "Forget the key"); the
+site has no key of its own, so nobody's run is ever billed to anyone else.
 
-**Requests** (in the top bar; the desktop only, the browser's window says why) is where the
+**In the browser**, the requests' folder is kept in the browser (`crate::keep`, at the same
+paths: the window works the same, never published, laid over nothing) and a run goes in a
+sandbox of Anthropic's on the user's key (Managed Agents: `crates/game/src/mapedit/requests/cloud.rs`):
+the agent ("Battle Frontier model requests", its prompt `tools/blender/cloud_agent.md`, its
+tools Anthropic's own with the web's off) and its environment (the packages Blender needs on a
+virtual display; its network the package registries, GitHub and Blender's downloads) are made
+in the key's workspace the first time, found again by their names after, and made again when
+the recipe changes. Start uploads the request's folder (and the props it made already, kept in
+the browser), and the session's first message runs the desktop's recipe there: a checkout of
+the commit the site was built from, `tools/blender/cloud_run.py setup` (the files in place,
+Blender 3.1.2 for Linux fetched and checked against Blender's sum, run under Xvfb),
+`run_claude.py --prompt` (the run started as Start starts it, its prompt written for the
+sandbox's Claude to follow: no cargo there, the editor reads the model once it's back),
+`run_claude.py --settle` (ended as a run here ends), `cloud_run.py outputs` (what's new or
+changed, with a manifest of where each goes). The editor follows the session's events
+(streamed, listed again after a break; a page opened again follows its run on): Claude's words
+and tool calls go into the console, and the request scripts print each change they make to a
+request (`[request] {...}`) and each log line (`[request-log] {...}`), which move its bar as on
+the desktop. Once it's done its outputs come back (the renders into the request's folder, the
+props and their models into the asset browser, saved at once) and the uploads and outputs are
+taken off the key's files. A run is capped (the window's "at most", $15 at first: it stops
+there); a request has cost $0.20 to $7.50 so far at the API's prices, about $2 typically.
+Anthropic's API won't take agents', sessions' or files' calls from a page, so they go through
+the site's own address (`functions/claude/`, only those, the key passed on and never kept).
+`node tools/requestcheck.mjs` runs one against a stand-in for Anthropic.
+
+**Requests** (in the top bar) is where the
 pictures of a creature, a prop or a floor go for Claude to model in Blender: drop PNG, JPG or WebP files
 on the window while it's open (models dropped meanwhile still go to the asset browser, and
 pictures go to it only while it's open). The first drop starts a request named after the

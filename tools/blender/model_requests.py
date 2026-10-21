@@ -44,6 +44,10 @@ request.json is laid out as the project's records are (content::to_text): the ed
 file write the same text for the same request. Each request's log.txt (what its runs did,
 each line timed, the computer's own clock) is written here too: run_claude.py and the
 editor's buttons go through `log`.
+
+In the cloud (a sandbox of Anthropic's, which the web editor's runs go in: cloud_run.py), each
+change to a request and each line of its log is printed too, as `[request] {...}` and
+`[request-log] {...}`: the editor follows the run by them.
 """
 import json
 import os
@@ -188,6 +192,27 @@ def folder(root, rid):
     return Path(root) / "private" / "requests" / rid
 
 
+# ---------------------------------------------------------------- in the cloud
+
+# what cloud_run.py's setup says of the sandbox a run's in (Blender's program there): only there
+CLOUD = Path("private") / "requests" / ".cloud.json"
+
+
+def cloud(root):
+    """The sandbox's setup, when the run's in the cloud (the web editor's); else None."""
+    try:
+        return json.loads((Path(root) / CLOUD).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def told(root, what, value):
+    """In the cloud: a line the editor follows the run by (a request's fields as they're
+    written, a line of its log), printed as it comes."""
+    if cloud(root) is not None:
+        print(f"[{what}] " + json.dumps(value, ensure_ascii=False), flush=True)
+
+
 def slug(text):
     return re.sub(r"[^a-z0-9]+", "_", text.lower()).strip("_")
 
@@ -218,10 +243,12 @@ def load(root, rid):
     return normal(record)
 
 
-def save(root, record):
+def save(root, record, said=True):
     path = folder(root, record["id"]) / "request.json"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(to_text(normal(record)), encoding="utf-8", newline="\n")
+    if said:
+        told(root, "request", normal(record))
     return record
 
 
@@ -229,7 +256,8 @@ def update(root, rid, **fields):
     """Read again, changed, written at once: what the editor changed meanwhile stays."""
     record = load(root, rid)
     record.update(fields)
-    return save(root, normal(record))
+    told(root, "request", dict(fields, id=rid))
+    return save(root, normal(record), said=False)
 
 
 def every(root):
@@ -287,6 +315,7 @@ def log(root, rid, text):
     lines indented under its time."""
     path = folder(root, rid) / "log.txt"
     path.parent.mkdir(parents=True, exist_ok=True)
+    told(root, "request-log", {"id": rid, "text": str(text)})
     at = stamp()
     lines = str(text).splitlines() or [""]
     with open(path, "a", encoding="utf-8", newline="\n") as f:

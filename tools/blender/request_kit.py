@@ -1680,7 +1680,10 @@ def free_prop_id(root, base):
 
 
 def engine_check(root, glb):
-    """What the engine reads in the model (export-glb check), or why it couldn't be asked."""
+    """What the engine reads in the model (export-glb check), or why it couldn't be asked (in
+    the cloud there's no engine to build: the web editor reads the model once it's back)."""
+    if mr.cloud(root) is not None:
+        return "(the web editor reads it once it's back: no engine in the cloud)"
     try:
         run = subprocess.run(["cargo", "run", "-q", "-p", "engine-world", "--bin", "export-glb", "--", "check", str(glb)], cwd=str(root), capture_output=True, text=True, timeout=900)
     except (OSError, subprocess.TimeoutExpired) as e:
