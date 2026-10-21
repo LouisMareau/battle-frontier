@@ -723,8 +723,13 @@ tail, wing, and misc for a piece you name yourself): a click adds each joint, ch
 root out, and a right-click ends the line. Claude works out which part of the creature each
 line is on when it draws its own lines, and rigs the creature on them. It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
-committed. The list shows each request's status (waiting, in progress, failed, done) and its
-pictures, with a **Start** button on each (**Cancel** while it's being made; one at a time):
+committed. The list shows each request as a card as wide as it, folded at first: its status
+(waiting, in progress, failed, done) and its kind as tags, its name, an "i" with the rest of
+what it asks for when hovered (its height, its style, its cells, shapes, variants, where its
+model goes, its notes, its folder), and its button at the end, with a bar at its foot for how
+far its making is, folded or not; unfolded, the file of the model it made (green) once it's
+made, its drawings, and the models it made (the model and each variant, not its line work).
+Its button is **Start** (**Cancel** while it's being made; one at a time):
 Start has Claude Code model it by itself, unattended (`tools/blender/run_claude.py`, with only
 the tools the recipe needs; **Claude:** at the top picks the model). One in progress has a bar
 with the time left (the top bar's button shows it too); it ends done by itself once the model

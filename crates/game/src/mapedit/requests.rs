@@ -2011,16 +2011,22 @@ mod desk {
             }
             for r in &list {
                 let chosen = self.selected.as_deref() == Some(r.id.as_str());
-                let fill = if chosen { Color32::from_rgb(38, 52, 76) } else { Color32::from_gray(28) };
-                // the row's click, under the buttons drawn on it (its size from the frame before)
+                let (fill, edge) = if chosen { (Color32::from_rgb(38, 52, 76), Color32::from_rgb(84, 116, 164)) } else { (Color32::from_gray(28), Color32::from_gray(50)) };
+                // the card's click, under what's drawn on it (its size from the frame before)
                 let row_id = ui.id().with(("request-row", &r.id));
                 let row = ui.ctx().data(|d| d.get_temp::<egui::Rect>(row_id)).map(|rect| ui.interact(rect, row_id, Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand));
                 let starting = self.starting.as_ref().is_some_and(|(id, _)| *id == r.id);
-                let frame = egui::Frame::new().fill(fill).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                // folded by default: its first row and its progress only
+                let mut fold = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-card", &r.id)), false);
+                let frame = egui::Frame::new().fill(fill).stroke(egui::Stroke::new(1.0, edge)).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
+                    // its first row: unfolded or not, its status, its name, its kind, the rest of
+                    // what it asks for (hovered), and its button at the end
                     ui.horizontal(|ui| {
+                        let open = fold.is_open();
+                        let toggle = fold.show_toggle_button(ui, egui::collapsing_header::paint_default_icon).on_hover_text(if open { "Fold it" } else { "Unfold it: what it made, its pictures, its models" });
+                        mark(&format!("uiRequestFold_{}", r.id), &toggle);
                         chip(ui, r);
-                        ui.label(RichText::new(&r.name).strong());
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if r.lines_ready() && !starting {
                                 // the user's turn: the request's panel has the lines and what's next
@@ -2033,43 +2039,78 @@ mod desk {
                             } else if let Some(a) = self.run_button(ui, r, true) {
                                 asked = Some(a);
                             }
+                            let info = info_icon(ui).on_hover_text(details(r));
+                            mark(&format!("uiRequestInfo_{}", r.id), &info);
+                            kind_tag(ui, r.kind);
+                            // the name in what's left, cut short (whole when hovered)
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                ui.add(egui::Label::new(RichText::new(&r.name).strong()).truncate()).on_hover_text(&r.name);
+                            });
                         });
                     });
-                    hint(ui, &about(r));
-                    if starting {
-                        hint(ui, "starting Claude Code…");
-                    } else if r.status == Status::InProgress {
-                        bar(ui, r, ui.available_width(), 6.0);
-                        hint(ui, &r.progress.at(now_secs()).1);
-                    } else if r.status == Status::Failed {
-                        ui.label(RichText::new(&r.progress.step).size(11.5).color(FAILED));
-                    } else if r.lines_ready() {
-                        ui.label(RichText::new(LINES_READY).size(11.5).color(WAITING));
-                    }
-                    ui.horizontal_wrapped(|ui| {
-                        for f in r.images.iter().take(4) {
-                            let path = self.picture_path(&r.id, f);
-                            self.picture(ui, &path, 34.0, Sense::hover());
+                    fold.show_body_unindented(ui, |ui| {
+                        ui.add_space(2.0);
+                        // what it made, by its whole file's name
+                        if r.status == Status::Done && !r.prop.is_empty() {
+                            let space = if r.mine { "content" } else { "temporary" };
+                            let file = format!("{space}/assets/models/{}.glb", r.prop);
+                            let made = ui.add(egui::Label::new(RichText::new(&file).monospace().size(11.0).color(DONE)).wrap());
+                            let made = made.on_hover_text(format!("The prop it made, {} (its record {space}/data/props/{}.json)", r.prop, r.prop));
+                            mark(&format!("uiRequestMade_{}", r.id), &made);
                         }
-                        if r.images.len() > 4 {
-                            hint(ui, &format!("+{}", r.images.len() - 4));
+                        if starting {
+                            hint(ui, "starting Claude Code…");
+                        } else if r.status == Status::Failed {
+                            ui.label(RichText::new(&r.progress.step).size(11.5).color(FAILED));
+                        } else if r.lines_ready() {
+                            ui.label(RichText::new(LINES_READY).size(11.5).color(WAITING));
                         }
-                        if r.images.is_empty() {
-                            hint(ui, "no pictures");
-                        }
-                    });
-                    if r.status == Status::Done {
-                        ui.horizontal(|ui| {
-                            for f in r.previews.iter().take(3) {
-                                let path = self.picture_path(&r.id, f);
-                                self.picture(ui, &path, 34.0, Sense::hover());
-                            }
-                            if !r.prop.is_empty() {
-                                ui.label(RichText::new(format!("→ {}", r.prop)).monospace().size(11.0).color(DONE));
-                            }
+                        // its drawings, and the models it made (its line work left out)
+                        ui.columns(2, |cols| {
+                            boxed(&mut cols[0], "Drawings", |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    for f in r.images.iter().take(6) {
+                                        let path = self.picture_path(&r.id, f);
+                                        self.picture(ui, &path, 40.0, Sense::hover()).on_hover_text(f.as_str());
+                                    }
+                                    if r.images.len() > 6 {
+                                        hint(ui, &format!("+{}", r.images.len() - 6));
+                                    }
+                                    if r.images.is_empty() {
+                                        hint(ui, "no pictures");
+                                    }
+                                });
+                            });
+                            boxed(&mut cols[1], "Models", |ui| {
+                                let made = made_models(r);
+                                if !r.children.is_empty() {
+                                    hint(ui, &format!("split into {}: each its own request", r.children.len()));
+                                } else if made.is_empty() {
+                                    hint(ui, if r.status == Status::Done { "none" } else { "none yet" });
+                                }
+                                for (k, (prop, render)) in made.into_iter().enumerate() {
+                                    ui.horizontal(|ui| {
+                                        match render {
+                                            Some(f) => {
+                                                let path = self.picture_path(&r.id, &f);
+                                                self.picture(ui, &path, 32.0, Sense::hover());
+                                            }
+                                            None => {
+                                                ui.allocate_exact_size(egui::vec2(32.0, 32.0), Sense::hover());
+                                            }
+                                        }
+                                        // (its prop's id too long for the box: whole when hovered)
+                                        let name = if k == 0 { "model".to_string() } else { format!("variant {}", k + 1) };
+                                        ui.add(egui::Label::new(RichText::new(name).size(11.5).color(DONE)).truncate()).on_hover_text(format!("The prop {prop}"));
+                                    });
+                                }
+                            });
                         });
-                    }
+                    });
+                    // its progress, at its foot, folded or not
+                    foot(ui, r, starting);
                 });
+                fold.store(ui.ctx());
                 ui.ctx().data_mut(|d| d.insert_temp(row_id, frame.response.rect));
                 if let Some(row) = row {
                     mark(&format!("uiRequest_{}", r.id), &row);
@@ -3099,6 +3140,16 @@ mod desk {
         ui.add(bar).on_hover_text(format!("{}: {text}", r.name))
     }
 
+    /// A word on a colour, its corners a little rounded.
+    fn tag(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
+        egui::Frame::new()
+            .fill(color)
+            .corner_radius(3.0)
+            .inner_margin(egui::Margin::symmetric(4, 1))
+            .show(ui, |ui| ui.label(RichText::new(text).size(9.5).strong().color(Color32::BLACK)))
+            .response
+    }
+
     /// Its status, as a tag (waiting for the user's check of its lines: LINES READY).
     fn chip(ui: &mut egui::Ui, r: &ModelRequest) {
         let (text, color) = match r.status {
@@ -3108,7 +3159,122 @@ mod desk {
             Status::Failed => ("FAILED", FAILED),
             Status::Done => ("DONE", DONE),
         };
-        ui.label(RichText::new(text).size(9.5).strong().color(Color32::BLACK).background_color(color));
+        tag(ui, text, color);
+    }
+
+    /// Its kind, as a tag, a colour each.
+    fn kind_tag(ui: &mut egui::Ui, kind: Kind) {
+        let color = match kind {
+            Kind::Creature => Color32::from_rgb(196, 160, 238),
+            Kind::Prop => Color32::from_rgb(158, 186, 220),
+            Kind::Grass => Color32::from_rgb(150, 210, 128),
+            Kind::Environment => Color32::from_rgb(118, 200, 182),
+            Kind::Floor => Color32::from_rgb(220, 186, 132),
+        };
+        tag(ui, kind.name(), color);
+    }
+
+    /// A small "i" in a ring, for what's said when it's hovered.
+    fn info_icon(ui: &mut egui::Ui) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(egui::vec2(15.0, 15.0), Sense::hover());
+        let color = if response.hovered() { Color32::from_gray(235) } else { Color32::from_gray(150) };
+        let p = ui.painter();
+        p.circle_stroke(rect.center(), 6.5, egui::Stroke::new(1.2, color));
+        p.text(rect.center() + egui::vec2(0.0, 0.5), egui::Align2::CENTER_CENTER, "i", egui::FontId::proportional(10.5), color);
+        response
+    }
+
+    /// What a request asks for, beyond its name and kind: its height and style (`about`), then
+    /// a line each for the rest it says (its cells, shapes, pose, variants, drawings outlined,
+    /// lines checked first, where its model goes, its notes), and its folder.
+    pub(in super::super) fn details(r: &ModelRequest) -> String {
+        let mut out = vec![about(r)];
+        if r.kind != Kind::Floor {
+            out.push(format!("Height: {} cells", r.height));
+        }
+        out.push(format!(
+            "Style: {}",
+            match r.style {
+                Style::Smooth => "smooth",
+                Style::LowPoly => "low-poly",
+                Style::Accurate => "accurate",
+            }
+        ));
+        if r.kind == Kind::Grass || r.cells != [1, 1] {
+            out.push(format!("Cells: {} × {}", r.cells[0], r.cells[1]));
+        }
+        out.push(if r.shapes.unlimited { format!("Shapes: as many as it needs, up to about {SHAPES_CAP}") } else { format!("Shapes: {} to {}", r.shapes.min, r.shapes.max) });
+        if r.kind == Kind::Creature {
+            out.push(format!("Pose: {}", if r.pose == Pose::TPose { "T-pose" } else { "as the pictures show" }));
+        }
+        if r.variants > 0 {
+            let how = if r.vary.trim().is_empty() { String::new() } else { format!(": {}", r.vary.trim()) };
+            out.push(format!("Variants: {}{how}", r.variants));
+        }
+        if r.several && r.parent.is_empty() {
+            let n = r.outlined().len();
+            out.push(if n == 0 { "Process multiple: every drawing made".to_string() } else { format!("Process multiple: {n} drawing{} outlined", if n == 1 { "" } else { "s" }) });
+        }
+        if r.check_lines {
+            out.push("Its lines checked first".to_string());
+        }
+        out.push(if r.mine { "Mine or licensed: made into content/".to_string() } else { "A placeholder: made into temporary/".to_string() });
+        let notes = r.notes.trim();
+        if !notes.is_empty() {
+            let short: String = notes.chars().take(140).collect();
+            out.push(format!("Notes: {short}{}", if notes.chars().count() > 140 { "…" } else { "" }));
+        }
+        out.push(format!("Folder: private/requests/{}", r.id));
+        out.join("\n")
+    }
+
+    /// A small box on a card, its title over what's in it.
+    fn boxed(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+        egui::Frame::new().fill(Color32::from_gray(20)).stroke(egui::Stroke::new(1.0, Color32::from_gray(44))).corner_radius(4.0).inner_margin(5.0).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(RichText::new(title).size(10.5).color(crate::hud::MUTED));
+            add(ui);
+        });
+    }
+
+    /// The models a request made: its prop with its own render (three-quarter, else the
+    /// first), then each variant's prop with its render (`variant_k.png`); none for its line
+    /// work.
+    pub(in super::super) fn made_models(r: &ModelRequest) -> Vec<(String, Option<String>)> {
+        if r.status != Status::Done || r.prop.is_empty() {
+            return vec![];
+        }
+        let own = r.previews.iter().find(|f| f.as_str() == "preview_three_quarter.png").or_else(|| r.previews.iter().find(|f| f.starts_with("preview_"))).cloned();
+        let mut out = vec![(r.prop.clone(), own)];
+        for (k, prop) in r.variant_props.iter().enumerate() {
+            let file = format!("variant_{}.png", k + 2);
+            out.push((prop.clone(), r.previews.contains(&file).then_some(file)));
+        }
+        out
+    }
+
+    /// A card's foot, folded or not: how far its making is, in its status's colour (waiting,
+    /// nothing yet; being made, its progress; made, all of it; failed, where it stopped), its
+    /// words when hovered.
+    fn foot(ui: &mut egui::Ui, r: &ModelRequest, starting: bool) {
+        let (at, words) = r.progress.at(now_secs());
+        let (fraction, color, text) = match r.status {
+            _ if starting => (0.02, WORKING, "starting Claude Code".to_string()),
+            Status::InProgress => (at, WORKING, words),
+            Status::Done => (1.0, DONE, "made".to_string()),
+            Status::Failed => (r.progress.done.clamp(0.02, 1.0) as f32, FAILED, r.progress.step.clone()),
+            Status::Waiting if r.lines_ready() => (r.progress.done as f32, WAITING, LINES_READY.to_string()),
+            Status::Waiting => (0.0, WAITING, "waiting to be made".to_string()),
+        };
+        ui.add_space(3.0);
+        // (painted: egui's bar is never shorter than it's high, a dot where nothing's done)
+        let (rect, bar) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, 2.0, Color32::from_gray(48));
+        if fraction > 0.0 {
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fraction.clamp(0.0, 1.0), rect.height())), 2.0, color);
+        }
+        mark(&format!("uiRequestFoot_{}", r.id), &bar.on_hover_text(format!("{}: {text}", r.name)));
     }
 
     /// A run asked for from the window.
@@ -4553,6 +4719,123 @@ mod tests {
             out = Some(run(&mut req, &mut shooter, vec![]));
         }
         shooter.shoot(&ctx, out.take().unwrap().shapes, [1400, 900], &dir.join("requests-variants.png")).unwrap();
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A request's card: folded at first, its first row (its fold, its button, the rest of what
+    /// it asks for under its "i") and its progress at its foot only; unfolded, what it made by
+    /// its whole file's name, its drawings and its models (its line work left out); its foot
+    /// still there.
+    #[test]
+    fn a_card_is_folded_at_first_and_unfolds_to_what_it_made() {
+        let root = scratch("cards");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut rock = create(&root, "Flat rock.png").unwrap();
+        add_picture(&root, &mut rock, "front.png", &png(60, 40, 5)).unwrap();
+        (rock.kind, rock.status, rock.prop, rock.height, rock.style) = (Kind::Environment, Status::Done, "flat_rock".into(), 1.2, Style::Accurate);
+        (rock.variants, rock.vary, rock.variant_props) = (1, "mossier".into(), vec!["flat_rock_variant_2".into()]);
+        rock.previews = vec!["preview_front.png".into(), "preview_three_quarter.png".into(), "variant_2.png".into()];
+        save(&root, &rock).unwrap();
+        let mut pot = create(&root, "Clay pot.png").unwrap();
+        add_picture(&root, &mut pot, "pot.png", &png(40, 40, 2)).unwrap();
+        save(&root, &pot).unwrap();
+        req.desk().reload();
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        for id in ["flat_rock", "clay_pot"] {
+            assert!(marked(&format!("uiRequestFold_{id}")).is_some() && marked(&format!("uiRequestInfo_{id}")).is_some() && marked(&format!("uiRequestFoot_{id}")).is_some(), "{id}'s first row and its foot");
+        }
+        assert!(marked("uiRequestStart_clay_pot").is_some(), "its button on its first row");
+        assert!(marked("uiRequestMade_flat_rock").is_none(), "folded at first");
+        // unfolded: what it made, by its whole file's name; its foot under it still
+        click(&ctx, &mut req, "uiRequestFold_flat_rock");
+        for _ in 0..20 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        let (made, foot) = (marked("uiRequestMade_flat_rock").expect("unfolded"), marked("uiRequestFoot_flat_rock").unwrap());
+        assert!(foot.y > made.y, "the progress at its foot: {foot:?} under {made:?}");
+        assert!(marked("uiRequestMade_clay_pot").is_none(), "the other one folded still");
+        // what's under its "i"; its models, its own render and its variant's
+        let said = details(&req.desk().list.iter().find(|r| r.id == "flat_rock").unwrap().clone());
+        for line in ["Height: 1.2 cells", "Style: accurate", "Variants: 1: mossier", "A placeholder: made into temporary/", "Folder: private/requests/flat_rock"] {
+            assert!(said.lines().any(|l| l == line), "{line:?} in {said}");
+        }
+        let rock = req.desk().list.iter().find(|r| r.id == "flat_rock").unwrap().clone();
+        assert_eq!(
+            made_models(&rock),
+            vec![("flat_rock".to_string(), Some("preview_three_quarter.png".to_string())), ("flat_rock_variant_2".to_string(), Some("variant_2.png".to_string()))]
+        );
+        assert!(made_models(&req.desk().list.iter().find(|r| r.id == "clay_pot").unwrap().clone()).is_empty(), "nothing made yet");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A look by eye at the requests' cards: one made (unfolded: its file, its drawing, its
+    /// model and variant), one being made, one waiting, one failed, one split into two:
+    /// build/shots/requests-cards.png. It needs a GPU, so it's run by hand:
+    ///     cargo test -p engine-game -- --ignored shot
+    #[test]
+    #[ignore]
+    fn shot_of_the_request_cards() {
+        let root = scratch("shot-cards");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut tuft = create(&root, "Tall grass tuft.png").unwrap();
+        add_picture(&root, &mut tuft, "tuft.png", &png(80, 60, 3)).unwrap();
+        (tuft.kind, tuft.status, tuft.prop, tuft.height, tuft.style) = (Kind::Grass, Status::Done, "tall_grass_tuft".into(), 0.8, Style::Accurate);
+        (tuft.variants, tuft.vary, tuft.variant_props) = (1, "a shade warmer".into(), vec!["tall_grass_tuft_variant_2".into()]);
+        tuft.previews = vec!["preview_three_quarter.png".into(), "variant_2.png".into()];
+        save(&root, &tuft).unwrap();
+        for (f, seed) in [("preview_three_quarter.png", 7), ("variant_2.png", 9)] {
+            std::fs::write(root.join("private").join("requests").join("tall_grass_tuft").join(f), png(64, 64, seed)).unwrap();
+        }
+        let mut fox = create(&root, "Ember fox.png").unwrap();
+        add_picture(&root, &mut fox, "fox.png", &png(70, 60, 4)).unwrap();
+        (fox.kind, fox.status) = (Kind::Creature, Status::InProgress);
+        fox.progress = Progress { step: "building the model".into(), done: 0.45, started: 0.0, minutes: 12.0 };
+        save(&root, &fox).unwrap();
+        let mut pot = create(&root, "Clay pot.png").unwrap();
+        add_picture(&root, &mut pot, "pot.png", &png(40, 40, 2)).unwrap();
+        save(&root, &pot).unwrap();
+        let mut well = create(&root, "Stone well.png").unwrap();
+        add_picture(&root, &mut well, "well.png", &png(50, 50, 6)).unwrap();
+        (well.status, well.progress) = (Status::Failed, Progress { step: "failed: Claude stopped with an error".into(), done: 0.3, ..Default::default() });
+        save(&root, &well).unwrap();
+        let mut bushes = create(&root, "Round bushes.png").unwrap();
+        add_picture(&root, &mut bushes, "bushes.png", &png(90, 50, 8)).unwrap();
+        (bushes.kind, bushes.several, bushes.children) = (Kind::Environment, true, vec!["round_bush".into(), "flat_bush".into()]);
+        save(&root, &bushes).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("tall_grass_tuft".into());
+        let mut shooter = crate::shot::Shooter::new().unwrap();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1400.0, 900.0));
+        let content = content::Content::default();
+        let mut run = |req: &mut Requests, events: Vec<egui::Event>| {
+            crate::platform::clear_hooks();
+            let mut o = ctx.run_ui(egui::RawInput { events, screen_rect: Some(screen), ..Default::default() }, |ui| {
+                shown(ui, req, &content);
+            });
+            shooter.textures(&mut o.textures_delta);
+            o
+        };
+        for _ in 0..30 {
+            run(&mut req, vec![]);
+        }
+        let at = marked("uiRequestFold_tall_grass_tuft").unwrap();
+        let button = |pressed| egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE };
+        run(&mut req, vec![egui::Event::PointerMoved(at), button(true)]);
+        run(&mut req, vec![button(false)]);
+        let mut out = None;
+        for _ in 0..40 {
+            out = Some(run(&mut req, vec![egui::Event::PointerMoved(egui::pos2(700.0, 880.0))]));
+        }
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/shots/requests-cards.png");
+        shooter.shoot(&ctx, out.unwrap().shapes, [1400, 900], &path).unwrap();
         std::fs::remove_dir_all(&root).ok();
     }
 
