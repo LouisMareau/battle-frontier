@@ -388,6 +388,41 @@ fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
 }
 
+/// How much taller a group of the top bar is than its buttons: its border and its margin.
+const GROUP_EDGE: f32 = 4.0;
+
+/// Where the top bar's first row is, and how much of its width the panels' toggles take
+/// (memory's key: `group` leaves it them).
+const TOP_ROW: &str = "top bar's first row";
+
+/// A group of the top bar: those of a kind together, side by side in a border of their own,
+/// marked `name` (for the checks: where it is). In a row that wraps, a whole group goes on to
+/// the next when it no longer fits (its width as the frame before had it: a group's size isn't
+/// known before it's drawn, so the row couldn't wrap it by itself).
+fn group<R>(ui: &mut egui::Ui, name: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let id = egui::Id::new(("top-bar group", name));
+    let wide = ui.ctx().data(|d| d.get_temp::<f32>(id));
+    // what this row leaves (the first, less what the panels' toggles take)
+    let taken = ui.ctx().data(|d| d.get_temp::<(f32, f32)>(egui::Id::new(TOP_ROW))).filter(|(top, _)| ui.cursor().top() <= top + 1.0).map(|(_, w)| w).unwrap_or(0.0);
+    if ui.layout().main_wrap && wide.is_some_and(|w| w > ui.available_size_before_wrap().x - taken) {
+        ui.end_row();
+    }
+    let r = egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, Color32::from_gray(64)))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin::symmetric(5, 1))
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                add(ui)
+            })
+            .inner
+        });
+    mark(name, &r.response);
+    ui.ctx().data_mut(|d| d.insert_temp(id, r.response.rect.width()));
+    r.inner
+}
+
 /// A quiet line under a control: what it does, or a key.
 fn hint(ui: &mut egui::Ui, text: &str) {
     ui.label(RichText::new(text).size(11.5).color(Color32::from_gray(140)));
@@ -1407,84 +1442,97 @@ impl MapEditor {
             ui.add_space(4.0);
             // its first row: the panels' toggles at its right end; the rest from the left, one
             // row at the window's first size (1400 wide), more when narrower, rather than
-            // buttons off the edge
-            let height = ui.spacing().interact_size.y;
+            // buttons off the edge; each kind of them in a border of its own (`group`)
+            let height = ui.spacing().interact_size.y + GROUP_EDGE;
             let first = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), height));
+            // (the first row's groups stop short of the toggles; the rows after it run the whole
+            // width: `group` wraps by what each row leaves)
             let room = (first.width() - self.dock.toggles_width - 12.0).max(240.0);
-            ui.allocate_ui_with_layout(egui::vec2(room, height), egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
+            ui.ctx().data_mut(|d| d.insert_temp(egui::Id::new(TOP_ROW), (first.top(), first.width() - room)));
+            ui.allocate_ui_with_layout(egui::vec2(first.width(), height), egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
                 ui.spacing_mut().item_spacing.x = 6.0;
                 ui.spacing_mut().button_padding.x = 3.0;
-                ui.label(RichText::new("Maps").size(16.0).strong());
-                if let Some(to) = self.leave_menu(ui) {
-                    back = Some(to);
-                }
-                ui.separator();
-                self.map_picker(ui);
-                ui.separator();
-                let (save, about) = if saving::keeps() {
-                    ("Save", "Ctrl+S · kept in this browser, at content/data/maps/<id>.json (the Menu's Saved in this browser): Publish sends it")
-                } else if cfg!(target_arch = "wasm32") {
-                    ("Download", "Ctrl+S · downloads the map: put it in content/data/maps/")
-                } else {
-                    ("Save", "Ctrl+S · writes content/data/maps/<id>.json")
-                };
-                let s = ui.button(if self.dirty { format!("{save} •") } else { save.to_string() }).on_hover_text(about);
-                mark("uiSave", &s);
-                if s.clicked() {
-                    self.save();
-                }
-                self.autosave_toggle(ui);
-                if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
-                    self.undo();
-                }
-                if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
-                    self.redo();
-                }
-                self.publish_buttons(ui);
-                ui.separator();
-                self.time_slider(ui);
-                let lamps = ui.selectable_label(self.lamps, "Lamps").on_hover_text("The lamps lit whatever the time (they light up by night on their own)");
-                mark("uiLamps", &lamps);
-                if lamps.clicked() {
-                    self.lamps = !self.lamps;
-                }
-                let sounds = ui.selectable_label(self.sounds_on, "Sounds").on_hover_text("The props' and creatures' sounds and the place's ambience, heard from the walker (or the view)");
-                mark("uiSounds", &sounds);
-                if sounds.clicked() {
-                    self.sounds_on = !self.sounds_on;
-                }
-                let animate = ui.selectable_label(self.animate, "Animate").on_hover_text("Rigged props play their animations");
-                mark("uiAnimate", &animate);
-                if animate.clicked() {
-                    self.animate = !self.animate;
-                }
-                if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
-                    self.grid = !self.grid;
-                }
-                if ui.button("Fit").on_hover_text("The whole map in view (Home)").clicked() {
-                    self.recentre();
-                }
-                ui.separator();
-                let creatures = ui.selectable_label(self.creatures_on, "Creatures").on_hover_text("Creatures roam their zones");
-                mark("uiCreatures", &creatures);
-                if creatures.clicked() {
-                    self.creatures_on = !self.creatures_on;
-                    self.spawner.reset();
-                }
-                let debug = ui.selectable_label(self.debug, "Debug").on_hover_text("Every zone, tree area, link and creature path");
-                mark("uiDebug", &debug);
-                if debug.clicked() {
-                    self.debug = !self.debug;
-                }
-                let walk = ui.selectable_label(self.walker.is_some(), "Walk").on_hover_text("Try the map on foot: the arrows move, Esc stops");
-                mark("uiWalk", &walk);
-                if walk.clicked() {
-                    if self.walker.is_some() {
-                        self.stop_walk();
-                    } else {
-                        self.start_walk();
+                // where it is: the maps, the way back to the menu
+                group(ui, "uiGroupApp", |ui| {
+                    ui.label(RichText::new("Maps").size(16.0).strong());
+                    if let Some(to) = self.leave_menu(ui) {
+                        back = Some(to);
                     }
-                }
+                });
+                // which map
+                group(ui, "uiGroupMap", |ui| self.map_picker(ui));
+                // what's done to it: kept, undone, done again
+                group(ui, "uiGroupEdit", |ui| {
+                    let (save, about) = if saving::keeps() {
+                        ("Save", "Ctrl+S · kept in this browser, at content/data/maps/<id>.json (the Menu's Saved in this browser): Publish sends it")
+                    } else if cfg!(target_arch = "wasm32") {
+                        ("Download", "Ctrl+S · downloads the map: put it in content/data/maps/")
+                    } else {
+                        ("Save", "Ctrl+S · writes content/data/maps/<id>.json")
+                    };
+                    let s = ui.button(if self.dirty { format!("{save} •") } else { save.to_string() }).on_hover_text(about);
+                    mark("uiSave", &s);
+                    if s.clicked() {
+                        self.save();
+                    }
+                    self.autosave_toggle(ui);
+                    if ui.add_enabled(!self.undo.is_empty(), egui::Button::new("Undo")).on_hover_text("Ctrl+Z").clicked() {
+                        self.undo();
+                    }
+                    if ui.add_enabled(!self.redo.is_empty(), egui::Button::new("Redo")).on_hover_text("Ctrl+Y").clicked() {
+                        self.redo();
+                    }
+                });
+                // sent to the game's repository
+                group(ui, "uiGroupShare", |ui| self.publish_buttons(ui));
+                // how it shows: the time of day, lamps, sounds, what moves, the grid, the view
+                group(ui, "uiGroupView", |ui| {
+                    self.time_slider(ui);
+                    let lamps = ui.selectable_label(self.lamps, "Lamps").on_hover_text("The lamps lit whatever the time (they light up by night on their own)");
+                    mark("uiLamps", &lamps);
+                    if lamps.clicked() {
+                        self.lamps = !self.lamps;
+                    }
+                    let sounds = ui.selectable_label(self.sounds_on, "Sounds").on_hover_text("The props' and creatures' sounds and the place's ambience, heard from the walker (or the view)");
+                    mark("uiSounds", &sounds);
+                    if sounds.clicked() {
+                        self.sounds_on = !self.sounds_on;
+                    }
+                    let animate = ui.selectable_label(self.animate, "Animate").on_hover_text("Rigged props play their animations");
+                    mark("uiAnimate", &animate);
+                    if animate.clicked() {
+                        self.animate = !self.animate;
+                    }
+                    if ui.selectable_label(self.grid, "Grid").on_hover_text("Cell lines on the ground (G)").clicked() {
+                        self.grid = !self.grid;
+                    }
+                    if ui.button("Fit").on_hover_text("The whole map in view (Home)").clicked() {
+                        self.recentre();
+                    }
+                });
+                // tried out: its creatures, what's under it, on foot
+                group(ui, "uiGroupTry", |ui| {
+                    let creatures = ui.selectable_label(self.creatures_on, "Creatures").on_hover_text("Creatures roam their zones");
+                    mark("uiCreatures", &creatures);
+                    if creatures.clicked() {
+                        self.creatures_on = !self.creatures_on;
+                        self.spawner.reset();
+                    }
+                    let debug = ui.selectable_label(self.debug, "Debug").on_hover_text("Every zone, tree area, link and creature path");
+                    mark("uiDebug", &debug);
+                    if debug.clicked() {
+                        self.debug = !self.debug;
+                    }
+                    let walk = ui.selectable_label(self.walker.is_some(), "Walk").on_hover_text("Try the map on foot: the arrows move, Esc stops");
+                    mark("uiWalk", &walk);
+                    if walk.clicked() {
+                        if self.walker.is_some() {
+                            self.stop_walk();
+                        } else {
+                            self.start_walk();
+                        }
+                    }
+                });
             });
             let toggled = dock::toggles(ui, first, &mut self.dock);
             if let Some(r) = toggled.get(&dock::Pane::Requests) {

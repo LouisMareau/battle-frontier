@@ -1137,9 +1137,11 @@ mod tests {
         assert!(in_folder(&p, "Buildings"));
         assert!(!in_folder(&p, "Buildings/In"));
         assert!(!in_folder(&p, "Nature"));
-        // no folders of its own: its category's
+        // no folders of its own: its category's (grass grows anywhere: Nature, not Town)
         let tree = Prop { category: "tree".into(), ..Default::default() };
         assert!(in_folder(&tree, "Nature"));
+        let grass = Prop { category: "grass".into(), ..Default::default() };
+        assert!(in_folder(&grass, "Nature") && !in_folder(&grass, "Town"));
     }
 
     #[test]

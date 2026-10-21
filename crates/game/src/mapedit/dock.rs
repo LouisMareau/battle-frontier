@@ -456,34 +456,36 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
 /// more on it (Requests' count).
 pub(super) fn toggles(ui: &mut egui::Ui, row: Rect, dock: &mut Dock) -> BTreeMap<Pane, egui::Response> {
     let mut out = BTreeMap::new();
-    // from the right: the last first
+    // at the right end, in a border as the top bar's other groups are; its row runs right to
+    // left as the scope does: the last panel first, the fold last (at its left)
     let r = ui.scope_builder(egui::UiBuilder::new().max_rect(row).layout(egui::Layout::right_to_left(egui::Align::Center)), |ui| {
-        ui.spacing_mut().item_spacing.x = 4.0;
-        for p in Pane::ALL.into_iter().rev() {
-            let open = dock.is_open(p);
-            let image = egui::Image::new(p.icon()).fit_to_exact_size(Vec2::splat(15.0)).tint(ui.visuals().text_color());
-            let button = if dock.words { egui::Button::image_and_text(image, p.title()) } else { egui::Button::image(image) };
-            let r = ui.add(button.selected(open));
-            // (Requests says more on its own: how many wait, what's being modelled)
-            let r = if p == Pane::Requests { r } else { r.on_hover_text(format!("{}{}\nRight-click: show where it is", if dock.words { String::new() } else { format!("{}: ", p.title()) }, p.about())) };
-            mark(p.mark(), &r);
-            if r.clicked() {
-                dock.set_open(p, !open);
+        super::group(ui, "uiGroupPanels", |ui| {
+            for p in Pane::ALL.into_iter().rev() {
+                let open = dock.is_open(p);
+                let image = egui::Image::new(p.icon()).fit_to_exact_size(Vec2::splat(15.0)).tint(ui.visuals().text_color());
+                let button = if dock.words { egui::Button::image_and_text(image, p.title()) } else { egui::Button::image(image) };
+                let r = ui.add(button.selected(open));
+                // (Requests says more on its own: how many wait, what's being modelled)
+                let r = if p == Pane::Requests { r } else { r.on_hover_text(format!("{}{}\nRight-click: show where it is", if dock.words { String::new() } else { format!("{}: ", p.title()) }, p.about())) };
+                mark(p.mark(), &r);
+                if r.clicked() {
+                    dock.set_open(p, !open);
+                }
+                // right-clicked: pinged (opened first if it was closed), to see where it is
+                if r.secondary_clicked() {
+                    let mut s = dock.get(p);
+                    s.open = true;
+                    s.ping = Some(ui.input(|i| i.time));
+                    dock.set(p, s);
+                }
+                out.insert(p, r);
             }
-            // right-clicked: pinged (opened first if it was closed), to see where it is
-            if r.secondary_clicked() {
-                let mut s = dock.get(p);
-                s.open = true;
-                s.ping = Some(ui.input(|i| i.time));
-                dock.set(p, s);
+            let fold = ui.add(egui::Button::new(if dock.words { "‹" } else { "›" }).frame(false)).on_hover_text(if dock.words { "Only the panels' icons" } else { "The panels' names too" });
+            mark("uiPanesFold", &fold);
+            if fold.clicked() {
+                dock.words = !dock.words;
             }
-            out.insert(p, r);
-        }
-        let fold = ui.add(egui::Button::new(if dock.words { "‹" } else { "›" }).frame(false)).on_hover_text(if dock.words { "Only the panels' icons" } else { "The panels' names too" });
-        mark("uiPanesFold", &fold);
-        if fold.clicked() {
-            dock.words = !dock.words;
-        }
+        });
     });
     dock.toggles_width = r.response.rect.width();
     out

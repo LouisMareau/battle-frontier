@@ -462,7 +462,11 @@ maps).
   keeps each one's lifeforce with the team, a plain number.
 
 The editor (the main menu's Editor, or `--maps`) opens on the map it last had, else the one
-games start on. Its top bar's **Menu** goes back to the main menu, to the **Content** (every
+games start on. Its top bar has its buttons in groups by kind, each in a border of its own
+(where it is: Maps and Menu; which map; Save, Auto-save, Undo and Redo; Sign in and Publish; how
+it shows: the time, Lamps, Sounds, Animate, Grid, Fit; Creatures, Debug and Walk; the panels'
+toggles at its right end), a whole group going on to the next row when one doesn't fit. Its
+**Menu** goes back to the main menu, to the **Content** (every
 record, both spaces) and to the **Test battles** (every encounter by region, to try it, with
 the party at its level or the AI on your side; a battle goes back to them), and shows the
 welcome again ("About the editor"). The tools and the level (PageUp/PageDown) are

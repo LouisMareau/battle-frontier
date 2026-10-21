@@ -1259,7 +1259,7 @@ impl Prop {
             return self.folders.clone();
         }
         let f = match self.category.as_str() {
-            "tree" | "flora" | "rock" => "Nature",
+            "tree" | "flora" | "rock" | "grass" => "Nature",
             "furniture" | "stairs" => INSIDE,
             "wall_decoration" => OUTSIDE,
             "door" | "window" | "wall" | "pillar" | "floor" | "roof" => "Buildings/Structure",
