@@ -1901,8 +1901,11 @@ impl SceneRenderer {
             queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
         }
 
-        // the grass's copies culled, each its level picked (on the GPU, a pass before these)
-        self.grass.prepare(device, queue, encoder, &frame.view_proj, size);
+        // the grass's copies culled, each its level picked (on the GPU, a pass before these),
+        // by the picture as it is before its pixelation: that only changes how it's drawn, not
+        // how fine the grass is (picked by the pixelation's few big pixels, it went sparse)
+        let unpixelated = [((screen[0] as f32 * self.quality.scale).round() as u32).max(1), ((screen[1] as f32 * self.quality.scale).round() as u32).max(1)];
+        self.grass.prepare(device, queue, encoder, &frame.view_proj, unpixelated);
         let (grass, grass_vertices, grass_levels) = self.grass.drawn();
         let mut stats = DrawStats { pixel: pixel.unwrap_or(1), grass, grass_vertices, grass_on_gpu: self.grass.culled_on_gpu(), grass_levels, ..Default::default() };
         let eye = Frustum::new(&frame.view_proj);
@@ -2579,6 +2582,13 @@ mod tests {
         r.grass.on_cpu();
         run(&mut r);
         assert_eq!(r.grass.counts_now(&device, &queue), want);
+        // pixelated, the same levels: the pixelation only changes how the picture's drawn
+        let mut pixelated = frame.clone();
+        pixelated.retro = Retro { pixelation: Some(0.3), zoom: 1.0, lcd: None };
+        let mut encoder = device.create_command_encoder(&Default::default());
+        r.prepare(&device, &queue, &mut encoder, &pixelated, size);
+        queue.submit([encoder.finish()]);
+        assert_eq!(r.grass.counts_now(&device, &queue), want, "pixelated, the copies at the levels they're at without it");
         let read = r.grass.lists_now(&device, &queue, "tuft");
         for l in 0..4 {
             assert_eq!(cells(&read[l]), lists[l], "level {l}'s copies as the draws read them");
