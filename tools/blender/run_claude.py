@@ -376,6 +376,37 @@ def program(claude):
     return [claude]
 
 
+# the API keys an environment can hold, which Claude Code goes on before its own sign-in
+KEYS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+
+
+def signed_in(claude):
+    """What the run goes on: the user's own Claude sign-in, as `claude auth status` tells it (the
+    environment's keys left out, so it tells Claude Code's own). A Claude subscription is routed
+    to the run: an API key in the environment would bill the key instead, so it's left out then;
+    an Anthropic Console sign-in likewise; without either, an API key the environment holds. The
+    environment to run Claude Code in and what it's on, or None and why not."""
+    plain = {k: v for k, v in os.environ.items() if k not in KEYS}
+    try:
+        asked = subprocess.run(program(claude) + ["auth", "status"], capture_output=True, text=True, timeout=60, env=plain,
+                               stdin=subprocess.DEVNULL)
+        status = json.loads(asked.stdout or "null")
+    except (OSError, subprocess.TimeoutExpired, ValueError):
+        status = None
+    if not isinstance(status, dict):
+        # an older Claude Code that doesn't say: the run finds out
+        return dict(os.environ), "Claude Code's sign-in (it didn't say which)"
+    if status.get("loggedIn") and status.get("authMethod") == "claude.ai":
+        plan = str(status.get("subscriptionType") or "").strip()
+        return plain, "your Claude subscription" + (f" ({plan.title()})" if plan else "") + ", Claude Code's own sign-in"
+    if status.get("loggedIn"):
+        return plain, f"Claude Code's own sign-in ({status.get('authMethod')})"
+    key = next((k for k in KEYS if os.environ.get(k)), None)
+    if key:
+        return dict(os.environ), f"the API key in {key}"
+    return None, "nothing: Claude Code isn't signed in"
+
+
 def allowed(rid):
     """What the run may do without asking; everything else is refused."""
     here = f"private/requests/{rid}"
@@ -722,6 +753,9 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         version = subprocess.run(program(claude) + ["--version"], capture_output=True, text=True, timeout=60).stdout.strip() or "?"
     except (OSError, subprocess.TimeoutExpired):
         version = "?"
+    env, on = signed_in(claude)
+    if env is None:
+        return mr.fail(root, rid, f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again')["status"]
     settings = here / "claude-settings.json"
     settings.write_text(json.dumps({"permissions": {"allow": allowed(rid)}}, indent=2) + "\n", encoding="utf-8")
     args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
@@ -732,6 +766,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
+    say(f"On: {on}")
     if part == "lines":
         say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
     elif part == "model":
@@ -756,7 +791,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     say("Prompt:\n" + text)
     extra = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(program(claude) + args, cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace", bufsize=1, **extra)
+                            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, **extra)
     state = {"last": time.time(), "model": None, "result": None, "error": None}
     lock = threading.Lock()
     raw = open(here / "run.jsonl", "a", encoding="utf-8", newline="\n")
@@ -840,7 +875,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         mr.update(root, rid, reply=last)
     if state["error"] == "authentication_failed" or "Not logged in" in last:
         # the program by its path: it's often not on the PATH (the editor's "Log in" opens it)
-        reason = f'Claude Code isn\'t logged in: run "{claude}" in a terminal and type /login, once (or the button below)'
+        reason = f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again'
     elif proc.returncode != 0 or result.get("is_error"):
         reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {proc.returncode})"
     elif part == "lines" and drawn_since(here / "profiles.png", began):

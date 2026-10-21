@@ -3,8 +3,9 @@ asked of Claude, nothing in content/ is touched):
 
     python tools/blender/test_run_claude.py
 
-The stand-in (written into the scratch project, CLAUDE points at it) checks how it was
-started, then plays one ending each time: it finishes the request, quits without it, crashes,
+The stand-in (written into the scratch project, CLAUDE points at it) says how it's signed in
+(a Claude subscription, else none: FAKE_AUTH), checks how it was started, notes the API key
+it was given (none, when the run goes on the subscription), then plays one ending each time: it finishes the request, quits without it, crashes,
 isn't logged in, goes silent (the watchdog stops it), waits to be cancelled, or draws the
 lines and the front and the side and stops there (a request that checks its lines first,
 which a run with --go-on then finishes); a request made once is made again with the user's
@@ -39,6 +40,11 @@ args = sys.argv[1:]
 if args == ["--version"]:
     print("9.9.9 (stand-in)")
     sys.exit(0)
+if args == ["auth", "status"]:
+    auth = os.environ.get("FAKE_AUTH", "claude.ai")
+    print(json.dumps({{"loggedIn": auth != "none", "authMethod": auth, "subscriptionType": "max"}}))
+    sys.exit(0 if auth != "none" else 1)
+open("key_seen.txt", "w", encoding="utf-8").write(os.environ.get("ANTHROPIC_API_KEY", ""))
 prompt = sys.stdin.read()
 need = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--settings"]
 if not all(a in args for a in need) or "private/requests/" not in prompt:
@@ -114,8 +120,9 @@ def fresh(rid, **fields):
     mr.save(SCRATCH, mr.normal(record))
 
 
-def run(rid, mode, *extra, stop_after=None):
-    env = dict(os.environ, CLAUDE=str(SCRATCH / "fake_claude.py"), FAKE_MODE=mode)
+def run(rid, mode, *extra, stop_after=None, env_extra=None):
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")}
+    env.update(CLAUDE=str(SCRATCH / "fake_claude.py"), FAKE_MODE=mode, **(env_extra or {}))
     proc = subprocess.Popen([sys.executable, str(HERE / "run_claude.py"), rid, *extra], cwd=str(SCRATCH), env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     if stop_after is not None:
         time.sleep(stop_after)
@@ -165,8 +172,24 @@ check("a run that crashes: failed, its error in the log", rec["status"] == "fail
 # 4. not logged in
 fresh("test_four")
 code, out, rec, log = run("test_four", "login")
-check("not logged in: failed, saying how to log in, with the program's own path", rec["status"] == "failed" and "/login" in rec["progress"]["step"]
-      and str(SCRATCH / "fake_claude.py") in rec["progress"]["step"], rec["progress"]["step"])
+check("not logged in: failed, saying how to sign in, with the program's own path", rec["status"] == "failed" and "Claude sign-in" in rec["progress"]["step"]
+      and str(SCRATCH / "fake_claude.py") + " auth login" in rec["progress"]["step"], rec["progress"]["step"])
+# 4b. signed in with a Claude subscription: the run goes on it, an API key in the environment left out
+fresh("test_four_b")
+code, out, rec, log = run("test_four_b", "finish", env_extra={"ANTHROPIC_API_KEY": "sk-test-key"})
+check("a subscription signed in: the run goes on it, the environment's API key left out", rec["status"] == "done" and "On: your Claude subscription (Max)" in log
+      and (SCRATCH / "key_seen.txt").read_text(encoding="utf-8") == "", log[-400:])
+# 4c. Claude Code not signed in, an API key in the environment: the run goes on the key
+fresh("test_four_c")
+code, out, rec, log = run("test_four_c", "finish", env_extra={"ANTHROPIC_API_KEY": "sk-test-key", "FAKE_AUTH": "none"})
+check("no sign-in, an API key in the environment: the run goes on the key", rec["status"] == "done" and "On: the API key in ANTHROPIC_API_KEY" in log
+      and (SCRATCH / "key_seen.txt").read_text(encoding="utf-8") == "sk-test-key", log[-400:])
+# 4d. neither: failed before Claude's started, saying how to sign in
+fresh("test_four_d")
+(SCRATCH / "key_seen.txt").unlink(missing_ok=True)
+code, out, rec, log = run("test_four_d", "finish", env_extra={"FAKE_AUTH": "none"})
+check("no sign-in, no key: failed at once, saying how to sign in", rec["status"] == "failed" and "isn't signed in to Claude" in rec["progress"]["step"]
+      and "Claude sign-in" in rec["progress"]["step"] and not (SCRATCH / "key_seen.txt").exists(), rec["progress"]["step"])
 # 5. silent: stopped after the quiet time, failed
 fresh("test_five")
 began = time.time()

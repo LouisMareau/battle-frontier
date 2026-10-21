@@ -386,6 +386,8 @@ pub(super) struct Requests {
     pub hovering: bool,
     /// what the status line says, once
     pub said: Option<String>,
+    /// the Claude sign-in asked for (a run failed for want of one): the editor opens its window
+    pub sign_in: bool,
     #[cfg(not(target_arch = "wasm32"))]
     desk: Desk,
 }
@@ -753,47 +755,6 @@ mod desk {
         python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
     }
 
-    /// Claude Code, where run_claude.py looks for it: CLAUDE, the PATH, ~/.local/bin.
-    fn find_claude() -> Option<PathBuf> {
-        if let Ok(p) = std::env::var("CLAUDE") {
-            let p = PathBuf::from(p);
-            if p.is_file() {
-                return Some(p);
-            }
-        }
-        let path = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).unwrap_or_default();
-        for dir in &path {
-            for name in ["claude.exe", "claude.cmd", "claude"] {
-                if dir.join(name).is_file() {
-                    return Some(dir.join(name));
-                }
-            }
-        }
-        let home = PathBuf::from(std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?);
-        [home.join(".local/bin/claude.exe"), home.join(".local/bin/claude"), home.join(".claude/local/claude")].into_iter().find(|p| p.is_file())
-    }
-
-    /// Claude Code in a terminal of its own, in the project, to log in (`/login`): a run needs
-    /// its command line logged in once, apart from the desktop app's.
-    fn open_login(root: &Path) -> Result<String, String> {
-        let claude = find_claude().ok_or("Claude Code not found: install it, or set CLAUDE to the claude program")?;
-        #[cfg(windows)]
-        {
-            std::process::Command::new("cmd")
-                .args(["/c", "start", "Claude Code: type /login"])
-                .arg(&claude)
-                .current_dir(root)
-                .spawn()
-                .map(|_| "Claude Code is opening in a terminal: type /login there (once), then Start again".to_string())
-                .map_err(|e| format!("{}: {e}", claude.display()))
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = root;
-            Err(format!("Run {} in a terminal and type /login there (once), then Start again", claude.display()))
-        }
-    }
-
     /// The newest time anything in a request's folder changed (its run writes there as it goes).
     fn last_word(seen: &[(PathBuf, SystemTime)], dir: &Path) -> Option<SystemTime> {
         seen.iter().filter(|(p, _)| p.parent() == Some(dir)).map(|(_, t)| *t).max()
@@ -1015,6 +976,8 @@ mod desk {
         pub bones: Sketch,
         /// the Outlines window: the user outlining the drawings to make (Process multiple)
         pub outlines: Outlining,
+        /// the Claude sign-in asked for (a run failed for want of one)
+        pub sign_in: bool,
         /// the runs that would have started (the tests start none)
         #[cfg(test)]
         pub launched: Vec<Vec<String>>,
@@ -2398,11 +2361,11 @@ mod desk {
                 mark("uiRequestBar", &shown);
             } else if r.status == Status::Failed {
                 warn(ui, &r.progress.step);
-                if r.progress.step.contains("logged in") {
-                    let login = ui.button("Log in to Claude Code…").on_hover_text("Opens Claude Code in a terminal: type /login there, once, then Start again");
+                if r.progress.step.contains("signed in") || r.progress.step.contains("logged in") {
+                    let login = ui.button("Claude sign-in…").on_hover_text("Claude Code's own sign-in (a Claude subscription, or a Console account billed by the API), then Start again");
                     mark("uiRequestLogin", &login);
                     if login.clicked() {
-                        said = Some(open_login(&self.root()).unwrap_or_else(|e| e));
+                        self.sign_in = true;
                     }
                 }
                 hint(ui, "The console has its log (Copy takes it all); Start again makes it once more.");
@@ -3361,6 +3324,7 @@ mod desk {
             if let Some(s) = d.take_arrived() {
                 self.said = Some(s);
             }
+            self.sign_in |= std::mem::take(&mut d.sign_in);
             let (mut use_prop, mut name_focused) = (None, false);
             if self.open {
                 let hovering = self.hovering;
@@ -3885,7 +3849,7 @@ mod tests {
         // failed for want of a login: its reason, and the way to log in
         let mut toad = read(&root, "toad").unwrap();
         toad.status = Status::Failed;
-        toad.progress.step = "failed: Claude Code isn't logged in: run \"claude\" in a terminal and type /login, once".into();
+        toad.progress.step = "failed: Claude Code isn't signed in to Claude: the editor's Claude sign-in (or \"claude auth login\" in a terminal), then Start again".into();
         save(&root, &toad).unwrap();
         req.watch(3.0e9);
         req.desk().selected = Some("toad".into());

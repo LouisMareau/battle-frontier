@@ -452,9 +452,10 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
 
 /// The top bar's toggles for the panels, at the right end of `row` (its first row: the rest of
 /// it wraps in what's left): each its icon and, while they have them, its name; a chevron
-/// before them folds the names away or brings them back. What each toggle's button was, for
-/// more on it (Requests' count).
-pub(super) fn toggles(ui: &mut egui::Ui, row: Rect, dock: &mut Dock) -> BTreeMap<Pane, egui::Response> {
+/// before them folds the names away or brings them back; those `locked` greyed out, saying
+/// why (Requests, with no Claude sign-in). What each toggle's button was, for more on it
+/// (Requests' count).
+pub(super) fn toggles(ui: &mut egui::Ui, row: Rect, dock: &mut Dock, locked: &[(Pane, &str)]) -> BTreeMap<Pane, egui::Response> {
     let mut out = BTreeMap::new();
     // at the right end, in a border as the top bar's other groups are; its row runs right to
     // left as the scope does: the last panel first, the fold last (at its left)
@@ -464,7 +465,12 @@ pub(super) fn toggles(ui: &mut egui::Ui, row: Rect, dock: &mut Dock) -> BTreeMap
                 let open = dock.is_open(p);
                 let image = egui::Image::new(p.icon()).fit_to_exact_size(Vec2::splat(15.0)).tint(ui.visuals().text_color());
                 let button = if dock.words { egui::Button::image_and_text(image, p.title()) } else { egui::Button::image(image) };
-                let r = ui.add(button.selected(open));
+                let why = locked.iter().find(|(l, _)| *l == p).map(|(_, why)| *why);
+                let r = ui.add_enabled(why.is_none(), button.selected(open && why.is_none()));
+                let r = match why {
+                    Some(why) => r.on_disabled_hover_text(why),
+                    None => r,
+                };
                 // (Requests says more on its own: how many wait, what's being modelled)
                 let r = if p == Pane::Requests { r } else { r.on_hover_text(format!("{}{}\nRight-click: show where it is", if dock.words { String::new() } else { format!("{}: ", p.title()) }, p.about())) };
                 mark(p.mark(), &r);

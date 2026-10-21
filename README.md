@@ -463,9 +463,10 @@ maps).
 
 The editor (the main menu's Editor, or `--maps`) opens on the map it last had, else the one
 games start on. Its top bar has its buttons in groups by kind, each in a border of its own
-(where it is: Maps and Menu; which map; Save, Auto-save, Undo and Redo; Sign in and Publish; how
-it shows: the time, Lamps, Sounds, Animate, Grid, Fit; Creatures, Debug and Walk; the panels'
-toggles at its right end), a whole group going on to the next row when one doesn't fit. Its
+(where it is: Maps and Menu; which map; Save, Auto-save, Undo and Redo; Sign in and Publish;
+on the desktop, Claude sign-in; how it shows: the time, Lamps, Sounds, Animate, Grid, Fit;
+Creatures, Debug and Walk; the panels' toggles at its right end), a whole group going on to
+the next row when one doesn't fit. Its
 **Menu** goes back to the main menu, to the **Content** (every
 record, both spaces) and to the **Test battles** (every encounter by region, to try it, with
 the party at its level or the AI on your side; a battle goes back to them), and shows the
@@ -707,6 +708,17 @@ Signing in by code goes through the repository's own OAuth App,
 editor runs or is built overrides it (a fork's own app, say). A token pasted signs in too. For merging to stay the maintainers', keep the repository's collaborators few
 (a branch rule on main asking for a review stops anyone merging their own unreviewed).
 
+**Claude sign-in** (in the top bar, the desktop's) is what the model requests run on: Claude
+Code's own sign-in, as `claude auth status` tells (asked now and then, and while its window's
+open): a Claude subscription, or an Anthropic Console account (billed by the API). Its window
+opens Claude Code's login in a terminal of its own, which goes on in the browser (Anthropic's
+own sign-in: the editor never sees a password or a token), then asks every few seconds until
+it's done; the button says what it's signed in with ("Claude: Max"). Until then the
+**Requests** button is greyed out ("Only available with Claude subscription or API keys").
+A run goes on that sign-in: a subscription first, an `ANTHROPIC_API_KEY` in the environment
+left out then (it would bill the key instead), and without one, that key (`run_claude.py`
+logs what it's on).
+
 **Requests** (in the top bar; the desktop only, the browser's window says why) is where the
 pictures of a creature, a prop or a floor go for Claude to model in Blender: drop PNG, JPG or WebP files
 on the window while it's open (models dropped meanwhile still go to the asset browser, and
@@ -738,7 +750,7 @@ Start has Claude Code model it by itself, unattended (`tools/blender/run_claude.
 the tools the recipe needs; **Claude:** at the top picks the model). One in progress has a bar
 with the time left (the top bar's button shows it too); it ends done by itself once the model
 is in the project, or failed (why, under it) when Claude ends without it, stops with an error,
-isn't logged in, or goes 30 minutes without a word. The **console** at the window's foot shows
+isn't signed in, or goes 30 minutes without a word. The **console** at the window's foot shows
 the request's log (`log.txt`, every line timed, the times greyed): Claude reached and the model it runs, what was
 sent, each step and tool call, the end; Copy puts it all on the clipboard. A done request shows
 the renders of its model and the prop it became ("Use it" puts it in the Place tool), and
@@ -769,8 +781,8 @@ tiles: Claude breaks the pattern into cells, each tile's edges saying what fits 
 lays the set out by the game's rules to compare it with the pictures, and adds each tile to
 the set; its panel lists the tiles and their edges, and "Use it" opens the Ground tool's Floors
 tab with the set (in a building, it's in the Build tool's Flooring). The
-window resizes every way. Claude Code's command line must be logged in once: a request that failed for that has a "Log in to
-Claude Code…" button, which opens it in a terminal (type `/login`). The recipe is
+window resizes every way. A request that failed for want of a sign-in has a "Claude sign-in…"
+button, which opens the Claude sign-in. The recipe is
 `tools/blender/requests.md`: a script per request builds the model from shapes in Blender,
 renders it beside the pictures until it matches (reshaping it with any of Blender's tools:
 edits by hand, modifiers, scripted sculpting), rigs a creature with an idle animation, and
