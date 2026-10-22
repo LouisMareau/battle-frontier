@@ -1,0 +1,12 @@
+{
+  "id": "flora_grass_1_seeded_meadow_grass_variant_2",
+  "name": "Flora grass 1 seeded meadow grass variant 2",
+  "category": "grass",
+  "footprint": [1, 2],
+  "height": 1.2,
+  "blocks": true,
+  "parts": [],
+  "model": "models/flora_grass_1_seeded_meadow_grass_variant_2.glb",
+  "folders": ["Nature"],
+  "toon": true
+}
