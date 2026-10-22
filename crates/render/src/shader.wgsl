@@ -1,9 +1,12 @@
-// The scene's shaders: the map (lit, with the sun's shadow), sprites and effects
-// (unlit, tinted), the shadow pass, and the blit to the screen with the toon look's ink
-// lines. What's solid also writes its look (toon or not, how far, which way it faces) to a
-// second target, which the lines are found in.
+// The scene's shaders: the map (lit, with the sun's shadow, the lamps and the indirect light
+// of what glows), sprites and effects (unlit, tinted), the shadow pass, the bloom, and the
+// blit to the screen (the picture exposed and tone mapped) with the toon look's ink lines.
+// What's solid also writes its look (toon or not, how far, which way it faces) to a second
+// target, which the lines are found in, and what shines of it to a third, which the bloom
+// blurs and the indirect light (`gi.wgsl`, after this) bounces.
 // Everything here works on WebGL 2 as well as WebGPU: uniform buffers only, but for the
-// skinned models' joints, which WebGPU's draws read from storage (WebGL 2's from a uniform buffer).
+// skinned models' joints, which WebGPU's draws read from storage (WebGL 2's from a uniform buffer);
+// the indirect light's compute shaders run on WebGPU alone (WebGL 2 reads blank probes).
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -54,6 +57,15 @@ struct Globals {
     // what's kept in sight through the trees and props in front of it (the walker): xyz where,
     // w the see-through cone's radius there (cells; 0: none)
     see_through: vec4<f32>,
+    // the picture's light: x the exposure, y how much of the glow's blur (the bloom) is added,
+    // z the tone map (0: a soft shoulder, 1: filmic), w what else blooms (the colour's
+    // brightness past this)
+    tone: vec4<f32>,
+    // the indirect light (the radiance cascades, `gi.wgsl`): x how strong (0: none), y 1 / the
+    // region's width (cells), z the region's width, w the probes' spacing (cells); b: xy the
+    // region's north-west corner (x, z), z the lamps' bounce, w the screen's glow's share
+    gi: vec4<f32>,
+    gi_b: vec4<f32>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -73,6 +85,50 @@ struct Place {
 @group(1) @binding(1) var samp: sampler;
 @group(2) @binding(0) var shadow_map: texture_depth_2d;
 @group(2) @binding(1) var shadow_samp: sampler_comparison;
+// the indirect light's probes (`gi.wgsl`'s `gi_resolve`): a: rgb the light from all round, w
+// the ground's height at the probe; b: xy the way most of it comes from (x, z, a unit when
+// all of it comes one way), z 1 when the probe stands under something (in a wall, where it
+// carries the light of the probes round it)
+@group(2) @binding(2) var gi_a: texture_2d<f32>;
+@group(2) @binding(3) var gi_b: texture_2d<f32>;
+
+// the indirect light on a point facing `n`: the four probes round it, each as much as it
+// stands near (and none that stands on something higher than the point: a roof's, a crate's
+// top), the light from all round plus what comes its way; fading up off the ground (what
+// stands high over the probes is lit by them less), and at the region's edge
+fn indirect(world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    if (g.gi.x <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    let uv = (world.xz - g.gi_b.xy) * g.gi.y;
+    if (uv.x <= 0.0 || uv.y <= 0.0 || uv.x >= 1.0 || uv.y >= 1.0) {
+        return vec3<f32>(0.0);
+    }
+    let edge = smoothstep(0.0, 0.12, min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y)));
+    let size = vec2<i32>(textureDimensions(gi_a));
+    let q = uv * vec2<f32>(size) - 0.5;
+    let b = vec2<i32>(floor(q));
+    let f = q - floor(q);
+    var sum = vec3<f32>(0.0);
+    var weight = 0.0;
+    var ground = 0.0;
+    for (var k = 0; k < 4; k = k + 1) {
+        let o = vec2<i32>(k & 1, k >> 1);
+        let p = clamp(b + o, vec2<i32>(0, 0), size - vec2<i32>(1, 1));
+        let a = textureLoad(gi_a, p, 0);
+        let d = textureLoad(gi_b, p, 0);
+        let w = select(1.0 - f.x, f.x, o.x == 1) * select(1.0 - f.y, f.y, o.y == 1) * (1.0 - smoothstep(0.25, 1.0, a.w - world.y));
+        // more of it on the side it comes from, less on the other (a wall's two faces)
+        sum = sum + a.rgb * (1.0 + 0.707 * (n.x * d.x + n.z * d.y)) * w;
+        weight = weight + w;
+        ground = ground + a.w * w;
+    }
+    if (weight <= 0.0001) {
+        return vec3<f32>(0.0);
+    }
+    let above = max(world.y - ground / weight, 0.0);
+    return sum / weight * edge * (1.0 - smoothstep(1.5, 4.0, above)) * g.gi.x;
+}
 
 fn fog(rgb: vec3<f32>, world: vec3<f32>) -> vec3<f32> {
     let depth = distance(world, g.camera.xyz);
@@ -139,10 +195,13 @@ struct MapOut {
     @location(5) toon: f32,
 };
 
-// what something solid writes: its colour, and its look for the ink lines
+// what something solid writes: its colour, its look for the ink lines, and what shines of it
+// (rgb: lit by nothing; a: 1 on the ground, whose glow the indirect light knows of itself,
+// 0 elsewhere), which the bloom blurs and the indirect light bounces
 struct Solid {
     @location(0) color: vec4<f32>,
     @location(1) look: vec4<u32>,
+    @location(2) emit: vec4<f32>,
 };
 
 // how far the look's distances reach
@@ -254,6 +313,12 @@ fn lamp(k: i32, world: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
 }
 
 fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32> {
+    return sunlit_with(normal, light_pos, world, 1.0);
+}
+
+// ... with `bounced` of the indirect light (what shines of itself takes less of it: a lava
+// lake lit by its own glow would go white)
+fn sunlit_with(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>, bounced: f32) -> vec3<f32> {
     let n = normalize(normal);
     let ndl = max(dot(n, g.sun_dir.xyz), 0.0);
     let hemi = mix(g.hemi_ground.rgb, g.hemi_sky.rgb, n.y * 0.5 + 0.5);
@@ -261,7 +326,7 @@ fn sunlit(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3<f32
     for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
         lit = lit + lamp(k, world, n);
     }
-    return lit;
+    return lit + indirect(world, n) * bounced;
 }
 
 // light in steps: `toon_a.x` of them from dark to lit, each step's edge as soft as
@@ -292,7 +357,8 @@ fn toon_light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>) -> vec3
     let rim = smoothstep(1.0 - g.toon_b.w - 0.03, 1.0 - g.toon_b.w + 0.03, edge) * g.toon_a.w * (0.35 + 0.65 * sun);
     let reach = 1.0 - g.toon_c.y * 0.25;
     let glint = smoothstep(reach - 0.004, reach + 0.004, dot(n, normalize(g.sun_dir.xyz + v))) * g.toon_c.x * sun;
-    return lit + g.sun_color.rgb * (rim + glint);
+    // (the indirect light smooth, whatever the steps: a glow's soft reach)
+    return lit + g.sun_color.rgb * (rim + glint) + indirect(world, n);
 }
 
 fn light(normal: vec3<f32>, light_pos: vec4<f32>, world: vec3<f32>, toon: f32) -> vec3<f32> {
@@ -310,6 +376,7 @@ fn shade_map(i: MapOut, c: vec4<f32>) -> Solid {
     var o: Solid;
     o.color = vec4<f32>(fog(focus_dim(c.rgb * (1.0 - place.grid.z) * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, i.toon);
+    o.emit = vec4<f32>(0.0);
     return o;
 }
 
@@ -995,17 +1062,20 @@ fn fs_ground(i: MapOut) -> Solid {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
         col = col * mix(0.72, 1.0, smoothstep(0.012, 0.035, line));
     }
-    var lit = col * (1.0 - place.grid.z) * sunlit(n, i.light_pos, i.world);
+    let bounced = 1.0 - clamp(dot(glow, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
+    var lit = col * (1.0 - place.grid.z) * sunlit_with(n, i.light_pos, i.world, bounced);
     // the sun glinting on the water, and on wet sand
     if (shine > 0.0) {
         let h = normalize(g.sun_dir.xyz + normalize(g.camera.xyz - i.world));
         lit = lit + g.sun_color.rgb * pow(max(dot(n, h), 0.0), 120.0) * shine * 0.8 * lit_by_sun(i.light_pos);
     }
     // what glows of itself, whatever the light (lava, magic: at night as by day)
-    lit = lit + glow * (1.0 - place.grid.z);
+    let shining = glow * (1.0 - place.grid.z);
+    lit = lit + shining;
     var o: Solid;
     o.color = vec4<f32>(fog(lit, i.world), 1.0);
     o.look = look(i.world, n, 0.0);
+    o.emit = vec4<f32>(shining, 1.0);
     return o;
 }
 
@@ -1163,6 +1233,16 @@ fn fs_map_shadow(i: MapOut) {
 @vertex
 fn vs_map_shadow(v: MapIn) -> MapOut {
     return shadowed(v);
+}
+
+// the indirect light's height pass (`gi.wgsl`): how high the point stands, seen from straight
+// above (the depth keeps the highest), the cut-outs left out
+@fragment
+fn fs_height(i: MapOut) -> @location(0) vec4<f32> {
+    if (textureSample(tex, samp, i.uv).a < 0.5) {
+        discard;
+    }
+    return vec4<f32>(i.world.y, 0.0, 0.0, 1.0);
 }
 
 // a vertex of the map as the sun sees it
@@ -1343,13 +1423,14 @@ fn fs_sprite_cutout(i: SpriteOut) -> Solid {
         discard;
     }
     let n = normalize(vec3<f32>(0.0, 1.0, 0.0) + normalize(g.camera.xyz - i.world));
-    var lamps = vec3<f32>(0.0);
+    var lamps = indirect(i.world, n);
     for (var k = 0; k < i32(g.light_count.x); k = k + 1) {
         lamps = lamps + lamp(k, i.world, n);
     }
     var o: Solid;
     o.color = vec4<f32>(fog(focus_dim(c.rgb * (i.color.rgb + lamps), i.world), i.world), 1.0);
     o.look = look(i.world, normalize(g.camera.xyz - i.world), i.toon);
+    o.emit = vec4<f32>(0.0);
     return o;
 }
 
@@ -1390,8 +1471,27 @@ fn to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
 
-// the looks the solid things wrote (see `look`)
+// the looks the solid things wrote (see `look`), what shines of them (`Solid::emit`), and the
+// bloom: that blurred, half the picture's size, read smoothly
 @group(1) @binding(4) var looks: texture_2d<u32>;
+@group(1) @binding(5) var emit_tex: texture_2d<f32>;
+@group(1) @binding(6) var bloom_tex: texture_2d<f32>;
+@group(1) @binding(7) var bloom_samp: sampler;
+
+// the picture's colours to the screen's range: the exposure, then a tone map. The soft one
+// (0) keeps the colours as they are up to 0.8 and bends what's brighter under 1, so a glow
+// and a lamp's hot spot keep their hue where a clamp would white them out; the filmic one (1,
+// an ACES fit) has a film's contrast and shoulder over the whole range.
+fn tone_mapped(c: vec3<f32>) -> vec3<f32> {
+    let x = max(c * g.tone.x, vec3<f32>(0.0));
+    if (g.tone.z > 0.5) {
+        let m = x * (2.51 * x + 0.03) / (x * (2.43 * x + 0.59) + 0.14);
+        return clamp(m, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    let knee = 0.8;
+    let over = max(x - knee, vec3<f32>(0.0));
+    return min(x, vec3<f32>(knee)) + (1.0 - knee) * (1.0 - exp(-over / (1.0 - knee)));
+}
 
 struct Look {
     toon: bool,
@@ -1555,12 +1655,17 @@ fn lcd_grid(uv: vec2<f32>) -> f32 {
     return 1.0 - g.retro_a.z * (1.0 - smoothstep(0.0, 1.0, min(d.x, d.y)));
 }
 
-// the scene as the screen shows it at `screen_uv`: the clouds' shadows over it, in colour
-// steps if asked, with the toon look's ink lines over it (faded by the fog); in the old
-// handhelds' pixels and colours if asked
+// the scene as the screen shows it at `screen_uv`: the bloom over it, exposed and tone
+// mapped to the screen's range, the clouds' shadows over it, in colour steps if asked, with
+// the toon look's ink lines over it (faded by the fog); in the old handhelds' pixels and
+// colours if asked
 fn picture(screen_uv: vec2<f32>) -> vec3<f32> {
     let uv = scene_uv(screen_uv);
     var c = textureSampleLevel(tex, samp, uv, 0.0).rgb;
+    if (g.tone.y > 0.0) {
+        c = c + textureSampleLevel(bloom_tex, bloom_samp, uv, 0.0).rgb * g.tone.y;
+    }
+    c = tone_mapped(c);
     if (g.clouds_a.x > 0.001) {
         c = clouds_over(c, uv, vec2<f32>(textureDimensions(looks)));
     }
@@ -1623,4 +1728,49 @@ fn fs_frost_x(i: BlitOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_frost_y(i: BlitOut) -> @location(0) vec4<f32> {
     return frost_blur(i.uv, vec2<f32>(0.0, 1.0 / f32(textureDimensions(tex).y)));
+}
+
+// ---------------------------------------------------------------- the bloom
+
+// What shines bleeds into what's round it: what the solid things wrote as shining (the
+// ground's glow, the blades', a lamp's), and whatever of the picture is brighter than
+// `tone.w`, taken at half the picture's size, then blurred by a chain of halvings and
+// doublings (Kawase's dual filter: each step a few smooth taps), the doublings added up on
+// the way back; the blit adds the result (`picture`).
+
+// the chain's first: what shines, and what's too bright, at half size (the colour and what
+// shines bound with a smooth sampler)
+@fragment
+fn fs_bloom_first(i: BlitOut) -> @location(0) vec4<f32> {
+    let e = textureSampleLevel(emit_tex, samp, i.uv, 0.0).rgb;
+    let c = textureSampleLevel(tex, samp, i.uv, 0.0).rgb;
+    let over = max(c - vec3<f32>(g.tone.w), vec3<f32>(0.0));
+    return vec4<f32>(e + over, 1.0);
+}
+
+// halved: the middle and the four corners of the texel it's over
+@fragment
+fn fs_bloom_down(i: BlitOut) -> @location(0) vec4<f32> {
+    let o = 0.5 / vec2<f32>(textureDimensions(tex));
+    var c = textureSampleLevel(tex, samp, i.uv, 0.0).rgb * 4.0;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(-o.x, -o.y), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(o.x, -o.y), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(-o.x, o.y), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(o.x, o.y), 0.0).rgb;
+    return vec4<f32>(c / 8.0, 1.0);
+}
+
+// doubled: eight taps round it, the diagonals twice (added onto the finer level)
+@fragment
+fn fs_bloom_up(i: BlitOut) -> @location(0) vec4<f32> {
+    let o = 1.0 / vec2<f32>(textureDimensions(tex));
+    var c = textureSampleLevel(tex, samp, i.uv + vec2<f32>(-2.0 * o.x, 0.0), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(2.0 * o.x, 0.0), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(0.0, -2.0 * o.y), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(0.0, 2.0 * o.y), 0.0).rgb;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(-o.x, -o.y), 0.0).rgb * 2.0;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(o.x, -o.y), 0.0).rgb * 2.0;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(-o.x, o.y), 0.0).rgb * 2.0;
+    c = c + textureSampleLevel(tex, samp, i.uv + vec2<f32>(o.x, o.y), 0.0).rgb * 2.0;
+    return vec4<f32>(c / 12.0, 1.0);
 }

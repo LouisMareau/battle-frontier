@@ -1,13 +1,14 @@
 //! The Post-processing window: the toon look (the world settings record's `toon`), how
-//! what's toon is lit and its ink lines, the colour steps and the clouds' shadows; and the
-//! world's wind (its `wind`). Changes show on the map at once and wait to be
+//! what's toon is lit and its ink lines, the colour steps and the clouds' shadows; the
+//! picture's light (its `light`: exposure, tone map, bloom, the indirect light of what
+//! glows); and the world's wind (its `wind`). Changes show on the map at once and wait to be
 //! saved into the record (into its file on the desktop, as a download in the browser);
 //! Ctrl+S saves them with the map. What's toon is ticked per asset: a prop in the asset
 //! browser or a placed prop's panel, a creature in the asset browser's Creatures.
 
 use std::sync::Arc;
 
-use content::{Space, Toon, Wind};
+use content::{Radiance, Space, Toon, Wind};
 
 use super::{hint, mark, section, MapEditor};
 
@@ -18,6 +19,8 @@ pub(super) struct Post {
     draft: Option<Toon>,
     /// the wind as changed here, not saved yet
     wind: Option<Wind>,
+    /// the light as changed here, not saved yet
+    light: Option<Radiance>,
 }
 
 /// A way on the map, in words: north (up the map, -z), north-east...
@@ -67,8 +70,13 @@ impl MapEditor {
         self.post.wind.clone().unwrap_or_else(|| self.content.world().wind)
     }
 
+    /// The picture's light as it stands: as changed in the window, else the content's.
+    pub(super) fn light_settings(&self) -> Radiance {
+        self.post.light.clone().unwrap_or_else(|| self.content.world().light)
+    }
+
     pub(super) fn post_changed(&self) -> bool {
-        self.post.draft.is_some() || self.post.wind.is_some()
+        self.post.draft.is_some() || self.post.wind.is_some() || self.post.light.is_some()
     }
 
     /// The Post-processing panel (docked or floating, as the layout has it), when it's open;
@@ -76,7 +84,9 @@ impl MapEditor {
     pub(super) fn post_window(&mut self, ui: &mut egui::Ui) {
         let mut t = self.toon_settings();
         let mut w = self.wind_settings();
+        let mut l = self.light_settings();
         crate::platform::set_hook("wind", &format!("{:.0} {:.2} {:.2}", w.direction, w.strength, w.gusts));
+        crate::platform::set_hook("light", &format!("{:.2} {} {:.2} {:.2} {:.0}", l.exposure, l.tone, l.bloom, l.gi, l.gi_range));
         crate::platform::set_hook("post", if self.post.open { "open" } else { "" });
         crate::platform::set_hook("toon", &format!("{} bands, ink {}, {} colour steps", t.bands, if t.ink { format!("{:.1}px", t.ink_width) } else { "off".into() }, t.color_steps));
         crate::platform::set_hook("postdirty", if self.post_changed() { "1" } else { "" });
@@ -86,12 +96,24 @@ impl MapEditor {
         }
         let before = t.clone();
         let wind_before = w.clone();
+        let light_before = l.clone();
         let (mut save, mut revert, mut defaults) = (false, false, false);
         let props = self.content.props.iter().filter(|p| p.toon).count();
         let creatures = self.content.creatures.iter().filter(|c| c.toon).count();
         let plural = |n: usize| if n == 1 { "" } else { "s" };
         let mut st = self.dock.get(super::dock::Pane::Post);
+        // floating, in two columns (the toon look and its lines; the clouds, the light and the
+        // wind), so it fits the screen; docked, one; what doesn't fit scrolls, the buttons
+        // staying under it
+        let wide = !st.docked;
+        let room = (ui.ctx().content_rect().height() - 150.0).clamp(200.0, 1200.0);
         super::dock::show(ui, &mut st, super::dock::Pane::Post, "Post-processing", |ui| {
+            if wide {
+                ui.set_min_width(700.0);
+            }
+            egui::ScrollArea::vertical().max_height(room).auto_shrink([false, true]).show(ui, |ui| {
+            let mut part = |ui: &mut egui::Ui, k: usize| {
+            if k == 0 {
             section(ui, "Toon look");
             hint(ui, &format!("For what's ticked toon: {props} prop{}, {creatures} creature{}. Tick them in the asset browser (creatures under Creatures) or a placed prop's panel.", plural(props), plural(creatures)));
             ui.add_space(4.0);
@@ -159,6 +181,8 @@ impl MapEditor {
                 ui.add_enabled(t.color_steps >= 2, egui::Slider::new(&mut t.color_softness, 0.0..=1.0)).on_hover_text("0: hard, 1: soft");
                 ui.end_row();
             });
+            return;
+            }
             section(ui, "Cloud shadows");
             hint(ui, "Clouds' shadows drifting over the world, in the sun's direction: darker where it's lit, fainter by moonlight.");
             egui::Grid::new("post-clouds").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
@@ -175,6 +199,38 @@ impl MapEditor {
                 ui.end_row();
                 ui.label("Cover");
                 ui.add_enabled(t.cloud_shadow > 0.0, egui::Slider::new(&mut t.cloud_cover, 0.0..=1.0)).on_hover_text("How much of the sky they cover");
+                ui.end_row();
+            });
+            section(ui, "Light");
+            hint(ui, "The picture exposed and tone mapped to the screen, what glows blooming, and the indirect light: what glows (lava, arcane moss, the lamps bounced off the ground) lighting what's round it, in the shadow of walls and cliffs (WebGPU; the Options can turn it off).");
+            let off = |v: f64, _: std::ops::RangeInclusive<usize>| if v < 0.005 { "off".to_string() } else { format!("{v:.2}") };
+            egui::Grid::new("post-radiance").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                ui.label("Exposure");
+                let r = ui.add(egui::Slider::new(&mut l.exposure, 0.25..=4.0).logarithmic(true)).on_hover_text("The colours times this before the tone map (1: as they are)");
+                mark("uiPostExposure", &r);
+                ui.end_row();
+                ui.label("Tone map");
+                ui.horizontal(|ui| {
+                    let r = ui.selectable_value(&mut l.tone, "soft".to_string(), "Soft").on_hover_text("The colours as they are up to 0.8, what's brighter bent under 1: a glow keeps its hue");
+                    mark("uiPostToneSoft", &r);
+                    let r = ui.selectable_value(&mut l.tone, "filmic".to_string(), "Filmic").on_hover_text("A film's contrast and shoulder over the whole range (an ACES fit)");
+                    mark("uiPostToneFilmic", &r);
+                });
+                ui.end_row();
+                ui.label("Bloom");
+                let r = ui.add(egui::Slider::new(&mut l.bloom, 0.0..=1.0).custom_formatter(off)).on_hover_text("How much of the blurred glow bleeds into what's round it (0: none)");
+                mark("uiPostBloom", &r);
+                ui.end_row();
+                ui.label("Blooms past");
+                ui.add_enabled(l.bloom > 0.0, egui::Slider::new(&mut l.threshold, 0.5..=4.0)).on_hover_text("What else blooms: the colour's brightness past this (1: only what's brighter than white)");
+                ui.end_row();
+                ui.label("Indirect light");
+                let r = ui.add(egui::Slider::new(&mut l.gi, 0.0..=2.0).custom_formatter(off)).on_hover_text("How much what glows lights what's round it (0: none)");
+                mark("uiPostGi", &r);
+                crate::platform::set_hook("uiPostGiRect", &format!("{:.0},{:.0},{:.0},{:.0}", r.rect.left(), r.rect.top(), r.rect.width(), r.rect.height()));
+                ui.end_row();
+                ui.label("Reach");
+                ui.add_enabled(l.gi > 0.0, egui::Slider::new(&mut l.gi_range, 8.0..=128.0).logarithmic(true).suffix(" cells")).on_hover_text("How far round the camera's target it's worked out: further, coarser");
                 ui.end_row();
             });
             section(ui, "Wind");
@@ -197,6 +253,17 @@ impl MapEditor {
                     ui.end_row();
                 });
             });
+            };
+            if wide {
+                ui.columns(2, |cols| {
+                    part(&mut cols[0], 0);
+                    part(&mut cols[1], 1);
+                });
+            } else {
+                part(ui, 0);
+                part(ui, 1);
+            }
+            });
             ui.separator();
             ui.horizontal(|ui| {
                 let s = ui.add_enabled(self.post_changed(), egui::Button::new(if self.post_changed() { "Save •" } else { "Save" })).on_hover_text("Into the world settings record (Ctrl+S saves it with the map)");
@@ -211,6 +278,7 @@ impl MapEditor {
         if defaults {
             t = Toon::default();
             w = Wind::default();
+            l = Radiance::default();
         }
         if t != before {
             self.post.draft = Some(t);
@@ -218,9 +286,13 @@ impl MapEditor {
         if w != wind_before {
             self.post.wind = Some(w);
         }
+        if l != light_before {
+            self.post.light = Some(l);
+        }
         if revert {
             self.post.draft = None;
             self.post.wind = None;
+            self.post.light = None;
         }
         if save {
             self.save_post();
@@ -231,7 +303,8 @@ impl MapEditor {
         self.dock.set(super::dock::Pane::Post, st);
     }
 
-    /// Writes the world settings record with the toon look and the wind as changed here.
+    /// Writes the world settings record with the toon look, the light and the wind as
+    /// changed here.
     pub(super) fn save_post(&mut self) {
         if !self.post_changed() {
             return;
@@ -240,6 +313,7 @@ impl MapEditor {
         let mut record = self.content.world();
         record.toon = self.toon_settings();
         record.wind = self.wind_settings();
+        record.light = self.light_settings();
         #[cfg(not(target_arch = "wasm32"))]
         let saved = {
             let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
@@ -260,6 +334,7 @@ impl MapEditor {
                 self.content = Arc::new(c);
                 self.post.draft = None;
                 self.post.wind = None;
+                self.post.light = None;
                 self.status = said;
             }
             Err(e) => self.status = format!("The toon look and the wind aren't saved: {e}"),

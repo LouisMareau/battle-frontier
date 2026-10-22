@@ -326,10 +326,12 @@ fn vs_blade_listed_shadow(@builtin(vertex_index) id: u32, @builtin(instance_inde
 @fragment
 fn fs_blade(i: MapOut) -> Solid {
     var o: Solid;
-    // lit, and what glows of it after (its glow in the colour's alpha)
-    let c = i.color.rgb * light(i.normal, i.light_pos, i.world, i.toon) + i.color.rgb * i.color.a;
+    // lit, and what glows of it after (its glow in the colour's alpha): that shines
+    let shining = i.color.rgb * i.color.a;
+    let c = i.color.rgb * light(i.normal, i.light_pos, i.world, i.toon) + shining;
     o.color = vec4<f32>(fog(focus_dim(c, i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, 0.0);
+    o.emit = vec4<f32>(shining, 0.0);
     return o;
 }
 

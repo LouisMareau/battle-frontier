@@ -716,6 +716,7 @@ impl Content {
                 out.push(format!("settings/{}: lifeforce_ko_cap {}: 1 to the lifeforce ({})", s.id, s.lifeforce_ko_cap, s.lifeforce));
             }
             out.extend(s.wind.problems().into_iter().map(|e| format!("settings/{}: wind: {e}", s.id)));
+            out.extend(s.light.problems().into_iter().map(|e| format!("settings/{}: light: {e}", s.id)));
             let st = &s.start;
             if !st.map.is_empty() {
                 match self.maps.get(&st.map) {

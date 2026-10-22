@@ -587,6 +587,10 @@ pub struct Settings {
     /// the wind (the Post-processing window)
     #[serde(skip_serializing_if = "is_default")]
     pub wind: Wind,
+    /// the picture's light: exposure, tone map, bloom, the indirect light (the
+    /// Post-processing window's Light)
+    #[serde(skip_serializing_if = "is_default")]
+    pub light: Radiance,
     /// a creature's lifeforce at most, a gauge (100): a knock-out costs some (its level, up
     /// to `lifeforce_ko_cap`), and with none left the creature is lost for good
     pub lifeforce: u8,
@@ -597,7 +601,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), lifeforce: 100, lifeforce_ko_cap: 20 }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), light: Radiance::default(), lifeforce: 100, lifeforce_ko_cap: 20 }
     }
 }
 
@@ -639,6 +643,50 @@ impl Wind {
         for (what, v) in [("strength", self.strength), ("gusts", self.gusts)] {
             if !(0.0..=1.0).contains(&v) {
                 out.push(format!("{what} {v}: 0 to 1"));
+            }
+        }
+        out
+    }
+}
+
+/// The picture's light (the Post-processing window's Light): how it's exposed and tone
+/// mapped to the screen, the bloom of what shines, and the indirect light of what glows
+/// (lava, arcane moss, the lamps bounced off the ground) on what's round it, in the shadow of
+/// walls and cliffs.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Radiance {
+    /// the colours times this before the tone map (1: as they are)
+    pub exposure: f64,
+    /// "soft": the colours as they are up to 0.8, what's brighter bent under 1; "filmic":
+    /// a film's contrast and shoulder over the whole range
+    pub tone: String,
+    /// how much of the blurred glow is added (0: none), and what else blooms: the colour's
+    /// brightness past this
+    pub bloom: f64,
+    pub threshold: f64,
+    /// the indirect light's strength (0: none), and how far round the camera's target it's
+    /// worked out (cells)
+    pub gi: f64,
+    pub gi_range: f64,
+}
+
+impl Default for Radiance {
+    fn default() -> Radiance {
+        Radiance { exposure: 1.0, tone: "soft".into(), bloom: 0.35, threshold: 1.0, gi: 1.0, gi_range: 32.0 }
+    }
+}
+
+impl Radiance {
+    /// What's wrong with it (empty when nothing).
+    pub fn problems(&self) -> Vec<String> {
+        let mut out = vec![];
+        if self.tone != "soft" && self.tone != "filmic" {
+            out.push(format!("tone \"{}\": soft or filmic", self.tone));
+        }
+        for (what, v, lo, hi) in [("exposure", self.exposure, 0.0, 16.0), ("bloom", self.bloom, 0.0, 4.0), ("threshold", self.threshold, 0.0, 64.0), ("gi", self.gi, 0.0, 8.0), ("gi_range", self.gi_range, 4.0, 256.0)] {
+            if !(lo..=hi).contains(&v) {
+                out.push(format!("{what} {v}: {lo} to {hi}"));
             }
         }
         out

@@ -527,6 +527,7 @@ enum Item {
     Rings,
     Resolution,
     Shadows,
+    Indirect,
     Pixelation,
     Density,
     Lcd,
@@ -562,7 +563,7 @@ fn sections(tab: usize) -> Vec<(&'static str, Vec<Row>)> {
     match tab {
         0 => vec![("Battles", vec![Row::Pick(Item::TextSpeed), Row::Pick(Item::Timing), Row::Toggle(Item::Rings)]), ("World", vec![])],
         1 => vec![
-            ("Quality", vec![Row::Pick(Item::Resolution), Row::Pick(Item::Shadows)]),
+            ("Quality", vec![Row::Pick(Item::Resolution), Row::Pick(Item::Shadows), Row::Toggle(Item::Indirect)]),
             ("Post-processing", vec![Row::Toggle(Item::Pixelation), Row::Level(Item::Density), Row::Pick(Item::Lcd)]),
         ],
         2 => vec![("Buttons", BUTTONS.map(Row::Keys).to_vec()), ("D-pad", D_PAD.map(Row::Keys).to_vec())],
@@ -613,6 +614,7 @@ fn nudge(o: &mut Options, item: Item, by: i32) {
             g.scale = scales[step(i, scales.len())];
         }
         Item::Shadows => g.shadows = step(g.shadows, Graphics::SHADOWS.len()),
+        Item::Indirect => g.indirect = by > 0,
         Item::Pixelation => g.pixelation = by > 0,
         Item::Density if g.pixelation => g.density = ((g.density * 20.0).round() + by as f32).clamp(0.0, 20.0) / 20.0,
         Item::Resolution | Item::Density => {}
@@ -627,6 +629,7 @@ fn nudge(o: &mut Options, item: Item, by: i32) {
 fn flip(o: &mut Options, item: Item) {
     match item {
         Item::Pixelation => o.graphics.pixelation = !o.graphics.pixelation,
+        Item::Indirect => o.graphics.indirect = !o.graphics.indirect,
         _ => nudge(o, item, 1),
     }
 }
@@ -853,6 +856,13 @@ pub fn options_window(ctx: &egui::Context, o: &mut Options, open: &mut bool, ui_
                                 for (i, (name, _)) in Graphics::SHADOWS.iter().enumerate() {
                                     choose(ui, &mut o.graphics.shadows, i, name, "uiShadows");
                                 }
+                            });
+                            spots.push(vec![r.response.rect]);
+                            ui.end_row();
+                            label(ui, "Indirect light");
+                            let r = ui.horizontal(|ui| {
+                                choose(ui, &mut o.graphics.indirect, false, "Off", "uiIndirect");
+                                choose(ui, &mut o.graphics.indirect, true, "On", "uiIndirect").on_hover_text("What glows (lava, arcane moss, the lamps) lights what's round it, in the shadow of walls and cliffs (WebGPU; the world settings say how much)");
                             });
                             spots.push(vec![r.response.rect]);
                             ui.end_row();
@@ -1217,8 +1227,13 @@ mod tests {
         go(&mut o, &mut s, Button::Down, false);
         go(&mut o, &mut s, Button::Left, false);
         assert_eq!(o.graphics.shadows, shadows.saturating_sub(1));
-        // Down, A: the pixelation on; Down, Left: its pixels a step fewer; Down, Right twice:
-        // the GBC's LCD (no further)
+        // Down, A: the indirect light off; A: on again. Down, A: the pixelation on; Down,
+        // Left: its pixels a step fewer; Down, Right twice: the GBC's LCD (no further)
+        go(&mut o, &mut s, Button::Down, false);
+        go(&mut o, &mut s, Button::A, false);
+        assert!(!o.graphics.indirect);
+        go(&mut o, &mut s, Button::A, false);
+        assert!(o.graphics.indirect);
         go(&mut o, &mut s, Button::Down, false);
         go(&mut o, &mut s, Button::A, false);
         assert!(o.graphics.pixelation);
@@ -1230,7 +1245,7 @@ mod tests {
         for _ in 0..3 {
             go(&mut o, &mut s, Button::Right, false);
         }
-        assert_eq!((s.row, o.graphics.lcd), (4, 2));
+        assert_eq!((s.row, o.graphics.lcd), (5, 2));
         assert_eq!(o.graphics.retro(), render::scene::Retro { pixelation: Some(o.graphics.density), lcd: Some(render::scene::Handheld::Gbc), ..Default::default() });
         // the resolution stays as it is while the pixelation sets it
         let scale = o.graphics.scale;
@@ -1281,7 +1296,7 @@ mod tests {
     #[test]
     fn a_closed_category_is_one_row() {
         let mut closed = BTreeSet::new();
-        assert_eq!(tab_rows(1, &closed).len(), 6, "the Graphics' five, Done and Defaults");
+        assert_eq!(tab_rows(1, &closed).len(), 7, "the Graphics' six, Done and Defaults");
         closed.insert("Quality");
         assert_eq!(tab_rows(1, &closed), [Row::Section(0), Row::Toggle(Item::Pixelation), Row::Level(Item::Density), Row::Pick(Item::Lcd), Row::End]);
         let mut o = Options::default();

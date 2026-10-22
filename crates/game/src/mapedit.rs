@@ -3041,6 +3041,7 @@ impl MapEditor {
             frost: self.frost,
             wind: crate::stage::wind_look(&self.wind_settings()),
             see_through,
+            radiance: crate::stage::radiance_look(&self.light_settings()),
         }
     }
 

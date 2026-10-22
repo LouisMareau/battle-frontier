@@ -176,11 +176,13 @@ pub struct Graphics {
     pub density: f32,
     /// an old handheld's LCD colours: 0 none, 1 the GBA's, 2 the GBC's (`HANDHELDS`)
     pub lcd: usize,
+    /// the indirect light of what glows (the radiance cascades each frame; WebGPU only)
+    pub indirect: bool,
 }
 
 impl Default for Graphics {
     fn default() -> Self {
-        Graphics { scale: 100, shadows: 2, pixelation: false, density: 0.35, lcd: 0 }
+        Graphics { scale: 100, shadows: 2, pixelation: false, density: 0.35, lcd: 0, indirect: true }
     }
 }
 
@@ -204,7 +206,7 @@ impl Graphics {
     }
 
     fn quality(self) -> Quality {
-        Quality { scale: self.scale as f32 / 100.0, shadow_size: Self::SHADOWS[self.shadows.min(3)].1 }
+        Quality { scale: self.scale as f32 / 100.0, shadow_size: Self::SHADOWS[self.shadows.min(3)].1, indirect: self.indirect }
     }
 }
 
@@ -818,6 +820,7 @@ impl GameApp {
         let mut stage = Stage::new(spot, hours);
         stage.toon = crate::stage::toon_look(&content.world().toon);
         stage.wind = crate::stage::wind_look(&content.world().wind);
+        stage.radiance = crate::stage::radiance_look(&content.world().light);
         stage.content = Some(content.clone());
         stage.add_people(player_key, foe_key);
         let hud = Hud { icons: self.icons.clone(), ..Default::default() };
@@ -1006,6 +1009,8 @@ impl GameApp {
                         self.options.graphics.shadows = i;
                     }
                 }
+                // the indirect light: on or off
+                "indirect" => self.options.graphics.indirect = !arg.eq_ignore_ascii_case("off"),
                 // the old handhelds' looks: off, gba or gbc
                 "pixelation" => match arg {
                     "off" => self.options.graphics.pixelation = false,

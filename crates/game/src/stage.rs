@@ -109,6 +109,8 @@ pub struct Stage {
     pub retro: render::scene::Retro,
     /// the world's wind (the clouds drift with it)
     pub wind: render::scene::Wind,
+    /// the picture's light (the content's world settings)
+    pub radiance: render::scene::Radiance,
 }
 
 /// An ability's timeline playing out on the stage, from `t0` (ms).
@@ -127,6 +129,18 @@ pub struct Playing {
 pub fn wind_look(w: &content::Wind) -> render::scene::Wind {
     let [x, z] = w.way();
     render::scene::Wind { way: glam::Vec2::new(x as f32, z as f32), strength: w.strength.clamp(0.0, 1.0) as f32, gusts: w.gusts.clamp(0.0, 1.0) as f32 }
+}
+
+/// The world settings' light, for the renderer.
+pub fn radiance_look(l: &content::Radiance) -> render::scene::Radiance {
+    render::scene::Radiance {
+        exposure: l.exposure.clamp(0.0, 16.0) as f32,
+        filmic: l.tone == "filmic",
+        bloom: l.bloom.clamp(0.0, 4.0) as f32,
+        threshold: l.threshold.clamp(0.0, 64.0) as f32,
+        gi: l.gi.clamp(0.0, 8.0) as f32,
+        gi_range: l.gi_range.clamp(4.0, 256.0) as f32,
+    }
 }
 
 /// The world settings' toon look, for the renderer.
@@ -241,6 +255,7 @@ impl Stage {
             content: None,
             retro: Default::default(),
             wind: Default::default(),
+            radiance: Default::default(),
         }
     }
 
@@ -763,7 +778,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false, wind: self.wind, see_through: None }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false, wind: self.wind, see_through: None, radiance: self.radiance }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

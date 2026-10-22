@@ -1,12 +1,14 @@
 //! The GPU side: pipelines, textures, the map's meshes, and each frame's sprites and
-//! effects. The scene is drawn into its own colour + depth target (with the sun's shadow
-//! map first): what's solid first, writing its look too (toon or not, how far, which way
-//! it faces) to a second target, then what's see-through; then blitted into whatever pass
-//! the host gives (egui's, in the game), with the toon look's ink lines found in the looks,
-//! and the pixelation and an old handheld's LCD colours if the game asks; a small blurred
-//! copy of the picture besides, for frosted glass over it (`frost_view`). The grass grown
-//! through tall ground is drawn as copies of its models, culled each frame (`grass`); the
-//! meadows' blades and flowers are made on the GPU as they're drawn (`blades`).
+//! effects. The scene is drawn into its own colour + depth target (linear light past white;
+//! with the sun's shadow map first, and the indirect light's height pass and cascades, `gi`):
+//! what's solid first, writing its look too (toon or not, how far, which way it faces) to a
+//! second target and what shines of it to a third, then what's see-through; the bloom of what
+//! shines blurred from the third; then blitted into whatever pass the host gives (egui's, in
+//! the game), the bloom added, exposed and tone mapped, with the toon look's ink lines found
+//! in the looks, and the pixelation and an old handheld's LCD colours if the game asks; a
+//! small blurred copy of the picture besides, for frosted glass over it (`frost_view`). The
+//! grass grown through tall ground is drawn as copies of its models, culled each frame
+//! (`grass`); the meadows' blades and flowers are made on the GPU as they're drawn (`blades`).
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -14,11 +16,19 @@ use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
 use crate::blades::{BladeInstance, BladeKind, BladePipelines, Blades};
+use crate::gi::{Gi, Region};
 use crate::grass::{Grass, GrassCopy, GrassModel};
 use crate::map::{build_meshes, MapScene, MapVertex, Spot};
 
-const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
-const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// The scene's colour: linear, past 1 where a glow or a lamp's hot spot is (the blit
+/// exposes and tone maps it to the screen's range).
+const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+pub(crate) const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// What solid things write as shining (rgb, lit by nothing; a: the ground's), for the bloom
+/// and the indirect light; the bloom's chain is of the same.
+const EMIT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+/// The bloom's chain: this many levels from half the picture's size, each half the last, at most.
+const BLOOM_MIPS: u32 = 5;
 /// What solid things write next to their colour, for the ink lines: toon or not, how far,
 /// which way they face (see `look` in the shader).
 const LOOK: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Uint;
@@ -60,11 +70,38 @@ pub struct Quality {
     /// 0.25 to 1
     pub scale: f32,
     pub shadow_size: u32,
+    /// the indirect light of what glows (the radiance cascades, each frame; WebGPU only)
+    pub indirect: bool,
 }
 
 impl Default for Quality {
     fn default() -> Self {
-        Quality { scale: 1.0, shadow_size: SHADOW_SIZE }
+        Quality { scale: 1.0, shadow_size: SHADOW_SIZE, indirect: true }
+    }
+}
+
+/// The picture's light (the world settings' `light`): how it's exposed and tone mapped to
+/// the screen, the bloom of what shines, and the indirect light of what glows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Radiance {
+    /// the colours times this before the tone map (1: as they are)
+    pub exposure: f32,
+    /// a filmic tone map (an ACES fit) over the whole range; else a soft shoulder that
+    /// keeps the colours as they are up to 0.8
+    pub filmic: bool,
+    /// how much of the blurred glow is added (0: no bloom)
+    pub bloom: f32,
+    /// what else blooms: the colour's brightness past this (linear)
+    pub threshold: f32,
+    /// the indirect light's strength (0: none) and how far it's worked out round the
+    /// camera's target (cells; a square twice that wide)
+    pub gi: f32,
+    pub gi_range: f32,
+}
+
+impl Default for Radiance {
+    fn default() -> Self {
+        Radiance { exposure: 1.0, filmic: false, bloom: 0.35, threshold: 1.0, gi: 1.0, gi_range: 32.0 }
     }
 }
 
@@ -227,6 +264,14 @@ struct Globals {
     /// what's kept in sight through the trees and props in front of it: xyz where, w the
     /// see-through cone's radius there (0: none)
     see_through: [f32; 4],
+    /// the picture's light: exposure, bloom, the tone map (0 soft, 1 filmic), what else
+    /// blooms (the colour's brightness past this)
+    tone: [f32; 4],
+    /// the indirect light: x how strong (0: none), y 1 / the region's width, z its width, w
+    /// the probes' spacing; b: xy the region's corner, z the lamps' bounce, w the screen's
+    /// glow's share
+    gi: [f32; 4],
+    gi_b: [f32; 4],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -433,6 +478,8 @@ pub struct Frame {
     /// what's kept in sight through the trees and props in front of it (the walker): where,
     /// and how wide the see-through cone is round it (cells); none: nothing is
     pub see_through: Option<(Vec3, f32)>,
+    /// the picture's light: its exposure and tone map, the bloom, the indirect light
+    pub radiance: Radiance,
 }
 
 /// The wind as the frame has it: the way it blows on the ground (x, z, a unit long), how
@@ -693,9 +740,18 @@ struct Target {
     size: [u32; 2],
     color_view: wgpu::TextureView,
     look_view: wgpu::TextureView,
+    emit_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
-    /// the colour and the looks, for the blit
+    /// the colour, the looks and the bloom, for the blit; the colour and what shines, for
+    /// the bloom's first pass
     post_bind: wgpu::BindGroup,
+    bloom_first_bind: wgpu::BindGroup,
+    /// the bloom's chain, level by level (half the picture's size, then halved again), each
+    /// drawn into, and bound for the next to read
+    bloom_views: Vec<wgpu::TextureView>,
+    bloom_binds: Vec<wgpu::BindGroup>,
+    /// the indirect light's field passes, reading what this target last showed shining
+    gi_bind: Option<wgpu::BindGroup>,
 }
 
 struct DrawCall {
@@ -745,8 +801,10 @@ pub struct SceneRenderer {
     /// how many placements `places` holds
     places_cap: u64,
     texture_layout: wgpu::BindGroupLayout,
-    /// the blit's: the scene's colour, a sampler, the looks
+    /// the blit's: the scene's colour, a sampler, the looks, the bloom
     post_layout: wgpu::BindGroupLayout,
+    /// the bloom's first pass's: the colour, a smooth sampler, what shines
+    bloom_layout: wgpu::BindGroupLayout,
     bones_layout: wgpu::BindGroupLayout,
     bones: Bones,
     /// a stand-in for the shadow map's slot in the shadow pass (which draws into it)
@@ -761,9 +819,18 @@ pub struct SceneRenderer {
     nearest: wgpu::Sampler,
     linear: wgpu::Sampler,
     shadow_view: wgpu::TextureView,
+    /// the light's: the sun's shadow map and the indirect light's probes
     shadow_bind: wgpu::BindGroup,
     shadow_layout: wgpu::BindGroupLayout,
     shadow_sampler: wgpu::Sampler,
+    /// the indirect light's cascades, where the device runs compute shaders
+    gi: Option<Gi>,
+    /// the globals as the indirect light's height pass has them (its view from above), and
+    /// their bind group with the placements
+    gi_globals: wgpu::Buffer,
+    gi_globals_bind: wgpu::BindGroup,
+    /// blank probes, bound where there are no cascades
+    blank_gi: (wgpu::TextureView, wgpu::TextureView),
     /// the shadow map's size now
     shadow_size: u32,
     quality: Quality,
@@ -774,11 +841,17 @@ pub struct SceneRenderer {
     through_pipeline: wgpu::RenderPipeline,
     opaque_through_pipeline: wgpu::RenderPipeline,
     map_shadow_pipeline: wgpu::RenderPipeline,
+    /// the indirect light's height pass
+    height_pipeline: wgpu::RenderPipeline,
     sprite_pipeline: wgpu::RenderPipeline,
     sprite_shadow_pipeline: wgpu::RenderPipeline,
     blend_pipeline: wgpu::RenderPipeline,
     add_pipeline: wgpu::RenderPipeline,
     blit_pipeline: wgpu::RenderPipeline,
+    /// the bloom: what shines at half size, halved down the chain, doubled back up and added
+    bloom_first_pipeline: wgpu::RenderPipeline,
+    bloom_down_pipeline: wgpu::RenderPipeline,
+    bloom_up_pipeline: wgpu::RenderPipeline,
     /// the frosted glass: the picture small (into the first texture), blurred across, down
     frost_pipeline: wgpu::RenderPipeline,
     frost_x_pipeline: wgpu::RenderPipeline,
@@ -820,7 +893,8 @@ pub struct SceneRenderer {
 
 pub const WHITE: &str = "#white";
 /// The scene's shaders: its own, and the meadows' blades' (what they are and how fine, then how
-/// they're made and drawn).
+/// they're made and drawn). The indirect light's compute shaders are a module of their own
+/// (`gi.rs`): a storage texture anywhere in a module keeps WebGL 2 from reading any of it.
 const SHADER: &str = concat!(include_str!("shader.wgsl"), include_str!("blade_lod.wgsl"), include_str!("blades_draw.wgsl"));
 /// The world layer of cliff faces: drawn by the terrain shader (as rock), like the tops.
 pub const CLIFFS: &str = "cliffs";
@@ -830,24 +904,34 @@ impl SceneRenderer {
     /// `output` is the format of the pass the scene is blitted into.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, output: wgpu::TextureFormat) -> SceneRenderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scene"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
-        let globals = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("globals"),
-            size: std::mem::size_of::<Globals>() as u64,
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let make_globals = |label: &str| {
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: std::mem::size_of::<Globals>() as u64,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            })
+        };
+        let globals = make_globals("globals");
+        let gi_globals = make_globals("globals from above");
+        // the indirect light's compute shaders read the globals and the ground where there
+        // are compute shaders (WebGPU); the layouts say so only then, WebGL 2 knowing no
+        // compute stage
+        let compute = Gi::can_compute(device);
+        let stages = if compute { wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE } else { wgpu::ShaderStages::VERTEX_FRAGMENT };
+        let fragment_stages = if compute { wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE } else { wgpu::ShaderStages::FRAGMENT };
         let globals_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals"),
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: stages,
                     ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: None },
                     count: None,
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    visibility: stages,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
@@ -857,7 +941,7 @@ impl SceneRenderer {
                 },
             ],
         });
-        let (places, places_cap, globals_bind) = Self::make_places(device, &globals_layout, &globals, 16);
+        let (places, places_cap, globals_bind, gi_globals_bind) = Self::make_places(device, &globals_layout, &globals, &gi_globals, 16);
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("texture"),
             entries: &[
@@ -908,8 +992,36 @@ impl SceneRenderer {
                     },
                     count: None,
                 },
+                // the bloom, and its smooth sampler
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
+        // the light's: the sun's shadow map, and the indirect light's probes
+        let probes = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
         let shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("shadow"),
             entries: &[
@@ -929,6 +1041,8 @@ impl SceneRenderer {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                probes(2),
+                probes(3),
             ],
         });
         let nearest = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -950,11 +1064,11 @@ impl SceneRenderer {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
-        let (shadow_view, shadow_bind) = Self::make_shadow(device, &shadow_layout, &shadow_sampler, SHADOW_SIZE);
+        let blank_gi = Gi::blank_views(device);
 
         let data_texture = |binding: u32| wgpu::BindGroupLayoutEntry {
             binding,
-            visibility: wgpu::ShaderStages::FRAGMENT,
+            visibility: fragment_stages,
             ty: wgpu::BindingType::Texture {
                 sample_type: wgpu::TextureSampleType::Float { filterable: false },
                 view_dimension: wgpu::TextureViewDimension::D2,
@@ -984,6 +1098,22 @@ impl SceneRenderer {
         let post_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("post"),
             bind_group_layouts: &[Some(&globals_layout), Some(&post_layout)],
+            immediate_size: 0,
+        });
+        // the bloom's first pass: the colour, a smooth sampler, what shines
+        let smooth_texture = |binding: u32| wgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false },
+            count: None,
+        };
+        let bloom_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("bloom first"),
+            entries: &[smooth_texture(0), wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::FRAGMENT, ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None }, smooth_texture(5)],
+        });
+        let bloom_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("bloom first"),
+            bind_group_layouts: &[Some(&globals_layout), Some(&bloom_layout)],
             immediate_size: 0,
         });
         let frost_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -1064,11 +1194,15 @@ impl SceneRenderer {
             bias: Default::default(),
         };
         let primitive = wgpu::PrimitiveState { cull_mode: None, ..Default::default() };
-        // the targets: the solid pass's (colour and looks, both written or neither), the
-        // see-through pass's (colour), the shadow's (none), the screen's
+        // the targets: the solid pass's (colour, looks and what shines, all written or
+        // none), the see-through pass's (colour), the shadow's (none), the screen's
         let solid = |write: bool| {
             let mask = if write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() };
-            vec![Some(wgpu::ColorTargetState { format: COLOR, blend: None, write_mask: mask }), Some(wgpu::ColorTargetState { format: LOOK, blend: None, write_mask: mask })]
+            vec![
+                Some(wgpu::ColorTargetState { format: COLOR, blend: None, write_mask: mask }),
+                Some(wgpu::ColorTargetState { format: LOOK, blend: None, write_mask: mask }),
+                Some(wgpu::ColorTargetState { format: EMIT, blend: None, write_mask: mask }),
+            ]
         };
         let clear = |blend: Option<wgpu::BlendState>, write: bool| {
             vec![Some(wgpu::ColorTargetState { format: COLOR, blend, write_mask: if write { wgpu::ColorWrites::ALL } else { wgpu::ColorWrites::empty() } })]
@@ -1147,6 +1281,9 @@ impl SceneRenderer {
         let fade_depth_pipeline = pipeline("fade depth", &main_layout, "vs_map", "fs_map_depth", &map_buffers, clear(None, false), Some(depth(true)));
         let fade_pipeline = pipeline("fade", &main_layout, "vs_map", "fs_map_fade", &map_buffers, clear(alpha, true), Some(depth(false)));
         let sprite_pipeline = pipeline("sprites", &main_layout, "vs_sprite", "fs_sprite_cutout", &sprite_buffers, solid(true), Some(depth(true)));
+        // the indirect light's height pass: the height of what the sun's pass draws, from above
+        let heights = vec![Some(wgpu::ColorTargetState { format: wgpu::TextureFormat::R32Float, blend: None, write_mask: wgpu::ColorWrites::ALL })];
+        let height_pipeline = pipeline("gi heights", &shadow_pass_layout, "vs_map_shadow", "fs_height", &map_buffers, heights, Some(shadow_depth.clone()));
         let sprite_shadow_pipeline = pipeline("sprite shadow", &shadow_pass_layout, "vs_sprite_shadow", "fs_sprite_shadow", &sprite_buffers, vec![], Some(shadow_depth));
         let blend_pipeline = pipeline("blend", &main_layout, "vs_sprite", "fs_sprite_blend", &sprite_buffers, clear(alpha, true), Some(depth(false)));
         let on_top = wgpu::DepthStencilState { format: DEPTH, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always), stencil: Default::default(), bias: Default::default() };
@@ -1157,13 +1294,22 @@ impl SceneRenderer {
         let frost_pipeline = pipeline("frost", &post_pipeline_layout, "vs_blit", "fs_frost", &[], frosted(), None);
         let frost_x_pipeline = pipeline("frost across", &frost_pipeline_layout, "vs_blit", "fs_frost_x", &[], frosted(), None);
         let frost_y_pipeline = pipeline("frost down", &frost_pipeline_layout, "vs_blit", "fs_frost_y", &[], frosted(), None);
+        // the bloom's chain: halved (the first from what shines and the colour), doubled and added
+        let bloomed = |blend: Option<wgpu::BlendState>| vec![Some(wgpu::ColorTargetState { format: EMIT, blend, write_mask: wgpu::ColorWrites::ALL })];
+        let add_up = wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::One, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: wgpu::BlendComponent::REPLACE };
+        let bloom_first_pipeline = pipeline("bloom first", &bloom_pipeline_layout, "vs_blit", "fs_bloom_first", &[], bloomed(None), None);
+        let bloom_down_pipeline = pipeline("bloom down", &frost_pipeline_layout, "vs_blit", "fs_bloom_down", &[], bloomed(None), None);
+        let bloom_up_pipeline = pipeline("bloom up", &frost_pipeline_layout, "vs_blit", "fs_bloom_up", &[], bloomed(Some(add_up)), None);
         let ground_pipeline = pipeline("ground", &ground_pipeline_layout, "vs_map", "fs_ground", &map_buffers, solid(true), Some(depth(true)));
+        let gi = compute.then(|| Gi::new(device, &globals_layout, &ground_layout, &empty_layout));
+        let (shadow_view, shadow_bind) = Self::make_light(device, &shadow_layout, &shadow_sampler, SHADOW_SIZE, gi.as_ref().map_or((&blank_gi.0, &blank_gi.1), Gi::views));
 
         let mut r = SceneRenderer {
-            globals, globals_layout, globals_bind, places, places_cap, texture_layout, post_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
-            nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler,
+            globals, globals_layout, globals_bind, places, places_cap, texture_layout, post_layout, bloom_layout, bones_layout, bones, empty_bind, skinned_pipeline, skinned_shadow_pipeline, fade_depth_pipeline, fade_pipeline, skinned: HashMap::new(),
+            nearest, linear, shadow_view, shadow_bind, shadow_layout, shadow_sampler, gi, gi_globals, gi_globals_bind, blank_gi,
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
-            map_pipeline, opaque_pipeline, through_pipeline, opaque_through_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
+            map_pipeline, opaque_pipeline, through_pipeline, opaque_through_pipeline, map_shadow_pipeline, height_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
+            bloom_first_pipeline, bloom_down_pipeline, bloom_up_pipeline,
             frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0, wind_clock: WindClock::default(),
             ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![], grass, blades,
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
@@ -1187,26 +1333,30 @@ impl SceneRenderer {
     }
 
     /// The world maps' placements: a buffer of `cap` of them (the first the scene's own
-    /// space), and the globals' bind group reading it.
-    fn make_places(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &wgpu::Buffer, cap: u64) -> (wgpu::Buffer, u64, wgpu::BindGroup) {
+    /// space), and the globals' bind groups reading it: the frame's, and the indirect
+    /// light's height pass's (`gi_globals`).
+    fn make_places(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, globals: &wgpu::Buffer, gi_globals: &wgpu::Buffer, cap: u64) -> (wgpu::Buffer, u64, wgpu::BindGroup, wgpu::BindGroup) {
         let places = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("places"),
             size: cap * PLACE_STRIDE,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals"),
-            layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &places, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<PlaceUniform>() as u64) }),
-                },
-            ],
-        });
-        (places, cap, bind)
+        let bind = |globals: &wgpu::Buffer| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("globals"),
+                layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: globals.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &places, offset: 0, size: wgpu::BufferSize::new(std::mem::size_of::<PlaceUniform>() as u64) }),
+                    },
+                ],
+            })
+        };
+        let (own, above) = (bind(globals), bind(gi_globals));
+        (places, cap, own, above)
     }
 
     /// Draws a degenerate triangle with every pipeline once, offscreen, so that browsers
@@ -1279,9 +1429,17 @@ impl SceneRenderer {
                 pass.draw(0..3, 0..1);
             }
         }
-        // the frosted glass's three passes
+        // the frosted glass's three passes, and the bloom's three
         let frost = self.make_frost(device, [2, 2]);
-        for (pipeline, bind, into) in [(&self.frost_pipeline, &target.post_bind, &frost.views[0]), (&self.frost_x_pipeline, &frost.binds[0], &frost.views[1]), (&self.frost_y_pipeline, &frost.binds[1], &frost.views[0])] {
+        let bloom = &target.bloom_views;
+        for (pipeline, bind, into) in [
+            (&self.frost_pipeline, &target.post_bind, &frost.views[0]),
+            (&self.frost_x_pipeline, &frost.binds[0], &frost.views[1]),
+            (&self.frost_y_pipeline, &frost.binds[1], &frost.views[0]),
+            (&self.bloom_first_pipeline, &target.bloom_first_bind, &bloom[0]),
+            (&self.bloom_down_pipeline, &target.bloom_binds[0], &bloom[1]),
+            (&self.bloom_up_pipeline, &target.bloom_binds[1], &bloom[0]),
+        ] {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("warm-up frost"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: into, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
@@ -1337,8 +1495,8 @@ impl SceneRenderer {
         self.skinned.contains_key(key)
     }
 
-    /// The sun's shadow map, `size` texels a side.
-    fn make_shadow(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, size: u32) -> (wgpu::TextureView, wgpu::BindGroup) {
+    /// The sun's shadow map, `size` texels a side, bound with the indirect light's probes.
+    fn make_light(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, sampler: &wgpu::Sampler, size: u32, probes: (&wgpu::TextureView, &wgpu::TextureView)) -> (wgpu::TextureView, wgpu::BindGroup) {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("shadow map"),
             size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
@@ -1356,16 +1514,19 @@ impl SceneRenderer {
             entries: &[
                 wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: wgpu::BindingResource::TextureView(probes.0) },
+                wgpu::BindGroupEntry { binding: 3, resource: wgpu::BindingResource::TextureView(probes.1) },
             ],
         });
         (view, bind)
     }
 
-    /// Sets the resolution and the shadows (taking effect on the next frame).
+    /// Sets the resolution, the shadows and the indirect light (taking effect on the next
+    /// frame).
     pub fn set_quality(&mut self, device: &wgpu::Device, q: Quality) {
-        let q = Quality { scale: q.scale.clamp(0.25, 1.0), shadow_size: q.shadow_size.min(device.limits().max_texture_dimension_2d) };
+        let q = Quality { scale: q.scale.clamp(0.25, 1.0), shadow_size: q.shadow_size.min(device.limits().max_texture_dimension_2d), indirect: q.indirect };
         if q.shadow_size > 0 && q.shadow_size != self.shadow_size {
-            (self.shadow_view, self.shadow_bind) = Self::make_shadow(device, &self.shadow_layout, &self.shadow_sampler, q.shadow_size);
+            (self.shadow_view, self.shadow_bind) = Self::make_light(device, &self.shadow_layout, &self.shadow_sampler, q.shadow_size, self.gi.as_ref().map_or((&self.blank_gi.0, &self.blank_gi.1), Gi::views));
             self.shadow_size = q.shadow_size;
         }
         if q.scale != self.quality.scale {
@@ -1376,6 +1537,11 @@ impl SceneRenderer {
 
     pub fn quality(&self) -> Quality {
         self.quality
+    }
+
+    /// Whether the device runs the indirect light's cascades (compute shaders: WebGPU).
+    pub fn indirect_on_gpu(&self) -> bool {
+        self.gi.is_some()
     }
 
     /// What the last frame had drawn.
@@ -1769,6 +1935,12 @@ impl SceneRenderer {
         self.sky = l.sky.to_array();
         let shadows = frame.shadows && self.quality.shadow_size > 0;
         let light_view_proj = on_texels(&l.light_view_proj, self.shadow_size);
+        // the indirect light: the region round the camera's target, when there are cascades
+        // to run and world maps to light
+        let gi_region = match &self.gi {
+            Some(_) if self.quality.indirect && frame.radiance.gi > 0.0 && !self.worlds.is_empty() => Some(Region::around(&frame.view_proj, frame.camera_pos, 2.0 * frame.radiance.gi_range)),
+            _ => None,
+        };
         // the clouds' shadows are the sun's: as strong as it is (a day's full, the moon's weak)
         let sun_strength = (l.sun.dot(Vec3::new(0.2126, 0.7152, 0.0722)) / 0.78).clamp(0.2, 1.0);
         let globals = Globals {
@@ -1814,6 +1986,9 @@ impl SceneRenderer {
             wind_b: [clock.gusts.x, clock.gusts.y, clock.sway as f32, clock.flutter as f32],
             wind_c: [clock.ripple as f32, clock.lap as f32, 0.0, 0.0],
             see_through: frame.see_through.map_or([0.0; 4], |(p, r)| [p.x, p.y, p.z, r.max(0.0)]),
+            tone: [frame.radiance.exposure.max(0.0), frame.radiance.bloom.max(0.0), frame.radiance.filmic as u32 as f32, frame.radiance.threshold.max(0.0)],
+            gi: gi_region.map_or([0.0; 4], |r| [frame.radiance.gi.max(0.0), 1.0 / r.width, r.width, r.spacing()]),
+            gi_b: gi_region.map_or([0.0; 4], |r| [r.origin.x, r.origin.y, crate::gi::BOUNCE, crate::gi::SCREEN]),
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -1829,7 +2004,7 @@ impl SceneRenderer {
         // the world maps' placements: the scene's own space first, then each map's
         let need = self.worlds.len() as u64 + 1;
         if need > self.places_cap {
-            (self.places, self.places_cap, self.globals_bind) = Self::make_places(device, &self.globals_layout, &self.globals, need.next_power_of_two());
+            (self.places, self.places_cap, self.globals_bind, self.gi_globals_bind) = Self::make_places(device, &self.globals_layout, &self.globals, &self.gi_globals, need.next_power_of_two());
         }
         let mut places = vec![0u8; (need * PLACE_STRIDE) as usize];
         for (k, w) in self.worlds.values().enumerate() {
@@ -1840,6 +2015,57 @@ impl SceneRenderer {
         queue.write_buffer(&self.places, 0, &places);
         // each map's placement, by its slot's offset
         let slot = |k: usize| ((k as u64 + 1) * PLACE_STRIDE) as u32;
+
+        // the indirect light: the height pass from straight above the region (the ground,
+        // its cliffs, the buildings and the props, through the shadow pipelines), then the
+        // field and the cascades, reading what the target last showed shining
+        if let (Some(gi), Some(region), Some(target)) = (&self.gi, gi_region, &self.target) {
+            let top = region.top_view_proj();
+            let mut above = globals;
+            above.light_view_proj = top.to_cols_array_2d();
+            queue.write_buffer(&self.gi_globals, 0, bytemuck::bytes_of(&above));
+            gi.prepare(queue, &region);
+            let seen = Frustum::new(&top);
+            let nothing = wgpu::Color { r: crate::gi::NOTHING, g: 0.0, b: 0.0, a: 1.0 };
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("gi heights"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &gi.height_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(nothing), store: wgpu::StoreOp::Store } })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &gi.height_depth_view,
+                    depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(1.0), store: wgpu::StoreOp::Discard }),
+                    stencil_ops: None,
+                }),
+                ..Default::default()
+            });
+            pass.set_pipeline(&self.height_pipeline);
+            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
+            let mut bound = WHITE;
+            for (k, w) in self.worlds.values().enumerate() {
+                pass.set_bind_group(0, &self.gi_globals_bind, &[slot(k)]);
+                let off = w.place.offset;
+                let blocking = w.layers.iter().filter(|(name, _)| matches!(name.as_str(), CLIFFS | "buildings" | "props")).flat_map(|(_, l)| l.values());
+                for sq in w.tops.values().chain(blocking) {
+                    if !seen.sees(sq.lo + off, sq.hi + off) {
+                        continue;
+                    }
+                    for (key, m) in &sq.pieces {
+                        if !seen.sees(m.lo + off, m.hi + off) {
+                            continue;
+                        }
+                        if key.as_str() != bound {
+                            pass.set_bind_group(1, &self.textures.get(key).unwrap_or(&self.textures[WHITE]).bind, &[]);
+                            bound = key.as_str();
+                        }
+                        m.draw(&mut pass);
+                    }
+                }
+            }
+            drop(pass);
+            let grounds: Vec<(u32, &wgpu::BindGroup)> = self.worlds.values().enumerate().map(|(k, w)| (slot(k), &w.bind)).collect();
+            if let Some(bind) = &target.gi_bind {
+                gi.record(encoder, &self.globals_bind, &self.empty_bind, bind, &grounds);
+            }
+        }
 
         // this frame's sprites, shapes and glows: one vertex buffer, drawn by texture
         let mut vertices: Vec<SpriteVertex> = vec![];
@@ -2236,6 +2462,30 @@ impl SceneRenderer {
             }
         }
         drop(pass);
+        // the bloom: what shines (and what's too bright) at half size, halved down the
+        // chain, then doubled back up, each level added onto the finer one
+        if frame.radiance.bloom > 0.0 {
+            let n = target.bloom_views.len();
+            let draw = |encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup, into: &wgpu::TextureView, load: wgpu::LoadOp<wgpu::Color>| {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("bloom"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: into, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load, store: wgpu::StoreOp::Store } })],
+                    ..Default::default()
+                });
+                pass.set_pipeline(pipeline);
+                pass.set_bind_group(0, &self.globals_bind, &[0]);
+                pass.set_bind_group(1, bind, &[]);
+                pass.draw(0..3, 0..1);
+            };
+            let clear = wgpu::LoadOp::Clear(wgpu::Color::BLACK);
+            draw(encoder, &self.bloom_first_pipeline, &target.bloom_first_bind, &target.bloom_views[0], clear);
+            for k in 1..n {
+                draw(encoder, &self.bloom_down_pipeline, &target.bloom_binds[k - 1], &target.bloom_views[k], clear);
+            }
+            for k in (0..n - 1).rev() {
+                draw(encoder, &self.bloom_up_pipeline, &target.bloom_binds[k + 1], &target.bloom_views[k], wgpu::LoadOp::Load);
+            }
+        }
         // the frosted glass: the finished picture small, blurred across, then down
         if let (true, Some(frost)) = (frame.frost, &self.frost) {
             let draw = |encoder: &mut wgpu::CommandEncoder, pipeline: &wgpu::RenderPipeline, bind: &wgpu::BindGroup, into: &wgpu::TextureView| {
@@ -2265,14 +2515,15 @@ impl SceneRenderer {
         pass.draw(0..3, 0..1);
     }
 
-    /// The pass for what's solid: colour (cleared to `sky`) and looks (cleared to nothing),
-    /// the depth kept for the see-through pass.
+    /// The pass for what's solid: colour (cleared to `sky`), looks and what shines (cleared
+    /// to nothing), the depth kept for the see-through pass.
     fn solid_pass<'e>(&self, encoder: &'e mut wgpu::CommandEncoder, target: &Target, sky: wgpu::Color) -> wgpu::RenderPass<'e> {
         encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("scene"),
             color_attachments: &[
                 Some(wgpu::RenderPassColorAttachment { view: &target.color_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(sky), store: wgpu::StoreOp::Store } }),
                 Some(wgpu::RenderPassColorAttachment { view: &target.look_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
+                Some(wgpu::RenderPassColorAttachment { view: &target.emit_view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT), store: wgpu::StoreOp::Store } }),
             ],
             depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                 view: &target.depth_view,
@@ -2329,8 +2580,50 @@ impl SceneRenderer {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
+        let emit = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("scene shining"),
+            size: extent,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: EMIT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        // the bloom's chain: half the picture's size, halved again down to a few texels, a
+        // texture a level (not one texture's mips: WebGL 2's views of one mip don't read
+        // as that mip, and the chain smeared the glow across the whole picture)
+        let half = [size[0].div_ceil(2).max(1), size[1].div_ceil(2).max(1)];
+        let mips = BLOOM_MIPS.min(half[0].min(half[1]).ilog2() + 1).max(1);
+        let bloom_views: Vec<wgpu::TextureView> = (0..mips)
+            .map(|k| {
+                device
+                    .create_texture(&wgpu::TextureDescriptor {
+                        label: Some("bloom"),
+                        size: wgpu::Extent3d { width: (half[0] >> k).max(1), height: (half[1] >> k).max(1), depth_or_array_layers: 1 },
+                        mip_level_count: 1,
+                        sample_count: 1,
+                        dimension: wgpu::TextureDimension::D2,
+                        format: EMIT,
+                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                        view_formats: &[],
+                    })
+                    .create_view(&Default::default())
+            })
+            .collect();
+        let bloom_binds = bloom_views
+            .iter()
+            .map(|v| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("bloom"),
+                    layout: &self.frost_layout,
+                    entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(v) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear) }],
+                })
+            })
+            .collect();
         let color_view = color.create_view(&Default::default());
         let look_view = looks.create_view(&Default::default());
+        let emit_view = emit.create_view(&Default::default());
         let post_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("post"),
             layout: &self.post_layout,
@@ -2339,9 +2632,21 @@ impl SceneRenderer {
                 // at a lower resolution, smoothed on the way up
                 wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(if self.quality.scale < 1.0 { &self.linear } else { &self.nearest }) },
                 wgpu::BindGroupEntry { binding: 4, resource: wgpu::BindingResource::TextureView(&look_view) },
+                wgpu::BindGroupEntry { binding: 6, resource: wgpu::BindingResource::TextureView(&bloom_views[0]) },
+                wgpu::BindGroupEntry { binding: 7, resource: wgpu::BindingResource::Sampler(&self.linear) },
             ],
         });
-        Target { size, color_view, look_view, depth_view: depth.create_view(&Default::default()), post_bind }
+        let bloom_first_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("bloom first"),
+            layout: &self.bloom_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&color_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.linear) },
+                wgpu::BindGroupEntry { binding: 5, resource: wgpu::BindingResource::TextureView(&emit_view) },
+            ],
+        });
+        let gi_bind = self.gi.as_ref().map(|gi| gi.target_bind(device, &emit_view, &look_view));
+        Target { size, color_view, look_view, emit_view, depth_view: depth.create_view(&Default::default()), post_bind, bloom_first_bind, bloom_views, bloom_binds, gi_bind }
     }
 }
 
@@ -2469,6 +2774,7 @@ mod tests {
             frost: false,
             wind: Wind { way: Vec2::new(1.0, 0.0), strength: 0.6, gusts: 0.5 },
             see_through: None,
+            radiance: Radiance::default(),
         }
     }
 
@@ -2929,6 +3235,175 @@ mod tests {
         assert!(!r.blades_on_gpu() && n > 1000 && templates[3..].iter().sum::<u32>() > 0, "{n} drawn, by template {templates:?}");
     }
 
+    /// The scene drawn and blitted into `size` pixels, read back (RGBA, the screen's values).
+    fn pixels_of(r: &mut SceneRenderer, device: &wgpu::Device, queue: &wgpu::Queue, frame: &Frame, size: u32) -> Vec<u8> {
+        let out = device.create_texture(&wgpu::TextureDescriptor {
+            label: None,
+            size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let read = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (size * size * 4) as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        r.prepare(device, queue, &mut encoder, frame, [size, size]);
+        {
+            let view = out.create_view(&Default::default());
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                ..Default::default()
+            });
+            r.paint(&mut pass);
+        }
+        encoder.copy_texture_to_buffer(
+            out.as_image_copy(),
+            wgpu::TexelCopyBufferInfo { buffer: &read, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: None } },
+            wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+        );
+        queue.submit([encoder.finish()]);
+        let error = block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+        device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+        let rgba = read.slice(..).get_mapped_range().unwrap().to_vec();
+        rgba
+    }
+
+    /// A 16 x 16 world map at night: a lava band along its west side (a terrain of its own
+    /// look, glowing), grey ground elsewhere, a thin wall two cells high from the north edge
+    /// down to z 9, three cells east of the lava. With the indirect light on, the ground
+    /// beside the lava (east of it, south of the wall's end) is lit by it, the ground behind
+    /// the wall is not (as dark as the far side of the map), and nothing is lit by it with
+    /// the indirect light off; the lava shines whatever the light. On a device without
+    /// compute shaders (WebGL 2's limits) the frame draws all the same, with no indirect light.
+    #[test]
+    fn a_glow_lights_the_cell_beside_it_and_not_the_one_behind_a_wall() {
+        let _turn = turn();
+        let devices: Vec<_> = [gpu(), webgl_limits()].into_iter().flatten().collect();
+        if devices.is_empty() {
+            eprintln!("no GPU here: the indirect light not checked");
+        }
+        for (device, queue) in devices {
+            let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            let (w, h) = (16i32, 16i32);
+            // the cells, with the ring round the map: the lava (terrain 1) in the four
+            // westmost columns, the grey (terrain 0) elsewhere, all on level 0
+            let mut cells = vec![];
+            for z in -1..=h {
+                for x in -1..=w {
+                    cells.extend_from_slice(&[u8::from((0..4).contains(&x) && (0..h).contains(&z)), 0, 255, 255]);
+                }
+            }
+            // the palette: two columns of crate::world's PALETTE_ROWS (19) rows: colour,
+            // second colour, [pattern, priority, water, beach], the cliffs' colour, then the
+            // look of its own: [size, sharpness, balance, grain], [shine, glow / 4, pulse,
+            // flow], [angle, layers, 0, 0], and the layers' rows (none)
+            let rows = 19;
+            let mut palette = vec![0u8; rows * 2 * 4];
+            let mut put = |t: usize, row: usize, v: [u8; 4]| palette[(row * 2 + t) * 4..(row * 2 + t) * 4 + 4].copy_from_slice(&v);
+            put(0, 0, [128, 128, 128, 255]);
+            put(0, 1, [136, 136, 136, 255]);
+            put(0, 2, [1, 128, 0, 0]);
+            put(0, 3, [90, 90, 90, 255]);
+            put(1, 0, [255, 90, 16, 255]);
+            put(1, 1, [255, 176, 48, 255]);
+            put(1, 2, [9, 129, 0, 0]);
+            put(1, 3, [42, 34, 32, 255]);
+            put(1, 4, [153, 102, 128, 26]);
+            put(1, 5, [0, 140, 0, 0]);
+            put(1, 6, [0, 0, 0, 0]);
+            r.set_world_ground(&device, &queue, "lava", &WorldGround { cells: &cells, size: [(w + 2) as u32, (h + 2) as u32], palette: &palette, palette_width: 2, level_height: 1.0 });
+            r.set_world_place("lava", Place::default());
+            // the cell tops: a quad a cell, each vertex carrying its cell's middle in uv
+            let (mut v, mut i) = (vec![], vec![]);
+            for z in 0..h {
+                for x in 0..w {
+                    let base = v.len() as u32;
+                    for (dx, dz) in [(0, 0), (1, 0), (1, 1), (0, 1)] {
+                        v.push(MapVertex { pos: [(x + dx) as f32, 0.0, (z + dz) as f32], normal: [0.0, 1.0, 0.0], uv: [x as f32 + 0.5, z as f32 + 0.5], color: [1.0, 1.0, 1.0, 0.0], toon: 0.0, wind: [0; 4] });
+                    }
+                    i.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+                }
+            }
+            r.set_chunk(&device, "lava", "tops", (0, 0), &[(WHITE.to_string(), v, i)]);
+            // the wall: a box x 6 to 6.3, z 0 to 9, two cells high (its faces inward and out)
+            let (mut v, mut i) = (vec![], vec![]);
+            let corner = |x: f32, y: f32, z: f32, n: [f32; 3]| MapVertex { pos: [x, y, z], normal: n, uv: [0.5, 0.5], color: [0.6, 0.6, 0.6, 1.0], toon: 0.0, wind: [0; 4] };
+            let (x0, x1, z0, z1, top) = (6.0, 6.3, 0.0, 9.0, 2.0);
+            let faces = [
+                [corner(x0, 0.0, z0, [-1.0, 0.0, 0.0]), corner(x0, top, z0, [-1.0, 0.0, 0.0]), corner(x0, top, z1, [-1.0, 0.0, 0.0]), corner(x0, 0.0, z1, [-1.0, 0.0, 0.0])],
+                [corner(x1, 0.0, z0, [1.0, 0.0, 0.0]), corner(x1, top, z0, [1.0, 0.0, 0.0]), corner(x1, top, z1, [1.0, 0.0, 0.0]), corner(x1, 0.0, z1, [1.0, 0.0, 0.0])],
+                [corner(x0, top, z0, [0.0, 1.0, 0.0]), corner(x1, top, z0, [0.0, 1.0, 0.0]), corner(x1, top, z1, [0.0, 1.0, 0.0]), corner(x0, top, z1, [0.0, 1.0, 0.0])],
+                [corner(x0, 0.0, z1, [0.0, 0.0, 1.0]), corner(x1, 0.0, z1, [0.0, 0.0, 1.0]), corner(x1, top, z1, [0.0, 0.0, 1.0]), corner(x0, top, z1, [0.0, 0.0, 1.0])],
+            ];
+            for f in faces {
+                let base = v.len() as u32;
+                v.extend(f);
+                i.extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+            }
+            r.set_chunk(&device, "lava", "buildings", (0, 0), &[(WHITE.to_string(), v, i)]);
+            // night: no sun, no sky, no lamps; the camera straight above the map's middle
+            let eye = Vec3::new(8.0, 30.0, 8.001);
+            let view_proj = Mat4::perspective_rh(0.62, 1.0, 0.1, 100.0) * Mat4::look_at_rh(eye, Vec3::new(8.0, 0.0, 8.0), Vec3::Y);
+            let mut frame = frame_of(vec![]);
+            frame.view_proj = view_proj;
+            frame.camera_pos = eye;
+            frame.shadows = false;
+            frame.light.sun = Vec3::ZERO;
+            frame.light.ambient = Vec3::ZERO;
+            frame.light.hemi_sky = Vec3::ZERO;
+            frame.light.hemi_ground = Vec3::ZERO;
+            frame.light.sky = Vec3::ZERO;
+            frame.light.fog_near = 500.0;
+            frame.light.fog_far = 1000.0;
+            frame.toon.cloud_shadow = 0.0;
+            frame.radiance = Radiance { bloom: 0.0, gi: 1.0, gi_range: 32.0, ..Radiance::default() };
+            // (a row of pixels copies out in whole multiples of 256 bytes)
+            let size = 192u32;
+            let compute = r.indirect_on_gpu();
+            // (twice: the field also reads what the picture last showed shining)
+            pixels_of(&mut r, &device, &queue, &frame, size);
+            let lit = pixels_of(&mut r, &device, &queue, &frame, size);
+            frame.radiance.gi = 0.0;
+            let unlit = pixels_of(&mut r, &device, &queue, &frame, size);
+            // the brightness round a point of the ground, linear (the screen's values undone),
+            // out of 255
+            let bright = |rgba: &[u8], x: f32, z: f32| {
+                let c = view_proj * Vec4::new(x, 0.0, z, 1.0);
+                let (px, py) = (((c.x / c.w) * 0.5 + 0.5) * size as f32, (0.5 - (c.y / c.w) * 0.5) * size as f32);
+                let linear = |v: u8| (v as f32 / 255.0).powf(2.2) * 255.0;
+                let mut sum = 0.0;
+                for dy in -2..=2i32 {
+                    for dx in -2..=2i32 {
+                        let i = ((py as i32 + dy) as usize * size as usize + (px as i32 + dx) as usize) * 4;
+                        sum += linear(rgba[i]) * 0.2126 + linear(rgba[i + 1]) * 0.7152 + linear(rgba[i + 2]) * 0.0722;
+                    }
+                }
+                sum / 25.0
+            };
+            let beside = bright(&lit, 7.5, 13.5);
+            let behind = bright(&lit, 7.5, 4.5);
+            let far = bright(&lit, 15.5, 13.5);
+            let lava = bright(&lit, 2.0, 8.0);
+            let lava_unlit = bright(&unlit, 2.0, 8.0);
+            eprintln!("compute {compute}: beside the lava {beside:.1}, behind the wall {behind:.1}, far {far:.1}, the lava {lava:.1} ({lava_unlit:.1} with the indirect light off), beside with it off {:.1}", bright(&unlit, 7.5, 13.5));
+            assert!(lava > 60.0 && lava_unlit > 60.0, "the lava shines of itself: {lava:.1}, {lava_unlit:.1}");
+            if compute {
+                assert!(beside > 5.0, "the ground beside the lava is lit by it: {beside:.1}");
+                assert!(beside > behind * 4.0, "behind the wall it isn't: {behind:.1} against {beside:.1}");
+                assert!(behind < far + 4.0, "behind the wall about as dark as far off: {behind:.1}, {far:.1}");
+                assert!(bright(&unlit, 7.5, 13.5) < beside / 4.0, "nothing of it with the indirect light off: {:.1}", bright(&unlit, 7.5, 13.5));
+            } else {
+                assert!(beside < 2.0 && behind < 2.0, "no indirect light without compute shaders: {beside:.1}, {behind:.1}");
+            }
+        }
+    }
+
     #[test]
     fn the_shader_holds_for_webgpu_and_webgl() {
         let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
@@ -2943,6 +3418,9 @@ mod tests {
         assert_eq!(webgpu_only, ["vs_blade_listed", "vs_blade_listed_shadow", "vs_skinned", "vs_skinned_shadow"]);
         let (_, uniform) = module.global_variables.iter().find(|(_, v)| v.name.as_deref() == Some("bones_uniform")).unwrap();
         assert_eq!(u64::from(module.types[uniform.ty].inner.size(module.to_ctx())), BONES_WINDOW as u64 * MAT4_BYTES);
+        // (and nothing of the indirect light's compute shaders, which WebGL 2 never runs: a
+        // storage texture anywhere in a module keeps its GLSL from reading any of it)
+        assert!(module.entry_points.iter().all(|e| e.stage != naga::ShaderStage::Compute));
         let options = naga::back::glsl::Options { version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: true }, ..Default::default() };
         for (_, ep) in module.entry_points.iter().enumerate().filter(|&(i, _)| !stored(i)) {
             let pipeline = naga::back::glsl::PipelineOptions { shader_stage: ep.stage, entry_point: ep.name.clone(), multiview: None };

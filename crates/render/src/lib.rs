@@ -3,6 +3,7 @@
 //! day and night. It knows nothing of battles: the game hands it a `Frame` each frame.
 
 pub mod blades;
+mod gi;
 pub mod grass;
 pub mod map;
 pub mod scene;
