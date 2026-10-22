@@ -131,7 +131,9 @@ const rewrite = (path, body) => {
   bundle.files['maps/grass_plain.json'] = field('grass_plain', 'tall_plain');
   bundle.files['props/grass_check.json'] = { id: 'grass_check', name: 'Check grass', category: 'grass', footprint: [1, 1], height: 0.8, parts: [], model: 'models/grass_check.glb', toon: true };
   const tall = bundle.files['terrains/tall_grass.json'];
-  bundle.files['terrains/tall_plain.json'] = { ...tall, id: 'tall_plain', name: 'Tall plain' };
+  // (growing nothing: neither the props nor the meadow tall grass grows in the game)
+  bundle.files['terrains/tall_plain.json'] = { ...tall, id: 'tall_plain', name: 'Tall plain', growth: undefined };
+  // (the props alone: not the meadow tall grass grows in the game)
   tall.growth = { props: [{ prop: 'grass_check', weight: 1 }], density: 4, scale: [0.8, 1.25], patchy: 0.35, turn: true, tiled: true };
   // the colours as they are: no cloud shadows drifting over, no colour steps
   const world = bundle.files['settings/world.json'];

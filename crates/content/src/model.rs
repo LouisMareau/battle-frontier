@@ -11,6 +11,32 @@ fn is_default<T: Default + PartialEq>(v: &T) -> bool {
     *v == T::default()
 }
 
+/// Functions saying whether a field is as its record's own default has it (`$record::default()`:
+/// left out of the record then, read back the same).
+macro_rules! as_default {
+    ($record:ty: $($name:ident => $field:ident: $ty:ty),* $(,)?) => {$(
+        fn $name(v: &$ty) -> bool {
+            *v == <$record>::default().$field
+        }
+    )*};
+}
+
+as_default!(Growth: growth_density => density: f64, growth_scale => scale: [f64; 2], growth_patchy => patchy: f64, growth_turn => turn: bool);
+as_default!(Meadow: meadow_density => density: f64, meadow_patchy => patchy: f64, meadow_clump => clump: f64, meadow_clumping => clumping: f64);
+as_default!(Plant:
+    plant_weight => weight: f64,
+    plant_height => height: [f64; 2],
+    plant_scale => scale: [f64; 2],
+    plant_width => width: f64,
+    plant_lean => lean: f64,
+    plant_bend => bend: f64,
+    plant_sway => sway: f64,
+    plant_petals => petals: u8,
+    plant_petal => petal: String,
+    plant_heart => heart: String,
+    plant_bloom => bloom: f64,
+);
+
 /// The six stats, in the order the game shows them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -807,16 +833,21 @@ pub struct Terrain {
 #[serde(default)]
 pub struct Growth {
     /// the grass props, with how often each is picked
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub props: Vec<Grower>,
     /// how many to a cell, on average (0 to 32; scattered)
+    #[serde(skip_serializing_if = "growth_density")]
     pub density: f64,
     /// how much smaller and how much bigger than its prop each one can be (scattered)
+    #[serde(skip_serializing_if = "growth_scale")]
     pub scale: [f64; 2],
     /// how much the ground thins in patches (0: as thick everywhere; 1: bare in places;
     /// scattered)
+    #[serde(skip_serializing_if = "growth_patchy")]
     pub patchy: f64,
     /// each turned its own way (else all as their props are made; tiled, by half or quarter
     /// turns, so it still covers its cells)
+    #[serde(skip_serializing_if = "growth_turn")]
     pub turn: bool,
     /// tiled: each whole over its footprint's cells, lined up with them (else scattered)
     #[serde(skip_serializing_if = "is_default")]
@@ -861,13 +892,17 @@ pub struct Meadow {
     /// its plants, each with how often it grows
     pub plants: Vec<Plant>,
     /// how many to a cell, on average (0 to `MOST`)
+    #[serde(skip_serializing_if = "meadow_density")]
     pub density: f64,
     /// how much it thins in patches a few cells across (0: as thick everywhere; 1: bare in
     /// places)
+    #[serde(skip_serializing_if = "meadow_patchy")]
     pub patchy: f64,
     /// its clumps: how wide (cells; 0: none), and how alike the blades of one are (0 to 1: as
     /// tall, leaning the same way out from its middle)
+    #[serde(skip_serializing_if = "meadow_clump")]
     pub clump: f64,
+    #[serde(skip_serializing_if = "meadow_clumping")]
     pub clumping: f64,
     /// lit in the toon look's steps (as toon props are), else as the ground under it is
     #[serde(skip_serializing_if = "is_default")]
@@ -903,7 +938,8 @@ pub fn is_hex_colour(c: &str) -> bool {
 /// it's made, placed as the meadow's own are and drawn thinner further off as they are).
 pub const PLANT_SHAPES: [&str; 3] = ["blade", "flower", "model"];
 
-/// A kind of plant in a meadow (`Meadow`), and how often it grows.
+/// A kind of plant in a meadow (`Meadow`), and how often it grows. Its record leaves out what's
+/// as a plant has it by default (a blade writes no petals).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Plant {
@@ -916,30 +952,44 @@ pub struct Plant {
     #[serde(skip_serializing_if = "String::is_empty")]
     pub prop: String,
     /// how often it grows, against the others
+    #[serde(skip_serializing_if = "plant_weight")]
     pub weight: f64,
     /// a blade's or a flower's: how tall (cells), the shortest and the tallest
+    #[serde(skip_serializing_if = "plant_height")]
     pub height: [f64; 2],
     /// a model's: how big against its prop as made, the smallest and the biggest
+    #[serde(skip_serializing_if = "plant_scale")]
     pub scale: [f64; 2],
     /// how wide at its foot (cells; a flower's stem)
+    #[serde(skip_serializing_if = "plant_width")]
     pub width: f64,
     /// how far over it leans (0: straight up; 1: lying down)
+    #[serde(skip_serializing_if = "plant_lean")]
     pub lean: f64,
     /// how much it curves over as it rises (0: straight)
+    #[serde(skip_serializing_if = "plant_bend")]
     pub bend: f64,
     /// "#rrggbb": at its foot and at its tip (empty: its terrain's colours)
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub color: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
     pub tip: String,
     /// how much the wind moves it (0: not at all; 1: as grass)
+    #[serde(skip_serializing_if = "plant_sway")]
     pub sway: f64,
     /// a flower's: how many petals (3 to `Meadow::PETALS`), their colour, its heart's colour,
     /// how wide its head is (cells)
+    #[serde(skip_serializing_if = "plant_petals")]
     pub petals: u8,
+    #[serde(skip_serializing_if = "plant_petal")]
     pub petal: String,
+    #[serde(skip_serializing_if = "plant_heart")]
     pub heart: String,
+    #[serde(skip_serializing_if = "plant_bloom")]
     pub bloom: f64,
     /// how much it keeps to clusters of its own a few cells across (0: grows anywhere; 1: only
     /// in them)
+    #[serde(skip_serializing_if = "is_default")]
     pub clusters: f64,
 }
 

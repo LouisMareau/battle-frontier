@@ -7,5 +7,30 @@
   "pattern": "tall",
   "side": "#7a5d40",
   "walk": "walk",
-  "priority": 2
+  "priority": 2,
+  "growth": {
+    "meadow": {
+      "plants": [
+        { "name": "Tall grass", "shape": "blade", "height": [0.55, 0.95], "width": 0.04, "lean": 0.3, "bend": 0.55 },
+        { "name": "Meadow grass", "shape": "blade", "weight": 0.4, "height": [0.3, 0.55] },
+        {
+          "name": "Buttercup",
+          "shape": "flower",
+          "weight": 0.03,
+          "height": [0.14, 0.28],
+          "width": 0.012,
+          "lean": 0.1,
+          "bend": 0.15,
+          "sway": 0.8,
+          "petal": "#f4cc1c",
+          "heart": "#e8a010",
+          "bloom": 0.055,
+          "clusters": 0.6
+        }
+      ],
+      "density": 56.0,
+      "patchy": 0.15,
+      "clumping": 0.55
+    }
+  }
 }

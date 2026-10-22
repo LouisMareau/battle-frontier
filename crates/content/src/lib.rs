@@ -1506,6 +1506,10 @@ mod tests {
         let back: Terrain = serde_json::from_str(&text).unwrap();
         assert_eq!(back.growth.meadow, meadow);
         assert!(!to_text(&Terrain { growth: Growth { meadow: Meadow::default(), ..Default::default() }, ..lawn }).contains("meadow"));
+        // what's as a plant has it by default left out (a blade writes no petals), and a growth
+        // of a meadow alone none of the props' settings
+        assert_eq!(serde_json::to_value(Plant::default()).unwrap(), serde_json::json!({ "shape": "blade" }));
+        assert!(!text.contains("petals") && !text.contains("\"props\"") && !text.contains("\"turn\""), "{text}");
     }
 
     #[test]

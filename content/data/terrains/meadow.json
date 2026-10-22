@@ -7,5 +7,81 @@
   "pattern": "meadow",
   "side": "#8a6a48",
   "walk": "walk",
-  "priority": 1
+  "priority": 1,
+  "growth": {
+    "meadow": {
+      "plants": [
+        {
+          "name": "Meadow grass",
+          "shape": "blade",
+          "height": [0.14, 0.3],
+          "width": 0.03,
+          "bend": 0.35,
+          "color": "#6aa846",
+          "tip": "#b0da74"
+        },
+        {
+          "name": "Daisy",
+          "shape": "flower",
+          "weight": 0.08,
+          "height": [0.18, 0.32],
+          "width": 0.012,
+          "lean": 0.1,
+          "bend": 0.15,
+          "sway": 0.8,
+          "petals": 8,
+          "petal": "#f6f3ea",
+          "heart": "#eab92a",
+          "bloom": 0.09,
+          "clusters": 0.5
+        },
+        {
+          "name": "Buttercup",
+          "shape": "flower",
+          "weight": 0.08,
+          "height": [0.14, 0.28],
+          "width": 0.012,
+          "lean": 0.1,
+          "bend": 0.15,
+          "sway": 0.8,
+          "petal": "#f4cc1c",
+          "heart": "#e8a010",
+          "bloom": 0.055,
+          "clusters": 0.5
+        },
+        {
+          "name": "Bluebell",
+          "shape": "flower",
+          "weight": 0.04,
+          "height": [0.2, 0.35],
+          "width": 0.012,
+          "lean": 0.1,
+          "bend": 0.15,
+          "sway": 0.8,
+          "petals": 6,
+          "petal": "#5b6fd8",
+          "heart": "#e8e2a8",
+          "bloom": 0.06,
+          "clusters": 0.6
+        },
+        {
+          "name": "Poppy",
+          "shape": "flower",
+          "weight": 0.03,
+          "height": [0.3, 0.5],
+          "width": 0.012,
+          "lean": 0.1,
+          "bend": 0.15,
+          "sway": 0.8,
+          "petals": 4,
+          "petal": "#d0301e",
+          "heart": "#2a1a12",
+          "bloom": 0.12,
+          "clusters": 0.7
+        }
+      ],
+      "density": 56.0,
+      "clump": 0.5
+    }
+  }
 }

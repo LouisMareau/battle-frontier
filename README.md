@@ -283,7 +283,10 @@ maps).
   squares are built again. The Ground tool's **Grows here** sets it for the terrain picked:
   plants added from presets (meadow grass, tall grass, a short lawn, reeds, dry grass;
   daisies, poppies, bluebells, buttercups, lavender, clover) or from the grass props, each a
-  card; a grass prop's inspector has **In meadows**.
+  card; a grass prop's inspector has **In meadows**. The game's own Tall grass grows tall
+  blades with shorter ones and the odd buttercup among them; its Meadow short grass with
+  daisies, buttercups, bluebells and poppies (the last two in clusters). A record leaves out
+  what's as a plant, a meadow or a growth has it by default (a blade writes no petals).
 - **Water** is a terrain's `water`: `inland` (lakes, ponds, rivers; what's drawn as water is
   inland unless it says otherwise) or `oceanic` (the Sea terrain). Inland water ripples the
   way the wind blows (barely when it's calm; from a cell or so out, clear of the shore's own
