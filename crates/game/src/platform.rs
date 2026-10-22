@@ -148,6 +148,11 @@ impl Files {
         Files { base: base.trim_end_matches('/').to_string(), slots: Arc::new(Mutex::new(HashMap::new())) }
     }
 
+    /// Where its files are read from (a review's own files start from the same place).
+    pub fn base(&self) -> &str {
+        &self.base
+    }
+
     /// Asks for a file (once); `get` tells when it's there.
     pub fn request(&self, path: &str) {
         let mut slots = self.slots.lock().unwrap();

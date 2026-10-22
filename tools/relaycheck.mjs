@@ -46,11 +46,11 @@ check('  the answer as it is, streamed', (await r.text()).startsWith('data: {"ty
 check('  with only its type and its request id', r.headers.get('content-type') === 'text/event-stream' && r.headers.get('request-id') === 'req_1' && !r.headers.get('set-cookie') && !r.headers.get('x-internal') && r.headers.get('cache-control') === 'no-store');
 r = await call('v1/files', { method: 'POST', headers: { ...key, 'content-type': 'multipart/form-data; boundary=b0' }, body: '--b0\r\nfile\r\n--b0--\r\n' });
 check('a file uploaded: its body and its type as they came', r.status === 200 && asked?.method === 'POST' && asked?.body === '--b0\r\nfile\r\n--b0--\r\n' && asked?.headers['content-type'] === 'multipart/form-data; boundary=b0');
-for (const path of ['v1/models', 'v1/agents', 'v1/agents/agent_x1', 'v1/environments/env_x1', 'v1/sessions', 'v1/files/file_x1/content']) {
+for (const path of ['v1/models', 'v1/agents', 'v1/agents/agent_x1', 'v1/environments/env_x1', 'v1/sessions', 'v1/files/file_x1/content', 'v1/messages']) {
   r = await call(path, { headers: key });
   check(`  ${path} goes on`, r.status === 200 && asked !== null);
 }
-for (const path of ['v1/messages', 'v1/complete', 'v1/organizations/me', 'v1/agents/agent_x1/versions', 'v1/files/../messages', 'v1/vaults']) {
+for (const path of ['v1/messages/batches', 'v1/complete', 'v1/organizations/me', 'v1/agents/agent_x1/versions', 'v1/files/../organizations/me', 'v1/vaults']) {
   r = await call(path, { headers: key });
   check(`  ${path}: not passed on`, r.status === 404 && asked === null, String(r.status));
 }

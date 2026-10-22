@@ -592,13 +592,17 @@ impl MapEditor {
             self.evt.placing = if self.evt.placing == Some(Placing::Actor) { None } else { Some(Placing::Actor) };
         }
         let ids: Vec<(String, String)> = self.map.actors.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
+        let (review, map_id) = (self.review.clone(), self.map.id.clone());
         for (i, (id, name)) in ids.iter().enumerate() {
-            let r = ui.selectable_label(self.evt.actor_sel == Some(i), format!("{name} ({id})"));
-            mark(&format!("uiActor_{id}"), &r);
-            if r.clicked() {
-                self.evt.actor_sel = Some(i);
-                self.evt.event_sel = None;
-            }
+            ui.horizontal(|ui| {
+                let r = ui.selectable_label(self.evt.actor_sel == Some(i), format!("{name} ({id})"));
+                mark(&format!("uiActor_{id}"), &r);
+                if r.clicked() {
+                    self.evt.actor_sel = Some(i);
+                    self.evt.event_sel = None;
+                }
+                super::review::record_mark(ui, review.as_deref(), "maps", &map_id, &format!("actors[{id}]"));
+            });
         }
         if let Some(i) = self.evt.actor_sel.filter(|&i| i < self.map.actors.len()) {
             self.actor_fields(ui, i);
@@ -627,11 +631,18 @@ impl MapEditor {
         }
         for (r, label) in list {
             let id = self.event(r).map(|e| e.id.clone()).unwrap_or_default();
-            let row = ui.selectable_label(self.evt.event_sel == Some(r), label);
-            mark(&format!("uiEvent_{id}"), &row);
-            if row.clicked() {
-                self.evt.event_sel = Some(r);
-            }
+            ui.horizontal(|ui| {
+                let row = ui.selectable_label(self.evt.event_sel == Some(r), label);
+                mark(&format!("uiEvent_{id}"), &row);
+                if row.clicked() {
+                    self.evt.event_sel = Some(r);
+                }
+                let prefix = match r {
+                    EventRef::Map(_) => format!("events[{id}]"),
+                    EventRef::Actor(a, _) => format!("actors[{}].events[{id}]", self.map.actors.get(a).map(|x| x.id.as_str()).unwrap_or("")),
+                };
+                super::review::record_mark(ui, review.as_deref(), "maps", &map_id, &prefix);
+            });
         }
         if self.evt.event_sel.is_some() {
             hint(ui, "The event's script is in the inspector, on the right.");

@@ -10,6 +10,7 @@
 //! name). When both spaces have a record with the same id, the game's own wins. For the
 //! browser, a space's files are packed into one `bundle.json` (`content bundle <space>`).
 
+pub mod diff;
 pub mod building;
 pub mod model;
 pub mod ramp;

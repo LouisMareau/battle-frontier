@@ -8,7 +8,7 @@
 
 use content::{Meadow, Plant, Terrain};
 
-use super::{card, fieldset, form, hint, mark, sign_button, warn, MapEditor, Sign};
+use super::{card, fieldset, fieldset_with, form, hint, mark, sign_button, warn, MapEditor, Sign};
 
 /// The plants to start from: grasses (a meadow's, a tall one, a short lawn, reeds, a dry one)
 /// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover), their stems stiffer
@@ -126,13 +126,21 @@ impl MapEditor {
         let mut gone: Option<usize> = None;
         for k in 0..m.plants.len() {
             let name = called(&m.plants[k], &self.content);
+            // (in the pull request's eyes: by its name, else its place)
+            let key = if m.plants[k].name.is_empty() { k.to_string() } else { m.plants[k].name.clone() };
+            let changed = self.review_changes("terrains", &t.id, &format!("growth.meadow.plants[{key}]"));
             card(
                 ui,
                 egui::Id::new(("meadow plant", &t.id, k)),
                 &format!("uiMeadowPlant_{k}"),
                 &name,
                 &mut m.plants[k],
-                |ui, p| super::swatch(ui, if p.shape == "flower" { &p.petal } else if p.tip.is_empty() { &tip } else { &p.tip }),
+                |ui, p| {
+                    super::swatch(ui, if p.shape == "flower" { &p.petal } else if p.tip.is_empty() { &tip } else { &p.tip });
+                    if let Some((kind, about)) = &changed {
+                        super::review::dot(ui, *kind, about);
+                    }
+                },
                 |ui, p| {
                     let x = sign_button(ui, Sign::Cross, true).on_hover_text("Grows here no longer");
                     mark(&format!("uiMeadowRemove_{k}"), &x);
@@ -269,7 +277,7 @@ impl MapEditor {
             r.response.on_disabled_hover_text("No grass props yet (the asset browser's grass category)");
         });
         if !m.is_empty() {
-            fieldset(ui, "Meadow", |ui| {
+            fieldset_with(ui, "Meadow", self.review_changes_in("terrains", &t.id, &["growth.meadow.density", "growth.meadow.patchy", "growth.meadow.clump", "growth.meadow.clumping", "growth.meadow.toon"]), |ui| {
                 form(ui, "meadow", |ui| {
                     ui.label("To a cell");
                     let d = ui.add(egui::Slider::new(&mut m.density, 0.0..=Meadow::MOST).step_by(1.0)).on_hover_text("How many grow on each cell, on average (up close: further off fewer are drawn)");

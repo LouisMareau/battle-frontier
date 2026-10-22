@@ -339,12 +339,12 @@ pub(super) fn signoff(user: &Value) -> String {
 /// Runs a task to its end on its own: on a thread of its own on the desktop (GitHub's calls
 /// block there), on the page's event loop in the browser.
 #[cfg(not(target_arch = "wasm32"))]
-fn spawn(task: impl Future<Output = ()> + Send + 'static) {
+pub(super) fn spawn(task: impl Future<Output = ()> + Send + 'static) {
     std::thread::spawn(move || block_on(task));
 }
 
 #[cfg(target_arch = "wasm32")]
-fn spawn(task: impl Future<Output = ()> + 'static) {
+pub(super) fn spawn(task: impl Future<Output = ()> + 'static) {
     wasm_bindgen_futures::spawn_local(task);
 }
 
@@ -517,12 +517,42 @@ impl Hub {
         self.send(req, &what).await
     }
 
-    async fn get(&self, path: &str) -> Result<Value, String> {
+    pub(super) async fn get(&self, path: &str) -> Result<Value, String> {
         self.call(ehttp::Method::GET, path, None).await
     }
 
     async fn post(&self, path: &str, body: Value) -> Result<Value, String> {
         self.call(ehttp::Method::POST, path, Some(body)).await
+    }
+
+    /// A file of the repository as it is at `reference` (a commit, a branch): its bytes; None
+    /// when there's no such file there. GitHub gives it base64, up to a megabyte; bigger, as a
+    /// blob by its id.
+    pub(super) async fn contents(&self, path: &str, reference: &str) -> Result<Option<Vec<u8>>, String> {
+        let what = format!("GET the contents of {path}");
+        let mut req = ehttp::Request::get(format!("{}/repos/{OWNER}/{REPO}/contents/{path}?ref={reference}", self.api));
+        req.headers = ehttp::Headers::new(&[("Accept", "application/vnd.github+json")]);
+        if !self.token.is_empty() {
+            req.headers.insert("Authorization", format!("Bearer {}", self.token));
+        }
+        let (status, text, body) = self.fetch(req).await?;
+        if status == 404 {
+            return Ok(None);
+        }
+        if !(200..300).contains(&status) {
+            return Err(failure(status, &text, &body, &what));
+        }
+        let decoded = |v: &Value| -> Result<Vec<u8>, String> {
+            let text: String = v.get("content").and_then(Value::as_str).unwrap_or("").chars().filter(|c| !c.is_whitespace()).collect();
+            base64::engine::general_purpose::STANDARD.decode(text).map_err(|e| format!("{path}: GitHub's base64 can't be read ({e})"))
+        };
+        if body.get("encoding").and_then(Value::as_str) == Some("base64") && body.get("content").and_then(Value::as_str).is_some_and(|c| !c.trim().is_empty()) {
+            return decoded(&body).map(Some);
+        }
+        // too big for that call: by its blob
+        let sha = body.get("sha").and_then(Value::as_str).ok_or_else(|| format!("{path}: GitHub gave neither its content nor its id"))?;
+        let blob = self.get(&format!("/repos/{OWNER}/{REPO}/git/blobs/{sha}")).await?;
+        decoded(&blob).map(Some)
     }
 
     /// A form posted to the site (signing in): its answer, whatever it is (`fetch`).
@@ -954,8 +984,13 @@ impl Publisher {
         self.root.clone().unwrap_or_else(project_root)
     }
 
-    fn hub(&self, token: &str) -> Hub {
+    pub(super) fn hub(&self, token: &str) -> Hub {
         Hub { api: self.api.clone(), web: self.web.clone(), token: token.into() }
+    }
+
+    /// GitHub as the signed-in user, and who that is; None signed out.
+    pub(super) fn signed(&self) -> Option<(Hub, String)> {
+        self.user.as_ref().map(|u| (self.hub(&u.token), u.login.clone()))
     }
 
     /// The kept sign-in, read the first time it's asked for.
@@ -1252,6 +1287,7 @@ pub(super) fn size(n: u64) -> String {
 impl MapEditor {
     /// The top bar's Sign in (or who's signed in, to sign out) and Publish (waiting for it).
     pub(super) fn publish_buttons(&mut self, ui: &mut egui::Ui) {
+        let reviewing = self.review.is_some();
         let p = &mut self.publisher;
         p.load();
         if p.take() {
@@ -1284,13 +1320,13 @@ impl MapEditor {
                 }
             }
         }
-        let signed = p.user.is_some();
+        let signed = p.user.is_some() && !reviewing;
         let about = if cfg!(target_arch = "wasm32") {
             "What you've saved in this browser (records, models dropped, a big map's squares), to look over and send as a pull request: the maintainers look at it before it's in the game"
         } else {
             "Every file of content/ you've changed, to look over and send as a pull request: the maintainers look at it before it's in the game"
         };
-        let b = ui.add_enabled(signed, egui::Button::new("Publish")).on_hover_text(about).on_disabled_hover_text("Sign in with GitHub first: the pull request is opened as you");
+        let b = ui.add_enabled(signed, egui::Button::new("Publish")).on_hover_text(about).on_disabled_hover_text(if reviewing { "Reviewing a pull request: nothing of it is yours to publish" } else { "Sign in with GitHub first: the pull request is opened as you" });
         mark("uiPublish", &b);
         crate::platform::set_hook("signedin", p.user.as_ref().map(|u| u.login.as_str()).unwrap_or(""));
         if b.clicked() {
@@ -1570,6 +1606,9 @@ impl Publisher {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+pub(super) use tests::stand_in;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -1577,11 +1616,11 @@ mod tests {
 
     use super::*;
 
-    type Asked = Arc<Mutex<Vec<(String, String, Value)>>>;
+    pub(in crate::mapedit) type Asked = Arc<Mutex<Vec<(String, String, Value)>>>;
 
     /// A stand-in for GitHub on this machine: each request answered by `answer` (its status
     /// and JSON), and kept (its method, path and body: JSON, or a form as a string).
-    fn stand_in(answer: impl Fn(&str, &str, &Value) -> (u16, Value) + Send + Sync + 'static) -> (String, Asked) {
+    pub(in crate::mapedit) fn stand_in(answer: impl Fn(&str, &str, &Value) -> (u16, Value) + Send + Sync + 'static) -> (String, Asked) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
         let asked: Asked = Arc::default();

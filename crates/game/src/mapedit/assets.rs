@@ -18,7 +18,7 @@ use egui::{Color32, RichText, Sense};
 use world::gltf_in::load_model;
 
 use super::build::Clicks;
-use super::{badge, hint, mark, requests, section, swatch, MapEditor};
+use super::{badge, hint, mark, requests, review, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
@@ -52,6 +52,9 @@ const IMPORTED: &str = "Imported";
 
 /// The folder row that shows the creatures instead of props.
 const CREATURES: &str = "#creatures";
+
+/// The folder of what the pull request under review changes (a review's only).
+const REVIEWED: &str = "#review";
 
 #[derive(Default)]
 pub(super) struct Assets {
@@ -305,6 +308,16 @@ impl MapEditor {
                         self.assets.rows.push((f.clone(), r.rect));
                     }
                     ui.separator();
+                    if let Some(r) = self.reviewing() {
+                        let n = r.collections().get("props").map(|c| c.total()).unwrap_or(0) + r.assets().len();
+                        let changed = ui.selectable_label(self.assets.folder.as_deref() == Some(REVIEWED), format!("Changed in the PR ({n})")).on_hover_text("The props and the assets the pull request under review adds, changes or takes out");
+                        mark("uiFolder_Changed", &changed);
+                        if changed.clicked() {
+                            self.assets.folder = Some(REVIEWED.into());
+                        }
+                    } else if self.assets.folder.as_deref() == Some(REVIEWED) {
+                        self.assets.folder = None;
+                    }
                     let creatures = ui.selectable_label(self.assets.folder.as_deref() == Some(CREATURES), format!("Creatures ({})", content.creatures.len())).on_hover_text("Every creature: whether it's drawn toon");
                     mark("uiFolder_Creatures", &creatures);
                     if creatures.clicked() {
@@ -351,17 +364,42 @@ impl MapEditor {
         let content = self.content.clone();
         let filter = self.assets.filter.to_lowercase();
         let folder = self.assets.folder.clone();
+        let reviewed = folder.as_deref() == Some(REVIEWED);
         let rows: Vec<_> = content
             .props
             .entries()
             .iter()
-            .filter(|e| folder.as_deref().map(|f| in_folder(&e.value, f)).unwrap_or(true))
+            .filter(|e| if reviewed { self.review_kind("props", &e.value.id).is_some() } else { folder.as_deref().map(|f| in_folder(&e.value, f)).unwrap_or(true) })
             .filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter) || e.value.category.contains(&filter))
             .collect();
         crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
-        if rows.is_empty() {
+        // what the pull request takes out: no longer here, listed by name
+        let removed: Vec<(String, String)> = self.reviewing().map(|r| r.records_of("props").into_iter().filter(|(_, k)| *k == content::diff::Kind::Removed).map(|(id, _)| (r.name_of("props", &id), id)).collect()).unwrap_or_default();
+        let assets: Vec<(String, String, content::diff::Kind)> = if reviewed { self.reviewing().map(|r| r.assets()).unwrap_or_default() } else { vec![] };
+        if rows.is_empty() && !reviewed {
             hint(ui, "Nothing here yet: drag rows from another folder, or drop .glb files on this one.");
             return;
+        }
+        if reviewed {
+            for (name, id) in &removed {
+                ui.horizontal(|ui| {
+                    review::change_badge(ui, content::diff::Kind::Removed);
+                    ui.label(RichText::new(name).strong());
+                    ui.label(RichText::new(id).monospace().size(11.0).color(Color32::GRAY));
+                });
+            }
+            for (kind, name, k) in &assets {
+                ui.horizontal(|ui| {
+                    review::change_badge(ui, *k);
+                    ui.label(RichText::new(format!("{kind}/{name}")).monospace().size(12.0));
+                });
+            }
+            if rows.is_empty() {
+                if removed.is_empty() && assets.is_empty() {
+                    hint(ui, "The pull request changes no prop and no asset.");
+                }
+                return;
+            }
         }
         let mut picked = None;
         let mut light_edit = None;
@@ -383,7 +421,12 @@ impl MapEditor {
                     picked = Some(p.id.clone());
                 }
                 ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
-                badge(ui, e.space);
+                ui.horizontal(|ui| {
+                    badge(ui, e.space);
+                    if let Some(k) = self.review_kind("props", &p.id) {
+                        review::change_badge(ui, k).on_hover_text(self.review_changes("props", &p.id, "").map(|(_, about)| about).unwrap_or_default());
+                    }
+                });
                 let mut category = p.category.clone();
                 egui::ComboBox::from_id_salt(("asset-category", &p.id)).selected_text(&category).width(104.0).show_ui(ui, |ui| {
                     for c in CATEGORIES {
@@ -518,6 +561,9 @@ impl MapEditor {
         section(ui, "Prop");
         ui.horizontal(|ui| {
             badge(ui, e.space);
+            if let Some(k) = self.review_kind("props", id) {
+                review::change_badge(ui, k).on_hover_text(self.review_changes("props", id, "").map(|(_, about)| about).unwrap_or_default());
+            }
             ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
             if self.assets.dirty.contains(id) {
                 let save = ui.small_button("Save prop").on_hover_text("Writes its record (Ctrl+S does too)");
@@ -530,9 +576,11 @@ impl MapEditor {
         ui.horizontal(|ui| {
             ui.label("Name");
             ui.add(egui::TextEdit::singleline(&mut after.name).desired_width(150.0));
+            self.change_mark(ui, "props", id, "name");
         });
         ui.horizontal(|ui| {
             ui.label("Category");
+            self.change_mark(ui, "props", id, "category");
             let mut category = after.category.clone();
             egui::ComboBox::from_id_salt(("prop-category", id)).selected_text(&category).width(130.0).show_ui(ui, |ui| {
                 for c in CATEGORIES {
@@ -545,6 +593,8 @@ impl MapEditor {
         });
         ui.horizontal(|ui| {
             ui.label("Cells");
+            self.change_mark(ui, "props", id, "footprint");
+            self.change_mark(ui, "props", id, "height");
             ui.add(egui::DragValue::new(&mut after.footprint[0]).range(1..=32)).on_hover_text("Along x");
             ui.add(egui::DragValue::new(&mut after.footprint[1]).range(1..=32)).on_hover_text("Along z");
             ui.label("high");

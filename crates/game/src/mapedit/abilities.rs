@@ -13,7 +13,7 @@ use std::sync::Arc;
 use content::{Move, MoveEvolution, MoveLevel, Space};
 use egui::{Color32, RichText};
 
-use super::{badge, hint, mark, section, slug_ok, warn, MapEditor};
+use super::{badge, hint, mark, section_with, slug_ok, warn, MapEditor};
 
 const TARGETS: [&str; 8] = ["selected", "both", "foes_and_ally", "user", "random", "depends", "user_or_selected", "opponents_field"];
 const CATEGORIES: [&str; 3] = ["physical", "special", "status"];
@@ -211,14 +211,18 @@ impl MapEditor {
                             .filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter) || e.value.ty.contains(&filter))
                             .collect();
                         crate::platform::set_hook("abilitiesshown", &rows.len().to_string());
+                        let review = self.review.clone();
                         for e in rows {
                             let m = &e.value;
                             let dot = if self.abilities.dirty.contains_key(&m.id) { " •" } else { "" };
-                            let r = ui.selectable_label(picked.as_deref() == Some(m.id.as_str()), format!("{}{dot}", m.name)).on_hover_text(format!("{} · {} · {}", m.id, m.ty, m.category));
-                            mark(&format!("uiAbility_{}", m.id), &r);
-                            if r.clicked() {
-                                pick = Some(m.id.clone());
-                            }
+                            ui.horizontal(|ui| {
+                                let r = ui.selectable_label(picked.as_deref() == Some(m.id.as_str()), format!("{}{dot}", m.name)).on_hover_text(format!("{} · {} · {}", m.id, m.ty, m.category));
+                                mark(&format!("uiAbility_{}", m.id), &r);
+                                if r.clicked() {
+                                    pick = Some(m.id.clone());
+                                }
+                                super::review::record_mark(ui, review.as_deref(), "moves", &m.id, "");
+                            });
                         }
                         if content.moves.is_empty() {
                             hint(ui, "No abilities yet: give one an id and press New ability.");
@@ -234,15 +238,21 @@ impl MapEditor {
                         };
                         let m = &e.value;
                         let mut a = m.clone();
+                        let review = self.review.clone();
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&m.name).size(16.0).strong());
                             badge(ui, e.space);
+                            super::review::record_mark(ui, review.as_deref(), "moves", &m.id, "");
                             ui.label(RichText::new(&m.id).monospace().size(11.0).color(Color32::GRAY));
                             if self.abilities.dirty.contains_key(&m.id) && ui.small_button("Revert").on_hover_text("Back to how it was saved").clicked() {
                                 revert = Some(m.id.clone());
                             }
                         });
-                        section(ui, "In battle");
+                        let changed = |prefixes: &[&str]| {
+                            let found: Vec<(content::diff::Kind, String)> = prefixes.iter().filter_map(|p| super::review::changes_of(review.as_deref(), "moves", &m.id, p)).collect();
+                            (!found.is_empty()).then(|| (if found.iter().all(|(k, _)| *k == found[0].0) { found[0].0 } else { content::diff::Kind::Modified }, found.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>().join("\n")))
+                        };
+                        section_with(ui, "In battle", changed(&["name", "type", "category", "power", "accuracy", "pp", "priority", "effects", "description", "target"]));
                         egui::Grid::new("ability-grid").num_columns(4).spacing([10.0, 4.0]).show(ui, |ui| {
                             ui.label("Name");
                             ui.add(egui::TextEdit::singleline(&mut a.name).desired_width(180.0));
@@ -304,7 +314,7 @@ impl MapEditor {
                         ui.label("Description");
                         ui.add(egui::TextEdit::multiline(&mut a.description).desired_rows(2).desired_width(f32::INFINITY));
 
-                        section(ui, "Level-ups");
+                        section_with(ui, "Level-ups", changed(&["levels"]));
                         hint(ui, "What it gains at a move level, on top of the world's own growth (a field at 0 keeps the level before's).");
                         let mut gone: Option<usize> = None;
                         for (i, l) in a.levels.iter_mut().enumerate() {
@@ -341,7 +351,7 @@ impl MapEditor {
                             }
                         });
 
-                        section(ui, "Becomes");
+                        section_with(ui, "Becomes", changed(&["evolutions"]));
                         hint(ui, "The stronger abilities it turns into, each its own record: at a move level, with an item, or both.");
                         let others: Vec<(String, String)> = content.moves.iter().filter(|o| o.id != m.id).map(|o| (o.id.clone(), o.name.clone())).collect();
                         let items: Vec<(String, String)> = content.items.iter().map(|i| (i.id.clone(), i.name.clone())).collect();
@@ -384,7 +394,7 @@ impl MapEditor {
                             a.evolutions.push(MoveEvolution { at_level: 3, ..Default::default() });
                         }
 
-                        section(ui, "Timeline");
+                        section_with(ui, "Timeline", changed(&["timeline"]));
                         let t = &a.timeline;
                         ui.horizontal(|ui| {
                             hint(ui, &format!("{} clip{} over {:.1} s: animations, motions, FX, sounds, the player's inputs, the camera.", t.clips.len(), if t.clips.len() == 1 { "" } else { "s" }, t.seconds));

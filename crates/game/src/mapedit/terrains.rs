@@ -15,7 +15,7 @@ use std::sync::Arc;
 use content::{Layer, Look, Meadow, Plant, Space, Terrain, LAYER_SHAPES, PATTERNS};
 use egui::{RichText, Sense};
 
-use super::{card, fieldset, fold_row, fold_section, fold_section_with, form, hint, mark, row_icon, sign_button, swatch, warn, MapEditor, Sign, ARROW, ROW, SWATCH};
+use super::{card, fieldset, fieldset_with, fold_row, fold_section, fold_section_with, form, hint, mark, row_icon, sign_button, swatch, warn, MapEditor, Sign, ARROW, ROW, SWATCH};
 
 /// The Terrain window: open for which terrain, and whether its deletion is being asked.
 #[derive(Default)]
@@ -261,7 +261,10 @@ impl MapEditor {
                     let edit = row_icon(ui, egui::include_image!("../../icons/edit.svg"), lit, "Edit: its name, group, colours, how it's walked and drawn (double-click it too)", &format!("uiTerrainEdit_{}", t.id));
                     let dup = row_icon(ui, egui::include_image!("../../icons/duplicate.svg"), lit, "Duplicate: a variant of it, in its group (the same ground growing other grass, flowers or models)", &format!("uiTerrainDuplicate_{}", t.id));
                     let text = RichText::new(format!("{}{extra}", t.name)).color(if picked { v.selection.stroke.color } else { v.text_color() });
-                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Label::new(text).truncate().selectable(false)));
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.add(egui::Label::new(text).truncate().selectable(false));
+                        self.change_mark(ui, "terrains", &t.id, "");
+                    });
                     (dup.clicked(), edit.clicked())
                 })
                 .inner;
@@ -364,18 +367,27 @@ impl MapEditor {
             // (clear of the scroll bar, which floats over what's under it)
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
                 ui.set_width(330.0);
-                fieldset(ui, "Terrain", |ui| {
+                fieldset_with(ui, "Terrain", self.review_changes_in("terrains", &id, &["name", "category", "walk"]), |ui| {
                     form(ui, "terrain-what", |ui| {
-                        ui.label("Name");
+                        ui.horizontal(|ui| {
+                            ui.label("Name");
+                            self.change_mark(ui, "terrains", &id, "name");
+                        });
                         let r = ui.add(egui::TextEdit::singleline(&mut t.name).desired_width(f32::INFINITY));
                         mark("uiTerrainName", &r);
                         ui.end_row();
-                        ui.label("Group");
+                        ui.horizontal(|ui| {
+                            ui.label("Group");
+                            self.change_mark(ui, "terrains", &id, "category");
+                        });
                         let derived = Terrain { category: String::new(), ..t.clone() }.category_name();
                         let r = ui.add(egui::TextEdit::singleline(&mut t.category).desired_width(f32::INFINITY).hint_text(derived)).on_hover_text("The group it's listed in with the terrains like it (none: its pattern's)");
                         mark("uiTerrainGroup", &r);
                         ui.end_row();
-                        ui.label("Walked");
+                        ui.horizontal(|ui| {
+                            ui.label("Walked");
+                            self.change_mark(ui, "terrains", &id, "walk");
+                        });
                         ui.horizontal(|ui| {
                             for (walk, about) in [("walk", "Walked on"), ("water", "Swum: needs surfing"), ("block", "Never walked on")] {
                                 if ui.selectable_label(t.walk == walk, walk).on_hover_text(about).clicked() {
@@ -386,9 +398,14 @@ impl MapEditor {
                         ui.end_row();
                     });
                 });
-                fieldset(ui, "Drawn", |ui| {
+                fieldset_with(ui, "Drawn", self.review_changes_in("terrains", &id, &["color", "color2", "side", "priority", "pattern", "water", "beach"]), |ui| {
                     form(ui, "terrain-drawn", |ui| {
-                        ui.label("Colours");
+                        ui.horizontal(|ui| {
+                            ui.label("Colours");
+                            self.change_mark(ui, "terrains", &id, "color");
+                            self.change_mark(ui, "terrains", &id, "color2");
+                            self.change_mark(ui, "terrains", &id, "side");
+                        });
                         ui.horizontal(|ui| {
                             colour(ui, &mut t.color);
                             if t.color2.is_empty() {
@@ -402,10 +419,16 @@ impl MapEditor {
                             colour(ui, &mut t.side);
                         });
                         ui.end_row();
-                        ui.label("Reaches");
+                        ui.horizontal(|ui| {
+                            ui.label("Reaches");
+                            self.change_mark(ui, "terrains", &id, "priority");
+                        });
                         ui.add(egui::Slider::new(&mut t.priority, -5..=5)).on_hover_text("Where two terrains meet, the one with the higher reaches further");
                         ui.end_row();
-                        ui.label("Drawn as");
+                        ui.horizontal(|ui| {
+                            ui.label("Drawn as");
+                            self.change_mark(ui, "terrains", &id, "pattern");
+                        });
                         let shown = PATTERNS.iter().find(|(p, _)| *p == t.pattern).map(|(_, n)| *n).unwrap_or("Plain");
                         let combo = egui::ComboBox::from_id_salt("terrain-pattern").selected_text(shown).show_ui(ui, |ui| {
                             for (p, n) in PATTERNS {
@@ -493,6 +516,13 @@ impl MapEditor {
         if !fold_section(ui, "Its look") {
             return;
         }
+        let id = t.id.clone();
+        if let Some((kind, about)) = self.review_changes("terrains", &id, "look") {
+            ui.horizontal(|ui| {
+                super::review::dot(ui, kind, &about);
+                hint(ui, "changed in the pull request (hover the dot)");
+            });
+        }
         ui.horizontal(|ui| {
             let r = ui.menu_button("From a preset…", |ui| {
                 for p in presets() {
@@ -506,7 +536,7 @@ impl MapEditor {
             r.response.on_hover_text("Its colours, cliffs and look as a preset has them (its name, group and what grows here stay)");
         });
         let l = &mut t.look;
-        fieldset(ui, "Base", |ui| {
+        fieldset_with(ui, "Base", self.review_changes_in("terrains", &id, &["look.scale", "look.sharpness", "look.balance", "look.grain", "look.shine"]), |ui| {
             form(ui, "look-base", |ui| {
                 ui.label("Blotches");
                 ui.add(egui::DragValue::new(&mut l.scale).range(0.1..=32.0).speed(0.05).suffix(" cells")).on_hover_text("How big the blotches of its two colours are");
@@ -525,7 +555,7 @@ impl MapEditor {
                 ui.end_row();
             });
         });
-        fieldset(ui, "Glow", |ui| {
+        fieldset_with(ui, "Glow", self.review_changes_in("terrains", &id, &["look.glow", "look.pulse", "look.flow", "look.angle"]), |ui| {
             form(ui, "look-glow", |ui| {
                 ui.label("Glow");
                 let r = ui.add(egui::Slider::new(&mut l.glow, 0.0..=4.0)).on_hover_text("How much its colours glow of themselves, lit by nothing (lava): at night as by day");
@@ -550,13 +580,19 @@ impl MapEditor {
         for k in 0..n {
             let name = SHAPE_NAMES.get(LAYER_SHAPES.iter().position(|s| *s == l.layers[k].shape).unwrap_or(0)).copied().unwrap_or("Layer");
             let title = format!("{}. {name}{}", k + 1, if l.layers[k].glow > 0.0 { " · glowing" } else { "" });
+            let changed = self.review_changes("terrains", &id, &format!("look.layers[{k}]"));
             card(
                 ui,
                 egui::Id::new(("look layer", &t.id, k)),
                 &format!("uiLookLayer_{k}"),
                 &title,
                 &mut l.layers[k],
-                |ui, y| swatch(ui, &y.color),
+                |ui, y| {
+                    swatch(ui, &y.color);
+                    if let Some((kind, about)) = &changed {
+                        super::review::dot(ui, *kind, about);
+                    }
+                },
                 |ui, _| {
                     let x = sign_button(ui, Sign::Cross, true).on_hover_text("Take it off");
                     mark(&format!("uiLookLayerRemove_{k}"), &x);

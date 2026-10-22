@@ -28,6 +28,7 @@ mod post;
 mod publish;
 mod ramps;
 mod requests;
+mod review;
 mod rooms;
 mod saving;
 mod sounds;
@@ -217,6 +218,12 @@ pub struct MapEditor {
     start_pick: welcome::StartPick,
     /// signed in with GitHub, and what's published as a pull request (the top bar's Publish)
     publisher: publish::Publisher,
+    /// the Review window; the pull request under review (this editor on its content); the one
+    /// chosen to open (the app opens it: `take_review`); leaving a review
+    reviewer: review::Reviewer,
+    review: Option<Arc<review::Opened>>,
+    review_enter: Option<Box<review::Opened>>,
+    review_leave: bool,
     /// signed in to Claude, for the model requests (the top bar's Claude sign-in)
     claude: claude::Claude,
     /// saving by itself (the top bar's Auto-save), and "Saved in this browser" (the Menu's, in
@@ -396,6 +403,19 @@ fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(2.0);
 }
 
+/// A section's title with a mark by it when the pull request under review changed what's in
+/// it (`changed`: how, and what).
+fn section_with(ui: &mut egui::Ui, text: &str, changed: Option<(content::diff::Kind, String)>) {
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(section_title(text));
+        if let Some((kind, about)) = changed {
+            review::dot(ui, kind, &about);
+        }
+    });
+    ui.add_space(2.0);
+}
+
 fn section_title(text: &str) -> RichText {
     RichText::new(text.to_uppercase()).font(crate::title::menu_font(10.5)).color(Color32::from_gray(160))
 }
@@ -470,8 +490,15 @@ const EDGE: Color32 = Color32::from_gray(64);
 /// A box of controls that go together, bordered, its title set into its top edge (as a form's
 /// fieldset), as wide as there's room. What `add` returns.
 fn fieldset<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    fieldset_with(ui, title, None, add)
+}
+
+/// A fieldset with a mark by its title (`changed`: how what's in it changed in the pull request
+/// under review, and what; the mark says it when hovered).
+fn fieldset_with<R>(ui: &mut egui::Ui, title: &str, changed: Option<(content::diff::Kind, String)>, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     let galley = egui::WidgetText::from(RichText::new(title).size(11.0)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
     let half = (galley.size().y / 2.0).round();
+    let dot = if changed.is_some() { 12.0 } else { 0.0 };
     ui.add_space(half);
     let r = egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: half as i8 + 3, bottom: 6 }).show(ui, |ui| {
         ui.set_min_width(ui.available_width());
@@ -479,8 +506,14 @@ fn fieldset<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -
     });
     let rect = r.response.rect.shrink(0.5);
     let at = egui::pos2(rect.left() + 9.0, rect.top() - half);
-    ui.painter().add(egui::Shape::line(open_outline(rect, 5.0, (at.x - 4.0, at.x + galley.size().x + 4.0)), egui::Stroke::new(1.0, EDGE)));
+    ui.painter().add(egui::Shape::line(open_outline(rect, 5.0, (at.x - 4.0, at.x + galley.size().x + dot + 4.0)), egui::Stroke::new(1.0, EDGE)));
+    let wide = galley.size().x;
     ui.painter().galley(at, galley, Color32::from_gray(175));
+    if let Some((kind, about)) = changed {
+        let centre = egui::pos2(at.x + wide + 6.0, rect.top());
+        ui.painter().circle_filled(centre, 3.5, review::colour(kind));
+        ui.interact(egui::Rect::from_center_size(centre, egui::vec2(12.0, 12.0)), egui::Id::new(("fieldset mark", title, rect.min.y as i32)), Sense::hover()).on_hover_text(about);
+    }
     ui.add_space(2.0);
     r.inner
 }
@@ -705,6 +738,23 @@ const AREA_COLORS: [[f32; 4]; 6] = [
 ];
 
 impl MapEditor {
+    /// The editor on a pull request's content, to review it: `base` (the game as the app has
+    /// it) with the pull request's files laid over, in files of its own (the app's `base_path`),
+    /// the first map it changes open (else the one games start on). Nothing it does is saved or
+    /// kept; the app parks the user's own editor meanwhile.
+    pub fn new_review(base: Arc<Content>, opened: Box<review::Opened>, base_path: &str) -> MapEditor {
+        let files = crate::platform::Files::new(base_path);
+        let content = Arc::new(review::overlay(&base, &opened, &files));
+        let first = opened.review.records_of("maps").into_iter().map(|(id, _)| id).find(|id| content.maps.contains(id));
+        let start = content.world().start.map;
+        let open = first.or_else(|| (!start.is_empty()).then_some(start));
+        let number = opened.pull.number;
+        let mut ed = MapEditor::new(content, open.as_deref(), files);
+        ed.review = Some(Arc::new(*opened));
+        ed.status = format!("Reviewing #{number}: read-only, every change marked");
+        ed
+    }
+
     pub fn new(content: Arc<Content>, open: Option<&str>, files: crate::platform::Files) -> MapEditor {
         let world = content.world();
         let entry = open.and_then(|id| content.maps.entry(id)).or_else(|| content.maps.entries().first());
@@ -733,6 +783,10 @@ impl MapEditor {
             jump: jumps::JumpTool::default(),
             start_pick: Default::default(),
             publisher: Default::default(),
+            reviewer: Default::default(),
+            review: None,
+            review_enter: None,
+            review_leave: false,
             claude: Default::default(),
             autosave: Default::default(),
             kept_window: Default::default(),
@@ -1169,6 +1223,10 @@ impl MapEditor {
     }
 
     fn save(&mut self) {
+        if self.review.is_some() {
+            self.status = "Reviewing a pull request: nothing is saved".into();
+            return;
+        }
         self.save_some(true);
     }
 
@@ -1176,6 +1234,10 @@ impl MapEditor {
     /// creatures, then whatever else has changed: the props, the world settings, the
     /// abilities, the FX, the templates, the terrains. What was saved goes in the status line.
     fn save_some(&mut self, map: bool) {
+        if self.review.is_some() {
+            self.status = "Reviewing a pull request: nothing is saved".into();
+            return;
+        }
         let mut said = vec![];
         if map {
             if !self.save_map() {
@@ -1712,7 +1774,10 @@ impl MapEditor {
                     }
                 });
                 // sent to the game's repository
-                group(ui, "uiGroupShare", |ui| self.publish_buttons(ui));
+                group(ui, "uiGroupShare", |ui| {
+                    self.publish_buttons(ui);
+                    self.review_buttons(ui);
+                });
                 // signed in to Claude, which the model requests run on
                 group(ui, "uiGroupClaude", |ui| self.claude.button(ui));
                 // how it shows: the time of day, lamps, sounds, what moves, the grid, the view
@@ -1764,8 +1829,15 @@ impl MapEditor {
                     }
                 });
             });
-            let locked = if self.claude.signed.is_in() { vec![] } else { vec![(dock::Pane::Requests, claude::NEEDS)] };
+            let locked = if self.review.is_some() {
+                vec![(dock::Pane::Requests, "Reviewing a pull request: no model requests here")]
+            } else if self.claude.signed.is_in() {
+                vec![]
+            } else {
+                vec![(dock::Pane::Requests, claude::NEEDS)]
+            };
             let toggled = dock::toggles(ui, first, &mut self.dock, &locked);
+            self.review_dots(ui, &toggled);
             if let Some(r) = toggled.get(&dock::Pane::Requests) {
                 self.requests.decorate(ui, r);
             }
@@ -1879,6 +1951,7 @@ impl MapEditor {
         });
         self.welcome_modal(&ctx);
         self.publish_window(&ctx);
+        self.review_window(&ctx);
         self.claude.window(&ctx, now);
         #[cfg(target_arch = "wasm32")]
         self.kept_window(&ctx);
@@ -1928,6 +2001,14 @@ impl MapEditor {
         crate::platform::set_hook("tool", self.tool.key());
         self.ramp_hooks();
         self.jump_hooks();
+        // a pull request chosen to review: the app opens it in an editor of its own; the review
+        // left: the app brings the editor back as it was parked
+        if self.review_enter.is_some() {
+            back = Some(Leave::Review);
+        }
+        if std::mem::take(&mut self.review_leave) {
+            back = Some(Leave::EndReview);
+        }
         back
     }
 
@@ -2422,11 +2503,24 @@ impl MapEditor {
     /// The map's own settings and what's on it, when nothing is selected.
     fn map_inspector(&mut self, ui: &mut egui::Ui) {
         ui.label(RichText::new(self.map.name.clone()).size(16.0).strong());
+        let map_id = self.map.id.clone();
         ui.horizontal(|ui| {
             badge(ui, self.space);
+            self.change_mark(ui, "maps", &map_id, "");
             hint(ui, &format!("{} · {}×{} cells", self.map.id, self.map.width, self.map.height));
         });
-        section(ui, "Map");
+        // reviewing: what the pull request does to this map, in a line each
+        if let Some(r) = self.reviewing() {
+            let changes = r.changed("maps", &map_id, "");
+            if !changes.is_empty() {
+                for c in changes {
+                    hint(ui, &format!("In the pull request, {} {}: {}", c.kind.word(), c.path, c.detail));
+                }
+            } else if let Some(kind) = r.record_kind("maps", &map_id) {
+                hint(ui, &format!("In the pull request: {}", kind.word()));
+            }
+        }
+        section_with(ui, "Map", self.review_changes_in("maps", &map_id, &["name", "width", "height", "terrain", "levels", "squares"]));
         ui.horizontal(|ui| {
             ui.label("Name");
             if ui.add(egui::TextEdit::singleline(&mut self.map.name).desired_width(f32::INFINITY)).changed() {
@@ -2451,7 +2545,7 @@ impl MapEditor {
                 self.everything_changed();
             }
         });
-        section(ui, "Storage");
+        section_with(ui, "Storage", self.review_changes("maps", &map_id, "chunk"));
         let big = self.map.width > content::ROWS_MAX as usize || self.map.height > content::ROWS_MAX as usize;
         let mut chunked = self.map.chunk > 0;
         if ui

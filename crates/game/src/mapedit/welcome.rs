@@ -64,6 +64,11 @@ pub enum Leave {
     Content,
     /// the test battles: any encounter, to try it
     Battles,
+    /// a pull request's review: the editor again, on its content, in an environment of its own
+    /// (`MapEditor::take_review` has which)
+    Review,
+    /// out of a review: the editor as it was left
+    EndReview,
 }
 
 impl MapEditor {

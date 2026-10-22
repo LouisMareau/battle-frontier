@@ -17,7 +17,7 @@ use world::mesh::{grown_cost, GROWN_HEAVIEST, GROWN_MOST};
 
 use super::stream::{grass_version, grass_weight};
 
-use super::{fieldset, fold_section, form, hint, mark, section, warn, MapEditor};
+use super::{fieldset, fieldset_with, fold_section, form, hint, mark, section, warn, MapEditor};
 
 /// The props that can grow through tall ground: the grass ones, by name.
 fn grass_props(content: &content::Content) -> Vec<(String, String)> {
@@ -103,7 +103,7 @@ impl MapEditor {
         }
         let mut g = t.growth.clone();
         let was_empty = !g.grows_props();
-        fieldset(ui, "Grass props", |ui| {
+        fieldset_with(ui, "Grass props", self.review_changes("terrains", &t.id, "growth.props"), |ui| {
             for (id, name) in &props {
                 ui.horizontal(|ui| {
                     let mut on = g.props.iter().any(|p| &p.prop == id);
@@ -129,7 +129,7 @@ impl MapEditor {
             g.tiled = self.fills_its_cells(&g.props[0].prop);
         }
         if g.grows_props() {
-            fieldset(ui, "How they grow", |ui| {
+            fieldset_with(ui, "How they grow", self.review_changes_in("terrains", &t.id, &["growth.tiled", "growth.density", "growth.scale", "growth.patchy", "growth.turn"]), |ui| {
                 ui.horizontal(|ui| {
                     let tiled = ui.radio_value(&mut g.tiled, true, "Tiled").on_hover_text("Each whole over its cells, lined up with them, so copies side by side join: grass made to fill its cells (a grass request's)");
                     mark("uiGrowthTiled", &tiled);

@@ -10,6 +10,7 @@
 //                                                      the agent and its sandbox, made once a key
 //     /claude/v1/sessions[/ID[/events[/stream]]]       a request's run: started, followed, stopped
 //     /claude/v1/files[/ID[/content]]                  its pictures in, what it made out
+//     /claude/v1/messages                              Review by Claude (a pull request's changes)
 const API = 'https://api.anthropic.com/';
 const PASSED = [
   /^v1\/models$/,
@@ -17,6 +18,7 @@ const PASSED = [
   /^v1\/environments(\/env_[A-Za-z0-9_-]+)?$/,
   /^v1\/sessions(\/sesn_[A-Za-z0-9_-]+(\/events(\/stream)?)?)?$/,
   /^v1\/files(\/file_[A-Za-z0-9_-]+(\/content)?)?$/,
+  /^v1\/messages$/,
 ];
 // what's passed on of the page's request, and of Anthropic's answer
 const ASKED = ['x-api-key', 'anthropic-version', 'anthropic-beta', 'content-type', 'accept'];

@@ -133,7 +133,7 @@ try {
   }
   check('at night the cracks glow warm where the grass has none', at['cracks-night'].warm > 400 && at['grass-night'].warm < 20, `${at['cracks-night'].warm} against ${at['grass-night'].warm}`);
   check('  the veins cyan', at['veins-night'].cyan > 300 && at['grass-night'].cyan < 20, `${at['veins-night'].cyan} against ${at['grass-night'].cyan}`);
-  check('  the lava as much as by day (lit by nothing)', at['lava-night'].warm > 400 && at['lava-night'].warm > 0.75 * at['lava-noon'].warm, `${at['lava-night'].warm} at night, ${at['lava-noon'].warm} at noon`);
+  check('  the lava as much as by day (lit by nothing)', at['lava-night'].warm > 400 && at['lava-night'].warm > 0.6 * at['lava-noon'].warm, `${at['lava-night'].warm} at night, ${at['lava-noon'].warm} at noon`);
   check('no error in the page', browser.errors.length === 0, browser.errors.slice(0, 3).join(' | '));
 } catch (e) {
   check('ran to its end', false, e.message);

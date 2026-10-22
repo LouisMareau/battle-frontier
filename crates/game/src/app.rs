@@ -322,6 +322,8 @@ pub struct GameApp {
     audio: crate::audio::Audio,
     /// the map editor (or the overworld), kept while a battle it asked for plays
     parked: Option<Box<MapEditor>>,
+    /// the user's own editor, parked while a pull request is reviewed in another
+    parked_review: Option<Box<MapEditor>>,
     pending: Option<crate::mapedit::Request>,
     /// the overworld asks to leave, and what it last saved (and when)
     leaving: bool,
@@ -430,7 +432,7 @@ impl GameApp {
         GameApp {
             files, content: None, dex: None, party: vec![], fielded: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), pictures: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
-            draws: DrawStats::default(), perf_panel: false, audio, parked: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
+            draws: DrawStats::default(), perf_panel: false, audio, parked: None, parked_review: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
             title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
             hud: Default::default(), frost: None,
         }
@@ -618,8 +620,13 @@ impl GameApp {
         self.screen = Screen::Maps(Box::new(ed));
     }
 
-    /// Out of the map editor (its content kept, the map it had open remembered).
+    /// Out of the map editor (its content kept, the map it had open remembered; a review's
+    /// content never: it's the pull request's).
     fn leave_editor(&mut self, ed: &MapEditor) {
+        if ed.reviewing().is_some() {
+            self.audio.stop_all();
+            return;
+        }
         self.content = Some(ed.content());
         self.editor_map = Some(ed.map_id().to_string());
         self.audio.stop_all();
@@ -1088,6 +1095,12 @@ impl GameApp {
                         ed.github_at(arg);
                     }
                 }
+                // the checks: a pull request to review, opened as soon as GitHub lists it
+                "review" => {
+                    if let (Some(ed), Ok(n)) = (self.editor_mut(), arg.trim().parse::<u64>()) {
+                        ed.review_ask(n);
+                    }
+                }
                 // the checks: a file this browser kept (`data-keptfile`: its text, "removed",
                 // or nothing)
                 #[cfg(target_arch = "wasm32")]
@@ -1495,16 +1508,36 @@ impl eframe::App for GameApp {
                 let leave = ed.ui(ui, frame.wgpu_render_state(), now, &mut self.audio);
                 let request = ed.take_request();
                 if let Some(to) = leave {
-                    let Screen::Maps(ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { unreachable!() };
-                    self.leave_editor(&ed);
-                    self.screen = match to {
-                        Leave::Menu => Screen::Menu,
-                        Leave::Battles => Screen::Battles,
-                        Leave::Content => match &self.content {
-                            Some(c) => Screen::Editor(Box::new(Browser::new(c.clone()))),
-                            None => Screen::Menu,
-                        },
-                    };
+                    let Screen::Maps(mut ed) = std::mem::replace(&mut self.screen, Screen::Menu) else { unreachable!() };
+                    if to == Leave::Review {
+                        // the pull request's content in an editor of its own, this one parked
+                        // meanwhile (as it is, nothing of it taken)
+                        match (ed.take_review(), self.content.clone()) {
+                            (Some(opened), Some(c)) => {
+                                let review = MapEditor::new_review(c, opened, self.files.base());
+                                self.parked_review = Some(ed);
+                                self.screen = Screen::Maps(Box::new(review));
+                            }
+                            _ => self.screen = Screen::Maps(ed),
+                        }
+                    } else if ed.reviewing().is_some() {
+                        // out of a review, whichever way: the editor back as it was parked
+                        self.leave_editor(&ed);
+                        match self.parked_review.take() {
+                            Some(parked) => self.screen = Screen::Maps(parked),
+                            None => self.open_editor(false),
+                        }
+                    } else {
+                        self.leave_editor(&ed);
+                        self.screen = match to {
+                            Leave::Menu | Leave::Review | Leave::EndReview => Screen::Menu,
+                            Leave::Battles => Screen::Battles,
+                            Leave::Content => match &self.content {
+                                Some(c) => Screen::Editor(Box::new(Browser::new(c.clone()))),
+                                None => Screen::Menu,
+                            },
+                        };
+                    }
                 } else if request.is_some() {
                     self.pending = request;
                 }

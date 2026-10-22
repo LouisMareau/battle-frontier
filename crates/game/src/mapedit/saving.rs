@@ -92,6 +92,9 @@ impl MapEditor {
     /// Saving by itself, each frame: what's changed, a moment after the last press, with
     /// nothing held and nothing being typed into (a name half typed isn't a new file).
     pub(super) fn autosave(&mut self, ctx: &egui::Context) {
+        if self.review.is_some() {
+            return;
+        }
         crate::platform::set_hook("autosave", if self.autosave.on && can_autosave() { "on" } else { "off" });
         if !(self.autosave.on && can_autosave()) || !self.unsaved() || self.welcome {
             self.autosave.due = None;
