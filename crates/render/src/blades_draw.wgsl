@@ -5,8 +5,8 @@
 // the blade as placed (`Blade`) and its kind (`Kind`). A blade is a curve (a quadratic Bézier)
 // from its foot to its tip, leaning its own way and curving over as much as its kind says, bent
 // by the wind from its rooted foot (its tip furthest, as far as the wind's strength and its own
-// give say), narrowing to its point; a flower a thinner stem with a head of petals round its
-// heart, nodding as the wind bends the stem. How fine, how wide and how tall it's drawn go by how big it looks (`blade_lod.wgsl`).
+// give say) and pushed aside by whoever walks through it (`trampled`), narrowing to its point;
+// a flower a thinner stem with a head of petals round its heart, nodding as the stem bends. How fine, how wide and how tall it's drawn go by how big it looks (`blade_lod.wgsl`).
 // Lit as the ground under it is (its normals turned half way up), or in the toon look's steps;
 // never inked. With compute shaders the culling lists the blades drawn and the drawing reads
 // them (`vs_blade_listed`); without, each square's blades come as instances and the drawing
@@ -184,7 +184,10 @@ fn made(b: Blade, id: u32) -> Made {
     let tip_way = normalize(up * cos(a) + dir * sin(a));
     let tip = b.at + tip_way * tall;
     let ctrl = mix((b.at + tip) * 0.5, b.at + up * tall, clamp(bend, 0.0, 1.0));
-    let wind = blade_wind(b.at, r3, k.bend.z) * tall;
+    // the wind, and whoever walks through it (pushing its tip aside by up to its height and a
+    // bit, whatever its give)
+    let trample = trampled(b.at, 1.0);
+    let wind = blade_wind(b.at, r3, k.bend.z) * tall + trample * min(1.0, 1.2 * tall / max(length(trample), 0.001));
     let dimmed = 1.0 - b.dim;
     m.toon = k.tip.w;
     if (p.part <= 1u) {

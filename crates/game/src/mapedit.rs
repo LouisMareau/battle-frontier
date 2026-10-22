@@ -308,6 +308,8 @@ pub struct MapEditor {
     /// a world point the checks want on the screen (`point:x,y,z`)
     probe: Option<Vec3>,
     walker: Option<walk::Walker>,
+    /// the grass gives way under whoever walks through it (off for the checks: `trample:off`)
+    pub trample: bool,
     /// a building's upper part fading as the walker goes in or out
     fade: Option<walk::Fade>,
     /// the sides of a building whose walls face the camera: cut down to a stub while the
@@ -837,6 +839,7 @@ impl MapEditor {
             backdrop_t0: None,
             probe: None,
             walker: None,
+            trample: true,
             fade: None,
             front: Default::default(),
             wall_fade: None,
@@ -3112,6 +3115,8 @@ impl MapEditor {
         }
         let see_through = self.see_through(now);
         crate::platform::set_hook("seethrough", &see_through.map(|(p, r)| format!("{:.2},{:.2},{:.2},{r}", p.x, p.y, p.z)).unwrap_or_default());
+        let pushers = self.pushers(now);
+        crate::platform::set_hook("pushers", &pushers.len().to_string());
         let pixel_zoom = PIXEL_DISTANCE / (self.cam.distance * self.cam.zoom).max(1.0);
         crate::platform::set_hook("pixelzoom", &format!("{pixel_zoom:.3}"));
         Frame {
@@ -3135,8 +3140,36 @@ impl MapEditor {
             frost: self.frost,
             wind: crate::stage::wind_look(&self.wind_settings()),
             see_through,
+            pushers,
             radiance: crate::stage::radiance_look(&self.light_settings()),
         }
+    }
+
+    /// Who tramples the grass this frame: the walker, the actors (where they stand or step),
+    /// the creatures roaming (as much as they're there), the nearest the camera's target
+    /// first, at most `MAX_PUSHERS`; none while the checks say `trample:off`.
+    fn pushers(&self, now: f64) -> Vec<(Vec3, f32)> {
+        if !self.trample {
+            return vec![];
+        }
+        let mut out: Vec<(Vec3, f32)> = vec![];
+        if let Some(w) = &self.walker {
+            out.push((w.pos(now), 0.9));
+        }
+        for i in 0..self.live.len() {
+            if !self.live[i].hidden {
+                out.push((self.actor_pos(i, now), 0.8));
+            }
+        }
+        for r in &self.spawner.roamers {
+            if r.presence > 0.05 {
+                out.push((Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y), r.pos.y), 0.7 * r.presence));
+            }
+        }
+        let target = self.cam.target;
+        out.sort_by(|a, b| a.0.distance_squared(target).total_cmp(&b.0.distance_squared(target)));
+        out.truncate(render::scene::MAX_PUSHERS);
+        out
     }
 
     /// The map's cells the camera can see round its target (x0, z0, x1, z1, out): what the

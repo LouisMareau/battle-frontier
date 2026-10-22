@@ -155,6 +155,49 @@ try {
   const windy = await moving('windy');
   await open({ ...wind, strength: 0 });
   const calm = await moving('calm');
+  // the grass gives way under the walker: with the wind calm, the picture round the walker's
+  // feet (the walker itself left out) differs with the trampling on and off, and not far off
+  await press('uiWalk', 400);
+  await cmd('walkto:20,53');
+  await cmd('view:20,52,10,0,45');
+  await sleep(2500);
+  const screen = async (x, y, z) => {
+    await cmd(`point:${x},${y},${z}`);
+    await sleep(150);
+    return (await data('point')).split(',').map(Number);
+  };
+  const [fx, fy] = await screen(20.5, 0, 53.5);
+  const [hx, hy] = await screen(20.5, 1.7, 53.5);
+  const [rx] = await screen(22.5, 0, 53.5);
+  const reach = Math.abs(rx - fx);
+  const half = Math.max(24, reach * 0.3);
+  const inSprite = (x, y) => Math.abs(x - fx) < half && y > Math.min(fy, hy) - 10 && y < Math.max(fy, hy) + 12;
+  const differing = (a, b, x0, y0, x1, y1) => {
+    let n = 0;
+    for (let y = Math.round(y0); y < y1; y += 2) {
+      for (let x = Math.round(x0); x < x1; x += 2) {
+        if (inSprite(x, y)) continue;
+        const i = (y * a.width + x) * 4;
+        if (Math.max(Math.abs(a.rgba[i] - b.rgba[i]), Math.abs(a.rgba[i + 1] - b.rgba[i + 1]), Math.abs(a.rgba[i + 2] - b.rgba[i + 2])) > 28) n++;
+      }
+    }
+    return n;
+  };
+  const on = await browser.pixels(join(shots, `blades-${webgl ? 'webgl-' : ''}trample-on.png`));
+  await cmd('trample:off');
+  await sleep(700);
+  const off = await browser.pixels(join(shots, `blades-${webgl ? 'webgl-' : ''}trample-off.png`));
+  await sleep(700);
+  const off2 = await browser.pixels();
+  // round the feet: a cell each way; far off: the view's left, clear of it
+  const [l] = (await data('viewrect')).split(',').map(Number);
+  const round = differing(on, off, fx - reach * 0.5, fy - reach * 0.35, fx + reach * 0.5, fy + reach * 0.35);
+  const still = differing(off, off2, fx - reach * 0.5, fy - reach * 0.35, fx + reach * 0.5, fy + reach * 0.35);
+  const away = differing(on, off, l + 30, fy - reach * 0.35, Math.max(l + 90, fx - reach * 1.2), fy + reach * 0.35);
+  console.log(`  trampling: ${round} pixels differ round the walker's feet (on against off), ${still} between two frames off, ${away} further off; pushers ${await data('pushers')}`);
+  check('the grass gives way under the walker', round > 150 && round > 6 * Math.max(still, 1) && away < 60, `${round} round the feet, ${still} still, ${away} far off (reach ${reach} px)`);
+  await cmd('trample:on');
+  await press('uiWalk', 400);
   await open(wind, false);
   const rigid = await moving('rigid');
   console.log(`  moving: ${windy} pixels in the wind, ${calm} calm, ${rigid} rigid in the wind`);

@@ -66,6 +66,10 @@ struct Globals {
     // region's north-west corner (x, z), z the lamps' bounce, w the screen's glow's share
     gi: vec4<f32>,
     gi_b: vec4<f32>,
+    // who tramples the grass (the walker, the actors, the creatures roaming): x how many; each:
+    // xyz where they stand (their feet), w how wide they push (cells)
+    push: vec4<f32>,
+    pushers: array<vec4<f32>, 16>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -243,17 +247,51 @@ fn gust_at(p: vec2<f32>) -> f32 {
     return mix(1.0, 0.35 + 1.45 * n, g.wind.w);
 }
 
+// how far a point of the grass is pushed aside by whoever stands on it or walks through it
+// (`g.pushers`): away from each of them, the more the nearer (nothing past their reach), only
+// what's about their feet (never a crown over their heads, nor a foot's grass under a cliff
+// they stand on), `bend` how far the point gives (0 at a root, 1 at a tip)
+fn trampled(p: vec3<f32>, bend: f32) -> vec3<f32> {
+    var out = vec3<f32>(0.0);
+    let n = i32(g.push.x);
+    for (var k = 0; k < n; k++) {
+        let q = g.pushers[k];
+        let d = p.xz - q.xz;
+        let dist = length(d);
+        if (dist >= q.w) {
+            continue;
+        }
+        let up = p.y - q.y;
+        let near = (1.0 - smoothstep(1.1, 1.8, up)) * smoothstep(-0.8, -0.3, up);
+        let away = select(normalize(d), vec2<f32>(1.0, 0.0), dist < 0.001);
+        let s = 1.0 - (dist / q.w) * (dist / q.w);
+        let push = s * q.w * 0.8 * near * bend;
+        out = out + vec3<f32>(away.x, 0.0, away.y) * push;
+    }
+    return out;
+}
+
 // a point of something painted for the wind, moved by it: `w` its weights (sway, flutter,
 // phase, its height above its foot over 8 cells). It leans downwind as far as its sway, its
 // height and the wind (with its gust) say, swaying about that, and flutters quickly up and
 // down and across the wind; whatever isn't painted stays. Nothing in it goes by the way a
 // point faces: the points of one place (where a mesh's faces meet at an edge, as all round a
 // leaf made thick, its two faces and its rim) carry the same paint, so they move as one and
-// the mesh never comes apart.
+// the mesh never comes apart. And whoever walks through it pushes it aside (`trampled`), as
+// far as its sway weight gives.
 fn swayed(p: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
-    let s = g.wind.z;
-    if (s <= 0.0 || (w.x <= 0.0 && w.y <= 0.0)) {
+    if (w.x <= 0.0 && w.y <= 0.0) {
         return p;
+    }
+    var out = p;
+    if (g.push.x > 0.0 && w.x > 0.0) {
+        let t = trampled(p, w.x);
+        // bent over, a tip comes down a little
+        out = out + t - vec3<f32>(0.0, dot(t, t) * 0.5 / max(w.w * 8.0, 0.3), 0.0);
+    }
+    let s = g.wind.z;
+    if (s <= 0.0) {
+        return out;
     }
     let way = vec3<f32>(g.wind.x, 0.0, g.wind.y);
     let height = w.w * 8.0;
@@ -262,7 +300,7 @@ fn swayed(p: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
     let gust = gust_at(p.xz);
     let lean = s * gust * (0.5 + 0.5 * sin(g.wind_b.z + phase));
     let bend = w.x * lean * (0.16 + 0.14 * height);
-    var q = p + way * bend;
+    var q = out + way * bend;
     // bent over, a tip comes down a little
     q.y = q.y - w.x * bend * bend * 0.35 / max(height, 0.3);
     let across = vec3<f32>(-way.z, 0.0, way.x);

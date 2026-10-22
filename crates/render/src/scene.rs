@@ -272,6 +272,9 @@ struct Globals {
     /// glow's share
     gi: [f32; 4],
     gi_b: [f32; 4],
+    /// who tramples the grass: x how many; each xyz where they stand, w how wide they push
+    push: [f32; 4],
+    pushers: [[f32; 4]; MAX_PUSHERS],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -279,6 +282,10 @@ struct Globals {
 
 /// How many lights a frame can hold: the nearest ones.
 pub const MAX_LIGHTS: usize = 32;
+
+/// The most who trample the grass in a frame (the walker, the actors, the creatures roaming;
+/// the nearest the camera's target).
+pub const MAX_PUSHERS: usize = 16;
 
 /// The way the clouds drift (cells, a unit long): east, and a little south.
 const CLOUD_WIND: glam::Vec2 = glam::Vec2::new(0.928, 0.371);
@@ -478,6 +485,10 @@ pub struct Frame {
     /// what's kept in sight through the trees and props in front of it (the walker): where,
     /// and how wide the see-through cone is round it (cells); none: nothing is
     pub see_through: Option<(Vec3, f32)>,
+    /// who tramples the grass: each where they stand (their feet) and how wide they push
+    /// (cells); the meadows' blades and what's painted for the wind give way round them (the
+    /// first `MAX_PUSHERS` count)
+    pub pushers: Vec<(Vec3, f32)>,
     /// the picture's light: its exposure and tone map, the bloom, the indirect light
     pub radiance: Radiance,
 }
@@ -1989,6 +2000,14 @@ impl SceneRenderer {
             tone: [frame.radiance.exposure.max(0.0), frame.radiance.bloom.max(0.0), frame.radiance.filmic as u32 as f32, frame.radiance.threshold.max(0.0)],
             gi: gi_region.map_or([0.0; 4], |r| [frame.radiance.gi.max(0.0), 1.0 / r.width, r.width, r.spacing()]),
             gi_b: gi_region.map_or([0.0; 4], |r| [r.origin.x, r.origin.y, crate::gi::BOUNCE, crate::gi::SCREEN]),
+            push: [frame.pushers.len().min(MAX_PUSHERS) as f32, 0.0, 0.0, 0.0],
+            pushers: {
+                let mut out = [[0.0f32; 4]; MAX_PUSHERS];
+                for (k, (p, r)) in frame.pushers.iter().take(MAX_PUSHERS).enumerate() {
+                    out[k] = [p.x, p.y, p.z, r.max(0.01)];
+                }
+                out
+            },
             lights: {
                 let mut out = [[0.0f32; 4]; MAX_LIGHTS * 3];
                 for (k, s) in l.lights.iter().take(MAX_LIGHTS).enumerate() {
@@ -2774,6 +2793,7 @@ mod tests {
             frost: false,
             wind: Wind { way: Vec2::new(1.0, 0.0), strength: 0.6, gusts: 0.5 },
             see_through: None,
+            pushers: vec![],
             radiance: Radiance::default(),
         }
     }

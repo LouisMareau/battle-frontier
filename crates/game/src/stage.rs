@@ -778,7 +778,7 @@ impl Stage {
             }
         }
         let streaks = self.rain.iter().map(|&p| (p, p + Vec3::new(-0.05, -0.5, 0.05))).collect();
-        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false, wind: self.wind, see_through: None, radiance: self.radiance }
+        Frame { view_proj, camera_pos: eye, light, shadows: true, billboards, shapes, glows, animated: vec![], streaks, time: (now / 1000.0) as f32, grid: false, focus: None, dim: 0.0, overlays: vec![], toon: self.toon, retro: self.retro, frost: false, wind: self.wind, see_through: None, pushers: vec![], radiance: self.radiance }
     }
 
     /// Screen position (egui points) of a point in the world; None behind the camera.

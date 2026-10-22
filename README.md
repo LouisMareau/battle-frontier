@@ -88,7 +88,7 @@ node tools/tilecheck.mjs               # cell by cell: flooring, wall styles, a 
 node tools/floorcheck.mjs              # floors laid with a set of tiles: a house's floor painted all over with the flagstones, every two cells side by side agreeing (each long slab whole), laid again another way, a slab put by hand staying as put, a long half put mirrored across the house's middle with the set laid round both; the grass out of doors laid so too (the Ground tool's Floors tab), a cell taken away, halves put with quarter turns round a corner picked on the map and with both mirrors, taken away all round and undone in one step; the tiles, turns, mirrored and hand-put ones in the download
 node tools/rampcheck.mjs               # ramps: one dragged along a step's top, refused two levels down, two rows deep or where nothing's a level down, walked up, down and along (not off its sides, nor up the cliff beside), picked, smoothed, removed and back, saved; stone stairs from the asset browser refused off a ramp and laid along one (every tread stone, flush at its foot and top), a mud slide on one rising west, both saved; gone when a cell of it is painted to another level, the stairs with it
 node tools/grasscheck.mjs              # grown grass as copies: a field of a made-up 16,000-vertex grass, culled on the GPU, its vertices within what the picture shows near, mid and far (the finest levels up close, none far off), the frame rate, no error
-node tools/bladecheck.mjs [--webgl]    # a meadow made on the GPU: a field of grass, daisies and poppies, culled on the GPU, the finest templates up close and the simplest far off, only a few of a cell's blades from the farthest, its vertices within what the picture shows, the frame rate, no error; the blades swaying in the wind up close (the picture changing moment to moment), still when the wind is calm and when the plants are rigid; --webgl: on WebGL 2 (WebGPU hidden), culled on the CPU patch by patch
+node tools/bladecheck.mjs [--webgl]    # a meadow made on the GPU: a field of grass, daisies and poppies, culled on the GPU, the finest templates up close and the simplest far off, only a few of a cell's blades from the farthest, its vertices within what the picture shows, the frame rate, no error; the blades swaying in the wind up close (the picture changing moment to moment), still when the wind is calm and when the plants are rigid, giving way round the walker's feet (the picture there differs with the trampling on and off, not further off); --webgl: on WebGL 2 (WebGPU hidden), culled on the CPU patch by patch
 node tools/jumpcheck.mjs               # jumps: two clicks two cells apart over a ditch, refused onto another level and into a pond (saying why), jumped over and back on foot in an arc, a ledge jumped down with Shift (not without, never back up), one way (there, never back) and turned round, an end's level kept under the brush, removed with Delete and back with an undo, saved
 node tools/levelcheck.mjs              # painting levels: the brush on the cell under the pointer, on its own ground, whatever the level picked (raised from the lowland, sunk from a hill's top), a stroke held still painting its own cells and no more, ground raised to meet a hill's top joining it with no seam, saved
 node tools/zonecheck.mjs               # creatures roaming, the debug view, a zone painted and linked to a treeline
@@ -298,7 +298,14 @@ maps).
   way up, lit as the ground is), bent by the wind from its rooted foot, its tip going furthest
   (as a blade painted for the wind would: no weight at its root, the most at its tip), as far
   as the wind's strength, its gusts and the plant's own `sway` say (a thin blade about 1, a
-  flower's stem stiffer: the presets' 0.45, so the flowers nod while the grass bends over). How fine each is drawn goes by how many
+  flower's stem stiffer: the presets' 0.45, so the flowers nod while the grass bends over);
+  and whoever walks through it pushes it aside (`trampled`: the frame's `pushers`, the walker,
+  the actors where they stand or step and the creatures roaming as much as they're there, the
+  nearest the camera first, up to `MAX_PUSHERS`; each pushes what's within its reach away from
+  its feet, the more the nearer, blades by up to their height and a bit, flowers nodding away;
+  what's painted for the wind gives way too, by its sway weight, so grass props and bushes
+  part round a walker while a tree's crown over their head never moves: the push only takes
+  what's about their feet). The checks turn it off with `trample:off`. How fine each is drawn goes by how many
   pixels a cell spans where it stands: from 40 every blade, under it fewer (the share drawn
   going with the pixels a cell covers, so the picture holds about as many blades whatever the
   distance), each kept one wider across and growing in as it comes, under 10 shorter, none

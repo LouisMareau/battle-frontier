@@ -1095,6 +1095,12 @@ impl GameApp {
                         ed.github_at(arg);
                     }
                 }
+                // the checks: the grass giving way under the walker, on or off
+                "trample" => {
+                    if let Some(ed) = self.editor_mut() {
+                        ed.trample = !arg.eq_ignore_ascii_case("off");
+                    }
+                }
                 // the checks: a pull request to review, opened as soon as GitHub lists it
                 "review" => {
                     if let (Some(ed), Ok(n)) = (self.editor_mut(), arg.trim().parse::<u64>()) {

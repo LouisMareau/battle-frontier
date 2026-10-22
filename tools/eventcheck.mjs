@@ -174,7 +174,8 @@ try {
   for (let y = Math.max(0, ry - 200); y < Math.min(shot6.height, ry + 200); y++) {
     for (let x = Math.max(0, rx - 350); x < Math.min(shot6.width, rx + 150); x++) {
       const i = (y * shot6.width + x) * 4;
-      flag += shot6.rgba[i] > 120 && shot6.rgba[i + 1] < 70 && shot6.rgba[i + 2] < 70;
+      // (crimson, at whatever phase of its wave the light catches it: well above its green and blue)
+      flag += shot6.rgba[i] > 120 && shot6.rgba[i + 1] < 95 && shot6.rgba[i + 2] < 95 && shot6.rgba[i] > shot6.rgba[i + 1] + 60;
     }
   }
   check('the flag drawn from the pole\'s top', flag > 2000, `${flag} crimson pixels round it`);

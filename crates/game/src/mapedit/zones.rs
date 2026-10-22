@@ -566,6 +566,21 @@ mod tests {
 
     use super::*;
 
+    /// Nobody on the map pushes the grass; the walker does, at its feet, as wide as a
+    /// walker is; and nothing when the checks turn the trampling off.
+    #[test]
+    fn whoever_walks_through_the_grass_pushes_it_aside() {
+        let mut ed = MapEditor::new(Arc::new(content::Content::default()), None, crate::platform::Files::new("."));
+        assert!(ed.pushers(0.0).is_empty(), "nobody about");
+        ed.walk_to(3, 3);
+        let p = ed.pushers(1000.0);
+        assert_eq!(p.len(), 1);
+        assert!((3.0..4.0).contains(&p[0].0.x) && (3.0..4.0).contains(&p[0].0.z) && p[0].1 > 0.3 && p[0].1 < 1.0, "{p:?}");
+        ed.trample = false;
+        assert!(ed.pushers(1000.0).is_empty(), "turned off for the checks");
+        assert!(render::scene::MAX_PUSHERS >= 8);
+    }
+
     #[test]
     fn a_new_zone_starts_with_nobody() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../build/tests").join(format!("zones-{}", std::process::id()));
