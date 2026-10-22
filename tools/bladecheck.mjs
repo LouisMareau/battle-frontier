@@ -106,7 +106,10 @@ try {
   const flowers = (at) => at.templates[3] + at.templates[4] + at.templates[5];
   check('blades drawn, flowers among them', mid.blades > 2000 && flowers(mid) > 0 && flowers(mid) < mid.blades / 3, `${mid.blades} blades, ${flowers(mid)} flowers`);
   check('  up close the finest', near.templates[0] > near.templates[2] && near.templates[0] > 0, near.templates.join(' '));
-  check('  far off the simplest, never the finest', far.templates[2] > far.templates[0] && farthest.templates[0] === 0, `${far.templates.join(' ')} / ${farthest.templates.join(' ')}`);
+  // (on WebGL 2 a patch takes the finest template its nearest blade needs: from far off the
+  // middle one, the simplest only from the farthest)
+  const simplest = webgl ? far.templates[0] === 0 && farthest.templates[2] > farthest.templates[1] : far.templates[2] > far.templates[0];
+  check('  far off the simplest, never the finest', simplest && farthest.templates[0] === 0, `${far.templates.join(' ')} / ${farthest.templates.join(' ')}`);
   // the share drawn falls with the pixels a cell covers: from far off a cell holds a blade or
   // two of the 48 it grows
   const cells = S * (S - 3);

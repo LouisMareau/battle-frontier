@@ -707,12 +707,16 @@ struct DrawCall {
 /// The joints' matrices of this frame's skinned models, one buffer, each model's at an
 /// offset the draw binds. The binding is a window of `window` bytes from that offset (the
 /// same for every model: it's the bind group's), so the buffer runs at least a window past
-/// the last model's offset.
+/// the last model's offset. Read from storage where vertex shaders can (WebGPU); where they
+/// can't (WebGL 2), from a uniform buffer, its window BONES_WINDOW matrices (16 KB, the most
+/// a uniform block holds there), a model's joints past them left out.
 struct Bones {
     buffer: wgpu::Buffer,
     bind: wgpu::BindGroup,
     cap: u64,
     window: u64,
+    /// in storage, not a uniform buffer
+    stored: bool,
 }
 
 /// Matrices per skinned model are padded to this many: a dynamic offset's alignment.
@@ -1001,15 +1005,17 @@ impl SceneRenderer {
         });
         // skinned models: their joints' matrices in a storage buffer, each model's at an
         // offset (group 3; in the shadow pass group 2 stands empty, the shadow map being
-        // drawn into)
+        // drawn into); where vertex shaders read no storage (WebGL 2), in a uniform buffer
+        // the same way, its own binding read by its own entry points
+        let stored = device.limits().max_storage_buffers_per_shader_stage > 0;
+        let (binding, ty, min_binding_size) = if stored {
+            (0, wgpu::BufferBindingType::Storage { read_only: true }, None)
+        } else {
+            (1, wgpu::BufferBindingType::Uniform, wgpu::BufferSize::new(BONES_WINDOW as u64 * MAT4_BYTES))
+        };
         let bones_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("bones"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: true, min_binding_size: None },
-                count: None,
-            }],
+            entries: &[wgpu::BindGroupLayoutEntry { binding, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty, has_dynamic_offset: true, min_binding_size }, count: None }],
         });
         let empty_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor { label: Some("empty"), entries: &[] });
         let empty_bind = device.create_bind_group(&wgpu::BindGroupDescriptor { label: Some("empty"), layout: &empty_layout, entries: &[] });
@@ -1024,7 +1030,7 @@ impl SceneRenderer {
             immediate_size: 0,
         });
         let (cap, window) = bones_needed(0, 0, 0, 0);
-        let bones = Self::make_bones(device, &bones_layout, cap, window);
+        let bones = Self::make_bones(device, &bones_layout, cap, window, stored);
         let map_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Float32, 5 => Unorm8x4];
         let sprite_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x2, 2 => Float32x4, 3 => Float32];
         let skinned_attrs = wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 3 => Float32x4, 4 => Uint32x4, 5 => Float32x4, 6 => Float32, 7 => Unorm8x4];
@@ -1134,8 +1140,9 @@ impl SceneRenderer {
             &blade_kinds_layout,
             blade_store_layout,
         );
-        let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
-        let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
+        let (skinned_vs, skinned_shadow_vs) = if stored { ("vs_skinned", "vs_skinned_shadow") } else { ("vs_skinned_uniform", "vs_skinned_uniform_shadow") };
+        let skinned_pipeline = pipeline("skinned", &skinned_layout, skinned_vs, "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
+        let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, skinned_shadow_vs, "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
         // depth only, in the see-through pass: a colour target it never writes to
         let fade_depth_pipeline = pipeline("fade depth", &main_layout, "vs_map", "fs_map_depth", &map_buffers, clear(None, false), Some(depth(true)));
         let fade_pipeline = pipeline("fade", &main_layout, "vs_map", "fs_map_fade", &map_buffers, clear(alpha, true), Some(depth(false)));
@@ -1288,24 +1295,25 @@ impl SceneRenderer {
         queue.submit([encoder.finish()]);
     }
 
-    /// A buffer for the skinned models' joint matrices, `cap` bytes.
-    /// The bones' buffer, `cap` bytes, bound a `window` of bytes at a time.
-    fn make_bones(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, cap: u64, window: u64) -> Bones {
+    /// The bones' buffer, `cap` bytes, bound a `window` of bytes at a time: in storage
+    /// (`stored`), or a uniform buffer.
+    fn make_bones(device: &wgpu::Device, layout: &wgpu::BindGroupLayout, cap: u64, window: u64, stored: bool) -> Bones {
+        let (usage, binding) = if stored { (wgpu::BufferUsages::STORAGE, 0) } else { (wgpu::BufferUsages::UNIFORM, 1) };
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("bones"),
             size: cap,
-            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            usage: usage | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("bones"),
             layout,
             entries: &[wgpu::BindGroupEntry {
-                binding: 0,
+                binding,
                 resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buffer, offset: 0, size: wgpu::BufferSize::new(window) }),
             }],
         });
-        Bones { buffer, bind, cap, window }
+        Bones { buffer, bind, cap, window, stored }
     }
 
     /// A skinned model's parts, by texture, kept under `key` for `Frame::animated` to draw.
@@ -1469,7 +1477,9 @@ impl SceneRenderer {
     /// The cells' and the palette's textures, bound for the ground shader.
     fn data_bind(&self, device: &wgpu::Device, queue: &wgpu::Queue, g: &WorldGround, shore: &[[f32; 4]]) -> (wgpu::Texture, wgpu::Texture, wgpu::BindGroup) {
         let cells = Self::data_texture(device, queue, "cells", g.cells, g.size);
-        let palette = Self::data_texture(device, queue, "palette", g.palette, [g.palette_width.max(1), 4]);
+        // (as many rows as it has: a terrain's own, then its look's)
+        let width = g.palette_width.max(1);
+        let palette = Self::data_texture(device, queue, "palette", g.palette, [width, (g.palette.len() as u32 / (4 * width)).max(1)]);
         let shore = Self::field_texture(device, queue, "shore", shore, g.size);
         let (cv, pv, sv) = (cells.create_view(&Default::default()), palette.create_view(&Default::default()), shore.create_view(&Default::default()));
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1944,21 +1954,23 @@ impl SceneRenderer {
         if !bytes.is_empty() {
             queue.write_buffer(sprite_buffer, 0, bytes);
         }
-        // the skinned models' joints, each model's placed in the world, in one buffer
+        // the skinned models' joints, each model's placed in the world, in one buffer (a
+        // uniform one: a model's first BONES_WINDOW, all its window holds)
+        let room = if self.bones.stored { usize::MAX } else { BONES_WINDOW };
         let mut bone_data: Vec<[[f32; 4]; 4]> = vec![];
         let mut animated: Vec<(&str, u32)> = vec![];
         for a in frame.animated.iter().filter(|a| self.skinned.contains_key(&a.key) && !a.joints.is_empty()) {
             animated.push((a.key.as_str(), (bone_data.len() * 64) as u32));
-            bone_data.extend(a.joints.iter().map(|j| (a.model * *j).to_cols_array_2d()));
+            bone_data.extend(a.joints.iter().take(room).map(|j| (a.model * *j).to_cols_array_2d()));
             while !bone_data.len().is_multiple_of(BONES_ALIGN) {
                 bone_data.push(Mat4::IDENTITY.to_cols_array_2d());
             }
         }
         let bone_bytes: &[u8] = bytemuck::cast_slice(&bone_data);
-        let most = frame.animated.iter().filter(|a| self.skinned.contains_key(&a.key)).map(|a| a.joints.len()).max().unwrap_or(0);
+        let most = frame.animated.iter().filter(|a| self.skinned.contains_key(&a.key)).map(|a| a.joints.len().min(room)).max().unwrap_or(0);
         let (cap, window) = bones_needed(bone_bytes.len() as u64, most, self.bones.cap, self.bones.window);
         if (cap, window) != (self.bones.cap, self.bones.window) {
-            self.bones = Self::make_bones(device, &self.bones_layout, cap, window);
+            self.bones = Self::make_bones(device, &self.bones_layout, cap, window, self.bones.stored);
         }
         if !bone_bytes.is_empty() {
             queue.write_buffer(&self.bones.buffer, 0, bone_bytes);
@@ -2382,8 +2394,17 @@ mod tests {
         }
     }
 
-    /// A device on the GPU there is, if it does all WebGPU does (the skinned models read a
-    /// storage buffer in their vertex shader); none on a machine without (CI's).
+    /// A GPU test's turn, held from its start (taken before its devices, let go after them):
+    /// the tests take turns, a device made while another test's were at work or being torn
+    /// down having hung the driver (Vulkan's, now and then).
+    fn turn() -> std::sync::MutexGuard<'static, ()> {
+        static TURNS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        TURNS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// A device on the GPU there is, if it does all WebGPU does (vertex shaders reading
+    /// storage buffers: the skinned models' joints, the blades from the culling's lists); none
+    /// on a machine without (CI's).
     fn gpu() -> Option<(wgpu::Device, wgpu::Queue)> {
         let adapter = block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         if !adapter.get_downlevel_capabilities().is_webgpu_compliant() {
@@ -2392,11 +2413,26 @@ mod tests {
         block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
+    /// A device on the GPU there is, held to what the game gets in a browser on WebGL 2 (the
+    /// limits eframe asks for there): no storage buffers, uniform blocks of 16 KB.
+    fn webgl_limits() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let adapter = block_on(wgpu::Instance::default().request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        let required_limits = wgpu::Limits { max_texture_dimension_2d: 8192, ..wgpu::Limits::downlevel_webgl2_defaults() };
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits, ..Default::default() })).ok()
+    }
+
     /// A device on OpenGL (as WebGL 2 is, through ANGLE or the driver), where this machine has one.
     fn gl() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::GL, ..wgpu::InstanceDescriptor::new_without_display_handle() });
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
         block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() })).ok()
+    }
+
+    /// A grey floor round the origin, 8 cells a side, in the scene's own space: a world's to
+    /// draw, the skinned models with it.
+    fn floor(r: &mut SceneRenderer, device: &wgpu::Device) {
+        let corner = |x: f32, z: f32| MapVertex { pos: [x, -0.01, z], normal: [0.0, 1.0, 0.0], uv: [0.5, 0.5], color: [0.5, 0.5, 0.5, 1.0], toon: 0.0, wind: [0; 4] };
+        r.set_world_extra(device, &[(WHITE.to_string(), vec![corner(-4.0, -4.0), corner(4.0, -4.0), corner(4.0, 4.0), corner(-4.0, 4.0)], vec![0, 1, 2, 0, 2, 3])]);
     }
 
     /// A frame of nothing but `animated`, from a camera looking down at the origin.
@@ -2436,10 +2472,6 @@ mod tests {
         }
     }
 
-    /// Skinned models in one frame, as many as a map has, each with its joints (the model
-    /// requests' creatures have 3, 7 and 32; a joint binding takes up to BONES_WINDOW of them):
-    /// drawn with no error from the GPU (a second one used to overrun the bones' buffer, and
-    /// wgpu's error ended the game).
     #[test]
     fn the_bones_buffer_leaves_a_window_past_the_last_model() {
         let window = (BONES_WINDOW as u64) * MAT4_BYTES;
@@ -2454,28 +2486,116 @@ mod tests {
         assert_eq!(bones_needed(64, 1, 1 << 20, w), (1 << 20, w));
     }
 
+    /// Skinned models in one frame, as many as a map has, each with its joints (the model
+    /// requests' creatures have 3, 7 and 32; a joint binding takes up to BONES_WINDOW of them,
+    /// one of more widens it, or on WebGL 2 keeps its first): drawn with no error from the GPU
+    /// (a second one used to overrun the bones' buffer, and wgpu's error ended the game), from
+    /// storage as on WebGPU and from a uniform buffer as on WebGL 2.
     #[test]
     fn many_skinned_models_draw_in_one_frame() {
-        let Some((device, queue)) = gpu() else {
+        let _turn = turn();
+        let devices: Vec<_> = [gpu(), webgl_limits()].into_iter().flatten().collect();
+        if devices.is_empty() {
             eprintln!("no GPU here: the skinned models' draw not checked");
-            return;
-        };
-        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
-        let vertex = |x: f32, z: f32, joint: u32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0; 4], joints: [joint, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0], toon: 0.0, wind: [200, 100, 50, 30] };
-        let counts = [3usize, 7, 32, 2, 7, 3, 200, 32, 1];
-        for (i, &n) in counts.iter().enumerate() {
-            let x = i as f32 * 0.5 - 2.0;
-            let last = n as u32 - 1;
-            r.set_skinned(&device, &format!("m{i}"), &[(WHITE.to_string(), vec![vertex(x, 0.0, 0), vertex(x + 0.4, 0.0, last), vertex(x, 0.4, last)], vec![0, 1, 2])]);
         }
-        for shown in [1, 2, 5, counts.len()] {
-            let animated = counts.iter().enumerate().take(shown).map(|(i, &n)| Animated { key: format!("m{i}"), model: Mat4::IDENTITY, joints: vec![Mat4::IDENTITY; n] }).collect();
-            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
-            let mut encoder = device.create_command_encoder(&Default::default());
-            r.prepare(&device, &queue, &mut encoder, &frame_of(animated), [64, 64]);
-            queue.submit([encoder.finish()]);
-            let error = block_on(scope.pop());
-            assert!(error.is_none(), "{shown} skinned models: {error:?}");
+        for (device, queue) in devices {
+            let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+            let stored = device.limits().max_storage_buffers_per_shader_stage > 0;
+            assert_eq!(r.bones.stored, stored);
+            floor(&mut r, &device);
+            let vertex = |x: f32, z: f32, joint: u32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0; 4], joints: [joint, 0, 0, 0], weights: [1.0, 0.0, 0.0, 0.0], toon: 0.0, wind: [200, 100, 50, 30] };
+            let counts = [3usize, 7, 32, 2, 7, 3, 200, 32, 1, 300];
+            for (i, &n) in counts.iter().enumerate() {
+                let x = i as f32 * 0.5 - 2.0;
+                let last = n as u32 - 1;
+                r.set_skinned(&device, &format!("m{i}"), &[(WHITE.to_string(), vec![vertex(x, 0.0, 0), vertex(x + 0.4, 0.0, last), vertex(x, 0.4, last)], vec![0, 1, 2])]);
+            }
+            for shown in [1, 2, 5, counts.len()] {
+                let animated = counts.iter().enumerate().take(shown).map(|(i, &n)| Animated { key: format!("m{i}"), model: Mat4::IDENTITY, joints: vec![Mat4::IDENTITY; n] }).collect();
+                let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+                let mut encoder = device.create_command_encoder(&Default::default());
+                r.prepare(&device, &queue, &mut encoder, &frame_of(animated), [64, 64]);
+                queue.submit([encoder.finish()]);
+                let error = block_on(scope.pop());
+                assert!(error.is_none(), "{shown} skinned models (stored {stored}): {error:?}");
+            }
+            assert_eq!(r.bones.window, if stored { 300 * MAT4_BYTES } else { BONES_WINDOW as u64 * MAT4_BYTES });
+        }
+    }
+
+    /// A skinned model drawn where its joints put it (each vertex half on two of them), the
+    /// same from a uniform buffer (WebGL 2's way) as from storage, past other models' joints.
+    #[test]
+    fn skinned_models_pose_alike_from_storage_and_a_uniform_buffer() {
+        let _turn = turn();
+        let pictures: Vec<Vec<u8>> = [gpu(), webgl_limits()]
+            .into_iter()
+            .flatten()
+            .map(|(device, queue)| {
+                let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+                floor(&mut r, &device);
+                // a crimson square at the origin, two cells wide: joints 5 and 6 carry it a cell
+                // and a half east between them (another model's 7 joints first)
+                let corner = |x: f32, z: f32| SkinnedVertex { pos: [x, 0.0, z], normal: [0.0, 1.0, 0.0], uv: [0.0; 2], color: [1.0, 0.0, 0.0, 1.0], joints: [5, 6, 0, 0], weights: [0.5, 0.5, 0.0, 0.0], toon: 0.0, wind: [0; 4] };
+                let square = vec![corner(-1.0, -1.0), corner(1.0, -1.0), corner(1.0, 1.0), corner(-1.0, 1.0)];
+                r.set_skinned(&device, "square", &[(WHITE.to_string(), square, vec![0, 1, 2, 0, 2, 3])]);
+                r.set_skinned(&device, "other", &[(WHITE.to_string(), vec![corner(0.0, 0.0); 3], vec![0, 1, 2])]);
+                let mut joints = vec![Mat4::from_translation(Vec3::new(9.0, 0.0, 0.0)); 7];
+                joints[5] = Mat4::from_translation(Vec3::new(1.0, 0.0, 0.0));
+                joints[6] = Mat4::from_translation(Vec3::new(2.0, 0.0, 0.0));
+                let other = Animated { key: "other".into(), model: Mat4::IDENTITY, joints: vec![Mat4::from_translation(Vec3::new(0.0, -50.0, 0.0)); 7] };
+                let frame = frame_of(vec![other, Animated { key: "square".into(), model: Mat4::IDENTITY, joints }]);
+                let size = 64;
+                let out = device.create_texture(&wgpu::TextureDescriptor {
+                    label: None,
+                    size: wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+                    mip_level_count: 1,
+                    sample_count: 1,
+                    dimension: wgpu::TextureDimension::D2,
+                    format: wgpu::TextureFormat::Rgba8Unorm,
+                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+                    view_formats: &[],
+                });
+                let read = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (size * size * 4) as u64, usage: wgpu::BufferUsages::MAP_READ | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+                let mut encoder = device.create_command_encoder(&Default::default());
+                r.prepare(&device, &queue, &mut encoder, &frame, [size, size]);
+                {
+                    let view = out.create_view(&Default::default());
+                    let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: None,
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &view, resolve_target: None, depth_slice: None, ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                        ..Default::default()
+                    });
+                    r.paint(&mut pass);
+                }
+                encoder.copy_texture_to_buffer(
+                    out.as_image_copy(),
+                    wgpu::TexelCopyBufferInfo { buffer: &read, layout: wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(size * 4), rows_per_image: None } },
+                    wgpu::Extent3d { width: size, height: size, depth_or_array_layers: 1 },
+                );
+                queue.submit([encoder.finish()]);
+                read.slice(..).map_async(wgpu::MapMode::Read, |_| {});
+                device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+                let rgba = read.slice(..).get_mapped_range().unwrap().to_vec();
+                rgba
+            })
+            .collect();
+        if pictures.is_empty() {
+            eprintln!("no GPU here: the skinned models' poses not checked");
+        }
+        // the crimson pixels, and the column they're about: the square seen east of the middle
+        let crimson: Vec<(usize, f32)> = pictures
+            .iter()
+            .map(|rgba| {
+                let columns: Vec<usize> = rgba.chunks(4).enumerate().filter(|(_, p)| p[0] > 120 && p[1] < 80 && p[2] < 80).map(|(i, _)| i % 64).collect();
+                (columns.len(), columns.iter().sum::<usize>() as f32 / columns.len().max(1) as f32)
+            })
+            .collect();
+        for &(n, middle) in &crimson {
+            assert!(n > 100 && middle > 40.0, "{n} crimson pixels about column {middle}");
+        }
+        if let [(n, middle), (m, uniform)] = crimson[..] {
+            assert!(n.abs_diff(m) <= n / 50 && (middle - uniform).abs() < 0.5, "from storage {n} about {middle}, from a uniform buffer {m} about {uniform}");
         }
     }
 
@@ -2506,6 +2626,7 @@ mod tests {
     /// (its generation the same while the screen's size is).
     #[test]
     fn the_handhelds_screens_and_the_frost_draw() {
+        let _turn = turn();
         let Some((device, queue)) = gpu() else {
             eprintln!("no GPU here: the handhelds' screens not drawn");
             return;
@@ -2602,6 +2723,7 @@ mod tests {
     /// no error from the GPU; and where there are no compute shaders, on the CPU, the same.
     #[test]
     fn grass_copies_cull_on_the_gpu_as_on_the_cpu() {
+        let _turn = turn();
         let Some((device, queue)) = gpu() else {
             eprintln!("no GPU here: the grass's culling not checked");
             return;
@@ -2698,6 +2820,7 @@ mod tests {
     /// GPU draws of it.
     #[test]
     fn blades_cull_on_the_gpu_as_on_the_cpu() {
+        let _turn = turn();
         let Some((device, queue)) = gpu() else {
             eprintln!("no GPU here: the blades' culling not checked");
             return;
@@ -2774,6 +2897,7 @@ mod tests {
     /// leaving out what isn't drawn: no error from the GPU, blades and flowers drawn.
     #[test]
     fn blades_draw_on_opengl_as_instances() {
+        let _turn = turn();
         let Some((device, queue)) = gl() else {
             eprintln!("no OpenGL here: the blades' WebGL 2 way not checked");
             return;
@@ -2809,11 +2933,18 @@ mod tests {
     fn the_shader_holds_for_webgpu_and_webgl() {
         let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
         let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
-        assert!(["vs_blade", "vs_blade_shadow", "vs_blade_listed", "vs_blade_listed_shadow", "fs_blade", "fs_blade_shadow"].iter().all(|n| module.entry_points.iter().any(|e| e.name == *n)));
-        // every entry point as WebGL 2 gets it (the skinned ones and the blades drawn from the
-        // culling's lists read a storage buffer, which it hasn't got)
+        assert!(["vs_blade", "vs_blade_shadow", "vs_blade_listed", "vs_blade_listed_shadow", "fs_blade", "fs_blade_shadow", "vs_skinned_uniform", "vs_skinned_uniform_shadow"].iter().all(|n| module.entry_points.iter().any(|e| e.name == *n)));
+        // every entry point as WebGL 2 gets it, but the four reading a storage buffer, which it
+        // hasn't got: the skinned models' (there their joints are in a uniform buffer, as many
+        // as the scene binds) and the blades drawn from the culling's lists (there as instances)
+        let stored = |i: usize| module.global_variables.iter().any(|(h, v)| matches!(v.space, naga::AddressSpace::Storage { .. }) && !info.get_entry_point(i)[h].is_empty());
+        let mut webgpu_only: Vec<&str> = module.entry_points.iter().enumerate().filter(|&(i, _)| stored(i)).map(|(_, e)| e.name.as_str()).collect();
+        webgpu_only.sort_unstable();
+        assert_eq!(webgpu_only, ["vs_blade_listed", "vs_blade_listed_shadow", "vs_skinned", "vs_skinned_shadow"]);
+        let (_, uniform) = module.global_variables.iter().find(|(_, v)| v.name.as_deref() == Some("bones_uniform")).unwrap();
+        assert_eq!(u64::from(module.types[uniform.ty].inner.size(module.to_ctx())), BONES_WINDOW as u64 * MAT4_BYTES);
         let options = naga::back::glsl::Options { version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: true }, ..Default::default() };
-        for ep in module.entry_points.iter().filter(|e| !e.name.contains("skinned") && !e.name.contains("listed")) {
+        for (_, ep) in module.entry_points.iter().enumerate().filter(|&(i, _)| !stored(i)) {
             let pipeline = naga::back::glsl::PipelineOptions { shader_stage: ep.stage, entry_point: ep.name.clone(), multiview: None };
             let mut out = String::new();
             let mut w = naga::back::glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, naga::proc::BoundsCheckPolicies::default()).unwrap_or_else(|e| panic!("{}: {e}", ep.name));

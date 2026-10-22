@@ -3,8 +3,10 @@
 // built again when it comes (the pole showed up missing once, its flag waving alone).
 // Walks up to the signpost and reads it, talks to Bo and takes a choice (the camera goes
 // to the well and back, a flag is remembered), steps into the well's cells once, sees the
-// flag pole wave on its pole, and hears the place. Exits 1 when something fails.
-//     node tools/eventcheck.mjs
+// flag pole wave on its pole, and hears the place. With --webgl, the page without WebGPU
+// (WebGL 2: the flag, a skinned model, posed from a uniform buffer). Exits 1 when something
+// fails.
+//     node tools/eventcheck.mjs [--webgl]
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +17,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const shots = join(root, 'screenshots');
 mkdirSync(shots, { recursive: true });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const webgl = process.argv.includes('--webgl');
 let failed = 0;
 const check = (what, ok, detail = '') => {
   console.log(`${ok ? 'ok  ' : 'FAIL'} ${what}${detail ? `: ${detail}` : ''}`);
@@ -32,7 +35,7 @@ const press = async (name) => {
   await browser.click(x, y);
   await sleep(250);
 };
-const shot = (name) => browser.screenshot(join(shots, `events-${name}.png`));
+const shot = (name) => browser.screenshot(join(shots, `events-${webgl ? 'webgl-' : ''}${name}.png`));
 const waitFor = (expr, what) => browser.waitFor(expr, { timeout: 15000, what });
 const dialogUp = () => waitFor('document.body.dataset.dialog !== ""', 'a dialog');
 const dialogDown = () => waitFor('document.body.dataset.dialog === ""', 'the dialog closing');
@@ -44,6 +47,7 @@ const a = async () => {
 
 try {
   await browser.viewport(1400, 900);
+  if (webgl) await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined, configurable: true });" });
   await browser.goto(`http://127.0.0.1:${server.address().port}/index.html`);
   await browser.waitFor('document.body.dataset.state === "menu"', { timeout: 90000, what: 'the menu' });
   await cmd('map:test_meadow');
@@ -140,7 +144,7 @@ try {
   };
   const [fx, fy] = await at(16.05, 0.1, 12.5);
   const [tx, ty] = await at(16.05, 2.9, 12.5);
-  const shot5 = await browser.pixels(join(shots, 'events-5-pole.png'));
+  const shot5 = await browser.pixels(join(shots, `events-${webgl ? 'webgl-' : ''}5-pole.png`));
   let hits = 0;
   const samples = 12;
   for (let k = 0; k < samples; k++) {
@@ -159,6 +163,21 @@ try {
   console.log('audio', await data('audio'), '· sounds playing', await data('sounds'));
   check('sounds asked for', (await data('audio')) === 'off' || Number(await data('sounds')) >= 1, `${await data('audio')} ${await data('sounds')}`);
   await shot('4-flag');
+  // the flag (crimson: the skinned part, posed by its rig) from the pole's top, seen whole
+  // (waving, about 7000 to 20000 pixels a little left of and below it; none when it isn't
+  // drawn there)
+  await cmd('view:16.5,14.5,10,180,40');
+  await sleep(1200);
+  const [rx, ry] = await at(16.1, 2.7, 12.54);
+  const shot6 = await browser.pixels(join(shots, `events-${webgl ? 'webgl-' : ''}6-flag.png`));
+  let flag = 0;
+  for (let y = Math.max(0, ry - 200); y < Math.min(shot6.height, ry + 200); y++) {
+    for (let x = Math.max(0, rx - 350); x < Math.min(shot6.width, rx + 150); x++) {
+      const i = (y * shot6.width + x) * 4;
+      flag += shot6.rgba[i] > 120 && shot6.rgba[i + 1] < 70 && shot6.rgba[i + 2] < 70;
+    }
+  }
+  check('the flag drawn from the pole\'s top', flag > 2000, `${flag} crimson pixels round it`);
   if (browser.errors.length) {
     failed++;
     console.log('PAGE ERRORS:\n' + browser.errors.join('\n'));

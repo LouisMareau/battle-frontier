@@ -2,7 +2,8 @@
 // (unlit, tinted), the shadow pass, and the blit to the screen with the toon look's ink
 // lines. What's solid also writes its look (toon or not, how far, which way it faces) to a
 // second target, which the lines are found in.
-// Everything here works on WebGL 2 as well as WebGPU: uniform buffers only.
+// Everything here works on WebGL 2 as well as WebGPU: uniform buffers only, but for the
+// skinned models' joints, which WebGPU's draws read from storage (WebGL 2's from a uniform buffer).
 
 struct Globals {
     view_proj: mat4x4<f32>,
@@ -1004,16 +1005,24 @@ struct SkinIn {
     @location(7) wind: vec4<f32>,
 };
 
-// each model's joint matrices (placed in the world already), at the draw's offset
+// each model's joint matrices (placed in the world already), at the draw's offset: in storage
+// (WebGPU), or where a vertex shader reads none (WebGL 2) in a uniform buffer, as many as a
+// uniform block holds there (16 KB: scene.rs's BONES_WINDOW), a joint past them read as the last
 @group(3) @binding(0) var<storage, read> bones: array<mat4x4<f32>>;
+const BONES_WINDOW: u32 = 256u;
+@group(3) @binding(1) var<uniform> bones_uniform: array<mat4x4<f32>, BONES_WINDOW>;
 
 fn skin(v: SkinIn) -> mat4x4<f32> {
     return bones[v.joints.x] * v.weights.x + bones[v.joints.y] * v.weights.y + bones[v.joints.z] * v.weights.z + bones[v.joints.w] * v.weights.w;
 }
 
-@vertex
-fn vs_skinned(v: SkinIn) -> MapOut {
-    let m = skin(v);
+fn skin_uniform(v: SkinIn) -> mat4x4<f32> {
+    let j = min(v.joints, vec4<u32>(BONES_WINDOW - 1u));
+    return bones_uniform[j.x] * v.weights.x + bones_uniform[j.y] * v.weights.y + bones_uniform[j.z] * v.weights.z + bones_uniform[j.w] * v.weights.w;
+}
+
+// a vertex of a skinned model, posed by `m` (its joints' matrices, weighed)
+fn posed(v: SkinIn, m: mat4x4<f32>) -> MapOut {
     let n = normalize((m * vec4<f32>(v.normal, 0.0)).xyz);
     let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, v.wind);
     var o: MapOut;
@@ -1027,9 +1036,8 @@ fn vs_skinned(v: SkinIn) -> MapOut {
     return o;
 }
 
-@vertex
-fn vs_skinned_shadow(v: SkinIn) -> MapOut {
-    let m = skin(v);
+// ... as the sun sees it
+fn posed_shadow(v: SkinIn, m: mat4x4<f32>) -> MapOut {
     let p = swayed((m * vec4<f32>(v.pos, 1.0)).xyz, v.wind);
     var o: MapOut;
     o.clip = g.light_view_proj * vec4<f32>(p, 1.0);
@@ -1040,6 +1048,26 @@ fn vs_skinned_shadow(v: SkinIn) -> MapOut {
     o.color = v.color;
     o.toon = v.toon;
     return o;
+}
+
+@vertex
+fn vs_skinned(v: SkinIn) -> MapOut {
+    return posed(v, skin(v));
+}
+
+@vertex
+fn vs_skinned_shadow(v: SkinIn) -> MapOut {
+    return posed_shadow(v, skin(v));
+}
+
+@vertex
+fn vs_skinned_uniform(v: SkinIn) -> MapOut {
+    return posed(v, skin_uniform(v));
+}
+
+@vertex
+fn vs_skinned_uniform_shadow(v: SkinIn) -> MapOut {
+    return posed_shadow(v, skin_uniform(v));
 }
 
 // ---------------------------------------------------------------- sprites and effects
