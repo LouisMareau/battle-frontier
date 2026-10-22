@@ -22,6 +22,8 @@ macro_rules! as_default {
 }
 
 as_default!(Growth: growth_density => density: f64, growth_scale => scale: [f64; 2], growth_patchy => patchy: f64, growth_turn => turn: bool);
+as_default!(Look: look_scale => scale: f64, look_sharpness => sharpness: f64, look_balance => balance: f64, look_grain => grain: f64);
+as_default!(Layer: layer_scale => scale: f64, layer_amount => amount: f64, layer_softness => softness: f64);
 as_default!(Meadow: meadow_density => density: f64, meadow_patchy => patchy: f64, meadow_clump => clump: f64, meadow_clumping => clumping: f64);
 as_default!(Plant:
     plant_weight => weight: f64,
@@ -793,11 +795,18 @@ pub struct Terrain {
     pub id: String,
     pub name: String,
     pub order: u16,
+    /// the group it's listed in with the terrains like it (none: its pattern's, `PATTERNS`)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub category: String,
     /// "#rrggbb": the main colour, and the one its pattern mixes in
     pub color: String,
     pub color2: String,
-    /// how it's drawn: "grass", "meadow", "dirt", "sand", "stones", "water", "rock"
+    /// how it's drawn: one of `PATTERNS` ("grass", "meadow", "tall", "dirt", "sand",
+    /// "stones", "rock", "water"), or "custom": as its `look` says
     pub pattern: String,
+    /// a look of its own (`pattern` "custom"): its two colours in blotches, layers over them
+    #[serde(skip_serializing_if = "Look::is_plain")]
+    pub look: Look,
     /// the cliff face under its cells
     pub side: String,
     /// "walk", "water" (needs surfing) or "block"
@@ -820,6 +829,128 @@ pub struct Terrain {
     /// other ground nothing)
     #[serde(skip_serializing_if = "Growth::is_empty")]
     pub growth: Growth,
+}
+
+/// How terrains are drawn (`Terrain::pattern`), each with the name its group goes by: the
+/// engine's own patterns, then a look of a terrain's own.
+pub const PATTERNS: [(&str, &str); 9] = [
+    ("grass", "Grass"),
+    ("meadow", "Meadow"),
+    ("tall", "Tall grass"),
+    ("dirt", "Dirt"),
+    ("sand", "Sand"),
+    ("stones", "Stones"),
+    ("rock", "Rock"),
+    ("water", "Water"),
+    ("custom", "Its own look"),
+];
+
+impl Terrain {
+    /// The group it's listed in: its own category, else its pattern's name (a look of its own:
+    /// its name).
+    pub fn category_name(&self) -> String {
+        if !self.category.is_empty() {
+            return self.category.clone();
+        }
+        match PATTERNS.iter().find(|(id, _)| *id == self.pattern) {
+            Some((id, _)) if *id == "custom" => self.name.clone(),
+            Some((_, name)) => name.to_string(),
+            None => self.pattern.clone(),
+        }
+    }
+}
+
+/// A terrain's look of its own (`pattern` "custom"): its two colours (`color`, `color2`) in
+/// blotches so big, so sharp, so much of the second, a grain of small specks; maybe glowing
+/// (lava, magic), drifting along `angle` and pulsing; how glossy it is (wet, icy); and up to
+/// `Look::LAYERS` layers over it in order (`Layer`): stones, cracks, dots, veins...
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Look {
+    /// how big its blotches are (cells), how sharp their edges (0 soft, 1 sharp), how much of
+    /// it is its second colour (0 none, 1 all)
+    #[serde(skip_serializing_if = "look_scale")]
+    pub scale: f64,
+    #[serde(skip_serializing_if = "look_sharpness")]
+    pub sharpness: f64,
+    #[serde(skip_serializing_if = "look_balance")]
+    pub balance: f64,
+    /// how much its small specks vary in brightness (0 none, 1 much)
+    #[serde(skip_serializing_if = "look_grain")]
+    pub grain: f64,
+    /// how glossy it is (0 matte, 1 wet or glassy: it catches the sun)
+    #[serde(skip_serializing_if = "is_default")]
+    pub shine: f64,
+    /// how much it glows of itself, its colours lit by nothing (0 none, up to 4: molten), how
+    /// fast its glow pulses (0 steady, up to 2), and how fast it drifts along `angle` (cells a
+    /// second, up to 2: flowing)
+    #[serde(skip_serializing_if = "is_default")]
+    pub glow: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub pulse: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub flow: f64,
+    /// the way it drifts (degrees, clockwise from east seen from above)
+    #[serde(skip_serializing_if = "is_default")]
+    pub angle: f64,
+    /// its layers, the first drawn first
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub layers: Vec<Layer>,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Look { scale: 3.0, sharpness: 0.3, balance: 0.5, grain: 0.2, shine: 0.0, glow: 0.0, pulse: 0.0, flow: 0.0, angle: 0.0, layers: vec![] }
+    }
+}
+
+impl Look {
+    /// As every look starts: nothing of its own (left out of the record).
+    pub fn is_plain(&self) -> bool {
+        *self == Look::default()
+    }
+
+    /// The most layers a look has (more are left out).
+    pub const LAYERS: usize = 4;
+}
+
+/// What a look's layer is: blotches of its colour, stones (cobbles, plates, crusts: cells
+/// with gaps between them), cracks (a net of thin lines), dots (pebbles, leaves, sparks,
+/// crystals), streaks (long marks along `angle`), veins (thin wavering lines), ripples (waves
+/// across `angle`, as on dunes).
+pub const LAYER_SHAPES: [&str; 7] = ["patches", "stones", "cracks", "dots", "streaks", "veins", "ripples"];
+
+/// A layer of a look (`Look::layers`): its shape, its colour, how big what it's made of is
+/// (cells), how much of the ground it covers (0 to 1), how soft its edges (0 crisp, 1 soft),
+/// how much it glows of itself (up to 4), how fast that pulses and how fast it drifts along
+/// `angle`, and its relief (sunken below 0, raised above, up to 1 either way: for the light).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Layer {
+    pub shape: String,
+    pub color: String,
+    #[serde(skip_serializing_if = "layer_scale")]
+    pub scale: f64,
+    #[serde(skip_serializing_if = "layer_amount")]
+    pub amount: f64,
+    #[serde(skip_serializing_if = "layer_softness")]
+    pub softness: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub glow: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub pulse: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub flow: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub angle: f64,
+    #[serde(skip_serializing_if = "is_default")]
+    pub relief: f64,
+}
+
+impl Default for Layer {
+    fn default() -> Self {
+        Layer { shape: "patches".into(), color: "#808080".into(), scale: 1.0, amount: 0.3, softness: 0.3, glow: 0.0, pulse: 0.0, flow: 0.0, angle: 0.0, relief: 0.0 }
+    }
 }
 
 /// What grows through a terrain's cells. On tall ground, in place of the engine's own tufts:
@@ -991,6 +1122,10 @@ pub struct Plant {
     /// in them)
     #[serde(skip_serializing_if = "is_default")]
     pub clusters: f64,
+    /// how much it glows of itself, lit by nothing (0 none, up to 4): a flower its petals and
+    /// heart, a blade towards its tip
+    #[serde(skip_serializing_if = "is_default")]
+    pub glow: f64,
 }
 
 impl Default for Plant {
@@ -1013,6 +1148,7 @@ impl Default for Plant {
             heart: "#e8b923".into(),
             bloom: 0.08,
             clusters: 0.0,
+            glow: 0.0,
         }
     }
 }

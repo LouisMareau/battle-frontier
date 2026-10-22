@@ -17,7 +17,7 @@ use world::mesh::{grown_cost, GROWN_HEAVIEST, GROWN_MOST};
 
 use super::stream::{grass_version, grass_weight};
 
-use super::{hint, mark, section, warn, MapEditor};
+use super::{fieldset, fold_section, form, hint, mark, section, warn, MapEditor};
 
 /// The props that can grow through tall ground: the grass ones, by name.
 fn grass_props(content: &content::Content) -> Vec<(String, String)> {
@@ -80,100 +80,119 @@ impl MapEditor {
         }
     }
 
-    /// The Ground tool's "Grows here", under the terrains, for the one picked to paint (any but
-    /// water): its meadow, and on tall ground the grass props grown through it in place of the
-    /// engine's own tufts, and how.
+    /// The Ground tool's "Grows here", a section that folds under the terrains, for the one
+    /// picked to paint (nothing in water): its meadow, and on tall ground the grass props grown
+    /// through it in place of the engine's own tufts (a box, each ticked with how often it's
+    /// picked) and how they grow (a box).
     pub(super) fn growth_section(&mut self, ui: &mut egui::Ui) {
-        let Some(t) = self.content.terrains.get(&self.terrain).filter(|t| t.walk != "water" && t.pattern != "water").cloned() else { return };
-        section(ui, "Grows here");
+        let Some(t) = self.content.terrains.get(&self.terrain).cloned() else { return };
+        if !fold_section(ui, "Grows here") {
+            return;
+        }
+        if t.walk == "water" || t.pattern == "water" {
+            hint(ui, "Nothing grows in water.");
+            return;
+        }
         self.meadow_section(ui, &t);
         // (the meadow may have changed it)
         let Some(t) = self.content.terrains.get(&self.terrain).filter(|t| t.pattern == "tall").cloned() else { return };
-        ui.add_space(6.0);
-        ui.label(egui::RichText::new("Grass props").strong());
         let props = grass_props(&self.content);
         if props.is_empty() {
-            hint(ui, &format!("{} grows the engine's own tufts (unless its meadow grows). A prop in the grass category (the asset browser) can grow through it instead.", t.name));
+            fieldset(ui, "Grass props", |ui| hint(ui, &format!("{} grows the engine's own tufts (unless its meadow grows). A prop in the grass category (the asset browser) can grow through it instead.", t.name)));
             return;
         }
         let mut g = t.growth.clone();
         let was_empty = !g.grows_props();
-        for (id, name) in &props {
-            ui.horizontal(|ui| {
-                let mut on = g.props.iter().any(|p| &p.prop == id);
-                let r = ui.checkbox(&mut on, name.as_str()).on_hover_text("Grows through it (any ticked: the engine's own blades no longer)");
-                mark(&format!("uiGrows_{id}"), &r);
-                if r.changed() {
-                    tick(&mut g.props, id, on);
-                }
-                if let Some(p) = g.props.iter_mut().find(|p| &p.prop == id) {
-                    let w = ui.add(egui::DragValue::new(&mut p.weight).range(0.05..=20.0).speed(0.05).prefix("× ")).on_hover_text("How often it's picked, against the others ticked");
-                    mark(&format!("uiGrowsWeight_{id}"), &w);
-                }
-            });
-        }
+        fieldset(ui, "Grass props", |ui| {
+            for (id, name) in &props {
+                ui.horizontal(|ui| {
+                    let mut on = g.props.iter().any(|p| &p.prop == id);
+                    let r = ui.checkbox(&mut on, name.as_str()).on_hover_text("Grows through it (any ticked: the engine's own blades no longer)");
+                    mark(&format!("uiGrows_{id}"), &r);
+                    if r.changed() {
+                        tick(&mut g.props, id, on);
+                    }
+                    if let Some(p) = g.props.iter_mut().find(|p| &p.prop == id) {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let w = ui.add(egui::DragValue::new(&mut p.weight).range(0.05..=20.0).speed(0.05).prefix("× ")).on_hover_text("How often it's picked, against the others ticked");
+                            mark(&format!("uiGrowsWeight_{id}"), &w);
+                        });
+                    }
+                });
+            }
+            if !g.grows_props() {
+                hint(ui, if g.meadow.is_empty() { "None ticked: the engine's own tufts." } else { "None ticked: its meadow alone." });
+            }
+        });
         // the first ticked made to fill its cells (a grass request's): tiled, as it's made to be
         if was_empty && g.grows_props() {
             g.tiled = self.fills_its_cells(&g.props[0].prop);
         }
-        if !g.grows_props() {
-            hint(ui, if g.meadow.is_empty() { "None ticked: the engine's own tufts." } else { "None ticked: its meadow alone." });
-        } else {
-            ui.horizontal(|ui| {
-                let tiled = ui.radio_value(&mut g.tiled, true, "Tiled").on_hover_text("Each whole over its cells, lined up with them, so copies side by side join: grass made to fill its cells (a grass request's)");
-                mark("uiGrowthTiled", &tiled);
-                let scattered = ui.radio_value(&mut g.tiled, false, "Scattered").on_hover_text("So many to a cell, anywhere on it, each sized its own way: small tufts");
-                mark("uiGrowthScattered", &scattered);
-            });
-            if !g.tiled {
-                let d = ui.add(egui::Slider::new(&mut g.density, 0.0..=Growth::MOST).step_by(0.5).text("to a cell")).on_hover_text("How many grow on each cell, on average");
-                mark("uiGrowthDensity", &d);
+        if g.grows_props() {
+            fieldset(ui, "How they grow", |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Sizes");
-                    let lo = ui.add(egui::DragValue::new(&mut g.scale[0]).range(0.1..=4.0).speed(0.01).prefix("× ")).on_hover_text("The smallest, against its prop as made");
-                    mark("uiGrowthSmallest", &lo);
-                    ui.label("to");
-                    let hi = ui.add(egui::DragValue::new(&mut g.scale[1]).range(0.1..=4.0).speed(0.01).prefix("× ")).on_hover_text("The biggest");
-                    mark("uiGrowthBiggest", &hi);
-                    if g.scale[0] > g.scale[1] {
-                        g.scale.swap(0, 1);
-                    }
+                    let tiled = ui.radio_value(&mut g.tiled, true, "Tiled").on_hover_text("Each whole over its cells, lined up with them, so copies side by side join: grass made to fill its cells (a grass request's)");
+                    mark("uiGrowthTiled", &tiled);
+                    let scattered = ui.radio_value(&mut g.tiled, false, "Scattered").on_hover_text("So many to a cell, anywhere on it, each sized its own way: small tufts");
+                    mark("uiGrowthScattered", &scattered);
                 });
-                let patchy = ui.add(egui::Slider::new(&mut g.patchy, 0.0..=1.0).text("patches")).on_hover_text("How much it thins out in patches a few cells across (0: as thick everywhere, 1: bare in places)");
-                mark("uiGrowthPatchy", &patchy);
-            }
-            let turn = ui.checkbox(&mut g.turn, "Each turned its own way").on_hover_text(if g.tiled { "By quarter turns (half turns when it's longer than wide), so it still lies over its cells" } else { "Any way round" });
-            mark("uiGrowthTurn", &turn);
-            // what it costs, the vertices a cell: up close (as made) and far off (at its
-            // thinnest), the props light enough to grow, as picked
-            let costs: Vec<(&Grower, usize)> = g.props.iter().map(|p| (p, self.grown_cost(&g, &p.prop))).collect();
-            let light: Vec<&(&Grower, usize)> = costs.iter().filter(|(_, c)| *c <= GROWN_MOST).collect();
-            let total: f64 = light.iter().map(|(p, _)| p.weight.max(0.0)).sum();
-            let share = |p: &Grower| p.weight.max(0.0) / total.max(1e-9);
-            let far: f64 = light.iter().map(|(p, c)| share(p) * *c as f64).sum();
-            let near: f64 = light.iter().map(|(p, _)| share(p) * self.near_cost(&g, &p.prop) as f64).sum();
-            if !light.is_empty() {
-                hint(ui, &format!("About {} vertices a cell up close, {} far off (drawn thinner the further off)", grouped(near.round() as usize), grouped(far.round() as usize)));
-            }
-            // too heavy to grow: said, with what they weigh (the blades grow in their place)
-            let heavy: Vec<String> = costs
-                .iter()
-                .filter(|(_, c)| *c > GROWN_MOST)
-                .map(|(p, c)| {
-                    let name = self.content.props.get(&p.prop).map(|q| q.name.as_str()).unwrap_or(&p.prop);
-                    if *c == usize::MAX { format!("{name} (more than {} a cell as made)", grouped(GROWN_HEAVIEST)) } else { format!("{name} ({} a cell at its thinnest)", grouped(*c)) }
-                })
-                .collect();
-            if !heavy.is_empty() {
-                let instead = if light.is_empty() { "the engine's blades grow instead" } else { "the others grow without them" };
-                warn(ui, &format!(
-                    "Too heavy to grow: {}; {instead}. Grass is drawn thinner further off by leaving out whole pieces (a blade, a leaf): at its thinnest at most {} vertices a cell, at most {} as made. Make it again in pieces (Model Requests).",
-                    heavy.join(", "),
-                    grouped(GROWN_MOST),
-                    grouped(GROWN_HEAVIEST)
-                ));
-            }
-            crate::platform::set_hook("growthheavy", &heavy.len().to_string());
+                if !g.tiled {
+                    form(ui, "grass props' growing", |ui| {
+                        ui.label("To a cell");
+                        let d = ui.add(egui::Slider::new(&mut g.density, 0.0..=Growth::MOST).step_by(0.5)).on_hover_text("How many grow on each cell, on average");
+                        mark("uiGrowthDensity", &d);
+                        ui.end_row();
+                        ui.label("Sizes");
+                        ui.horizontal(|ui| {
+                            let lo = ui.add(egui::DragValue::new(&mut g.scale[0]).range(0.1..=4.0).speed(0.01).prefix("× ")).on_hover_text("The smallest, against its prop as made");
+                            mark("uiGrowthSmallest", &lo);
+                            ui.label("to");
+                            let hi = ui.add(egui::DragValue::new(&mut g.scale[1]).range(0.1..=4.0).speed(0.01).prefix("× ")).on_hover_text("The biggest");
+                            mark("uiGrowthBiggest", &hi);
+                            if g.scale[0] > g.scale[1] {
+                                g.scale.swap(0, 1);
+                            }
+                        });
+                        ui.end_row();
+                        ui.label("Patches");
+                        let patchy = ui.add(egui::Slider::new(&mut g.patchy, 0.0..=1.0)).on_hover_text("How much it thins out in patches a few cells across (0: as thick everywhere, 1: bare in places)");
+                        mark("uiGrowthPatchy", &patchy);
+                        ui.end_row();
+                    });
+                }
+                let turn = ui.checkbox(&mut g.turn, "Each turned its own way").on_hover_text(if g.tiled { "By quarter turns (half turns when it's longer than wide), so it still lies over its cells" } else { "Any way round" });
+                mark("uiGrowthTurn", &turn);
+                // what it costs, the vertices a cell: up close (as made) and far off (at its
+                // thinnest), the props light enough to grow, as picked
+                let costs: Vec<(&Grower, usize)> = g.props.iter().map(|p| (p, self.grown_cost(&g, &p.prop))).collect();
+                let light: Vec<&(&Grower, usize)> = costs.iter().filter(|(_, c)| *c <= GROWN_MOST).collect();
+                let total: f64 = light.iter().map(|(p, _)| p.weight.max(0.0)).sum();
+                let share = |p: &Grower| p.weight.max(0.0) / total.max(1e-9);
+                let far: f64 = light.iter().map(|(p, c)| share(p) * *c as f64).sum();
+                let near: f64 = light.iter().map(|(p, _)| share(p) * self.near_cost(&g, &p.prop) as f64).sum();
+                if !light.is_empty() {
+                    hint(ui, &format!("About {} vertices a cell up close, {} far off (drawn thinner the further off)", grouped(near.round() as usize), grouped(far.round() as usize)));
+                }
+                // too heavy to grow: said, with what they weigh (the blades grow in their place)
+                let heavy: Vec<String> = costs
+                    .iter()
+                    .filter(|(_, c)| *c > GROWN_MOST)
+                    .map(|(p, c)| {
+                        let name = self.content.props.get(&p.prop).map(|q| q.name.as_str()).unwrap_or(&p.prop);
+                        if *c == usize::MAX { format!("{name} (more than {} a cell as made)", grouped(GROWN_HEAVIEST)) } else { format!("{name} ({} a cell at its thinnest)", grouped(*c)) }
+                    })
+                    .collect();
+                if !heavy.is_empty() {
+                    let instead = if light.is_empty() { "the engine's blades grow instead" } else { "the others grow without them" };
+                    warn(ui, &format!(
+                        "Too heavy to grow: {}; {instead}. Grass is drawn thinner further off by leaving out whole pieces (a blade, a leaf): at its thinnest at most {} vertices a cell, at most {} as made. Make it again in pieces (Model Requests).",
+                        heavy.join(", "),
+                        grouped(GROWN_MOST),
+                        grouped(GROWN_HEAVIEST)
+                    ));
+                }
+                crate::platform::set_hook("growthheavy", &heavy.len().to_string());
+            });
         }
         if g != t.growth {
             self.change_terrain(&t.id, move |t| t.growth = g);

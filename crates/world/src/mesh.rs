@@ -481,6 +481,7 @@ pub fn pattern_id(pattern: &str) -> u8 {
         "stones" => 6,
         "rock" => 7,
         "water" => 8,
+        "custom" => 9,
         _ => 0,
     }
 }
@@ -599,11 +600,54 @@ pub fn cell_texel(map: &WorldMap, x: i32, z: i32) -> Option<usize> {
     map.index(x, z).map(|_| ((z + 1) * (map.width as i32 + 2) + x + 1) as usize)
 }
 
+/// The palette's rows (`palette`): a terrain's four, then its look's three and each of its
+/// layers' three.
+pub const PALETTE_ROWS: usize = 7 + 3 * content::Look::LAYERS;
+
+/// 0 to 255 for where `v` is from `lo` to `hi`.
+fn unorm(v: f64, lo: f64, hi: f64) -> u8 {
+    (((v - lo) / (hi - lo)).clamp(0.0, 1.0) * 255.0).round() as u8
+}
+
+/// A size (cells, 1/64 to 32) on a scale of twos, 0 to 255 (the shader's `exp2(v * 11 - 6)`).
+fn size_byte(v: f64) -> u8 {
+    unorm(v.max(1e-3).log2(), -6.0, 5.0)
+}
+
+/// An angle (degrees), 0 to 255 for once round.
+fn angle_byte(a: f64) -> u8 {
+    ((a.rem_euclid(360.0) / 360.0 * 256.0).floor() as i32).clamp(0, 255) as u8
+}
+
+/// A look's rows in the palette (`PALETTE_ROWS` less the terrain's own four): [its blotches'
+/// size, sharpness, its second colour's share, grain], [shine, glow / 4, pulse / 2, flow / 2],
+/// [its drift's angle, its layers, 0, 0]; then each layer's [colour (sRGB), glow / 4], [shape
+/// (`LAYER_SHAPES`' place, from 1), size, amount, softness], [pulse / 2, flow / 2, relief from
+/// -1 to 1, angle]; none past its layers.
+fn look_rows(l: &content::Look) -> Vec<[u8; 4]> {
+    let layers = &l.layers[..l.layers.len().min(content::Look::LAYERS)];
+    let mut out = vec![
+        [size_byte(l.scale), unorm(l.sharpness, 0.0, 1.0), unorm(l.balance, 0.0, 1.0), unorm(l.grain, 0.0, 1.0)],
+        [unorm(l.shine, 0.0, 1.0), unorm(l.glow, 0.0, 4.0), unorm(l.pulse, 0.0, 2.0), unorm(l.flow, 0.0, 2.0)],
+        [angle_byte(l.angle), layers.len() as u8, 0, 0],
+    ];
+    for y in layers {
+        let [r, g, b, _] = hex_bytes(&y.color);
+        let shape = content::LAYER_SHAPES.iter().position(|s| *s == y.shape).map(|k| k as u8 + 1).unwrap_or(0);
+        out.push([r, g, b, unorm(y.glow, 0.0, 4.0)]);
+        out.push([shape, size_byte(y.scale), unorm(y.amount, 0.0, 1.0), unorm(y.softness, 0.0, 1.0)]);
+        out.push([unorm(y.pulse, 0.0, 2.0), unorm(y.flow, 0.0, 2.0), unorm(y.relief, -1.0, 1.0), angle_byte(y.angle)]);
+    }
+    out.resize(PALETTE_ROWS - 4, [0; 4]);
+    out
+}
+
 /// Every terrain of the content, a column each, then one for a terrain it hasn't got
-/// (magenta), in 4 rows: colour, second colour (sRGB), [pattern, priority + 128, water (0
-/// none, 1 inland, 2 oceanic: `water_code`), beach (255) or not (0)], the cliff side's colour.
+/// (magenta), in `PALETTE_ROWS` rows: colour, second colour (sRGB), [pattern, priority + 128,
+/// water (0 none, 1 inland, 2 oceanic: `water_code`), beach (255) or not (0)], the cliff
+/// side's colour, then a look of its own (`look_rows`; nothing for the engine's patterns).
 pub fn palette(content: &Content) -> (Vec<u8>, u32) {
-    let mut rows: [Vec<u8>; 4] = [vec![], vec![], vec![], vec![]];
+    let mut rows: Vec<Vec<u8>> = vec![vec![]; PALETTE_ROWS];
     let all: Vec<Option<&content::Terrain>> = content.terrains.iter().map(Some).chain(std::iter::once(None)).collect();
     for t in &all {
         let (c1, c2, params, side) = match t {
@@ -615,10 +659,13 @@ pub fn palette(content: &Content) -> (Vec<u8>, u32) {
             ),
             None => ([255, 0, 255, 255], [128, 0, 128, 255], [0, 128, 0, 0], hex_bytes(SIDE)),
         };
-        rows[0].extend_from_slice(&c1);
-        rows[1].extend_from_slice(&c2);
-        rows[2].extend_from_slice(&params);
-        rows[3].extend_from_slice(&side);
+        let look = match t {
+            Some(t) if t.pattern == "custom" => look_rows(&t.look),
+            _ => vec![[0; 4]; PALETTE_ROWS - 4],
+        };
+        for (row, texel) in rows.iter_mut().zip([c1, c2, params, side].into_iter().chain(look)) {
+            row.extend_from_slice(&texel);
+        }
     }
     (rows.concat(), all.len() as u32)
 }
@@ -1959,6 +2006,42 @@ mod wind_tests {
         assert_eq!((row2(at("sand"))[2], row2(at("sand"))[3]), (0, 255), "sand: a beach");
         assert_eq!(row2(at("water"))[2], 1, "water drawn as water: inland");
         assert_eq!(row2(at("sea"))[2], 2, "the sea: oceanic");
+    }
+
+    /// A terrain of its own look in the palette (`look_rows`): its base, its layers (as many as
+    /// it has, their shapes, sizes on a scale of twos, glow, relief, angle); the engine's
+    /// patterns none of it.
+    #[test]
+    fn the_palette_holds_a_look_of_its_own() {
+        let mut content = Content::default();
+        let look = content::Look {
+            scale: 4.0,
+            glow: 2.0,
+            angle: 90.0,
+            layers: vec![
+                content::Layer { shape: "cracks".into(), color: "#ff8000".into(), scale: 0.5, amount: 1.0, glow: 4.0, relief: -1.0, ..Default::default() },
+                content::Layer { shape: "dots".into(), color: "#000000".into(), scale: 2.0, angle: 180.0, ..Default::default() },
+            ],
+            ..Default::default()
+        };
+        content.terrains.put(content::Terrain { id: "grass".into(), pattern: "grass".into(), color: "#808080".into(), ..Default::default() }, content::Space::Content);
+        content.terrains.put(content::Terrain { id: "lava".into(), pattern: "custom".into(), color: "#ff4000".into(), look, ..Default::default() }, content::Space::Content);
+        let (palette, width) = palette(&content);
+        assert_eq!(palette.len(), PALETTE_ROWS * width as usize * 4, "{PALETTE_ROWS} rows");
+        let texel = |row: usize, t: usize| &palette[(row * width as usize + t) * 4..(row * width as usize + t) * 4 + 4];
+        let (grass, lava) = (terrain_index(&content, "grass") as usize, terrain_index(&content, "lava") as usize);
+        assert_eq!(texel(2, lava)[0], 9, "drawn by its look");
+        assert!((4..PALETTE_ROWS).all(|row| texel(row, grass) == [0; 4]), "the engine's pattern: none of it");
+        // its base: size 4 cells (2 on a scale of twos from -6 to 5), its glow, its way a quarter round
+        let size = |b: u8| 2f64.powf(b as f64 / 255.0 * 11.0 - 6.0);
+        assert!((size(texel(4, lava)[0]) - 4.0).abs() < 0.2, "{}", size(texel(4, lava)[0]));
+        assert_eq!((texel(5, lava)[1], texel(6, lava)[0], texel(6, lava)[1]), (128, 64, 2), "glow 2 of 4, 90 degrees, two layers");
+        // its layers: cracks then dots, their sizes, glow and relief
+        assert_eq!((texel(7, lava), texel(8, lava)[0], texel(8, lava)[2]), (&[255, 128, 0, 255][..], 3, 255), "cracks: orange, glowing all it can, as wide as they go");
+        assert!((size(texel(8, lava)[1]) - 0.5).abs() < 0.03 && texel(9, lava)[2] == 0, "half a cell, sunk all it can");
+        assert_eq!((texel(11, lava)[0], texel(12, lava)[3]), (4, 128), "dots, half way round");
+        assert!((size(texel(11, lava)[1]) - 2.0).abs() < 0.1);
+        assert!((13..PALETTE_ROWS).all(|row| texel(row, lava) == [0; 4]), "none past its layers");
     }
 }
 

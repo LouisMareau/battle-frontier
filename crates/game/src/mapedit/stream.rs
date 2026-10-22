@@ -38,8 +38,8 @@ const BUDGET_MS: f64 = 6.0;
 #[derive(Default)]
 pub(super) struct GpuState {
     /// what the ground's texture and palette were sent for: the map, its width, height and
-    /// terrains
-    pub(super) ground: Option<(String, usize, usize, Vec<String>)>,
+    /// terrains, the palette's digest (a terrain's colours or look changed: sent again)
+    pub(super) ground: Option<(String, usize, usize, Vec<String>, u64)>,
     /// the squares each layer holds on the GPU
     built: BTreeMap<&'static str, BTreeSet<(i32, i32)>>,
     /// per layer and square, a digest of what it's made from
@@ -76,6 +76,9 @@ pub(super) struct GpuState {
     ramp_ground_changed: bool,
     /// what the grass props grown through tall ground were last built from (`growth_digest`)
     lit_growth: u64,
+    /// what the terrains were when the ground was last built (`terrains_digest`: how each is
+    /// drawn and walked; every square's ground holds it)
+    lit_terrains: u64,
     /// the props layer's vertices, by square (a hook for the checks: it grows when a model
     /// comes late)
     props_vertices: BTreeMap<(i32, i32), usize>,
@@ -300,7 +303,7 @@ fn growth_digest(content: &content::Content, versions: &HashMap<String, u64>) ->
 
 /// Every meadow's kinds of blade and flower as the renderer has them (`world::meadow::Kinds`,
 /// in its order): their shapes, heights, widths, how they lean and curve and sway, their
-/// colours (their terrain's where they have none), whether they're toon.
+/// colours (their terrain's where they have none), whether they're toon, how much they glow.
 pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
     world::meadow::Kinds::of(content)
         .list
@@ -315,10 +318,27 @@ pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
                 foot: [foot[0], foot[1], foot[2], p.petals as f32],
                 tip: [tip[0], tip[1], tip[2], if t.growth.meadow.toon { 1.0 } else { 0.0 }],
                 petal: [petal[0], petal[1], petal[2], 0.0],
-                heart: [heart[0], heart[1], heart[2], 0.0],
+                heart: [heart[0], heart[1], heart[2], p.glow as f32],
             }
         })
         .collect()
+}
+
+/// What the ground's squares are built from in the terrains' records: how each is drawn and
+/// walked (water lies flat, tall ground grows its tufts), its water.
+fn terrains_digest(content: &content::Content) -> u64 {
+    let mut h = Quick::default();
+    for t in content.terrains.iter() {
+        (&t.id, &t.pattern, &t.walk, &t.water).hash(&mut h);
+    }
+    h.finish()
+}
+
+/// The palette's digest (`mesh::palette`: every terrain's colours and look).
+fn palette_digest(content: &content::Content) -> u64 {
+    let mut h = Quick::default();
+    mesh::palette(content).0.hash(&mut h);
+    h.finish()
 }
 
 /// A building's digest: its record and the records of the props it's made of.
@@ -452,6 +472,8 @@ impl Feed<'_> {
             if grows {
                 gpu.lit_growth.hash(&mut h);
             }
+            // (and every square when a terrain is drawn or walked otherwise)
+            gpu.lit_terrains.hash(&mut h);
             gpu.ground_cells.insert(s, h.finish());
         }
         // the ramps on it and round it (their walls come down onto the ground across), and
@@ -683,7 +705,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
     let edges = f.gpu.around != f.around_version;
     // what each step of a change costs (the `streamcost` hook: how big maps hold up)
     let mut tick = crate::platform::now_ms();
-    let key = (f.id.to_string(), w, h, f.map.terrains.clone());
+    let key = (f.id.to_string(), w, h, f.map.terrains.clone(), palette_digest(f.content));
     let focus = f.focus.unwrap_or(&[]).to_vec();
     let whole = f.gpu.ground.as_ref() != Some(&key);
     if f.gpu.ground.as_ref().map(|g| (g.0.as_str(), g.1, g.2) != (f.id, w, h)).unwrap_or(true) {
@@ -698,12 +720,15 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
     // they grow on are built again)
     let growth = growth_digest(f.content, f.model_versions);
     let grew = std::mem::replace(&mut f.gpu.lit_growth, growth) != growth;
-    if grew {
+    // a terrain drawn or walked otherwise (the Terrain window): every square's ground again
+    let terrains = terrains_digest(f.content);
+    let redrawn = std::mem::replace(&mut f.gpu.lit_terrains, terrains) != terrains;
+    if grew || redrawn {
         f.gpu.ground_due.extend(squares_of(f.map));
     }
     // the ground's squares again (props too can change the ground: what lies along a ramp
     // makes it straight); what changed in the cells looked for once, for them and the texture
-    let ground = need.ground || edges || (need.props && !f.map.ramps.is_empty()) || grew;
+    let ground = need.ground || edges || (need.props && !f.map.ramps.is_empty()) || grew || redrawn;
     if whole || need.cells || edges || ground {
         f.cells_changed();
         tick = cost("cellschanged", tick);

@@ -98,6 +98,7 @@ node tools/hudcheck.mjs                # the overworld's HUD: its groups, Esc, t
 node tools/watercheck.mjs              # the wind and the water: inland foam on the shore the wind blows to, the sea rougher onshore than offshore, the tall grass and trees swaying (still when calm), a leaf made two-sided fluttering as one (its back never through its top), the clouds' shadows drifting the wind's way, changing shape, unbroken across a cliff, the Post-processing window's Wind
 node tools/layoutcheck.mjs             # the editor's panels: as they first come, floated and docked again, closed and opened, pinged, the toggles' names folded, all kept after a reload; what's selected (props, the buildings, the map) fitting the Inspector
 node tools/assetcheck.mjs              # the asset browser: folders, a row dragged, a .glb dropped in, unstackable, saves; the Requests button greyed out with no Claude sign-in
+node tools/terraincheck.mjs            # terrains of their own: Tall grass duplicated (its group of two), the Terrain window, a new kind from the Volcanic rock preset painted (a right-click on it picks it), the brush pinned at the Toolbox's foot; a map in bands of looks of their own at noon and at night, what glows (cracks, veins, lava) shining at night where the grass is dark
 node tools/relaycheck.mjs              # the site's relay to Anthropic (functions/claude/), as Cloudflare runs it: only the requests' calls go on, only from the site's pages, only the API's headers (the user's key, no cookie), the answer streamed back as it is (CI runs it)
 node tools/requestcheck.mjs            # a model request in the browser against a stand-in for Anthropic: the Claude sign-in's key (a wrong one turned away, the right one kept), a picture dropped, Start in the cloud (the agent and its sandbox made once, the files mounted, the commands sent, the events followed into the bar and the console), its outputs back as a prop, kept after a reload
 python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; the user's bones; the user's own sign-in (a subscription before an API key in the environment)
@@ -216,7 +217,30 @@ maps).
 - **Terrains** are painted per cell; the border between two is drawn by the ground shader
   (the four nearest cells vote with noise and priority), so edges come out organic and
   corners round without border tiles. Patterns (grass, meadow, tall grass, dirt, sand,
-  cobbles, rock, water) are procedural for now. Raised cells get cliff faces of rock (layered
+  cobbles, rock, water) are procedural; a terrain can also have a look of its own (`pattern`
+  "custom", `look`): its two colours in blotches (`scale`, `sharpness`, `balance`, `grain`),
+  how glossy (`shine`), what of it glows of itself (`glow`, lit by nothing: at night as by
+  day), pulsing (`pulse`) and drifting (`flow` along `angle`), and up to four `layers` over
+  it, each `patches`, `stones`, `cracks`, `dots`, `streaks`, `veins` or `ripples` of its
+  `color`, its `scale`, `amount` and `softness`, its own glow, pulse and drift, and its
+  `relief` (sunken or raised: the light falls on it so). The palette carries a terrain's look
+  (`world::mesh::palette`, 19 rows) and the ground shader draws it (`own_look`), the glow
+  after the light, the relief tilting it. The Ground tool lists the terrains by kind
+  (`category`, else the pattern's name; a look of its own, its name), a group folding where
+  two or more share one (in its first one's colour, its variants under it), each terrain a
+  row as wide as the panel with two icons at its right end: **Duplicate** makes a variant of
+  it (the same ground growing something else) and **Edit** (or a double-click) opens the
+  Terrain window: its name, group and how it's walked, its colours, cliffs, reach and how
+  it's drawn, each a box with its title set in its edge, and its look (its base, its glow,
+  and its layers, each a card that folds), showing on the map as it changes; under what
+  scrolls, Close, and Delete for one no map uses. The **+** by the Terrain section's title
+  makes a new kind, a terrain of its own look from a preset (volcanic rock, a lava lake,
+  arcane moss with its glowing meadow, a crystal field, snow, ice, a swamp, autumn leaves,
+  dunes, ash, mossy flagstones, glowing moss). The panel's sections fold (Terrain folded
+  still shows the one picked, under its group's name); under **Terrain details**, Grows
+  here's plants are cards whose headers line up (colour and name, how often and ✕), their
+  settings in boxes; the Paint tab's brush is pinned at the Toolbox's foot. Raised cells get
+  cliff faces of rock (layered
   slabs, cracks, lumps; in the terrain's side colour), every edge bevelled: the top edge
   goes down, the ground at the foot comes up into it (not water), and an outer corner
   standing on one level all round is cut off down its height. Tall grass is tufts of the
@@ -261,7 +285,8 @@ maps).
   `petals` round its heart) or a `model` (a grass prop's: one blade or a few, a flower), with
   its `weight`, its `height` (or a model's `scale`), `width`, `lean`, `bend`, `sway`, its
   colours at its foot and tip (its terrain's where it has none), a flower's `petal`, `heart`
-  and `bloom`, and `clusters` (how much it keeps to clusters of its own a few cells across);
+  and `bloom`, `clusters` (how much it keeps to clusters of its own a few cells across) and
+  `glow` (how much it glows of itself: a flower its petals and heart, a blade its tip);
   and how it grows: `density` (how many to a cell, up to 128), `patchy`, `clump` and
   `clumping` (clumps of a Voronoi pattern whose blades are alike: as tall, leaning out from
   their middle), `toon` (lit in the toon look's steps, else as the ground). Each blade is

@@ -524,6 +524,197 @@ fn terrain_color(t: i32, p: vec2<f32>, inside: f32) -> vec3<f32> {
     return c;
 }
 
+// ---------------------------------------------------------------- a look of a terrain's own
+
+// a terrain at a point as drawn (`terrain_shade`): its colour, what glows of it, how much
+// higher it stands, how glossy it is
+struct Shade {
+    col: vec3<f32>,
+    glow: vec3<f32>,
+    height: f32,
+    shine: f32,
+};
+
+// a size from the palette (`world::mesh::size_byte`): cells, 1/64 to 32
+fn size_of(v: f32) -> f32 {
+    return exp2(v * 11.0 - 6.0);
+}
+
+// the way an angle from the palette points (a turn from 0 to 1, clockwise from east seen from
+// above: x east, z south)
+fn way_of(turn: f32) -> vec2<f32> {
+    return vec2<f32>(cos(turn * TAU), sin(turn * TAU));
+}
+
+// a point as seen along that way: how far along it, and across it
+fn along(p: vec2<f32>, turn: f32) -> vec2<f32> {
+    let w = way_of(turn);
+    return vec2<f32>(dot(p, w), dot(p, vec2<f32>(-w.y, w.x)));
+}
+
+// how bright a glow is just now, pulsing `speed` times a second from its own `phase` (0:
+// steady)
+fn pulsing(speed: f32, phase: f32) -> f32 {
+    if (speed <= 0.0) {
+        return 1.0;
+    }
+    return 0.65 + 0.35 * sin(g.world.w * speed * TAU + phase);
+}
+
+// the nearest two points of a Voronoi pattern (one a cell, as far off its middle as `jitter`
+// says) to q: how far each is, and the nearest's cell
+struct Near {
+    d1: f32,
+    d2: f32,
+    id: vec2<f32>,
+};
+
+fn near_points(q: vec2<f32>, jitter: f32) -> Near {
+    let base = floor(q);
+    var c: Near;
+    c.d1 = 9.0;
+    c.d2 = 9.0;
+    for (var j = -1; j <= 1; j = j + 1) {
+        for (var i = -1; i <= 1; i = i + 1) {
+            let k = base + vec2<f32>(f32(i), f32(j));
+            let o = k + 0.5 + (vec2<f32>(hash2(k + 1.7), hash2(k + 8.3)) - 0.5) * jitter;
+            let d = distance(q, o);
+            if (d < c.d1) {
+                c.d2 = c.d1;
+                c.d1 = d;
+                c.id = k;
+            } else if (d < c.d2) {
+                c.d2 = d;
+            }
+        }
+    }
+    return c;
+}
+
+// a layer's mark at a point of its own (`q`: the point over its size): how much of the layer
+// is there (0 to 1), how high it stands there, and a little of its own (0 to 1: one stone's,
+// one dot's) to vary its colour and its pulse. Its shapes as `content::LAYER_SHAPES` names
+// them, from 1.
+struct Mark {
+    m: f32,
+    h: f32,
+    own: f32,
+};
+
+fn layer_mark(shape: i32, q: vec2<f32>, amount: f32, softness: f32, turn: f32) -> Mark {
+    var k: Mark;
+    let s = max(softness, 0.02);
+    switch shape {
+        case 1: { // patches
+            k.m = smoothstep(1.0 - amount - s * 0.5, 1.0 - amount + s * 0.5, fbm(q));
+            k.h = k.m;
+            k.own = noise(q * 3.1);
+        }
+        case 2: { // stones: cells with gaps between them, covering as much as `amount` says
+            let c = near_points(q, 0.8);
+            let gap = (1.0 - amount) * 0.35;
+            k.m = smoothstep(gap, gap + 0.02 + s * 0.15, c.d2 - c.d1);
+            k.h = k.m * smoothstep(0.0, 0.3, c.d2 - c.d1);
+            k.own = hash2(c.id + 4.7);
+        }
+        case 3: { // cracks: a net of thin lines, wavering
+            let w = q + vec2<f32>(noise(q * 1.3), noise(q * 1.3 + 7.7)) * 0.6;
+            let c = near_points(w, 0.9);
+            let width = 0.02 + amount * 0.2;
+            k.m = 1.0 - smoothstep(width, width + 0.02 + s * 0.2, c.d2 - c.d1);
+            k.h = k.m;
+            k.own = hash2(c.id);
+        }
+        case 4: { // dots: round, scattered, as many as `amount` says
+            let c = near_points(q, 0.7);
+            let on = step(hash2(c.id + 2.3), amount);
+            let r = 0.22 + 0.16 * hash2(c.id + 5.9);
+            k.m = on * (1.0 - smoothstep(r - s * 0.2, r + 0.02, c.d1));
+            k.h = k.m * clamp(1.0 - c.d1 / r, 0.0, 1.0);
+            k.own = hash2(c.id + 9.1);
+        }
+        case 5: { // streaks: long marks along its way
+            let a = along(q, turn);
+            k.m = smoothstep(1.0 - amount - s * 0.5, 1.0 - amount + s * 0.5, fbm(vec2<f32>(a.x * 0.25, a.y * 2.0)));
+            k.h = k.m;
+            k.own = noise(a * 2.0);
+        }
+        case 6: { // veins: thin wavering lines, where its noise crosses its middle
+            let ridge = 1.0 - abs(fbm(q) * 2.0 - 1.0);
+            let line = 0.98 - amount * 0.16;
+            k.m = smoothstep(line - s * 0.2, line + 0.01, ridge);
+            k.h = k.m;
+            k.own = noise(q * 2.3);
+        }
+        case 7: { // ripples: waves across its way, wavering
+            let a = along(q, turn);
+            let wave = sin((a.x + fbm(q * 0.5) * 1.5) * TAU);
+            let at = 1.0 - 2.0 * amount;
+            k.m = smoothstep(at - s, at + s, wave);
+            k.h = wave * 0.5 + 0.5;
+            k.own = 0.5;
+        }
+        default: {}
+    }
+    return k;
+}
+
+// a terrain's look of its own at p (the world's grid), as its palette says
+// (`world::mesh::look_rows`): its two colours in blotches, drifting along its way, grainy,
+// maybe glowing; then each layer over it, its colour varied a little thing to thing, its glow
+// pulsing thing by thing, its relief raising or sinking it
+fn own_look(t: i32, p: vec2<f32>) -> Shade {
+    var o: Shade;
+    let base = pal(t, 4);
+    let feel = pal(t, 5);
+    let more = pal(t, 6);
+    let q = (p - way_of(more.x) * feel.w * 2.0 * g.world.w) / size_of(base.x);
+    let s = mix(0.35, 0.02, base.y);
+    var col = mix(to_linear(pal(t, 0).rgb), to_linear(pal(t, 1).rgb), smoothstep(0.5 - s, 0.5 + s, fbm(q) + base.z - 0.5));
+    col = col * (1.0 + (hash2(floor(p * 24.0)) - 0.5) * base.w * 0.6);
+    o.glow = col * feel.y * 4.0 * pulsing(feel.z * 2.0, 0.0);
+    o.shine = feel.x;
+    let layers = i32(round(more.y * 255.0));
+    for (var k = 0; k < 4; k = k + 1) {
+        if (k >= layers) {
+            break;
+        }
+        let a = pal(t, 7 + 3 * k);
+        let b = pal(t, 8 + 3 * k);
+        let c = pal(t, 9 + 3 * k);
+        let lq = (p - way_of(c.w) * c.y * 2.0 * g.world.w) / size_of(b.y) + f32(k) * 17.31;
+        let mk = layer_mark(i32(round(b.x * 255.0)), lq, b.z, b.w, c.w);
+        let lc = to_linear(a.rgb) * (0.85 + 0.3 * mk.own);
+        col = mix(col, lc, mk.m);
+        o.glow = o.glow * (1.0 - mk.m) + lc * a.w * 4.0 * mk.m * pulsing(c.x * 2.0, mk.own * TAU);
+        o.height = o.height + mk.h * (c.z * 2.0 - 1.0);
+    }
+    o.col = col;
+    return o;
+}
+
+// a terrain at p as drawn: the engine's patterns their colour (`terrain_color`), a look of its
+// own (pattern 9) with what glows of it, its relief and its shine
+fn terrain_shade(t: i32, p: vec2<f32>, inside: f32) -> Shade {
+    if (i32(round(pal(t, 2).r * 255.0)) == 9) {
+        return own_look(t, p);
+    }
+    var o: Shade;
+    o.col = terrain_color(t, p, inside);
+    return o;
+}
+
+// a normal tilted by a height's slope across the picture (`dh`: its change a pixel right and
+// a pixel down; `wx`, `wy` the world's), the surface's own way round (Mikkelsen's surface
+// gradient)
+fn bumped(n: vec3<f32>, wx: vec3<f32>, wy: vec3<f32>, dh: vec2<f32>) -> vec3<f32> {
+    let r1 = cross(wy, n);
+    let r2 = cross(n, wx);
+    let det = dot(wx, r1);
+    let grad = sign(det) * (dh.x * r1 + dh.y * r2);
+    return normalize(abs(det) * n - grad);
+}
+
 // ---------------------------------------------------------------- water
 
 // a terrain's water: 0 none, 1 inland, 2 oceanic; a beach (the water washes onto it)
@@ -567,11 +758,14 @@ fn shore_wobble(pg: vec2<f32>) -> f32 {
 }
 
 // a point of the ground as drawn: its colour, the way it faces (the water's waves tilt it),
-// how much the sun glints on it
+// how much the sun glints on it, what glows of it (a look of a terrain's own: lit by
+// nothing) and how much higher it stands (its layers' relief, for the light)
 struct Ground {
     col: vec3<f32>,
     n: vec3<f32>,
     shine: f32,
+    glow: vec3<f32>,
+    height: f32,
 };
 
 const TAU: f32 = 6.2831853;
@@ -752,15 +946,27 @@ fn fs_ground(i: MapOut) -> Solid {
     let facet = cross(dpdx(i.world), dpdy(i.world));
     var col = vec3<f32>(0.0);
     var shine = 0.0;
+    var glow = vec3<f32>(0.0);
+    var height = 0.0;
     let fc = p - vec2<f32>(own_cell);
     if (rocky < 0.999) {
         let gr = ground_color(own_cell, own, p, pg, fc);
         col = gr.col;
         shine = gr.shine;
+        glow = gr.glow;
+        height = gr.height;
         // a top tilts as the water's waves say
         if (rocky < 0.001) {
             n = gr.n;
         }
+    }
+    // a look's relief tilts the light as its height runs across the picture (worked out
+    // here, where every pixel of a quad takes the same way)
+    let wx = dpdx(i.world);
+    let wy = dpdy(i.world);
+    let dh = vec2<f32>(dpdx(height), dpdy(height)) * 0.05;
+    if (rocky < 0.001 && (dh.x != 0.0 || dh.y != 0.0)) {
+        n = bumped(n, wx, wy, dh);
     }
     if (rocky > 0.001) {
         // along the face (across its normal, on the ground) and up it
@@ -783,6 +989,7 @@ fn fs_ground(i: MapOut) -> Solid {
     }
     if (g.editor.y > 0.5 && !focused(own_cell)) {
         col = col * 0.16;
+        glow = glow * 0.16;
     }
     if (g.editor.x > 0.5 && rocky < 0.999) {
         let line = min(min(fc.x, 1.0 - fc.x), min(fc.y, 1.0 - fc.y));
@@ -794,6 +1001,8 @@ fn fs_ground(i: MapOut) -> Solid {
         let h = normalize(g.sun_dir.xyz + normalize(g.camera.xyz - i.world));
         lit = lit + g.sun_color.rgb * pow(max(dot(n, h), 0.0), 120.0) * shine * 0.8 * lit_by_sun(i.light_pos);
     }
+    // what glows of itself, whatever the light (lava, magic: at night as by day)
+    lit = lit + glow * (1.0 - place.grid.z);
     var o: Solid;
     o.color = vec4<f32>(fog(lit, i.world), 1.0);
     o.look = look(i.world, n, 0.0);
@@ -838,14 +1047,29 @@ fn vote(ts: array<i32, 4>, f: vec2<f32>, pg: vec2<f32>, dry: bool) -> Vote {
     return v;
 }
 
-// the land's colour where the vote went (its border with the runner-up drawn soft)
-fn voted_color(v: Vote, pg: vec2<f32>) -> vec3<f32> {
-    var col = terrain_color(v.bt, pg, v.best - v.second);
+// the land where the vote went (its border with the runner-up drawn soft): its colour, what
+// glows of it, its relief, its shine
+fn voted_shade(v: Vote, pg: vec2<f32>) -> Shade {
+    var s = terrain_shade(v.bt, pg, v.best - v.second);
     if (v.second > -8.0) {
-        let other = terrain_color(v.st, pg, 0.0);
-        col = mix(other, col, 0.5 + 0.5 * smoothstep(0.0, 0.04, v.best - v.second));
+        let other = terrain_shade(v.st, pg, 0.0);
+        let k = 0.5 + 0.5 * smoothstep(0.0, 0.04, v.best - v.second);
+        s.col = mix(other.col, s.col, k);
+        s.glow = mix(other.glow, s.glow, k);
+        s.height = mix(other.height, s.height, k);
+        s.shine = mix(other.shine, s.shine, k);
     }
-    return col;
+    return s;
+}
+
+// a point of the ground drawn as a terrain's shade says
+fn shaded(out: Ground, s: Shade) -> Ground {
+    var o = out;
+    o.col = s.col;
+    o.glow = s.glow;
+    o.height = s.height;
+    o.shine = max(o.shine, s.shine);
+    return o;
 }
 
 // a cell top at p (in the map's cells; `pg`, the same point on the world's grid,
@@ -893,18 +1117,18 @@ fn ground_color(own_cell: vec2<i32>, own: vec2<i32>, p: vec2<f32>, pg: vec2<f32>
             out = water(water_kind(wt), wt, pg, min(d, 0.0), sh.land);
         } else {
             let v = vote(ts, f, pg, true);
-            out.col = voted_color(v, pg);
+            out = shaded(out, voted_shade(v, pg));
             if (is_beach(v.bt)) {
                 out = swash(out.col, water_kind(wt), wt, pg, d, sh.land);
             }
         }
     } else if (ts[0] == ts[1] && ts[1] == ts[2] && ts[2] == ts[3]) {
         // one terrain all around (most of the ground): no border to draw, no votes
-        out.col = terrain_color(ts[0], pg, 10.0);
+        out = shaded(out, terrain_shade(ts[0], pg, 10.0));
         drawn = ts[0];
     } else {
         let v = vote(ts, f, pg, false);
-        out.col = voted_color(v, pg);
+        out = shaded(out, voted_shade(v, pg));
         drawn = v.bt;
     }
     // a beach a little further from the water (what's drawn there: a beach's sand reaches

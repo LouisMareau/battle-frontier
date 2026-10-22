@@ -608,6 +608,36 @@ impl Content {
             if !t.water.is_empty() && !model::WATERS.contains(&t.water.as_str()) {
                 out.push(format!("terrains/{}: water \"{}\" ({})", t.id, t.water, model::WATERS.join(" or ")));
             }
+            // how it's drawn: one of the patterns (none: plain), a look of its own in its ranges
+            if !t.pattern.is_empty() && !model::PATTERNS.iter().any(|(id, _)| *id == t.pattern) {
+                out.push(format!("terrains/{}: pattern \"{}\" ({})", t.id, t.pattern, model::PATTERNS.iter().map(|(id, _)| *id).collect::<Vec<_>>().join(", ")));
+            }
+            let l = &t.look;
+            let at = format!("terrains/{}: look", t.id);
+            let ranges = [("scale", l.scale, 0.1, 32.0), ("sharpness", l.sharpness, 0.0, 1.0), ("balance", l.balance, 0.0, 1.0), ("grain", l.grain, 0.0, 1.0), ("shine", l.shine, 0.0, 1.0), ("glow", l.glow, 0.0, 4.0), ("pulse", l.pulse, 0.0, 2.0), ("flow", l.flow, 0.0, 2.0), ("angle", l.angle, -360.0, 360.0)];
+            for (what, v, lo, hi) in ranges {
+                if !(lo..=hi).contains(&v) {
+                    out.push(format!("{at}: {what} {v} ({lo} to {hi})"));
+                }
+            }
+            if l.layers.len() > model::Look::LAYERS {
+                out.push(format!("{at}: {} layers (at most {})", l.layers.len(), model::Look::LAYERS));
+            }
+            for (k, y) in l.layers.iter().enumerate() {
+                let at = format!("{at}: layer {}", k + 1);
+                if !model::LAYER_SHAPES.contains(&y.shape.as_str()) {
+                    out.push(format!("{at}: shape \"{}\" ({})", y.shape, model::LAYER_SHAPES.join(", ")));
+                }
+                if !model::is_hex_colour(&y.color) {
+                    out.push(format!("{at}: color \"{}\" (#rrggbb)", y.color));
+                }
+                let ranges = [("scale", y.scale, 0.02, 32.0), ("amount", y.amount, 0.0, 1.0), ("softness", y.softness, 0.0, 1.0), ("glow", y.glow, 0.0, 4.0), ("pulse", y.pulse, 0.0, 2.0), ("flow", y.flow, 0.0, 2.0), ("angle", y.angle, -360.0, 360.0), ("relief", y.relief, -1.0, 1.0)];
+                for (what, v, lo, hi) in ranges {
+                    if !(lo..=hi).contains(&v) {
+                        out.push(format!("{at}: {what} {v} ({lo} to {hi})"));
+                    }
+                }
+            }
             let g = &t.growth;
             for p in &g.props {
                 if !self.props.contains(&p.prop) {
@@ -647,7 +677,7 @@ impl Content {
                             out.push(format!("{at}: {what} {} to {} (more than 0, the least first)", r[0], r[1]));
                         }
                     }
-                    for (what, v, most) in [("width", p.width, 1.0), ("lean", p.lean, 1.0), ("bend", p.bend, 1.0), ("sway", p.sway, 2.0), ("bloom", p.bloom, 1.0), ("clusters", p.clusters, 1.0)] {
+                    for (what, v, most) in [("width", p.width, 1.0), ("lean", p.lean, 1.0), ("bend", p.bend, 1.0), ("sway", p.sway, 2.0), ("bloom", p.bloom, 1.0), ("clusters", p.clusters, 1.0), ("glow", p.glow, 4.0)] {
                         if !(0.0..=most).contains(&v) {
                             out.push(format!("{at}: {what} {v} (0 to {most})"));
                         }
@@ -1510,6 +1540,45 @@ mod tests {
         // of a meadow alone none of the props' settings
         assert_eq!(serde_json::to_value(Plant::default()).unwrap(), serde_json::json!({ "shape": "blade" }));
         assert!(!text.contains("petals") && !text.contains("\"props\"") && !text.contains("\"turn\""), "{text}");
+    }
+
+    /// A terrain of its own look: none said of it when all is well; a pattern there's none of,
+    /// numbers out of their ranges, a layer of a shape there's none of or a colour that isn't
+    /// one, too many layers, each said; its group by its category, else its pattern's name, a
+    /// look of its own its name; its record with what's not its default only.
+    #[test]
+    fn a_look_of_its_own_is_checked_grouped_and_kept() {
+        let with = |t: Terrain| {
+            let mut c = Content::default();
+            c.terrains.put(t, Space::Content);
+            c.validate().into_iter().filter(|p| p.contains("terrains/")).collect::<Vec<_>>()
+        };
+        let look = Look { glow: 1.5, shine: 0.4, layers: vec![Layer { shape: "cracks".into(), color: "#ff5a14".into(), glow: 2.6, relief: -0.6, ..Default::default() }], ..Default::default() };
+        let lava = Terrain { id: "lava".into(), name: "Lava".into(), pattern: "custom".into(), walk: "block".into(), color: "#ff5a10".into(), color2: "#ffb030".into(), look: look.clone(), ..Default::default() };
+        assert!(with(lava.clone()).is_empty(), "{:?}", with(lava.clone()));
+        let mut bad = lava.clone();
+        bad.pattern = "glitter".into();
+        assert!(with(bad.clone())[0].contains("pattern \"glitter\""));
+        bad.pattern = "custom".into();
+        bad.look.glow = 9.0;
+        bad.look.layers[0].shape = "stars".into();
+        bad.look.layers[0].color = "orange".into();
+        bad.look.layers[0].relief = 2.0;
+        bad.look.layers.extend(std::iter::repeat_n(Layer::default(), 4));
+        let said = with(bad);
+        for word in ["glow 9", "shape \"stars\"", "color \"orange\"", "relief 2", "5 layers"] {
+            assert!(said.iter().any(|p| p.contains(word)), "{word}: {said:?}");
+        }
+        // its group
+        assert_eq!(lava.category_name(), "Lava", "a look of its own: its name");
+        assert_eq!(Terrain { pattern: "tall".into(), ..Default::default() }.category_name(), "Tall grass");
+        assert_eq!(Terrain { category: "Embers".into(), ..lava.clone() }.category_name(), "Embers");
+        // kept: what's not its default only, read back the same
+        let text = to_text(&lava);
+        assert!(text.contains("\"glow\": 1.5") && !text.contains("\"scale\"") && !text.contains("\"softness\"") && !text.contains("\"category\""), "{text}");
+        let back: Terrain = serde_json::from_str(&text).unwrap();
+        assert_eq!(back, lava);
+        assert!(!to_text(&Terrain { look: Look::default(), ..lava }).contains("\"look\""));
     }
 
     #[test]

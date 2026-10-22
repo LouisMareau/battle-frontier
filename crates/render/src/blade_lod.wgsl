@@ -21,7 +21,8 @@ struct Kind {
     foot: vec4<f32>,
     // rgb: at its tip; w: toon (1) or not (0)
     tip: vec4<f32>,
-    // rgb: a flower's petals', its heart's
+    // rgb: a flower's petals', its heart's; the heart's w: how much it glows of itself (0 to
+    // 4: a flower its petals and heart, a blade towards its tip)
     petal: vec4<f32>,
     heart: vec4<f32>,
 };

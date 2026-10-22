@@ -122,12 +122,14 @@ fn bezier(a: vec3<f32>, c: vec3<f32>, b: vec3<f32>, t: f32) -> array<vec3<f32>, 
     return array<vec3<f32>, 2>(a * s * s + c * (2.0 * s * t) + b * (t * t), (c - a) * (2.0 * s) + (b - c) * (2.0 * t));
 }
 
-// a point of a blade or a flower, in the world, with its normal (towards the eye), its colour
-// and whether it's toon; none when it isn't drawn
+// a point of a blade or a flower, in the world, with its normal (towards the eye), its colour,
+// how much it glows of itself (its colour times this, whatever the light) and whether it's
+// toon; none when it isn't drawn
 struct Made {
     pos: vec3<f32>,
     normal: vec3<f32>,
     color: vec3<f32>,
+    glow: f32,
     toon: f32,
     drawn: bool,
 };
@@ -191,6 +193,10 @@ fn made(b: Blade, id: u32) -> Made {
         var c = mix(k.foot.rgb, k.tip.rgb, smoothstep(0.0, 1.0, t));
         c = c * (0.82 + 0.36 * r4) * mix(0.55, 1.0, sqrt(t));
         m.color = c * dimmed;
+        // a glowing blade towards its tip (a flower's stem: none)
+        if (!flower) {
+            m.glow = k.heart.w * smoothstep(0.25, 1.0, t);
+        }
     } else {
         // a flower's head at its stem's tip, facing up and nodding the way it leans: its petals
         // round its heart (fewer than eight: the rest none), or far off a dot of its colour
@@ -226,6 +232,7 @@ fn made(b: Blade, id: u32) -> Made {
             }
             m.pos = q;
             m.color = k.petal.rgb * shade * (0.88 + 0.24 * r3) * dimmed;
+            m.glow = k.heart.w;
         } else {
             // its heart (a small square over the petals), or the far head (a larger one, its
             // petals' colour with some of its heart's)
@@ -238,6 +245,7 @@ fn made(b: Blade, id: u32) -> Made {
             }
             m.pos = centre + face * radius * 0.04 + (e1 * corner.x + e2 * corner.y) * size;
             m.color = c * dimmed;
+            m.glow = k.heart.w;
         }
     }
     // facing the eye (both its faces drawn alike)
@@ -260,7 +268,8 @@ fn blade_out(m: Made) -> MapOut {
     o.normal = normalize(mix(m.normal, vec3<f32>(0.0, 1.0, 0.0), 0.45));
     o.world = m.pos;
     o.light_pos = g.light_view_proj * vec4<f32>(m.pos + m.normal * g.shadow.x, 1.0);
-    o.color = vec4<f32>(m.color, 1.0);
+    // (its glow in the alpha: blades have none of their own)
+    o.color = vec4<f32>(m.color, m.glow);
     o.toon = m.toon;
     return o;
 }
@@ -300,7 +309,9 @@ fn vs_blade_listed_shadow(@builtin(vertex_index) id: u32, @builtin(instance_inde
 @fragment
 fn fs_blade(i: MapOut) -> Solid {
     var o: Solid;
-    o.color = vec4<f32>(fog(focus_dim(i.color.rgb * light(i.normal, i.light_pos, i.world, i.toon), i.world), i.world), 1.0);
+    // lit, and what glows of it after (its glow in the colour's alpha)
+    let c = i.color.rgb * light(i.normal, i.light_pos, i.world, i.toon) + i.color.rgb * i.color.a;
+    o.color = vec4<f32>(fog(focus_dim(c, i.world), i.world), 1.0);
     o.look = look(i.world, i.normal, 0.0);
     return o;
 }

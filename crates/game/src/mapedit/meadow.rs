@@ -7,9 +7,8 @@
 //! browser's "In meadows", for a grass prop: the meadows it grows in as one of their plants.
 
 use content::{Meadow, Plant, Terrain};
-use egui::RichText;
 
-use super::{hint, mark, warn, MapEditor};
+use super::{card, fieldset, form, hint, mark, sign_button, warn, MapEditor, Sign};
 
 /// The plants to start from: grasses (a meadow's, a tall one, a short lawn, reeds, a dry one)
 /// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover).
@@ -70,10 +69,9 @@ fn called(p: &Plant, content: &content::Content) -> String {
 
 /// "#rrggbb" edited with a colour picker; `own` unticked: none of its own (its terrain's,
 /// `fallback`, shown).
-fn colour(ui: &mut egui::Ui, hex: &mut String, fallback: &str, label: &str) -> bool {
+fn colour(ui: &mut egui::Ui, hex: &mut String, fallback: &str) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(label);
         let mut own = !hex.is_empty();
         if ui.checkbox(&mut own, "").on_hover_text("Its own colour (else its terrain's)").changed() {
             *hex = if own { fallback.to_string() } else { String::new() };
@@ -92,13 +90,12 @@ fn colour(ui: &mut egui::Ui, hex: &mut String, fallback: &str, label: &str) -> b
 }
 
 /// A range of two numbers edited side by side, the least first.
-fn range(ui: &mut egui::Ui, label: &str, r: &mut [f64; 2], lo: f64, hi: f64, speed: f64, suffix: &str) -> bool {
+fn range(ui: &mut egui::Ui, r: &mut [f64; 2], lo: f64, hi: f64, speed: f64, suffix: &str) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
-        ui.label(label);
-        changed |= ui.add(egui::DragValue::new(&mut r[0]).range(lo..=hi).speed(speed).suffix(suffix)).changed();
+        changed |= ui.add(egui::DragValue::new(&mut r[0]).range(lo..=hi).speed(speed).max_decimals(2)).changed();
         ui.label("to");
-        changed |= ui.add(egui::DragValue::new(&mut r[1]).range(lo..=hi).speed(speed).suffix(suffix)).changed();
+        changed |= ui.add(egui::DragValue::new(&mut r[1]).range(lo..=hi).speed(speed).max_decimals(2).suffix(suffix)).changed();
     });
     if r[0] > r[1] {
         r.swap(0, 1);
@@ -114,70 +111,130 @@ impl MapEditor {
         out
     }
 
-    /// The meadow of the terrain picked to paint, under "Grows here": its plants and how it
-    /// grows, changed on its record.
+    /// The meadow of the terrain picked to paint, under "Grows here": its plants, each a card
+    /// (its colour, name, how often it grows and taking it off in its header; under it its
+    /// shape, its colours or its head, and where it grows, a box each), more from the presets;
+    /// how the meadow grows, a box; changed on its record.
     pub(super) fn meadow_section(&mut self, ui: &mut egui::Ui, t: &Terrain) {
-        ui.label(RichText::new("Meadow").strong());
         let mut m = t.growth.meadow.clone();
         if m.is_empty() {
-            hint(ui, "Blades of grass and flowers the engine grows itself, made on the GPU as they're drawn: every one up close, further off fewer and wider (as full to the eye), at the furthest shorter. Add a grass or a flower to start one.");
+            hint(ui, "A meadow: blades of grass and flowers the engine grows itself, made on the GPU as they're drawn: every one up close, further off fewer and wider (as full to the eye), at the furthest shorter. Add a grass or a flower to start one.");
         }
         let (foot, tip) = (t.color.clone(), if t.color2.is_empty() { t.color.clone() } else { t.color2.clone() });
         let models = self.grass_models();
         let mut gone: Option<usize> = None;
         for k in 0..m.plants.len() {
-            let id = egui::Id::new(("meadow plant", &t.id, k));
             let name = called(&m.plants[k], &self.content);
-            let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
-            let p = &mut m.plants[k];
-            state
-                .show_header(ui, |ui| {
-                    let swatch = if p.shape == "flower" { p.petal.clone() } else if p.tip.is_empty() { tip.clone() } else { p.tip.clone() };
-                    super::swatch(ui, &swatch);
-                    ui.label(&name);
-                    let w = ui.add(egui::DragValue::new(&mut p.weight).range(0.01..=20.0).speed(0.01).prefix("× ")).on_hover_text("How often it grows, against the meadow's others");
-                    mark(&format!("uiMeadowWeight_{k}"), &w);
-                    let x = ui.small_button("✕").on_hover_text("Grows here no longer");
+            card(
+                ui,
+                egui::Id::new(("meadow plant", &t.id, k)),
+                &format!("uiMeadowPlant_{k}"),
+                &name,
+                &mut m.plants[k],
+                |ui, p| super::swatch(ui, if p.shape == "flower" { &p.petal } else if p.tip.is_empty() { &tip } else { &p.tip }),
+                |ui, p| {
+                    let x = sign_button(ui, Sign::Cross, true).on_hover_text("Grows here no longer");
                     mark(&format!("uiMeadowRemove_{k}"), &x);
                     if x.clicked() {
                         gone = Some(k);
                     }
-                })
-                .body(|ui| {
-                    ui.horizontal(|ui| {
+                    let w = ui.add(egui::DragValue::new(&mut p.weight).range(0.01..=20.0).speed(0.01).prefix("× ")).on_hover_text("How often it grows, against the meadow's others");
+                    mark(&format!("uiMeadowWeight_{k}"), &w);
+                },
+                |ui, p| {
+                    form(ui, ("meadow plant's name", k), |ui| {
                         ui.label("Name");
-                        ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(140.0).hint_text(name.as_str()));
+                        ui.add(egui::TextEdit::singleline(&mut p.name).desired_width(f32::INFINITY).hint_text(name.as_str()));
+                        ui.end_row();
                     });
                     match p.shape.as_str() {
                         "model" => {
-                            let shown = models.iter().find(|(id, _)| id == &p.prop).map(|(_, n)| n.clone()).unwrap_or_else(|| "(none)".into());
-                            egui::ComboBox::from_id_salt(("meadow model", &t.id, k)).selected_text(shown).show_ui(ui, |ui| {
-                                for (id, n) in &models {
-                                    ui.selectable_value(&mut p.prop, id.clone(), n);
-                                }
+                            fieldset(ui, "Model", |ui| {
+                                form(ui, ("meadow plant's model", k), |ui| {
+                                    ui.label("Prop");
+                                    let shown = models.iter().find(|(id, _)| id == &p.prop).map(|(_, n)| n.clone()).unwrap_or_else(|| "(none)".into());
+                                    egui::ComboBox::from_id_salt(("meadow model", &t.id, k)).selected_text(shown).show_ui(ui, |ui| {
+                                        for (id, n) in &models {
+                                            ui.selectable_value(&mut p.prop, id.clone(), n);
+                                        }
+                                    });
+                                    ui.end_row();
+                                    ui.label("Sizes");
+                                    range(ui, &mut p.scale, 0.1, 4.0, 0.01, " ×");
+                                    ui.end_row();
+                                });
+                                hint(ui, "A grass prop's model (a blade or a few, a flower): placed as the meadow's own are, fewer further off and shorter at the furthest.");
                             });
-                            range(ui, "Sizes", &mut p.scale, 0.1, 4.0, 0.01, " ×");
-                            hint(ui, "A grass prop's model (a blade or a few, a flower): placed as the meadow's own are, fewer further off and shorter at the furthest.");
                         }
                         shape => {
                             let flower = shape == "flower";
-                            range(ui, "Height", &mut p.height, 0.02, 3.0, 0.005, " cells");
-                            ui.add(egui::Slider::new(&mut p.width, 0.004..=0.2).logarithmic(true).text(if flower { "stem's width" } else { "width at its foot" }));
-                            ui.add(egui::Slider::new(&mut p.lean, 0.0..=1.0).text("lean")).on_hover_text("How far over it leans (0: straight up, 1: lying down)");
-                            ui.add(egui::Slider::new(&mut p.bend, 0.0..=1.0).text("curve")).on_hover_text("How much it curves over as it rises");
-                            ui.add(egui::Slider::new(&mut p.sway, 0.0..=2.0).text("sway")).on_hover_text("How much the wind moves it");
-                            colour(ui, &mut p.color, &foot, if flower { "Stem at its foot" } else { "At its foot" });
-                            colour(ui, &mut p.tip, &tip, if flower { "Stem at its top" } else { "At its tip" });
-                            if flower {
-                                ui.add(egui::Slider::new(&mut p.petals, 3..=Meadow::PETALS).text("petals"));
-                                colour(ui, &mut p.petal, "#f4f1e8", "Petals");
-                                colour(ui, &mut p.heart, "#e8b923", "Heart");
-                                ui.add(egui::Slider::new(&mut p.bloom, 0.02..=0.4).text("head's width"));
-                            }
+                            fieldset(ui, if flower { "Stem" } else { "Shape" }, |ui| {
+                                form(ui, ("meadow plant's shape", k), |ui| {
+                                    ui.label("Height");
+                                    range(ui, &mut p.height, 0.02, 3.0, 0.005, " cells");
+                                    ui.end_row();
+                                    ui.label("Width");
+                                    ui.add(egui::Slider::new(&mut p.width, 0.004..=0.2).logarithmic(true)).on_hover_text(if flower { "The stem's" } else { "At its foot" });
+                                    ui.end_row();
+                                    ui.label("Lean");
+                                    ui.add(egui::Slider::new(&mut p.lean, 0.0..=1.0)).on_hover_text("How far over it leans (0: straight up, 1: lying down)");
+                                    ui.end_row();
+                                    ui.label("Curve");
+                                    ui.add(egui::Slider::new(&mut p.bend, 0.0..=1.0)).on_hover_text("How much it curves over as it rises");
+                                    ui.end_row();
+                                    ui.label("Sway");
+                                    ui.add(egui::Slider::new(&mut p.sway, 0.0..=2.0)).on_hover_text("How much the wind moves it");
+                                    ui.end_row();
+                                    if flower {
+                                        ui.label("At its foot");
+                                        colour(ui, &mut p.color, &foot);
+                                        ui.end_row();
+                                        ui.label("At its top");
+                                        colour(ui, &mut p.tip, &tip);
+                                        ui.end_row();
+                                    }
+                                });
+                            });
+                            fieldset(ui, if flower { "Head" } else { "Colour" }, |ui| {
+                                form(ui, ("meadow plant's colours", k), |ui| {
+                                    if flower {
+                                        ui.label("Petals");
+                                        ui.add(egui::Slider::new(&mut p.petals, 3..=Meadow::PETALS)).on_hover_text("How many");
+                                        ui.end_row();
+                                        ui.label("Petals' colour");
+                                        colour(ui, &mut p.petal, "#f4f1e8");
+                                        ui.end_row();
+                                        ui.label("Heart");
+                                        colour(ui, &mut p.heart, "#e8b923");
+                                        ui.end_row();
+                                        ui.label("Width");
+                                        ui.add(egui::Slider::new(&mut p.bloom, 0.02..=0.4)).on_hover_text("The head's, across its petals");
+                                        ui.end_row();
+                                    } else {
+                                        ui.label("At its foot");
+                                        colour(ui, &mut p.color, &foot);
+                                        ui.end_row();
+                                        ui.label("At its tip");
+                                        colour(ui, &mut p.tip, &tip);
+                                        ui.end_row();
+                                    }
+                                    ui.label("Glow");
+                                    let g = ui.add(egui::Slider::new(&mut p.glow, 0.0..=4.0)).on_hover_text(if flower { "How much its petals and heart glow of themselves, lit by nothing: at night as by day" } else { "How much it glows of itself towards its tip, lit by nothing" });
+                                    mark(&format!("uiMeadowGlow_{k}"), &g);
+                                    ui.end_row();
+                                });
+                            });
                         }
                     }
-                    ui.add(egui::Slider::new(&mut p.clusters, 0.0..=1.0).text("in clusters")).on_hover_text("How much it keeps to clusters of its own a few cells across (0: anywhere, 1: only in them)");
-                });
+                    fieldset(ui, "Where", |ui| {
+                        form(ui, ("meadow plant's place", k), |ui| {
+                            ui.label("Clusters");
+                            ui.add(egui::Slider::new(&mut p.clusters, 0.0..=1.0)).on_hover_text("How much it keeps to clusters of its own a few cells across (0: anywhere, 1: only in them)");
+                            ui.end_row();
+                        });
+                    });
+                },
+            );
         }
         if let Some(k) = gone {
             m.plants.remove(k);
@@ -211,23 +268,32 @@ impl MapEditor {
             r.response.on_disabled_hover_text("No grass props yet (the asset browser's grass category)");
         });
         if !m.is_empty() {
-            let d = ui.add(egui::Slider::new(&mut m.density, 0.0..=Meadow::MOST).step_by(1.0).text("to a cell")).on_hover_text("How many grow on each cell, on average (up close: further off fewer are drawn)");
-            mark("uiMeadowDensity", &d);
-            ui.add(egui::Slider::new(&mut m.patchy, 0.0..=1.0).text("patches")).on_hover_text("How much it thins out in patches a few cells across (0: as thick everywhere, 1: bare in places)");
-            ui.horizontal(|ui| {
-                ui.label("Clumps");
-                ui.add(egui::DragValue::new(&mut m.clump).range(0.0..=2.0).speed(0.01).suffix(" cells")).on_hover_text("How wide its clumps are (0: none)");
-                ui.add(egui::Slider::new(&mut m.clumping, 0.0..=1.0).text("alike")).on_hover_text("How alike a clump's blades are: as tall, leaning out from its middle");
+            fieldset(ui, "Meadow", |ui| {
+                form(ui, "meadow", |ui| {
+                    ui.label("To a cell");
+                    let d = ui.add(egui::Slider::new(&mut m.density, 0.0..=Meadow::MOST).step_by(1.0)).on_hover_text("How many grow on each cell, on average (up close: further off fewer are drawn)");
+                    mark("uiMeadowDensity", &d);
+                    ui.end_row();
+                    ui.label("Patches");
+                    ui.add(egui::Slider::new(&mut m.patchy, 0.0..=1.0)).on_hover_text("How much it thins out in patches a few cells across (0: as thick everywhere, 1: bare in places)");
+                    ui.end_row();
+                    ui.label("Clumps");
+                    ui.add(egui::DragValue::new(&mut m.clump).range(0.0..=2.0).speed(0.01).suffix(" cells")).on_hover_text("How wide its clumps are (0: none)");
+                    ui.end_row();
+                    ui.label("Alike");
+                    ui.add(egui::Slider::new(&mut m.clumping, 0.0..=1.0)).on_hover_text("How alike a clump's blades are: as tall, leaning out from its middle");
+                    ui.end_row();
+                });
+                let toon = ui.checkbox(&mut m.toon, "Toon light").on_hover_text("Lit in the toon look's steps, as toon props are (else as the ground under it)");
+                mark("uiMeadowToon", &toon);
+                let kinds = world::meadow::Kinds::of(&self.content).list.len() - t.growth.meadow.plants.len() + m.plants.len();
+                if kinds > world::meadow::MOST_KINDS {
+                    warn(ui, &format!("{kinds} plants in all the meadows: the first {} grow, the rest don't.", world::meadow::MOST_KINDS));
+                }
+                if t.pattern == "tall" {
+                    hint(ui, "It grows in place of the engine's own tufts, with the grass props below or alone.");
+                }
             });
-            let toon = ui.checkbox(&mut m.toon, "Toon light").on_hover_text("Lit in the toon look's steps, as toon props are (else as the ground under it)");
-            mark("uiMeadowToon", &toon);
-            let kinds = world::meadow::Kinds::of(&self.content).list.len() - t.growth.meadow.plants.len() + m.plants.len();
-            if kinds > world::meadow::MOST_KINDS {
-                warn(ui, &format!("{kinds} plants in all the meadows: the first {} grow, the rest don't.", world::meadow::MOST_KINDS));
-            }
-            if t.pattern == "tall" {
-                hint(ui, "It grows in place of the engine's own tufts, with the grass props below or alone.");
-            }
         }
         crate::platform::set_hook("meadowplants", &m.plants.len().to_string());
         if m != t.growth.meadow {

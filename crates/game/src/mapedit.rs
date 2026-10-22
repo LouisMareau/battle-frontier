@@ -32,6 +32,7 @@ mod rooms;
 mod saving;
 mod sounds;
 mod stream;
+mod terrains;
 mod templates;
 mod timeline;
 mod walk;
@@ -222,8 +223,11 @@ pub struct MapEditor {
     /// the browser)
     autosave: saving::Autosave,
     kept_window: saving::KeptWindow,
-    /// the terrains changed here (what grows through tall ground: `growth.rs`), to save
+    /// the terrains changed here (what grows through them: `growth.rs`; made, duplicated or
+    /// edited: `terrains.rs`), to save
     terrains_dirty: std::collections::BTreeSet<String>,
+    /// the Terrain window (the Ground tool's Edit…)
+    terrain_window: terrains::TerrainWindow,
     prop: Option<String>,
     turn: f32,
     prop_filter: String,
@@ -388,7 +392,216 @@ fn mark(name: &str, r: &egui::Response) {
 /// A section's title in a panel.
 fn section(ui: &mut egui::Ui, text: &str) {
     ui.add_space(8.0);
-    ui.label(RichText::new(text.to_uppercase()).font(crate::title::menu_font(10.5)).color(Color32::from_gray(160)));
+    ui.label(section_title(text));
+    ui.add_space(2.0);
+}
+
+fn section_title(text: &str) -> RichText {
+    RichText::new(text.to_uppercase()).font(crate::title::menu_font(10.5)).color(Color32::from_gray(160))
+}
+
+/// A section that folds: its title as `section`'s, an arrow before it, the whole row clicked to
+/// fold what's under it or open it again (open until folded: egui's memory keeps it). Whether
+/// it's open (the caller draws what's under it then); marked `uiSection_<title>`.
+fn fold_section(ui: &mut egui::Ui, text: &str) -> bool {
+    fold_section_with(ui, text, |_| {})
+}
+
+/// A section that folds (`fold_section`), `beside` drawing next to its title (a button there
+/// takes its own clicks).
+fn fold_section_with(ui: &mut egui::Ui, text: &str, beside: impl FnOnce(&mut egui::Ui)) -> bool {
+    ui.add_space(6.0);
+    let (open, r) = fold_row(ui, egui::Id::new(("panel section", text)), true, |ui| {
+        ui.add(egui::Label::new(section_title(text)).selectable(false));
+        beside(ui);
+    });
+    mark(&format!("uiSection_{}", text.replace(' ', "")), &r);
+    open
+}
+
+/// How wide the arrow of something that folds is, with its room.
+const ARROW: f32 = 14.0;
+
+/// How tall a row of a list is (a terrain, a folding header).
+const ROW: f32 = 20.0;
+
+/// The header of something that folds: an arrow, then what `add` draws, the whole row (as wide
+/// as there's room) clicked to fold it or open it (`open` until then). Whether it's open, and
+/// the row.
+fn fold_row(ui: &mut egui::Ui, id: egui::Id, open: bool, add: impl FnOnce(&mut egui::Ui)) -> (bool, egui::Response) {
+    let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, open);
+    // the row first: what's drawn in it comes after, so a button there takes its own clicks
+    let (_, rect) = ui.allocate_space(egui::vec2(ui.available_width(), ROW));
+    let r = ui.interact(rect, id.with("row"), Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+    if r.clicked() {
+        state.toggle(ui);
+    }
+    let mut inside = ui.new_child(egui::UiBuilder::new().max_rect(rect).layout(egui::Layout::left_to_right(egui::Align::Center)));
+    let (at, _) = inside.allocate_exact_size(egui::vec2(ARROW - inside.spacing().item_spacing.x, 12.0), Sense::hover());
+    add(&mut inside);
+    let color = if r.contains_pointer() { Color32::from_gray(220) } else { Color32::from_gray(160) };
+    arrow(ui, at, state.openness(ui.ctx()), color);
+    state.store(ui.ctx());
+    (state.is_open(), r)
+}
+
+/// A row's icon button (Duplicate, Edit): dim until its row is picked or under the pointer
+/// (`lit`), marked `name`.
+fn row_icon(ui: &mut egui::Ui, icon: egui::ImageSource<'static>, lit: bool, tip: &str, name: &str) -> egui::Response {
+    let tint = if lit { ui.visuals().text_color() } else { Color32::from_gray(105) };
+    let image = egui::Image::new(icon).fit_to_exact_size(egui::vec2(14.0, 14.0)).tint(tint);
+    let r = ui.add(egui::Button::image(image).frame(false)).on_hover_text(tip);
+    mark(name, &r);
+    r
+}
+
+/// The arrow of something that folds, in `rect`: pointing right when it's shut, down when it's
+/// open (`openness` between).
+fn arrow(ui: &egui::Ui, rect: egui::Rect, openness: f32, color: Color32) {
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(8.0, 8.0));
+    let turn = egui::emath::Rot2::from_angle(egui::emath::remap(openness, 0.0..=1.0, -std::f32::consts::FRAC_PI_2..=0.0));
+    let points = [r.left_top(), r.right_top(), r.center_bottom()].map(|p| r.center() + turn * (p - r.center()));
+    ui.painter().add(egui::Shape::convex_polygon(points.to_vec(), color, egui::Stroke::NONE));
+}
+
+/// The edge of the panels' boxes and cards.
+const EDGE: Color32 = Color32::from_gray(64);
+
+/// A box of controls that go together, bordered, its title set into its top edge (as a form's
+/// fieldset), as wide as there's room. What `add` returns.
+fn fieldset<R>(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let galley = egui::WidgetText::from(RichText::new(title).size(11.0)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let half = (galley.size().y / 2.0).round();
+    ui.add_space(half);
+    let r = egui::Frame::new().inner_margin(egui::Margin { left: 8, right: 8, top: half as i8 + 3, bottom: 6 }).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        add(ui)
+    });
+    let rect = r.response.rect.shrink(0.5);
+    let at = egui::pos2(rect.left() + 9.0, rect.top() - half);
+    ui.painter().add(egui::Shape::line(open_outline(rect, 5.0, (at.x - 4.0, at.x + galley.size().x + 4.0)), egui::Stroke::new(1.0, EDGE)));
+    ui.painter().galley(at, galley, Color32::from_gray(175));
+    ui.add_space(2.0);
+    r.inner
+}
+
+/// A rounded rectangle's outline, left open along its top edge from `gap.0` to `gap.1` (for a
+/// title): from the gap's right end round to its left.
+fn open_outline(rect: egui::Rect, radius: f32, gap: (f32, f32)) -> Vec<egui::Pos2> {
+    let r = radius.min(rect.width() / 2.0).min(rect.height() / 2.0);
+    let mut out = vec![egui::pos2(gap.1, rect.top())];
+    // the corners clockwise (on the screen), each a quarter turn from where it starts
+    let corners = [(rect.right() - r, rect.top() + r, -0.25), (rect.right() - r, rect.bottom() - r, 0.0), (rect.left() + r, rect.bottom() - r, 0.25), (rect.left() + r, rect.top() + r, 0.5)];
+    for (x, y, from) in corners {
+        for k in 0..=6 {
+            let a = (from + k as f32 / 24.0) * std::f32::consts::TAU;
+            out.push(egui::pos2(x + r * a.cos(), y + r * a.sin()));
+        }
+    }
+    out.push(egui::pos2(gap.0, rect.top()));
+    out
+}
+
+/// A form's rows in a fieldset: each a label, then its control (`ui.end_row()` after each), the
+/// sliders as wide as the rest of the row leaves.
+fn form(ui: &mut egui::Ui, id: impl egui::AsIdSalt, add: impl FnOnce(&mut egui::Ui)) {
+    ui.spacing_mut().slider_width = (ui.available_width() - 136.0).clamp(48.0, 180.0);
+    egui::Grid::new(id).num_columns(2).spacing([8.0, 4.0]).show(ui, add);
+}
+
+/// One of a list (a meadow's plants, a look's layers) as a card: a bordered box whose header
+/// folds what's under it (shut until opened), lined up with the other cards': its arrow, what
+/// `left` draws and its name from the left (the name clicked folds it too), what `right` draws
+/// from the right edge in (the rightmost first). `it` goes to each in turn; its arrow marked
+/// `key`. What `right` returns.
+#[allow(clippy::too_many_arguments)]
+fn card<T, R>(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    key: &str,
+    name: &str,
+    it: &mut T,
+    left: impl FnOnce(&mut egui::Ui, &mut T),
+    right: impl FnOnce(&mut egui::Ui, &mut T) -> R,
+    body: impl FnOnce(&mut egui::Ui, &mut T),
+) -> R {
+    let (out, named) = egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, EDGE))
+        .corner_radius(5.0)
+        .inner_margin(egui::Margin { left: 4, right: 4, top: 2, bottom: 2 })
+        .show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            let state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+            let header = state.show_header(ui, |ui| {
+                left(ui, it);
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let out = right(ui, it);
+                    let named = ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| ui.add(egui::Label::new(name).truncate().selectable(false).sense(Sense::click()))).inner;
+                    (out, named.clicked())
+                })
+                .inner
+            });
+            let (arrow, head, _) = header.body_unindented(|ui| {
+                ui.add_space(2.0);
+                body(ui, it);
+                ui.add_space(2.0);
+            });
+            mark(key, &arrow);
+            head.inner
+        })
+        .inner;
+    if named {
+        let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);
+        state.toggle(ui);
+        state.store(ui.ctx());
+    }
+    ui.add_space(3.0);
+    out
+}
+
+/// What a sign button shows.
+#[derive(Clone, Copy)]
+enum Sign {
+    /// a cross: take it off
+    Cross,
+    /// an arrow up: move it up
+    Up,
+}
+
+/// A small button with a sign drawn on it (the fonts have no ✕ or ↑).
+fn sign_button(ui: &mut egui::Ui, sign: Sign, enabled: bool) -> egui::Response {
+    let r = ui.add_enabled(enabled, egui::Button::new("").small().min_size(egui::vec2(18.0, 18.0)));
+    let color = if !enabled {
+        Color32::from_gray(90)
+    } else if r.hovered() {
+        Color32::from_gray(235)
+    } else {
+        Color32::from_gray(180)
+    };
+    let (m, d, stroke) = (r.rect.center(), 3.5, egui::Stroke::new(1.5, color));
+    let p = |x: f32, y: f32| m + egui::vec2(x, y);
+    match sign {
+        Sign::Cross => {
+            ui.painter().line_segment([p(-d, -d), p(d, d)], stroke);
+            ui.painter().line_segment([p(-d, d), p(d, -d)], stroke);
+        }
+        Sign::Up => {
+            ui.painter().add(egui::Shape::line(vec![p(-d, 2.0), p(0.0, -2.5), p(d, 2.0)], stroke));
+        }
+    }
+    r
+}
+
+/// A rule across the panel, a few words in its middle: what's under it goes with what's above.
+fn divider(ui: &mut egui::Ui, text: &str) {
+    ui.add_space(10.0);
+    let galley = egui::WidgetText::from(RichText::new(text).size(11.0)).into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body);
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), galley.size().y), Sense::hover());
+    let (mid, half) = (rect.center(), galley.size().x / 2.0);
+    let stroke = egui::Stroke::new(1.0, Color32::from_gray(78));
+    ui.painter().hline(rect.left()..=mid.x - half - 6.0, mid.y.round() + 0.5, stroke);
+    ui.painter().hline(mid.x + half + 6.0..=rect.right(), mid.y.round() + 0.5, stroke);
+    ui.painter().galley(egui::pos2(mid.x - half, rect.top()), galley, Color32::from_gray(165));
     ui.add_space(2.0);
 }
 
@@ -427,19 +640,22 @@ fn group<R>(ui: &mut egui::Ui, name: &str, add: impl FnOnce(&mut egui::Ui) -> R)
     r.inner
 }
 
-/// A quiet line under a control: what it does, or a key.
+/// A quiet line under a control: what it does, or a key (small, in italics).
 fn hint(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.5).color(Color32::from_gray(140)));
+    ui.label(RichText::new(text).size(11.0).italics().color(Color32::from_gray(150)));
 }
 
-/// Something that needs attention.
+/// Something that needs attention (as a hint, in orange).
 fn warn(ui: &mut egui::Ui, text: &str) {
-    ui.label(RichText::new(text).size(11.5).color(Color32::from_rgb(255, 170, 90)));
+    ui.label(RichText::new(text).size(11.0).italics().color(Color32::from_rgb(255, 170, 90)));
 }
+
+/// How wide a square of colour is.
+const SWATCH: f32 = 14.0;
 
 /// A square of colour.
 fn swatch(ui: &mut egui::Ui, color: &str) {
-    let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), Sense::hover());
+    let (r, _) = ui.allocate_exact_size(egui::vec2(SWATCH, SWATCH), Sense::hover());
     ui.painter().rect_filled(r, 3.0, hex(color));
 }
 
@@ -521,6 +737,7 @@ impl MapEditor {
             autosave: Default::default(),
             kept_window: Default::default(),
             terrains_dirty: Default::default(),
+            terrain_window: Default::default(),
             prop,
             turn: 0.0,
             prop_filter: String::new(),
@@ -1591,7 +1808,16 @@ impl MapEditor {
         self.pane(ui, dock::Pane::Timeline, "Timeline", |ed, ui| ed.timeline_panel(ui));
         self.pane(ui, dock::Pane::Toolbox, "Toolbox", |ed, ui| {
             ed.toolbar(ui);
-            egui::ScrollArea::vertical().show(ui, |ui| ed.tools_panel(ui));
+            // painting, the brush pinned under what scrolls
+            if ed.painting() {
+                egui::Panel::bottom(egui::Id::new("toolbox-brush"))
+                    .resizable(false)
+                    .show_separator_line(false)
+                    .frame(egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 4, bottom: 4 }))
+                    .show(ui, |ui| ed.brush_box(ui));
+            }
+            // (clear of the scroll bar, which floats over what's under it)
+            egui::ScrollArea::vertical().show(ui, |ui| egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 }).show(ui, |ui| ed.tools_panel(ui)));
         });
         self.pane(ui, dock::Pane::Inspector, "Inspector", |ed, ui| {
             // as wide as it's made (it fits the rows to its width), else it scrolls
@@ -1599,6 +1825,7 @@ impl MapEditor {
             crate::platform::set_hook("inspectorfits", if shown.content_size.x <= shown.inner_rect.width() + 1.0 { "1" } else { "" });
         });
         self.light_window(ui);
+        self.terrain_window(&ctx);
         self.post_window(ui);
         self.abilities_window(ui);
         self.fx_windows(&ctx);
@@ -1926,24 +2153,30 @@ impl MapEditor {
             self.floor_panel(ui);
             return;
         }
-        section(ui, "Terrain");
-        let terrains: Vec<(String, String, String, String)> = self.content.terrains.iter().map(|t| (t.id.clone(), t.name.clone(), t.color.clone(), t.walk.clone())).collect();
-        for (id, name, color, walk) in terrains {
-            ui.horizontal(|ui| {
-                swatch(ui, &color);
-                let extra = if walk == "walk" || name.to_lowercase().contains(&walk) { String::new() } else { format!(" · {walk}") };
-                let r = ui.selectable_label(self.terrain == id, format!("{name}{extra}"));
-                mark(&format!("uiTerrain_{id}"), &r);
-                if r.clicked() {
-                    self.terrain = id.clone();
-                }
-            });
-        }
+        self.terrain_list(ui);
+        divider(ui, "Terrain details");
         self.growth_section(ui);
-        section(ui, "Brush");
-        ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1)));
-        ui.checkbox(&mut self.set_level, format!("Set the level to {}", self.level)).on_hover_text("Painted cells rise or sink to the chosen level; off: only the terrain changes");
-        hint(ui, "Right-click picks a cell's terrain and level.");
+    }
+
+    /// Whether the Ground tool paints (its Paint tab): its brush is pinned under the panel.
+    fn painting(&self) -> bool {
+        self.tool == Tool::Ground && !(self.ramp.on || self.floorer.on || self.jump.on)
+    }
+
+    /// The Paint tab's brush, in a box of its own pinned under the panel (the same for every
+    /// terrain: how the painting's done, not what's painted): how wide it paints, whether it
+    /// sets the level.
+    fn brush_box(&mut self, ui: &mut egui::Ui) {
+        fieldset(ui, "Brush", |ui| {
+            form(ui, "brush", |ui| {
+                ui.label("Size");
+                let r = ui.add(egui::Slider::new(&mut self.brush, 0..=4).custom_formatter(|v, _| format!("{0}×{0}", v as i32 * 2 + 1))).on_hover_text("How many cells a dab paints");
+                mark("uiBrush", &r);
+                ui.end_row();
+            });
+            ui.checkbox(&mut self.set_level, format!("Set the level to {}", self.level)).on_hover_text("Painted cells rise or sink to the chosen level; off: only the terrain changes");
+            hint(ui, "Right-click picks a cell's terrain and level.");
+        });
     }
 
     fn place_panel(&mut self, ui: &mut egui::Ui) {
