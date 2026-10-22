@@ -39,6 +39,8 @@ Rules that hold all the way:
   "variants": 0,
   "vary": "",
   "mine": false,
+  "toon": true,
+  "many": false,
   "check_lines": false,
   "status": "waiting",
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
@@ -52,6 +54,7 @@ Rules that hold all the way:
   "reply": "",
   "comments": "",
   "earlier": [],
+  "rating": null,
   "several": false,
   "parent": "",
   "children": []
@@ -63,14 +66,25 @@ are.)
 
 - `kind`: `creature` (rigged, with an idle animation), `prop`, `grass` (a patch of grass
   filling its `cells` to the edges, so copies side by side join without a gap: below,
-  "Grass"), `environment` (what dresses the outdoors: rocks, bushes, flowers, logs, trees;
-  below, "Environment"), or `floor` (the window's **floor set**: a set of floor tiles, each a
-  cell, laid to fit; below, "A set of floor tiles"; its `height` and `check_lines` go
-  unused); `height` in cells (a cell is a metre; the player is about 1.5); `cells` (grass):
-  the cells it fills, across x and deep z; `style`: `smooth`, `low_poly` or `accurate` (as
+  "Grass"), `flower` (a flower made finely, its stem, leaves, petals and heart: below, "A
+  flower"), `rock` (a rock made finely, asked for by its footprint, `cells`, its height its
+  pictures' proportions': below, "A rock"), `environment` (what dresses the outdoors: rocks,
+  bushes, flowers, logs, trees; below, "Environment"), or `floor` (the window's **floor set**:
+  a set of floor tiles, each a cell, laid to fit; below, "A set of floor tiles"; its `height`
+  and `check_lines` go unused); `height` in cells (a cell is a metre; the player is about 1.5;
+  a rock's is worked out by `lines`); `cells` (grass): the cells it fills, across x and deep z
+  (a rock: the cells it stands on, about); `style`: `smooth`, `low_poly` or `accurate` (as
   close to the pictures as it can be, whatever it takes: see "Accurate" below), and with it
   `details`, the user's word on how to build it.
-- `variants` (the window's **Variants**, grass and environment, and any request once it's
+- `toon` (the window's **Toon look**, on unless the user unticks it): it's drawn with the
+  game's toon look, its prop added toon (below, "The toon look"); `many` (**Expect large
+  rendered count**, not for a creature or a floor): it's drawn by the thousand, strewn over
+  fields with the grass and the flowers, and made as light as it can be (below, "Drawn by the
+  thousand").
+- `rating` (the window's **Rating**, once it's made): the user's, 0 (nothing like it) to 100
+  (exactly as designed, as its description says), `null` until rated. The best and worst rated
+  of a kind teach its next runs (below, "What the ratings teach").
+- `variants` (the window's **Variants**, grass, flower, rock and environment, and any request once it's
   made): how many variants of it to make besides it, each a prop of its own; `vary` (**What
   changes**): how they differ (its size, its colours...), else as Claude sees fit; with
   `several`, each drawing's request makes that many of its own. `variant_props`: the props
@@ -129,10 +143,14 @@ python tools/blender/model_requests.py zoom ID PICTURE [X0 Y0 X1 Y1] [--grid] [-
 python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1]
 python tools/blender/model_requests.py bones ID
 python tools/blender/model_requests.py lines ID
-python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine] [--check-lines]
+python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop] [--height 1.2] [--style low_poly] [--notes "..."] [--mine] [--check-lines] [--no-toon] [--many]
+python tools/blender/model_requests.py rate ID 85
+python tools/blender/model_requests.py lessons ID
+python tools/blender/model_requests.py learnt ID --works "..." --fails "..."
 ```
 
-(`new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
+(`rate` sets the user's rating, `none` takes it off; `lessons` and `learnt` are what the ratings
+teach, below. `new` makes a request without the editor, from pictures on disk. `note`, `wait --note` and
 `fail` add a line to the request's `log.txt`, timed by the computer's clock; `wait --check`
 leaves a request waiting for the user to check its lines. `zoom`, `colours`, `bones` and
 `lines` are for reading the pictures: below.)
@@ -772,6 +790,55 @@ its cells (`cells`, 1 x 1 unless the request says; `job.cells`) to the edges, ex
 `kit.finish` says when a grass model doesn't fill its cells, and refuses one that can't grow
 (counted in a .glb written to the run's folder first: nothing goes into the project).
 
+## A flower
+
+A request of the kind `flower` is a flower made finely, part by part, as a botanist would draw
+it: a meadow can grow it among its grass (a terrain's Grows here, its `+ Model`), so it's seen
+both close up and by the hundred.
+
+- **the stem**: `kit.tube` along a gentle curve, tapering up to the head, a node or two where
+  leaves grow (a thin stem bends: never a straight rod);
+- **the leaves**: thin slabs bent along their length and cupped across, narrowing to a point
+  (or round, lobed, as the design has them), each from a node or in a rosette at its foot;
+- **the petals**: each its own thin curved surface (`kit.slab` bent with `kit.modifier`'s
+  simple deform, or `kit.editing`), cupped, curving out and its tip curling, in rings that
+  overlap, the inner ones smaller (a double flower: more rings); never one flat disc cut into
+  petals;
+- **the heart**: a disc, a dome or a cone, its seeds or florets a texture of bumps where they
+  show; with stamens where the design has them, long thin filaments (`kit.tube`, a hair's
+  width) fanning out of it, each tipped with an anther (a small oval), and the pistil among
+  them;
+- **the sepals**: the small green leaves under the head;
+- each petal's colour shading along it as the design does (its base darker or another hue: a
+  paint volume), the heart's its own;
+- the wind: one `kit.plant_wind` call, the stem as `stems`, rooted at its foot; the petals and
+  the leaves fluttering;
+- `kit.finish(..., category="flower")` (its default for the kind), never blocking the way.
+
+## A rock
+
+A request of the kind `rock` is a rock made finely, asked for by the cells it stands on
+(`cells`, its footprint) rather than its height: its height is what its pictures' proportions
+make it on that footprint.
+
+- draw its front `cells[0]` wide and its side `cells[1]` long in their proportions: `python
+  tools/blender/model_requests.py lines ID` works out how tall that makes it (each view's
+  height against its width, the two's mean), writes it in the request (`height`) and stands
+  the profiles so; `job.height` is it then;
+- fit it with `kit.fit_footprint(parts, job.cells)` in place of `kit.fit`: scaled as a whole,
+  its proportions kept, as close to its cells as it can come both ways. About its cells, not
+  exactly: the proportions of the pictures come first;
+- as fine as the design: its mass blocked in, then its facets, cracks, ledges and strata
+  (`kit.editing`, `kit.sculpt`, cuts); its colour varying over it as rock does (paint volumes
+  for veins, lichen and weathering, its top paler, its foot darker; or a texture painted from
+  the pictures);
+- moss in patches where moss grows: its top, its shaded side, its hollows and cracks (a part
+  of its own, thin, following its surface);
+- grass and flowers at its foot and out of its cracks where the design has them, each blade or
+  stem a thin piece of its own, painted for the wind (`kit.plant_wind`); the rock and its moss
+  never;
+- `kit.finish(..., category="rock")` (its default for the kind), blocking the way.
+
 ## Environment
 
 A request of the kind `environment` is an asset that dresses the outdoors: a rock, a bush, a
@@ -779,6 +846,58 @@ flowerbed, a log, a stump, a tree. Made as a prop is, with what the outdoors ask
 category the one that fits (`tree`, `flora`, `rock`, `grass`, `decoration`) in `kit.finish`,
 blocking the way when it's big enough to walk round (a rock, a tree, a log), not when it's
 walked through (flowers, a low bush); what the wind moves painted for it ("The wind").
+
+## Drawn by the thousand
+
+A request whose `many` is set (the window's **Expect large rendered count**) is strewn over whole
+fields with the grass and the flowers (a meadow's model, procedural ground): it's drawn by the
+thousand, so it's made as light as it can be while it reads right a few cells off.
+
+- the fewest vertices that keep its silhouette: about 300 in all, as the engine counts them in
+  its .glb (flat faces and seams split vertices); the run's own count says how many;
+- no subdivision, no faces nobody sees (under the ground, inside it, a back hidden against
+  another part), no fur;
+- flat colours over textures, few materials (one per colour region);
+- each loose piece (a leaf, a petal, a blade) a piece of its own, so the engine leaves pieces out
+  further off (as it thins grass); none heavy.
+
+## The toon look
+
+A request's `toon` (on unless the user unticks **Toon look**) has its model drawn with the
+game's toon look: the light in steps and ink lines round it and along its sharp folds (the
+Post-processing window sets how). Clear shapes and flat colour regions read best in it; fine
+surface detail the light's steps would band is left out, a texture's soft gradients too. Its
+prop is added toon (`kit.finish` sets the record's `toon`); the asset browser's toon tag
+switches it off when it's wanted otherwise.
+
+## What the ratings teach
+
+Once a request is made, the user rates it in the window (**Rating**): 0, nothing like it, to
+100, exactly as designed, as its description says. Requests of a kind are meant to look of one
+hand (the game's flowers alike in their style, its rocks in theirs), so the ratings teach the
+runs of that kind, and only of that kind:
+
+```bash
+python tools/blender/model_requests.py lessons ID
+```
+
+lists the kind's models rated best (60 or more) and worst (40 or less), three of each at most,
+the one being made left out: each one's rating, notes, what the user said of it (its comments),
+what its run said, its renders and its model.py; and what the runs before learnt from them
+(`private/requests/.lessons/KIND.md`). A run that builds a model reads it first (the prompt
+says so when there's anything to read): it looks at the best ones' renders and reads their
+model.py, and builds its own with their DNA (how the parts are made and joined, the
+proportions, the level of detail, how colour and materials are handled, the silhouette), its
+own design still; it looks at the worst ones' renders and leaves out what they did. When the
+ratings show something the lessons don't say yet, it writes them again, whole and short (the
+style and the way of building, never one model's details):
+
+```bash
+python tools/blender/model_requests.py learnt ID --works "..." --fails "..."
+```
+
+In the browser the run is given those models' records, renders and scripts and the kind's
+lessons with its own files, and the lessons it writes come back with what it made.
 
 ## Variants
 

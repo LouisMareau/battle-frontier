@@ -11,7 +11,8 @@ use content::{Meadow, Plant, Terrain};
 use super::{card, fieldset, form, hint, mark, sign_button, warn, MapEditor, Sign};
 
 /// The plants to start from: grasses (a meadow's, a tall one, a short lawn, reeds, a dry one)
-/// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover).
+/// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover), their stems stiffer
+/// in the wind than a blade.
 pub(super) fn presets() -> Vec<Plant> {
     let grass = |name: &str, height: [f64; 2], width: f64, lean: f64, bend: f64, sway: f64, color: &str, tip: &str| Plant {
         name: name.into(),
@@ -32,7 +33,7 @@ pub(super) fn presets() -> Vec<Plant> {
         width: 0.012,
         lean: 0.1,
         bend: 0.15,
-        sway: 0.8,
+        sway: 0.45,
         petals,
         petal: petal.into(),
         heart: heart.into(),
@@ -183,7 +184,7 @@ impl MapEditor {
                                     ui.add(egui::Slider::new(&mut p.bend, 0.0..=1.0)).on_hover_text("How much it curves over as it rises");
                                     ui.end_row();
                                     ui.label("Sway");
-                                    ui.add(egui::Slider::new(&mut p.sway, 0.0..=2.0)).on_hover_text("How much the wind moves it");
+                                    ui.add(egui::Slider::new(&mut p.sway, 0.0..=2.0)).on_hover_text("How much the wind bends it, by the wind's strength: its foot rooted, its tip going furthest (0: rigid; a thin blade about 1, a stiff stem less)");
                                     ui.end_row();
                                     if flower {
                                         ui.label("At its foot");

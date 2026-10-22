@@ -94,7 +94,7 @@ pub(super) fn presets() -> Vec<Terrain> {
                 width: 0.012,
                 lean: 0.1,
                 bend: 0.15,
-                sway: 0.8,
+                sway: 0.45,
                 petals: 5,
                 petal: "#8af0ff".into(),
                 heart: "#ffffff".into(),

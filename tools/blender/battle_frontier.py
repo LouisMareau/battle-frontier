@@ -50,6 +50,8 @@ CATEGORIES = [
     ("decoration", "Decoration", ""),
     ("tree", "Tree", "fills tree areas; not scaled when placed"),
     ("flora", "Flora", "not scaled when placed"),
+    ("grass", "Grass", "grown through tall ground, and in meadows"),
+    ("flower", "Flower", "a meadow can grow it among its grass"),
     ("rock", "Rock", ""),
     ("fence", "Fence", ""),
     ("furniture", "Furniture", "stands inside buildings"),
@@ -65,7 +67,7 @@ CATEGORIES = [
      "laid on a ramp end to end. It stays where it was made, on the origin"),
     ("character", "Character", ""),
 ]
-PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "sound", "folders"]
+PROP_KEYS = ["id", "name", "category", "footprint", "height", "sill", "pattern", "blocks", "unstackable", "parts", "model", "light", "sound", "folders", "toon"]
 # a prop's light in Blender's units: 1000 W is an intensity of 1
 WATTS_PER_INTENSITY = 1000.0
 SKIP = {"node_modules", ".git", "build", "target", "appdata", "windows", "program files", "program files (x86)",
@@ -233,7 +235,7 @@ def ordered_prop(record):
             continue
         if k in ("blocks", "unstackable") and not v:
             continue
-        if k == "folders" and not v:
+        if k in ("folders", "toon") and not v:
             continue
         if k == "model" and not v:
             continue
@@ -964,7 +966,8 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     """`objects` as a prop of the project: its .glb under the space's assets/models/, its
     record under data/props/ (keeping what the record had: its folders, its stand-in...),
     measured from them; `facts` are the record's fields to set (name, category, blocks,
-    unstackable, sill). Returns (the model's path, the record's path, the record, notes)."""
+    unstackable, sill; toon: drawn with the toon look). Returns (the model's path, the record's
+    path, the record, notes)."""
     root = Path(root)
     meshes = [o for o in objects if o.type == "MESH"]
     if not meshes:
@@ -1058,6 +1061,9 @@ def write_prop(context, root, space, aid, objects, facts, recentre=True, apply_m
     if facts.get("floor"):
         # a tile of a set of floor tiles: its set and its edges (`content::FloorTile`)
         record["floor"] = facts["floor"]
+    if "toon" in facts:
+        # (a model request's: the game's look, unless the request says otherwise)
+        record["toon"] = bool(facts["toon"])
     # its light and its sound, from the prop's origin (a record's own stay when there's none)
     if lights:
         record["light"] = light_record(lights[0], offset, record.get("light"))

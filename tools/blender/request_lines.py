@@ -279,6 +279,23 @@ def facing_wrong(part):
     return on_right if part.get("faces", "left") == "left" else on_left
 
 
+def rock_height(data, cells):
+    """A rock's height in cells, by its views' proportions (requests.md, "A rock"): the front
+    `cells[0]` wide, the side `cells[1]` long, each view as tall against that as it's drawn, the
+    two's mean (rounded to a hundredth); None without either view."""
+    heights = []
+    for view, across in zip(VIEWS, cells):
+        part = data.get(view)
+        if not part or not part.get("lines"):
+            continue
+        pts = [p for item in part["lines"] for p in shape(item)]
+        x0, top, x1, low = _box(pts)
+        ground = float(part.get("ground", low))
+        if x1 - x0 > 1e-9 and ground - top > 1e-9:
+            heights.append(float(across) * (ground - top) / (x1 - x0))
+    return round(sum(heights) / len(heights), 2) if heights else None
+
+
 def profiles(root, rid, data=None, height=None):
     """The front and the side in cells, as the model stands: {"front": {name: [(x, z), ...]},
     "side": {name: [(y, z), ...]}}. Each view stands the request's height from its ground (z
@@ -709,6 +726,12 @@ def lines(root, rid):
         bones_said, bones_missing = _user_bones_drawn(root, rid, record, data)
         said += bones_said
         missing += bones_missing
+    # a rock: as tall as its views' proportions make it on its footprint, written in the request
+    tall = rock_height(data, record["cells"]) if record["kind"] == "rock" else None
+    if tall:
+        record = mr.update(root, rid, height=tall)
+        w, dd = record["cells"]
+        said.append(f"a rock on about {w} x {dd} cells: {tall:.2f} cells tall by its front's and its side's proportions (written in the request)")
     sheet = draw_profiles(data, float(record["height"]), colours)
     if sheet is not None:
         # (written over even while a viewer shows the last one)

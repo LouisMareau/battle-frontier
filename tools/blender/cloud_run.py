@@ -9,7 +9,8 @@ commit the site was built from):
     python3 tools/blender/cloud_run.py outputs ID    what the run made, for the editor
 
 `setup` copies the request's files in (the editor uploads its folder, each at
-uploads/request/NAME), fetches Blender 3.1.2 for Linux once (the version the requests are made
+uploads/request/NAME; the props it made and what the ratings teach of its kind, the kind's best
+and worst rated models and its lessons, at uploads/project/PATH), fetches Blender 3.1.2 for Linux once (the version the requests are made
 with, its download checked against Blender's own sum), writes a wrapper running it on a virtual
 display (Xvfb: its Workbench renders need OpenGL, which a sandbox has only in software), makes
 `python` the sandbox's Python 3 when there's none, and writes private/requests/.cloud.json,
@@ -135,12 +136,13 @@ def setup(root, rid):
     if not (here / "request.json").is_file():
         print(f"no request.json among the uploads ({given}): nothing to make")
         return 1
-    # the props the request made already (kept in the user's browser, not in the checkout):
-    # into the project's spaces, where its runs made them
+    # the props the request made already (kept in the user's browser, not in the checkout): into
+    # the project's spaces, where its runs made them; and what the ratings teach of its kind (its
+    # best and worst rated models' records, renders and scripts, its lessons): into the requests
     project = UPLOADS / "project"
     for f in sorted(project.rglob("*")) if project.is_dir() else []:
         rel = f.relative_to(project).as_posix()
-        if f.is_file() and rel.split("/", 1)[0] in ("content", "temporary") and ".." not in rel:
+        if f.is_file() and (rel.split("/", 1)[0] in ("content", "temporary") or rel.startswith("private/requests/")) and ".." not in rel:
             to = Path(root) / rel
             to.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(f, to)

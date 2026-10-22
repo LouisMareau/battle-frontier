@@ -22,8 +22,8 @@ use super::{badge, hint, mark, requests, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
-const CATEGORIES: [&str; 21] = [
-    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor",
+const CATEGORIES: [&str; 22] = [
+    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "flower", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor",
     "roof", "railing", "ramp", "sign", "light", "other",
 ];
 

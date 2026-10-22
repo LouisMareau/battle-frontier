@@ -54,6 +54,15 @@ record = mr.normal(dict(mr.FIELDS, id="cloud_lamp", name="Cloud lamp", kind="pro
 made = SCRATCH / "uploads" / "project" / "temporary" / "data" / "props"
 made.mkdir(parents=True)
 (made / "cloud_lamp_old.json").write_text('{ "id": "cloud_lamp_old" }\n', encoding="utf-8")
+# what the ratings teach of its kind (requests.md, "What the ratings teach"): a prop rated best,
+# its record and render, and the kind's lessons, as the editor gives them
+taught = SCRATCH / "uploads" / "project" / "private" / "requests"
+(taught / "rated_lamp").mkdir(parents=True)
+rated = mr.normal(dict(mr.FIELDS, id="rated_lamp", name="Rated lamp", kind="prop", status="done", prop="rated_lamp", rating=88, previews=["preview_front.png"]))
+(taught / "rated_lamp" / "request.json").write_text(mr.to_text(rated), encoding="utf-8")
+(taught / "rated_lamp" / "preview_front.png").write_bytes(b"\x89PNG rated")
+(taught / ".lessons").mkdir()
+(taught / ".lessons" / "prop.md").write_text("Works:\nlanterns of few parts\n\nFails:\n(nothing yet)\n", encoding="utf-8")
 # Blender there already (a stand-in): nothing fetched
 (SCRATCH / "sandbox" / "blender-3.1.2-linux-x64").mkdir(parents=True)
 (SCRATCH / "sandbox" / "blender-3.1.2-linux-x64" / "blender").write_text("stand-in", encoding="utf-8")
@@ -63,6 +72,8 @@ code, out = tool("cloud_run.py", "setup", "cloud_lamp")
 here = mr.folder(SCRATCH, "cloud_lamp")
 check("setup: the request's files copied in", code == 0 and (here / "request.json").is_file() and (here / "front.png").read_bytes() == b"\x89PNG stand-in", out[-300:])
 check("  the props it made before, into the project's space", (SCRATCH / "temporary" / "data" / "props" / "cloud_lamp_old.json").is_file())
+check("  what the ratings teach of its kind, into the requests", mr.load(SCRATCH, "rated_lamp")["rating"] == 88
+      and (mr.folder(SCRATCH, "rated_lamp") / "preview_front.png").is_file() and mr.lessons_path(SCRATCH, "prop").is_file())
 note = json.loads((SCRATCH / mr.CLOUD).read_text(encoding="utf-8"))
 wrapper = Path(note["blender"])
 check("  the cloud's note names Blender's wrapper, which runs it on a virtual display", wrapper.is_file() and "xvfb-run -a" in wrapper.read_text(encoding="utf-8")
@@ -83,6 +94,8 @@ told = out.split("Your instructions for cloud_lamp: read ", 1)[-1].split(" whole
 text = Path(told).read_text(encoding="utf-8") if Path(told).is_file() else ""
 check("  the prompt written: the cloud's way, no cargo to run", text.startswith("In the cloud:") and 'The request: "Cloud lamp", a prop' in text
       and "cargo run" not in text and "none in the cloud (no Rust there)" in text, told)
+check("  what the ratings teach of its kind read first", "python tools/blender/model_requests.py lessons cloud_lamp" in text
+      and "Rated lamp (rated_lamp)" in "\n".join(mr.lessons(SCRATCH, "cloud_lamp")))
 
 # 3. the run: its model made and added, as the kit writes them
 (SCRATCH / "temporary" / "data" / "props").mkdir(parents=True, exist_ok=True)
@@ -91,6 +104,7 @@ check("  the prompt written: the cloud's way, no cargo to run", text.startswith(
 (SCRATCH / "temporary" / "assets" / "models" / "cloud_lamp.glb").write_bytes(b"glTF stand-in")
 (here / "preview_front.png").write_bytes(b"\x89PNG render")
 mr.finish(SCRATCH, "cloud_lamp", "cloud_lamp", ["preview_front.png"], "made a lamp")
+mr.learnt(SCRATCH, "cloud_lamp", "lanterns of few parts, the iron dark", "")
 
 # 4. --settle: done, as a run here ends
 code, out = tool("run_claude.py", "cloud_lamp", "--settle", "--reply", "A lamp of iron.")
@@ -101,9 +115,10 @@ check("--settle: done by what's on disk", code == 0 and rec["status"] == "done" 
 code, out = tool("cloud_run.py", "outputs", "cloud_lamp")
 manifest = json.loads((SCRATCH / "outputs" / "manifest.json").read_text(encoding="utf-8"))
 paths = sorted(f["path"] for f in manifest["files"])
-check("outputs: the prop, its model, the request's record and render", code == 0 and paths == [
-    "private/requests/cloud_lamp/preview_front.png", "private/requests/cloud_lamp/request.json",
+check("outputs: the prop, its model, the request's record and render, the kind's lessons written again", code == 0 and paths == [
+    "private/requests/.lessons/prop.md", "private/requests/cloud_lamp/preview_front.png", "private/requests/cloud_lamp/request.json",
     "temporary/assets/models/cloud_lamp.glb", "temporary/data/props/cloud_lamp.json"], str(paths))
+check("  not what it was given to learn from", not any("rated_lamp" in p for p in paths))
 check("  not the picture that came in, nor the log, nor the cloud's note", not any(p.endswith(("front.png", "log.txt", ".cloud.json")) and "preview" not in p for p in paths))
 sent = {f["path"]: f["name"] for f in manifest["files"]}
 check("  each under a name of its own, its bytes as they are", (SCRATCH / "outputs" / sent["temporary/assets/models/cloud_lamp.glb"]).read_bytes() == b"glTF stand-in"

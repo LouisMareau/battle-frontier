@@ -4,8 +4,9 @@
 // of its template's points it is (`vertex_index`: its row and side, the template its rows'),
 // the blade as placed (`Blade`) and its kind (`Kind`). A blade is a curve (a quadratic Bézier)
 // from its foot to its tip, leaning its own way and curving over as much as its kind says, bent
-// by the wind, narrowing to its point; a flower a thinner stem with a head of petals round its
-// heart. How fine, how wide and how tall it's drawn go by how big it looks (`blade_lod.wgsl`).
+// by the wind from its rooted foot (its tip furthest, as far as the wind's strength and its own
+// give say), narrowing to its point; a flower a thinner stem with a head of petals round its
+// heart, nodding as the wind bends the stem. How fine, how wide and how tall it's drawn go by how big it looks (`blade_lod.wgsl`).
 // Lit as the ground under it is (its normals turned half way up), or in the toon look's steps;
 // never inked. With compute shaders the culling lists the blades drawn and the drawing reads
 // them (`vs_blade_listed`); without, each square's blades come as instances and the drawing
@@ -38,8 +39,9 @@ fn unseen() -> MapOut {
     return o;
 }
 
-// the wind on a blade: its tip pushed downwind as far as it sways (with the gusts, its own
-// time), and fluttering across
+// the wind on a blade: how far its tip goes downwind, as a share of its height, by the wind's
+// strength (with its gusts, swaying in its own time) and the plant's own give (`sway`: a thin
+// blade 1, a stiff stem less, 0 rigid); and a flutter across
 fn blade_wind(at: vec3<f32>, phase: f32, sway: f32) -> vec3<f32> {
     let s = g.wind.z;
     if (s <= 0.0 || sway <= 0.0) {
@@ -48,10 +50,22 @@ fn blade_wind(at: vec3<f32>, phase: f32, sway: f32) -> vec3<f32> {
     let way = vec3<f32>(g.wind.x, 0.0, g.wind.y);
     let ph = phase * 6.2832 + dot(at.xz, vec2<f32>(0.11, 0.07));
     let gust = gust_at(at.xz);
-    let push = s * gust * (0.55 + 0.45 * sin(g.wind_b.z + ph)) * 0.8 * sway;
+    let push = s * gust * (0.5 + 0.5 * sin(g.wind_b.z + ph)) * 0.85 * sway;
     let across = vec3<f32>(-way.z, 0.0, way.x);
     let flutter = sway * (0.25 + 0.75 * s) * gust * 0.08 * sin(g.wind_b.w + ph * 3.1);
     return way * push + across * flutter;
+}
+
+// a point of a blade's curve (`at`: its point and its way at `t`, 0 its foot to 1 its tip) bent
+// by the wind: pushed `wind` (how far its tip goes) more the further up it is, as t squared, so
+// its foot stays rooted and its tip goes furthest, as a blade painted for the wind would (no
+// weight at its root, the most at its tip); coming down a little as it bends over, its length
+// kept, about
+fn blown(at: array<vec3<f32>, 2>, wind: vec3<f32>, t: f32, tall: f32) -> array<vec3<f32>, 2> {
+    let w = wind * t * t;
+    let over = dot(wind, wind) / (2.0 * max(tall, 0.05));
+    let down = vec3<f32>(0.0, over * t * t * t, 0.0);
+    return array<vec3<f32>, 2>(at[0] + w - down, at[1] + wind * 2.0 * t - down * 3.0 / max(t, 0.05));
 }
 
 // a point of a template: its part (0 a blade's rows, 1 a flower's stem, 2 a petal, 3 its
@@ -158,7 +172,8 @@ fn made(b: Blade, id: u32) -> Made {
     let up = vec3<f32>(0.0, 1.0, 0.0);
     let dir = vec3<f32>(cos(b.turn), 0.0, -sin(b.turn));
     let side = vec3<f32>(sin(b.turn), 0.0, cos(b.turn));
-    // its curve: leaning over its own way, curving over, the wind pushing its tip
+    // its curve: leaning over its own way, curving over; the wind then bends it from its foot
+    // (`blown`: rooted there, its tip going furthest)
     var lean = k.bend.x * (0.6 + 0.8 * r1);
     var bend = k.bend.y * (0.5 + 1.0 * r2);
     if (flower) {
@@ -166,15 +181,16 @@ fn made(b: Blade, id: u32) -> Made {
         bend = bend * 0.5;
     }
     let a = min(lean, 1.0) * 1.3;
-    let tip_way = normalize(up * cos(a) + dir * sin(a) + blade_wind(b.at, r3, k.bend.z));
+    let tip_way = normalize(up * cos(a) + dir * sin(a));
     let tip = b.at + tip_way * tall;
     let ctrl = mix((b.at + tip) * 0.5, b.at + up * tall, clamp(bend, 0.0, 1.0));
+    let wind = blade_wind(b.at, r3, k.bend.z) * tall;
     let dimmed = 1.0 - b.dim;
     m.toon = k.tip.w;
     if (p.part <= 1u) {
         // a blade's rows, or a flower's stem: two points a row across it, its tip one
         let t = f32(p.row) / f32(p.rows);
-        let at = bezier(b.at, ctrl, tip, t);
+        let at = blown(bezier(b.at, ctrl, tip, t), wind, t, tall);
         var half = 0.5 * k.form.w * (0.8 + 0.4 * r4) * wide;
         if (flower) {
             half = half * (1.0 - 0.5 * t);
@@ -198,9 +214,10 @@ fn made(b: Blade, id: u32) -> Made {
             m.glow = k.heart.w * smoothstep(0.25, 1.0, t);
         }
     } else {
-        // a flower's head at its stem's tip, facing up and nodding the way it leans: its petals
-        // round its heart (fewer than eight: the rest none), or far off a dot of its colour
-        let top = bezier(b.at, ctrl, tip, 1.0);
+        // a flower's head at its stem's tip, facing up and nodding the way it leans (and the
+        // wind bends it): its petals round its heart (fewer than eight: the rest none), or far
+        // off a dot of its colour
+        let top = blown(bezier(b.at, ctrl, tip, 1.0), wind, 1.0, tall);
         let face = normalize(mix(up, normalize(top[1]), 0.35));
         let e1 = normalize(cross(face, side));
         let e2 = cross(face, e1);

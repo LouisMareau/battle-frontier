@@ -34,11 +34,23 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
     python tools/blender/model_requests.py colours ID PICTURE [X0 Y0 X1 Y1] [--count 8]
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
-    python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop|grass|environment]
+    python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop|grass|flower|rock|environment]
                                               [--height 1.2] [--cells 1x1] [--style low_poly|accurate]
                                               [--details "..."] [--pose as_is] [--shapes 8-30|unlimited]
                                               [--notes "..."] [--variants 2] [--vary "size, colours"]
-                                              [--mine] [--check-lines]
+                                              [--mine] [--check-lines] [--no-toon] [--many]
+    python tools/blender/model_requests.py rate ID 85
+                                              the user's rating of the model made: 0 (nothing like
+                                              it) to 100 (exactly as designed); "none" takes it off
+    python tools/blender/model_requests.py lessons ID
+                                              what the ratings teach of the request's kind: the
+                                              models of it rated best and worst, each with its
+                                              notes, what the user said, its renders and its
+                                              model.py, and what the runs before learnt
+    python tools/blender/model_requests.py learnt ID --works "..." --fails "..."
+                                              what the runs learn from the ratings, for the kind's
+                                              next runs (private/requests/.lessons/KIND.md), written
+                                              again whole, short
 
 request.json is laid out as the project's records are (content::to_text): the editor and this
 file write the same text for the same request. Each request's log.txt (what its runs did,
@@ -63,7 +75,7 @@ FIELDS = {
     "name": "",
     "kind": "creature",
     "height": 1.0,
-    # grass: the cells it fills to their edges (across x, deep z)
+    # grass: the cells it fills to their edges (across x, deep z); a rock: its footprint, about
     "cells": [1, 1],
     "style": "smooth",
     "details": "",
@@ -75,6 +87,11 @@ FIELDS = {
     "variants": 0,
     "vary": "",
     "mine": False,
+    # drawn with the toon look (its prop's `toon`): the game's style, on unless the user says
+    "toon": True,
+    # drawn by the thousand (meadows, procedural ground, with grass and flowers): made as light as
+    # it can be
+    "many": False,
     "check_lines": False,
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
@@ -94,6 +111,9 @@ FIELDS = {
     # again with these comments"), and what the runs made again before were told, oldest first
     "comments": "",
     "earlier": [],
+    # the user's rating of the model made: 0 (nothing like it) to 100 (exactly as designed, as its
+    # description says); None: not rated. A kind's best and worst rated teach its next runs
+    "rating": None,
     # the pictures hold several drawings of the same kind of asset (trees, bushes, rocks): the
     # first run splits it, each drawing a request of its own (`children`, each one's `parent`
     # this one), made one after another
@@ -101,11 +121,13 @@ FIELDS = {
     "parent": "",
     "children": [],
 }
-# a creature (rigged), a prop, grass (filling its cells to their edges), an environment asset
-# (rocks, bushes, flowers, logs, trees), or a set of floor tiles (laid by wave function collapse)
-KINDS = ("creature", "prop", "grass", "environment", "floor")
+# a creature (rigged), a prop, grass (filling its cells to their edges), a flower (made finely:
+# its stem, leaves, petals and heart), a rock (made finely, on about its cells: its `cells` its
+# footprint, its height its pictures' proportions'), an environment asset (rocks, bushes,
+# flowers, logs, trees), or a set of floor tiles (laid by wave function collapse)
+KINDS = ("creature", "prop", "grass", "flower", "rock", "environment", "floor")
 # the kinds whose settings ask for variants from the first run on (any made one can have some)
-VARYING = ("grass", "environment")
+VARYING = ("grass", "flower", "rock", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
 VARIANTS_CAP = 12
 # grass is grown over whole fields (the engine grows it through tall ground, one to a cell) and
@@ -275,6 +297,101 @@ def every(root):
 
 def waiting(root):
     return [r for r in every(root) if r["status"] == "waiting"]
+
+
+# ---------------------------------------------------------------- what the ratings teach
+
+# a kind's models rated best (at least BEST) and worst (at most WORST) the next runs of its kind
+# look at, at most SHOWN of each: what the game's models of that kind share (its "DNA"), and
+# what to steer clear of
+BEST, WORST, SHOWN = 60, 40, 3
+# what the runs have learnt from them, a kind's to a file (written again whole, short)
+LESSONS = Path("private") / "requests" / ".lessons"
+
+
+def rated(root, kind, but=None):
+    """The models of a kind the user has rated (made, with a rating), best first (by rating,
+    then by name), `but` (the request being made) left out."""
+    out = [r for r in every(root) if r["kind"] == kind and r["status"] == "done" and r.get("rating") is not None and r["id"] != but]
+    return sorted(out, key=lambda r: (-int(r["rating"]), r["name"].lower(), r["id"]))
+
+
+def best_and_worst(records):
+    """Of a kind's rated models (best first), the few rated best (BEST or more, the best first)
+    and the few rated worst (WORST or less, the worst first), at most SHOWN of each (the
+    editor's requests::best_and_worst)."""
+    best = [r for r in records if int(r["rating"]) >= BEST][:SHOWN]
+    worst = [r for r in reversed(records) if int(r["rating"]) <= WORST][:SHOWN]
+    return best, worst
+
+
+def lessons_path(root, kind):
+    return Path(root) / LESSONS / f"{kind}.md"
+
+
+def lessons(root, rid):
+    """What the ratings teach of a request's kind, for its run to read: what the runs before
+    learnt, then its models rated best and worst, each with its notes, what the user said of it,
+    what its run said, its renders and its model.py. Empty when there's nothing to learn yet."""
+    record = load(root, rid)
+    kind = record["kind"]
+    best, worst = best_and_worst(rated(root, kind, but=rid))
+    path = lessons_path(root, kind)
+    learnt = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+    if not (best or worst or learnt):
+        return []
+    out = [f"What the user's ratings teach of {kind} models (0: nothing like it, 100: exactly as designed, as its",
+           "description says), for this one to share the best ones' style and leave out what the worst did."]
+    if learnt:
+        out += ["", f"What the runs before learnt ({path.relative_to(root).as_posix()}):"] + ["  " + line for line in learnt.splitlines()]
+
+    def each(r):
+        base = folder(root, r["id"])
+        lines = [f"  {int(r['rating']):>3}  {r['name']} ({r['id']}): private/requests/{r['id']}/"]
+        if r["notes"].strip():
+            lines.append("       its notes: " + " ".join(r["notes"].split()))
+        said = [c for c in [*r["earlier"], r["comments"]] if str(c).strip()]
+        if said:
+            lines.append("       the user said of it: " + " / ".join(" ".join(str(c).split()) for c in said))
+        if r["reply"].strip():
+            reply = " ".join(r["reply"].split())
+            lines.append("       its run said: " + (reply[:400] + "..." if len(reply) > 400 else reply))
+        renders = [f for f in r["previews"] if (base / f).is_file()]
+        if renders:
+            lines.append("       its renders: " + ", ".join(renders))
+        if (base / "model.py").is_file():
+            lines.append(f"       built by: private/requests/{r['id']}/model.py")
+        return lines
+
+    if best:
+        out += ["", f"Rated best ({BEST} or more): look at their renders and read their model.py; build this one with their DNA"]
+        for r in best:
+            out += each(r)
+    if worst:
+        out += ["", f"Rated worst ({WORST} or less): look at their renders; steer clear of what they did"]
+        for r in worst:
+            out += each(r)
+    return out
+
+
+def learnt(root, rid, works="", fails=""):
+    """What a run takes from the ratings, for the next runs of its request's kind: the kind's
+    lessons written again whole (what works, what fails; short, the style and the way of
+    building, not one model's details), and a line in the request's log. Its path."""
+    kind = load(root, rid)["kind"]
+    path = lessons_path(root, kind)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    text = f"Works:\n{works.strip() or '(nothing yet)'}\n\nFails:\n{fails.strip() or '(nothing yet)'}\n"
+    path.write_text(text, encoding="utf-8", newline="\n")
+    log(root, rid, f"learnt for the {kind} models: works: {' '.join(works.split()) or '-'}; fails: {' '.join(fails.split()) or '-'}")
+    return path
+
+
+def rate(root, rid, rating):
+    """The user's rating of the model made (0 to 100; None: not rated)."""
+    if rating is not None:
+        rating = max(0, min(100, int(rating)))
+    return update(root, rid, rating=rating)
 
 
 def free(path):
@@ -918,6 +1035,17 @@ def main(argv):
         count = option("--count", "8")
         box = [float(v) for v in argv[2:6]] if len(argv) >= 6 else None
         print("\n".join(colours(root, argv[0], argv[1], box, int(count))))
+    elif verb == "rate":
+        value = None if argv[1].lower() == "none" else int(argv[1])
+        r = rate(root, argv[0], value)
+        print(f"{r['id']}: " + ("not rated" if r["rating"] is None else f"rated {r['rating']}"))
+    elif verb == "lessons":
+        said = lessons(root, argv[0])
+        print("\n".join(said) if said else f"Nothing to learn yet: no {load(root, argv[0])['kind']} model is rated, and no run has learnt anything.")
+    elif verb == "learnt":
+        works, fails = option("--works", ""), option("--fails", "")
+        path = learnt(root, argv[0], works, fails)
+        print(f"{path.relative_to(root).as_posix()}: written again")
     elif verb == "new":
         cells = option("--cells", "1x1").lower().split("x")
         fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "cells": [int(cells[0]), int(cells[-1])], "style": option("--style", "smooth"),
@@ -930,6 +1058,10 @@ def main(argv):
             if flag in argv:
                 argv.remove(flag)
                 fields[field] = True
+        for flag, field, value in (("--no-toon", "toon", False), ("--many", "many", True)):
+            if flag in argv:
+                argv.remove(flag)
+                fields[field] = value
         if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
             raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
         r = new(root, argv[0], argv[1:], **fields)

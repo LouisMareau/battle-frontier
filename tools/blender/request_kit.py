@@ -90,8 +90,19 @@ class Job:
         return self.record["kind"] == "environment"
 
     @property
+    def flower(self):
+        """A flower, made finely (requests.md, "A flower")."""
+        return self.record["kind"] == "flower"
+
+    @property
+    def rock(self):
+        """A rock on about its cells, as tall as its pictures' proportions (requests.md, "A rock")."""
+        return self.record["kind"] == "rock"
+
+    @property
     def cells(self):
-        """Grass's cells, across x and deep y (Blender's): (1, 1) unless the request says."""
+        """Grass's cells (a rock's footprint, about), across x and deep y (Blender's): (1, 1)
+        unless the request says."""
         return tuple(int(c) for c in self.record["cells"])
 
     @property
@@ -1044,6 +1055,26 @@ def fit_cells(objects, cells=(1, 1), height=None):
     return sx, sy, sz
 
 
+def fit_footprint(objects, cells=(1, 1)):
+    """A rock fitted to about its footprint (requests.md, "A rock"): scaled as a whole, its
+    proportions kept, so its bounds across Blender's x and deep its y come as close to `cells`
+    as they can both (the two ways' scales' geometric mean), on the origin with the middle of its
+    footprint there, standing on it. Returns the scale."""
+    lo, hi = bounds(objects)
+    size = hi - lo
+    s = ((cells[0] / max(size.x, 1e-6)) * (cells[1] / max(size.y, 1e-6))) ** 0.5
+    m = Matrix.Scale(s, 4) @ Matrix.Translation(-Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z)))
+    for o in objects:
+        if o.type == "MESH":
+            o.data.transform(o.matrix_world)
+            o.matrix_world = Matrix.Identity(4)
+            o.data.transform(m)
+            o.data.update()
+        else:
+            o.location = m @ o.location
+    return s
+
+
 def drop(objects):
     """Objects taken out of the scene, their meshes with them: a variant once it's added (the
     next one built where it stood)."""
@@ -1647,7 +1678,7 @@ def finish_floor_set(job, files, reply=None):
         floor = {"set": job.id, "edges": t["edges"], "weight": t["weight"]}
         if t["turns"]:
             floor["turns"] = True
-        facts = {"name": f"{record['name']}: {t['name']}", "category": "floor", "blocks": False, "unstackable": False, "floor": floor}
+        facts = {"name": f"{record['name']}: {t['name']}", "category": "floor", "blocks": False, "unstackable": False, "floor": floor, "toon": record["toon"]}
         glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in t["objects"] if not bf.is_bounds(o)], facts, recentre=False)
         made.append(pid)
         print(f"Done: {pid} ({Path(glb).relative_to(job.root)}, {Path(path).relative_to(job.root)})" + (f"; {'; '.join(notes)}" if notes else ""), flush=True)
@@ -1693,9 +1724,9 @@ def engine_check(root, glb):
 
 def _facts(job, category, blocks):
     """A prop's category and whether it blocks the way, unless said: by the request's kind (a
-    character; grass, never in the way; else a decoration, in the way)."""
-    kind = {"creature": "character", "grass": "grass"}.get(job.record["kind"], "decoration")
-    return category or kind, (not job.grass) if blocks is None else blocks
+    character; grass and a flower, never in the way; a rock; else a decoration, in the way)."""
+    kind = job.record["kind"]
+    return category or {"creature": "character", "grass": "grass", "flower": "flower", "rock": "rock"}.get(kind, "decoration"), (kind not in ("grass", "flower")) if blocks is None else blocks
 
 
 def _fills(job, objects):
@@ -1753,7 +1784,7 @@ def finish_variant(job, k, objects, category=None, blocks=None, unstackable=Fals
     space = "content" if record["mine"] else "temporary"
     pid = mr.variant_id(dict(record, prop=record["prop"] or free_prop_id(job.root, record["id"])), k)
     category, blocks = _facts(job, category, blocks)
-    facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable}
+    facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable, "toon": record["toon"]}
     _fills(job, objects)
     _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
@@ -1779,7 +1810,7 @@ def finish(job, objects, files, reply=None, category=None, blocks=None, unstacka
     space = "content" if record["mine"] else "temporary"
     pid = record["prop"] or free_prop_id(job.root, record["id"])
     category, blocks = _facts(job, category, blocks)
-    facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable}
+    facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable, "toon": record["toon"]}
     _fills(job, objects)
     _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)

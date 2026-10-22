@@ -21,7 +21,7 @@
           "width": 0.012,
           "lean": 0.1,
           "bend": 0.15,
-          "sway": 0.8,
+          "sway": 0.45,
           "petal": "#f4cc1c",
           "heart": "#e8a010",
           "bloom": 0.055,

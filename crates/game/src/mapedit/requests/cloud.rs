@@ -372,8 +372,8 @@ mod run {
 
     use serde_json::{json, Value};
 
-    use super::super::desk::{folder, now_secs, read, save, How};
-    use super::super::{disk, ModelRequest, Progress, Status};
+    use super::super::desk::{folder, load_all, now_secs, read, save, How};
+    use super::super::{best_and_worst, disk, ModelRequest, Progress, Status};
     use super::*;
     use crate::mapedit::claude::{key, RELAY, VERSION};
 
@@ -679,7 +679,9 @@ mod run {
     }
 
     /// The request's files a run is given: its folder's (its log and the run's own notes aside),
-    /// each at request/NAME; the props it made, kept in this browser, at project/PATH.
+    /// each at request/NAME; the props it made, kept in this browser, at project/PATH; and what
+    /// the ratings teach of its kind (requests.md, "What the ratings teach"): its best and worst
+    /// rated models' records, renders and scripts, and the kind's lessons, at project/PATH.
     fn given(root: &Path, r: &ModelRequest) -> Vec<(String, Vec<u8>)> {
         let mut out = vec![];
         for e in disk::read_dir(&folder(root).join(&r.id)).unwrap_or_default() {
@@ -703,6 +705,20 @@ mod run {
                 }
                 out.push((format!("project/{record}"), bytes.to_vec()));
             }
+        }
+        let (all, _) = load_all(root);
+        let (best, worst) = best_and_worst(&all, r.kind, &r.id);
+        for q in best.into_iter().chain(worst) {
+            let names = std::iter::once("request.json".to_string()).chain(q.previews.iter().cloned()).chain(std::iter::once("model.py".to_string()));
+            for name in names {
+                if let Ok(bytes) = disk::read(folder(root).join(&q.id).join(&name)) {
+                    out.push((format!("project/private/requests/{}/{name}", q.id), bytes));
+                }
+            }
+        }
+        let word = serde_json::to_value(r.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        if let Ok(bytes) = disk::read(folder(root).join(".lessons").join(format!("{word}.md"))) {
+            out.push((format!("project/private/requests/.lessons/{word}.md"), bytes));
         }
         out
     }

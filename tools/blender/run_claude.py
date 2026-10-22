@@ -72,6 +72,8 @@ import request_lines as rl  # noqa: E402
 
 # seconds without a word from Claude: the run is stopped, the request failed
 QUIET = 30 * 60
+# about the most vertices a model drawn by the thousand has (requests.md, "Drawn by the thousand")
+MANY_VERTICES = 300
 # lines of a tool's answer kept in the log (run.jsonl has everything)
 SHOWN = 30
 
@@ -89,6 +91,21 @@ and its pictures). Notes from the user: {notes}
 READ = """- read private/requests/{id}/request.json and look at every picture in that folder (to see a
   part closer: python tools/blender/model_requests.py zoom {id} PICTURE X0 Y0 X1 Y1, in pixels
   or fractions of the picture, with no box it gives the size; then look at the zoom it writes);
+"""
+# what the user's ratings teach of the request's kind (model_requests.py lessons): the style its
+# best rated models share, carried on; what its worst did, left out ({kind}: the request's)
+LESSONS = """- what the user's ratings teach of {kind} models (requests.md, "What the ratings teach"): run
+  python tools/blender/model_requests.py lessons {id}
+  It lists the {kind} models the user rated best and worst (0 to 100: 100 is exactly as designed,
+  as its description says), each with its notes, what the user said of it, what its run said,
+  its renders and its model.py, and what the runs before learnt from them. Look at the best ones'
+  renders and read their model.py: build this one with their DNA (how the parts are made and
+  joined, the proportions, the level of detail, how the colours and materials are handled, the
+  silhouette), so the game's {kind}s look made by one hand, this one still its own design. Look
+  at the worst ones' renders, and leave out what they did. When the ratings show something the
+  lessons don't say yet, write them again, whole and short (the style and the way of building,
+  never one model's details):
+  python tools/blender/model_requests.py learnt {id} --works "..." --fails "..."
 """
 # the user has drawn the creature's bones over the pictures (the editor's Bones window): the run reads
 # the pictures by them ({drawn}: on which pictures, how many lines)
@@ -236,7 +253,7 @@ MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
 PROMPT = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
-          + READ + "{bones}{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
+          + READ + "{lessons}{bones}{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
 LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
              "started already), then stop: the user checks the lines before the model is built (the request\n"
              "says \"Let me check the lines first\"):\n"
@@ -244,7 +261,7 @@ LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from
                                                            "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
                                                            "lines you're unsure of."))
 GO_ON_RUN = (HEAD + "Follow tools/blender/requests.md for this one request from its step 6, the model (it's started\n"
-             "already):\n" + READ + CHECKED + MODEL + RULES.replace("{end}", MADE))
+             "already):\n" + READ + "{lessons}" + CHECKED + MODEL + RULES.replace("{end}", MADE))
 # a request made once, made again with the user's comments on it ({said}), from what the last
 # run made ({reply}: what it said back; {earlier}: what the runs made again before were told)
 AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its parts listed at its top,
@@ -339,7 +356,7 @@ FLOOR = """- the pictures show a floor, a pavement or a tiling (or a part of one
 - check: cargo run -q -p engine-content --bin content -- check
 """
 FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
-             "it's a set of floor tiles (\"A set of floor tiles\"):\n" + READ + "{noted}" + FLOOR + RULES.replace("{end}", MADE))
+             "it's a set of floor tiles (\"A set of floor tiles\"):\n" + READ + "{lessons}{noted}" + FLOOR + RULES.replace("{end}", MADE))
 AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made again from what the last run made,\n"
              "with the user's comments on it (requests.md, \"Made again, with the user's comments\"; it's started\n"
              "already):\n" + READ + AGAIN
@@ -452,6 +469,36 @@ FLOOR_STYLES = {
                  "pictures put it, the colours measured off them (none of the drawing's light or shade), an image texture painted from the "
                  "picture for what's too fine to model; each tile still light, as a floor is laid on many cells (about 1500 triangles a tile)."),
 }
+# a flower, made finely: its stem, leaves, petals and heart (requests.md, "A flower")
+FLOWER = ("Flower: made finely, part by part (requests.md, \"A flower\"): its stem (kit.tube along a gentle curve, tapering up to the "
+          "head, a node or two where its leaves grow), its leaves (thin slabs bent along their length and cupped, each from a node or a "
+          "rosette at its foot), its petals (each its own thin curved surface: cupped, curving out, its tip curling, in rings that overlap, "
+          "the inner ones smaller), its heart (a disc, a dome or a cone; with stamens where the design has them: long thin filaments "
+          "fanning out of it, each tipped with an anther) and the sepals under its head; each petal's colour shading along it as the design "
+          "does. Painted for the wind in one kit.plant_wind call: the stem as stems, rooted at its foot, the petals and the leaves "
+          "fluttering. kit.finish's category \"flower\", never blocking the way: a meadow can grow it among its grass.")
+# a rock, made finely on about its footprint, as tall as its pictures' proportions (requests.md,
+# "A rock"; {w} x {d}: its cells)
+ROCK = ("Rock: made finely, on about {w} x {d} cells (Blender's X and Y), as the user asks: its footprint, not its height "
+        "(requests.md, \"A rock\"). Its height is the pictures' proportions': draw the front {w} cells wide and the side {d} long "
+        "in their proportions, and python tools/blender/model_requests.py lines works out how tall that makes it and writes it in "
+        "the request (profiles.png stands it so; job.height is it then). Fit it with kit.fit_footprint(parts, job.cells) in place of "
+        "kit.fit: about its cells, its proportions kept, not exactly. As fine as the design: its mass, then its facets, cracks, "
+        "ledges and strata; its colour varying over it (paint volumes for veins, lichen and weathering, or a texture painted from "
+        "the pictures); moss in patches where moss grows (its top, its shaded side, its hollows and cracks); grass and flowers at "
+        "its foot and out of its cracks where the design has them, each blade or stem a thin piece of its own, painted for the "
+        "wind (the rock never). kit.finish's category \"rock\", blocking the way.")
+# a model drawn by the thousand: as light as it can be (requests.md, "Drawn by the thousand")
+MANY = ("Drawn by the thousand: it's strewn over whole fields with the grass and the flowers (meadows, procedural ground), so make it "
+        "as light as it can be while it reads right a few cells off (requests.md, \"Drawn by the thousand\"): the fewest vertices that "
+        f"keep its silhouette (about {MANY_VERTICES} in all, as the engine counts them in its .glb: flat faces and seams split vertices), "
+        "no subdivision, no faces nobody sees (under the ground, inside), flat colours over textures, few materials, no fur; each loose "
+        "piece (a leaf, a petal, a blade) a piece of its own, so the engine leaves pieces out further off.")
+# the game's look, or not (the prop's toon tag)
+TOON = ("Toon: it's drawn with the game's toon look (light in steps, ink lines round it and along its sharp folds; requests.md, "
+        "\"The toon look\"): clear shapes and flat colour regions read best, fine surface detail the light's steps would band left out. "
+        "The prop is added toon.")
+NOT_TOON = "Not toon: the user wants it drawn with smooth light (the prop is added without the toon look)."
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -486,6 +533,9 @@ def settings_lines(record):
                    f"{mr.GRASS_THINNEST * w * d} vertices, and at most {mr.GRASS_MOST * w * d} in all ({mr.GRASS_MOST} a cell, as the engine "
                    "counts them in its .glb: flat faces and seams split vertices); as dense and fine as the pictures want within that. "
                    "kit.finish refuses more.")
+    elif record["kind"] == "rock":
+        w, d = record["cells"]
+        out.append(ROCK.format(w=w, d=d))
     elif record["kind"] != "floor" and list(record["cells"]) != [1, 1]:
         # (a drawing outlined with its own cells: the ground it covers)
         w, d = record["cells"]
@@ -495,6 +545,11 @@ def settings_lines(record):
                    "tree... kit.finish's category the one that fits (tree, flora, rock, grass, decoration), blocking the way when it's big "
                    "enough to walk round (a rock, a tree, a log), not when it's walked through (flowers, a low bush); what the wind moves "
                    "painted for it.")
+    if record["kind"] == "flower":
+        out.append(FLOWER)
+    if record["kind"] != "floor" and record.get("many"):
+        out.append(MANY)
+    out.append(TOON if record.get("toon", True) else NOT_TOON)
     if record["kind"] != "floor" and record["variants"] > 0:
         n = record["variants"]
         how = record["vary"].strip()
@@ -549,13 +604,15 @@ def vary_text(record):
             "  its shape, how its parts sit, its colours a shade apart; never another kind of thing.")
 
 
-def prompt(record, go_on=False, note="", again=False, variants=False):
+def prompt(record, go_on=False, note="", again=False, variants=False, root=None):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
     user says is off in the lines (`note`, from the window's check) fixed first; made again
     (`again`), what the user says of the last run's model (`note`, else the record's comments);
     `variants`, its variants made from its model. A request that asks for variants has them
-    made with its model."""
+    made with its model. With the project (`root`), a run that builds the model reads first what
+    the ratings teach of its kind, when they teach anything yet."""
     rid = record["id"]
+    lessons = LESSONS.format(kind=record["kind"], id=rid) if root is not None and mr.lessons(root, rid) else ""
     note = (note.strip() or record["comments"].strip()) if again else note.strip()
     said = indented(note)
     if note:
@@ -590,6 +647,11 @@ def prompt(record, go_on=False, note="", again=False, variants=False):
         what = f"grass filling {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, {height} cells tall"
     elif kind == "environment":
         what = f"an environment asset {height} cells tall"
+    elif kind == "flower":
+        what = f"a flower {height} cells tall, made finely"
+    elif kind == "rock":
+        w, d = record["cells"]
+        what = f"a rock on about {w} x {d} cells, as tall as its pictures' proportions make it"
     else:
         what = f"a {kind} {height} cells tall"
     count = record["variants"]
@@ -601,7 +663,7 @@ def prompt(record, go_on=False, note="", again=False, variants=False):
                            settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
                            variants=step, count=len(shapes) if part == "split" and shapes else count, vary=vary, made=made,
-                           outlined=outlines_said(record, shapes))
+                           outlined=outlines_said(record, shapes), lessons=lessons)
 
 
 def outlines_said(record, shapes):
@@ -849,7 +911,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    text = prompt(record, go_on, note, again, variants)
+    text = prompt(record, go_on, note, again, variants, root=root)
     mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
@@ -956,7 +1018,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False)
     if ended is not None:
         print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
         return ended
-    text = CLOUD + prompt(record, go_on, note, again, variants).replace(CHECK, CLOUD_CHECK)
+    text = CLOUD + prompt(record, go_on, note, again, variants, root=root).replace(CHECK, CLOUD_CHECK)
     mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say("In the cloud: Claude in a sandbox of Anthropic's, on the user's own API key (the web editor's run)")

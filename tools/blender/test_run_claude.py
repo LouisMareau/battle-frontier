@@ -12,7 +12,9 @@ which a run with --go-on then finishes); a request made once is made again with 
 comments on it (--again); a request whose picture has several drawings is split, each one a
 request of its own; a set of floor tiles: laid by the engine's rules (floor_wfc.py), and its
 run's own recipe; grass filling its cells, an environment asset, variants made with the model and
-variants of a model made (--variants). Then the bones the user has drawn over the pictures: in the
+variants of a model made (--variants); a flower and a rock made finely (the rock's height from its
+lines' proportions on its footprint), toon unless the user says, drawn by the thousand when asked;
+a kind's best and worst rated teaching its next runs, and what they learn. Then the bones the user has drawn over the pictures: in the
 record, the prompt, their drawing, what the run says each is, and the rig's chains from them.
 Exits 1 when a check fails.
 """
@@ -313,7 +315,7 @@ check("  its prompt: from what the last run made, what it said back, the comment
       and "run_request.py test_again --finish" in asked and "made again from what the last run made" in ran, asked[:3000])
 check("  and not the lines drawn again from nothing, nor a stop", "draw the design's lines over each picture" not in asked and "stop there" not in asked
       and "This run makes it again from the last run's model, with the user's comments: the trunk thicker" in ran)
-check("  in the record's layout: the comments for the next run after the reply", list(mr.FIELDS)[-6:-3] == ["reply", "comments", "earlier"])
+check("  in the record's layout: the comments for the next run after the reply, the rating after them", list(mr.FIELDS)[-7:-3] == ["reply", "comments", "earlier", "rating"])
 fresh("test_again_note", status="done", prop="test_prop", comments="the old comment")
 (mr.folder(SCRATCH, "test_again_note") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
 code, out, rec, log = run("test_again_note", "finish", "--again", "--note", "the leaves lighter")
@@ -454,6 +456,67 @@ fresh("test_vary_zero", status="done", prop="test_prop")
 (mr.folder(SCRATCH, "test_vary_zero") / "model.py").write_text("# the last run's model\n", encoding="utf-8")
 code, out, rec, log = run("test_vary_zero", "variants", "--variants")
 check("  no variants asked for: nothing run, still done", rec["status"] == "done" and "No variants asked for" in log and "Claude Code: " not in log, rec["status"])
+
+# 9h. a flower and a rock made finely (requests.md, "A flower", "A rock"), toon unless the user
+# says ("The toon look"), drawn by the thousand when asked ("Drawn by the thousand"); in the
+# record's layout as the editor writes it
+import request_lines as rl  # noqa: E402
+fresh("test_flower", kind="flower", height=0.3)
+asked = rc.prompt(mr.load(SCRATCH, "test_flower"))
+check("a flower: made finely, its stem, leaves, petals and heart (stamens), a meadow's, never in the way",
+      "a flower 0.3 cells tall, made finely" in asked and "Flower: made finely, part by part" in asked and "stamens" in asked
+      and 'category "flower", never blocking the way: a meadow can grow it' in asked, asked[:2500])
+check("  toon unless the user says, not drawn by the thousand unless asked", "Toon: it's drawn with the game's toon look" in asked and "The prop is added toon" in asked
+      and "Drawn by the thousand" not in asked)
+check("  its kind asks for variants from the first run on, as grass's and a rock's", "flower" in mr.VARYING and "rock" in mr.VARYING and "flower" in mr.KINDS and "rock" in mr.KINDS)
+fresh("test_boulder", kind="rock", cells=[2, 1], toon=False, many=True)
+asked = rc.prompt(mr.load(SCRATCH, "test_boulder"))
+check("a rock: by its footprint, its height its pictures' proportions', fitted about its cells", "a rock on about 2 x 1 cells, as tall as its pictures' proportions make it" in asked
+      and "Rock: made finely, on about 2 x 1 cells" in asked and "kit.fit_footprint(parts, job.cells) in place of kit.fit" in asked
+      and "moss in patches" in asked and 'category "rock", blocking the way' in asked, asked[:2500])
+check("  not toon when the user says, drawn by the thousand when asked: as light as it can be", "Not toon" in asked and "Toon: it's drawn" not in asked
+      and "Drawn by the thousand" in asked and f"about {rc.MANY_VERTICES} in all" in asked and "each loose piece (a leaf, a petal, a blade) a piece of its own" in asked)
+check("  in the record's layout: toon and drawn by the thousand after mine, the rating after the comments",
+      all(after(a, b) for a, b in (("mine", "toon"), ("toon", "many"), ("many", "check_lines"), ("earlier", "rating"), ("rating", "several")))
+      and mr.FIELDS["toon"] is True and mr.FIELDS["many"] is False and mr.FIELDS["rating"] is None, str(list(mr.FIELDS)))
+check("  a rock's height by its views' proportions on its footprint: each view's height against its width, the mean",
+      rl.rock_height({"front": {"lines": [{"name": "outline", "points": [[0, 0], [200, 0], [200, 100], [0, 100]], "closed": True}]},
+                      "side": {"lines": [{"name": "outline", "points": [[0, 20], [100, 20], [100, 100], [0, 100]], "closed": True}]}}, [2, 1]) == 0.9
+      and rl.rock_height({}, [2, 1]) is None)
+
+# 9i. the ratings (requests.md, "What the ratings teach"): a kind's best (60 or more) and worst (40
+# or less) rated, three of each, the one being made left out, teach its next runs; what they learn
+# written again whole for the kind
+for rid, rating in (("test_daisy", 95), ("test_poppy", 90), ("test_tulip", 72), ("test_iris", 66), ("test_aster", 50), ("test_lily", 20), ("test_rose", 35)):
+    fresh(rid, kind="flower", status="done", prop=rid, rating=rating, notes=f"the {rid[5:]}'s notes", comments="the petals curl more" if rating < 40 else "",
+          reply=f"made the {rid[5:]}", previews=["preview_front.png"])
+    (mr.folder(SCRATCH, rid) / "preview_front.png").write_bytes(b"png")
+    (mr.folder(SCRATCH, rid) / "model.py").write_text("# its model\n", encoding="utf-8")
+fresh("test_moss", kind="rock", status="done", prop="test_moss", rating=99)
+best, worst = mr.best_and_worst(mr.rated(SCRATCH, "flower", but="test_flower"))
+check("the best rated (60 or more), three, best first; the worst (40 or less), worst first; of the kind only",
+      [r["id"] for r in best] == ["test_daisy", "test_poppy", "test_tulip"] and [r["id"] for r in worst] == ["test_lily", "test_rose"],
+      str(([r["id"] for r in best], [r["id"] for r in worst])))
+said = "\n".join(mr.lessons(SCRATCH, "test_flower"))
+check("  their lessons: each one's rating, notes, what the user said, what its run said, its renders and its script",
+      "95  Test Daisy (test_daisy)" in said and "the daisy's notes" in said and "the user said of it: the petals curl more" in said
+      and "its run said: made the lily" in said and "its renders: preview_front.png" in said and "built by: private/requests/test_daisy/model.py" in said
+      and "Rated best (60 or more)" in said and "Rated worst (40 or less)" in said and "test_moss" not in said and "test_aster" not in said, said)
+check("  a run that builds the model reads them first", "python tools/blender/model_requests.py lessons test_flower" in rc.prompt(mr.load(SCRATCH, "test_flower"), root=SCRATCH)
+      and "lessons test_flower" not in rc.prompt(mr.load(SCRATCH, "test_flower")))
+check("  none rated of its kind, nothing learnt: nothing to read", mr.lessons(SCRATCH, "test_grass") == []
+      and "model_requests.py lessons" not in rc.prompt(mr.load(SCRATCH, "test_grass"), root=SCRATCH))
+path = mr.learnt(SCRATCH, "test_flower", "petals cupped, curling at their tips", "flat discs for petals")
+said = "\n".join(mr.lessons(SCRATCH, "test_flower"))
+check("  what a run learns, for the kind's next runs: written again whole, in its lessons, in its log",
+      path == SCRATCH / "private" / "requests" / ".lessons" / "flower.md" and "Works:\npetals cupped, curling at their tips" in path.read_text(encoding="utf-8")
+      and "What the runs before learnt (private/requests/.lessons/flower.md):" in said and "flat discs for petals" in said
+      and "learnt for the flower models" in (mr.folder(SCRATCH, "test_flower") / "log.txt").read_text(encoding="utf-8"), said)
+fresh("test_newt", kind="creature")
+mr.learnt(SCRATCH, "test_newt", "four legs splayed, its belly low", "")
+check("  what was learnt, none rated: read too", "four legs splayed, its belly low" in "\n".join(mr.lessons(SCRATCH, "test_newt"))
+      and "Rated best" not in "\n".join(mr.lessons(SCRATCH, "test_newt")))
+check("the user's rating: 0 to 100, none taken off", mr.rate(SCRATCH, "test_iris", 130)["rating"] == 100 and mr.rate(SCRATCH, "test_iris", None)["rating"] is None)
 
 # 9e. a set of floor tiles (requests.md, "A set of floor tiles"): laid as the engine lays them
 # (floor_wfc.py, its rules in plain Python), every two cells side by side agreeing; its run the

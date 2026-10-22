@@ -3,7 +3,9 @@
 // middle, a strip of short grass along its west edge), its meadow a grass, daisies and poppies
 // (in clusters). Looked at from four distances: blades drawn, culled on the GPU; up close the
 // finest templates, far off the simplest; what they cost in vertices within what the picture
-// can show; flowers among them; the frame rate; no error. With --webgl, the page without
+// can show; flowers among them; the frame rate; no error. Then the wind: up close, the blades
+// sway (the picture changes from one moment to the next), still when the wind is calm, and
+// still in the wind when the plants are rigid (their sway 0). With --webgl, the page without
 // WebGPU (WebGL 2: no compute shaders, the CPU culling patch by patch). Screenshots to
 // screenshots/blades-*.png (blades-webgl-*.png). Exits 1 when something fails.
 //     node tools/bladecheck.mjs [--webgl]
@@ -44,18 +46,23 @@ const field = (id) => {
 };
 const plants = [
   { name: 'Meadow grass', shape: 'blade', weight: 1, height: [0.3, 0.55], width: 0.035, lean: 0.25, bend: 0.4, sway: 1 },
-  { name: 'Daisy', shape: 'flower', weight: 0.1, height: [0.18, 0.32], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.8, petals: 8, petal: '#f6f3ea', heart: '#eab92a', bloom: 0.09 },
-  { name: 'Poppy', shape: 'flower', weight: 0.08, height: [0.3, 0.5], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.8, petals: 4, petal: '#d0301e', heart: '#2a1a12', bloom: 0.12, clusters: 0.6 },
+  { name: 'Daisy', shape: 'flower', weight: 0.1, height: [0.18, 0.32], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.45, petals: 8, petal: '#f6f3ea', heart: '#eab92a', bloom: 0.09 },
+  { name: 'Poppy', shape: 'flower', weight: 0.08, height: [0.3, 0.5], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.45, petals: 4, petal: '#d0301e', heart: '#2a1a12', bloom: 0.12, clusters: 0.6 },
 ];
+// the wind as the page is opened (a breeze from the west), and whether the plants give to it
+let wind = { direction: 90, strength: 0.7, gusts: 0.3 };
+let giving = true;
 const rewrite = (path, body) => {
   if (path !== 'content/bundle.json') return body;
   const bundle = JSON.parse(body.toString('utf8'));
   bundle.files['maps/meadow_check.json'] = field('meadow_check');
   const tall = bundle.files['terrains/tall_grass.json'];
-  bundle.files['terrains/meadow_check.json'] = { ...tall, id: 'meadow_check', name: 'Meadow check', growth: { meadow: { plants, density: 48, patchy: 0.3, clump: 0.6, clumping: 0.5 } } };
+  const grown = plants.map((p) => ({ ...p, sway: giving ? p.sway : 0 }));
+  bundle.files['terrains/meadow_check.json'] = { ...tall, id: 'meadow_check', name: 'Meadow check', growth: { meadow: { plants: grown, density: 48, patchy: 0.3, clump: 0.6, clumping: 0.5 } } };
   // the colours as they are: no cloud shadows drifting over, no colour steps
   const world = bundle.files['settings/world.json'];
   world.toon = { ...(world.toon ?? {}), cloud_shadow: 0, color_steps: 0 };
+  world.wind = wind;
   return Buffer.from(JSON.stringify(bundle));
 };
 
@@ -86,9 +93,10 @@ const look = async (view, name) => {
   return out;
 };
 
-try {
-  await browser.viewport(1400, 900);
-  if (webgl) await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined, configurable: true });" });
+// the page opened on the test map, the wind as `wind` says and the plants giving to it or not
+const open = async (w, gives = true) => {
+  wind = w;
+  giving = gives;
   await browser.goto(url);
   await browser.waitFor('document.body.dataset.state === "menu"', { timeout: 90000, what: 'the menu' });
   await cmd('map:meadow_check');
@@ -97,6 +105,30 @@ try {
   if ((await data('layout')).includes('assets=bottom')) await press('uiAssets');
   await cmd('view:32,32,24,0,50');
   await browser.waitFor('Number(document.body.dataset.blades ?? 0) > 0', { timeout: 60000, what: 'blades drawn' });
+};
+// how many pixels of the view (its middle, clear of the panels) change from one moment to the
+// next, up close among the blades: what the wind moves
+const moving = async (name) => {
+  await cmd('view:20,52,6,0,35');
+  await sleep(3000);
+  const [l, t, r, b] = (await data('viewrect')).split(',').map(Number);
+  const a = await browser.pixels(join(shots, `blades-${webgl ? 'webgl-' : ''}${name}-a.png`));
+  await sleep(700);
+  const c = await browser.pixels(join(shots, `blades-${webgl ? 'webgl-' : ''}${name}-b.png`));
+  let n = 0;
+  for (let y = Math.round(t + 40); y < b - 40; y += 2) {
+    for (let x = Math.round(l + 40); x < r - 40; x += 2) {
+      const i = (y * a.width + x) * 4;
+      if (Math.max(Math.abs(a.rgba[i] - c.rgba[i]), Math.abs(a.rgba[i + 1] - c.rgba[i + 1]), Math.abs(a.rgba[i + 2] - c.rgba[i + 2])) > 28) n++;
+    }
+  }
+  return n;
+};
+
+try {
+  await browser.viewport(1400, 900);
+  if (webgl) await browser.send('Page.addScriptToEvaluateOnNewDocument', { source: "Object.defineProperty(Navigator.prototype, 'gpu', { get: () => undefined, configurable: true });" });
+  await open(wind);
   if (webgl) check('culled on the CPU (WebGL 2)', (await data('bladesgpu')) === '0', await data('bladesgpu'));
   else check('culled on the GPU (WebGPU)', (await data('bladesgpu')) === '1', await data('bladesgpu'));
   const mid = await look('32,32,24,0,50', 'mid');
@@ -118,6 +150,17 @@ try {
     check(`  ${name}: within what the picture shows`, at.vertices > 0 && at.vertices < 1400 * 900 * 4, `${at.vertices} vertices`);
   }
   check('  the frame keeps up', mid.fps >= 20 && far.fps >= 20, `${mid.fps} and ${far.fps} fps`);
+  // the wind: the blades sway (the picture changes moment to moment), not when it's calm, nor
+  // when the plants are rigid
+  const windy = await moving('windy');
+  await open({ ...wind, strength: 0 });
+  const calm = await moving('calm');
+  await open(wind, false);
+  const rigid = await moving('rigid');
+  console.log(`  moving: ${windy} pixels in the wind, ${calm} calm, ${rigid} rigid in the wind`);
+  check('the blades sway in the wind', windy > 1500 && windy > 10 * Math.max(calm, 1), `${windy} pixels change, ${calm} when calm`);
+  check('  still when the wind is calm', calm < 150, `${calm} pixels`);
+  check('  rigid plants (their sway 0) stand still in the wind', rigid < 150, `${rigid} pixels`);
   check('no error in the page', browser.errors.length === 0, browser.errors.slice(0, 3).join(' | '));
 } catch (e) {
   check('ran to its end', false, e.message);
