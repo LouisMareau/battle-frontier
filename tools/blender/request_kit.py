@@ -1678,7 +1678,7 @@ def finish_floor_set(job, files, reply=None):
         floor = {"set": job.id, "edges": t["edges"], "weight": t["weight"]}
         if t["turns"]:
             floor["turns"] = True
-        facts = {"name": f"{record['name']}: {t['name']}", "category": "floor", "blocks": False, "unstackable": False, "floor": floor, "toon": record["toon"]}
+        facts = {"name": f"{record['name']}: {t['name']}", "category": "floor", "blocks": False, "unstackable": False, "floor": floor, "toon": True}
         glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in t["objects"] if not bf.is_bounds(o)], facts, recentre=False)
         made.append(pid)
         print(f"Done: {pid} ({Path(glb).relative_to(job.root)}, {Path(path).relative_to(job.root)})" + (f"; {'; '.join(notes)}" if notes else ""), flush=True)
@@ -1784,7 +1784,7 @@ def finish_variant(job, k, objects, category=None, blocks=None, unstackable=Fals
     space = "content" if record["mine"] else "temporary"
     pid = mr.variant_id(dict(record, prop=record["prop"] or free_prop_id(job.root, record["id"])), k)
     category, blocks = _facts(job, category, blocks)
-    facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable, "toon": record["toon"]}
+    facts = {"name": f"{record['name']} (variant {k})", "category": category, "blocks": blocks, "unstackable": unstackable, "toon": True}
     _fills(job, objects)
     _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)
@@ -1810,7 +1810,7 @@ def finish(job, objects, files, reply=None, category=None, blocks=None, unstacka
     space = "content" if record["mine"] else "temporary"
     pid = record["prop"] or free_prop_id(job.root, record["id"])
     category, blocks = _facts(job, category, blocks)
-    facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable, "toon": record["toon"]}
+    facts = {"name": record["name"], "category": category, "blocks": blocks, "unstackable": unstackable, "toon": True}
     _fills(job, objects)
     _weighed(job, pid, objects, facts)
     glb, path, _, notes = bf.write_prop(bpy.context, str(job.root), space, pid, [o for o in objects if not bf.is_bounds(o)], facts)

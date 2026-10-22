@@ -38,7 +38,7 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               [--height 1.2] [--cells 1x1] [--style low_poly|accurate]
                                               [--details "..."] [--pose as_is] [--shapes 8-30|unlimited]
                                               [--notes "..."] [--variants 2] [--vary "size, colours"]
-                                              [--mine] [--check-lines] [--no-toon] [--many]
+                                              [--mine] [--check-lines] [--many]
     python tools/blender/model_requests.py rate ID 85
                                               the user's rating of the model made: 0 (nothing like
                                               it) to 100 (exactly as designed); "none" takes it off
@@ -127,9 +127,9 @@ FIELDS = {
 # its stem, leaves, petals and heart), a rock (made finely, on about its cells: its `cells` its
 # footprint, its height its pictures' proportions'), an environment asset (rocks, bushes,
 # flowers, logs, trees), or a set of floor tiles (laid by wave function collapse)
-KINDS = ("creature", "prop", "grass", "flower", "rock", "environment", "floor")
+KINDS = ("creature", "prop", "grass", "flower", "rock", "tree", "environment", "floor")
 # the kinds whose settings ask for variants from the first run on (any made one can have some)
-VARYING = ("grass", "flower", "rock", "environment")
+VARYING = ("grass", "flower", "rock", "tree", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
 VARIANTS_CAP = 12
 # grass is grown over whole fields (the engine grows it through tall ground, one to a cell) and
@@ -1060,10 +1060,9 @@ def main(argv):
             if flag in argv:
                 argv.remove(flag)
                 fields[field] = True
-        for flag, field, value in (("--no-toon", "toon", False), ("--many", "many", True)):
-            if flag in argv:
-                argv.remove(flag)
-                fields[field] = value
+        if "--many" in argv:
+            argv.remove("--many")
+            fields["many"] = True
         if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
             raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
         r = new(root, argv[0], argv[1:], **fields)

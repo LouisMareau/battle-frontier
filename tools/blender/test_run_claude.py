@@ -457,24 +457,31 @@ fresh("test_vary_zero", status="done", prop="test_prop")
 code, out, rec, log = run("test_vary_zero", "variants", "--variants")
 check("  no variants asked for: nothing run, still done", rec["status"] == "done" and "No variants asked for" in log and "Claude Code: " not in log, rec["status"])
 
-# 9h. a flower and a rock made finely (requests.md, "A flower", "A rock"), toon unless the user
-# says ("The toon look"), drawn by the thousand when asked ("Drawn by the thousand"); in the
-# record's layout as the editor writes it
+# 9h. a flower and a rock made finely (requests.md, "A flower", "A rock"), every model toon
+# ("The toon look"), drawn by the thousand when asked ("Drawn by the thousand"); in the
+# record's layout as the editor writes it; a tree's trunk of mesh and foliage of leaf cards
+# ("A tree")
 import request_lines as rl  # noqa: E402
 fresh("test_flower", kind="flower", height=0.3)
 asked = rc.prompt(mr.load(SCRATCH, "test_flower"))
 check("a flower: made finely, its stem, leaves, petals and heart (stamens), a meadow's, never in the way",
       "a flower 0.3 cells tall, made finely" in asked and "Flower: made finely, part by part" in asked and "stamens" in asked
       and 'category "flower", never blocking the way: a meadow can grow it' in asked, asked[:2500])
-check("  toon unless the user says, not drawn by the thousand unless asked", "Toon: it's drawn with the game's toon look" in asked and "The prop is added toon" in asked
+check("  toon, as every model is; not drawn by the thousand unless asked", "Toon: it's drawn with the game's toon look" in asked and "The prop is added toon" in asked
       and "Drawn by the thousand" not in asked)
-check("  its kind asks for variants from the first run on, as grass's and a rock's", "flower" in mr.VARYING and "rock" in mr.VARYING and "flower" in mr.KINDS and "rock" in mr.KINDS)
-fresh("test_boulder", kind="rock", cells=[2, 1], toon=False, many=True)
+check("  its kind asks for variants from the first run on, as grass's, a rock's and a tree's", "flower" in mr.VARYING and "rock" in mr.VARYING and "tree" in mr.VARYING and "flower" in mr.KINDS and "tree" in mr.KINDS)
+fresh("test_oak", kind="tree", height=4.0)
+asked = rc.prompt(mr.load(SCRATCH, "test_oak"))
+check("a tree: its trunk a mesh, its foliage clusters of leaf cards crossing, cut to the leaves' silhouette, no billboards, painted for the wind, a tree prop",
+      "a tree 4.0 cells tall, its trunk a mesh and its foliage clusters of leaf cards" in asked and "Tree: its trunk and its main branches are meshes" in asked
+      and "3 or 4 cards" in asked and "no camera-facing billboards" in asked and "cut to the leaves' silhouette" in asked
+      and 'category "tree", blocking the way' in asked and "the trunk rooted" in asked, asked[:3000])
+fresh("test_boulder", kind="rock", cells=[2, 1], many=True)
 asked = rc.prompt(mr.load(SCRATCH, "test_boulder"))
 check("a rock: by its footprint, its height its pictures' proportions', fitted about its cells", "a rock on about 2 x 1 cells, as tall as its pictures' proportions make it" in asked
       and "Rock: made finely, on about 2 x 1 cells" in asked and "kit.fit_footprint(parts, job.cells) in place of kit.fit" in asked
       and "moss in patches" in asked and 'category "rock", blocking the way' in asked, asked[:2500])
-check("  not toon when the user says, drawn by the thousand when asked: as light as it can be", "Not toon" in asked and "Toon: it's drawn" not in asked
+check("  toon whatever the record said before (no toggle any more), drawn by the thousand when asked: as light as it can be", "Not toon" not in asked and "Toon: it's drawn" in asked
       and "Drawn by the thousand" in asked and f"about {rc.MANY_VERTICES} in all" in asked and "each loose piece (a leaf, a petal, a blade) a piece of its own" in asked)
 check("  in the record's layout: toon and drawn by the thousand after mine, the rating after the comments",
       all(after(a, b) for a, b in (("mine", "toon"), ("toon", "many"), ("many", "check_lines"), ("earlier", "rating"), ("rating", "several")))

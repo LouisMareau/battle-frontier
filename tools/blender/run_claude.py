@@ -498,7 +498,15 @@ MANY = ("Drawn by the thousand: it's strewn over whole fields with the grass and
 TOON = ("Toon: it's drawn with the game's toon look (light in steps, ink lines round it and along its sharp folds; requests.md, "
         "\"The toon look\"): clear shapes and flat colour regions read best, fine surface detail the light's steps would band left out. "
         "The prop is added toon.")
-NOT_TOON = "Not toon: the user wants it drawn with smooth light (the prop is added without the toon look)."
+# a tree: a trunk and branches of mesh, the foliage as clusters of leaf cards (requests.md, "A tree")
+TREE = ("Tree: its trunk and its main branches are meshes (the trunk tapering, forking into a few branches that reach into the "
+        "foliage); its foliage is clusters of leaves, each cluster a few curved planes (3 or 4 cards, bent a little, crossing at "
+        "the cluster's middle at different angles) whose outline is cut to the leaves' silhouette (a scalloped, leafy edge, in the "
+        "mesh itself: no transparency, the engine draws no cut-out textures and no camera-facing billboards for a model's parts, "
+        "crossed cards read as a cluster from every side), coloured as the leaves are (darker toward the cluster's underside), "
+        "two-sided as a leaf is (requests.md, \"A tree\", \"The wind\"). Painted for the wind: the trunk rooted (0 at its foot, a "
+        "little at its top), the branches more, the clusters most, their flutter on the cards; a phase per cluster. "
+        "kit.finish's category \"tree\", blocking the way, its footprint the trunk's cells (the canopy may reach past them).")
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -547,9 +555,11 @@ def settings_lines(record):
                    "painted for it.")
     if record["kind"] == "flower":
         out.append(FLOWER)
+    if record["kind"] == "tree":
+        out.append(TREE)
     if record["kind"] != "floor" and record.get("many"):
         out.append(MANY)
-    out.append(TOON if record.get("toon", True) else NOT_TOON)
+    out.append(TOON)
     if record["kind"] != "floor" and record["variants"] > 0:
         n = record["variants"]
         how = record["vary"].strip()
@@ -645,6 +655,8 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     elif kind == "grass":
         w, d = record["cells"]
         what = f"grass filling {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, {height} cells tall"
+    elif kind == "tree":
+        what = f"a tree {height} cells tall, its trunk a mesh and its foliage clusters of leaf cards"
     elif kind == "environment":
         what = f"an environment asset {height} cells tall"
     elif kind == "flower":

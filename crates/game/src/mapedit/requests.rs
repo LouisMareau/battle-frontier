@@ -129,6 +129,9 @@ pub(super) enum Kind {
     /// a rock made finely (its facets, cracks, colours, moss, what grows on it), on about its
     /// cells (`cells`: its footprint), as tall as its pictures' proportions make it there
     Rock,
+    /// a tree: its trunk and branches as meshes, its foliage as clusters of leaves, each a few
+    /// curved planes (cards) crossing, painted for the wind; tree areas grow it
+    Tree,
     /// what dresses the outdoors: rocks, bushes, flowers, logs, trees
     Environment,
     /// a set of floor tiles, each a cell, laid to fit by wave function collapse (`world::floors`)
@@ -144,6 +147,7 @@ impl Kind {
             Kind::Grass => "grass",
             Kind::Flower => "flower",
             Kind::Rock => "rock",
+            Kind::Tree => "tree",
             Kind::Environment => "environment",
             Kind::Floor => "floor set",
         }
@@ -151,7 +155,7 @@ impl Kind {
 
     /// Its settings ask for variants of it (each a prop of its own) from the first run on.
     pub(super) fn varies(self) -> bool {
-        matches!(self, Kind::Grass | Kind::Flower | Kind::Rock | Kind::Environment)
+        matches!(self, Kind::Grass | Kind::Flower | Kind::Rock | Kind::Tree | Kind::Environment)
     }
 
     /// It can be drawn by the thousand (strewn over fields with the grass and the flowers): not
@@ -292,7 +296,9 @@ pub(super) struct ModelRequest {
     /// the design is the user's own, or licensed to them: its model goes to content/ (the
     /// public game); else to temporary/ (never committed)
     pub mine: bool,
-    /// drawn with the toon look (its prop's `toon`): the game's style, on unless the user says
+    /// drawn with the toon look (its prop's `toon`): the game's style, always (kept for records
+    /// from before the window's toggle went; the kit adds every prop toon)
+    #[serde(skip_serializing)]
     pub toon: bool,
     /// drawn by the thousand (meadows, procedural ground, with grass and flowers): made as light
     /// as it can be
@@ -2354,6 +2360,10 @@ mod desk {
                         "A rock made finely: its facets, cracks and strata, its colours, moss, grass and flowers on it. Asked for by its footprint: Claude works out its height from the pictures' proportions",
                     );
                     mark("uiRequestKindRock", &rock);
+                    let tree = ui.selectable_value(&mut r.kind, Kind::Tree, "tree").on_hover_text(
+                        "A tree: its trunk and branches as meshes, its foliage as clusters of leaves, each a few curved planes (cards) crossing, their edges cut to the leaves' silhouette, painted for the wind (the trunk rooted, the clusters swaying and fluttering). Tree areas grow it",
+                    );
+                    mark("uiRequestKindTree", &tree);
                     let environment = ui.selectable_value(&mut r.kind, Kind::Environment, "environment").on_hover_text("What dresses the outdoors: rocks, bushes, flowers, logs, trees");
                     mark("uiRequestKindEnvironment", &environment);
                     let floor = ui.selectable_value(&mut r.kind, Kind::Floor, "floor set").on_hover_text(
@@ -2460,12 +2470,6 @@ mod desk {
                     "Then its model goes into content/, the public game. Off: into temporary/, never committed (a design of someone else's stays a placeholder)",
                 );
                 mark("uiRequestMine", &mine);
-                ui.end_row();
-                ui.label("");
-                let toon = ui.checkbox(&mut r.toon, "Toon look").on_hover_text(
-                    "Drawn with the game's toon look (light in steps, ink lines round it): made for it, and its prop added toon. Off: smooth light",
-                );
-                mark("uiRequestToon", &toon);
                 ui.end_row();
                 if r.kind.strewn() {
                     ui.label("");
@@ -3370,6 +3374,7 @@ mod desk {
             Kind::Grass => Color32::from_rgb(150, 210, 128),
             Kind::Flower => Color32::from_rgb(236, 164, 204),
             Kind::Rock => Color32::from_rgb(178, 176, 168),
+            Kind::Tree => Color32::from_rgb(116, 178, 104),
             Kind::Environment => Color32::from_rgb(118, 200, 182),
             Kind::Floor => Color32::from_rgb(220, 186, 132),
         };
@@ -3429,7 +3434,6 @@ mod desk {
         if r.check_lines {
             out.push("Its lines checked first".to_string());
         }
-        out.push(if r.toon { "Toon look".to_string() } else { "Not toon: smooth light".to_string() });
         if r.many && r.kind.strewn() {
             out.push("Drawn by the thousand: made as light as it can be".to_string());
         }
@@ -3774,8 +3778,8 @@ mod tests {
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"outlines\": {},\n  \"lines\""), "the outlines after the bones, as model_requests.py has them: {text}");
         assert!(
-            text.contains("  \"mine\": true,\n  \"toon\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"status\""),
-            "toon (on unless said) and drawn by the thousand after mine, then the lines' check, as model_requests.py has them: {text}"
+            text.contains("  \"mine\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"status\""),
+            "drawn by the thousand after mine (toon no longer written: every model is), then the lines' check, as model_requests.py has them: {text}"
         );
         assert!(
             text.ends_with("  \"reply\": \"\",\n  \"comments\": \"\",\n  \"earlier\": [],\n  \"rating\": null,\n  \"several\": false,\n  \"parent\": \"\",\n  \"children\": []\n}\n"),
@@ -3807,7 +3811,7 @@ mod tests {
         // toon)
         let boulder: ModelRequest = serde_json::from_str(r#"{ "kind": "rock", "cells": [2, 1], "rating": 85, "toon": false, "many": true }"#).unwrap();
         assert_eq!((boulder.kind, about(&boulder)), (Kind::Rock, "rock · about 2 × 1 cells · smooth · rated 85".to_string()));
-        assert!(details(&boulder).contains("Footprint: about 2 × 1 cells") && !details(&boulder).contains("Height") && details(&boulder).contains("Not toon"));
+        assert!(details(&boulder).contains("Footprint: about 2 × 1 cells") && !details(&boulder).contains("Height") && !details(&boulder).contains("toon"), "toon isn't a setting any more");
         assert!(details(&boulder).contains("Drawn by the thousand") && details(&boulder).contains("Rated 85 of 100"));
         let daisy: ModelRequest = serde_json::from_str(r#"{ "kind": "flower", "height": 0.3 }"#).unwrap();
         assert_eq!((daisy.kind, daisy.toon, daisy.many, daisy.rating, about(&daisy)), (Kind::Flower, true, false, None, "flower · 0.3 cells · smooth".to_string()));
@@ -4372,7 +4376,7 @@ mod tests {
         for _ in 0..3 {
             frame_with(&ctx, &mut req, vec![]);
         }
-        assert!(marked("uiRequestCellsX").is_some() && marked("uiRequestToon").is_some() && marked("uiRequestMany").is_some(), "its footprint, toon, drawn by the thousand");
+        assert!(marked("uiRequestCellsX").is_some() && marked("uiRequestToon").is_none() && marked("uiRequestMany").is_some(), "its footprint, drawn by the thousand; no toon toggle");
         assert!(marked("uiRequestRating").is_none(), "nothing made yet: nothing to rate");
         let mut made = read(&root, "round_stone").unwrap();
         (made.status, made.prop) = (Status::Done, "round_stone".into());

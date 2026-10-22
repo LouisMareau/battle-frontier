@@ -68,7 +68,8 @@ are.)
   filling its `cells` to the edges, so copies side by side join without a gap: below,
   "Grass"), `flower` (a flower made finely, its stem, leaves, petals and heart: below, "A
   flower"), `rock` (a rock made finely, asked for by its footprint, `cells`, its height its
-  pictures' proportions': below, "A rock"), `environment` (what dresses the outdoors: rocks,
+  pictures' proportions': below, "A rock"), `tree` (a trunk and branches of mesh, the foliage as
+  clusters of leaf cards: below, "A tree"), `environment` (what dresses the outdoors: rocks,
   bushes, flowers, logs, trees; below, "Environment"), or `floor` (the window's **floor set**:
   a set of floor tiles, each a cell, laid to fit; below, "A set of floor tiles"; its `height`
   and `check_lines` go unused); `height` in cells (a cell is a metre; the player is about 1.5;
@@ -76,8 +77,9 @@ are.)
   (a rock: the cells it stands on, about); `style`: `smooth`, `low_poly` or `accurate` (as
   close to the pictures as it can be, whatever it takes: see "Accurate" below), and with it
   `details`, the user's word on how to build it.
-- `toon` (the window's **Toon look**, on unless the user unticks it): it's drawn with the
-  game's toon look, its prop added toon (below, "The toon look"); `many` (**Expect large
+- every model is drawn with the game's toon look, its prop added toon (below, "The toon
+  look"; a record's `toon` from before the window's toggle went is read but not written);
+  `many` (**Expect large
   rendered count**, not for a creature or a floor): it's drawn by the thousand, strewn over
   fields with the grass and the flowers, and made as light as it can be (below, "Drawn by the
   thousand").
@@ -839,6 +841,29 @@ make it on that footprint.
   never;
 - `kit.finish(..., category="rock")` (its default for the kind), blocking the way.
 
+## A tree
+
+A request of the kind `tree` is a tree: made as a prop is, `height` cells tall, with what a
+tree asks.
+
+- Its trunk and its main branches are meshes: the trunk tapering from its foot, forking into
+  a few branches (two to five) that reach into the foliage, the bark's colour on them (ridges
+  or knots only where the pictures show them, in the mesh, never a texture's gradient).
+- Its foliage is clusters of leaves, not a solid blob and not single leaves: each cluster a few
+  curved planes, 3 or 4 cards bent a little and crossing at the cluster's middle at different
+  angles (so the cluster reads from every side: the engine draws no camera-facing billboards
+  for a model's parts, crossed cards stand in for one), each card's outline cut to the leaves'
+  silhouette in the mesh itself (a scalloped, leafy edge; no transparency: the engine draws no
+  cut-out textures), coloured as the leaves are, darker toward the cluster's underside and
+  lighter on top, two-sided as a leaf is ("The wind": its back a hair behind, moving as one).
+  As many clusters as the crown's shape asks (a few big ones for a round crown, more and
+  smaller for a loose one), each on a branch or in reach of one.
+- Painted for the wind ("The wind"): the trunk rooted (0 at its foot, a little at its top),
+  the branches more, the clusters most, their flutter on the cards; a phase of its own per
+  cluster, so the crown doesn't move as one block.
+- `kit.finish`'s category `tree`, blocking the way; its footprint the trunk's cells (the canopy
+  may reach past them, as a tree's does). Tree areas grow it (the editor's Trees tool).
+
 ## Environment
 
 A request of the kind `environment` is an asset that dresses the outdoors: a rock, a bush, a
@@ -863,12 +888,11 @@ thousand, so it's made as light as it can be while it reads right a few cells of
 
 ## The toon look
 
-A request's `toon` (on unless the user unticks **Toon look**) has its model drawn with the
-game's toon look: the light in steps and ink lines round it and along its sharp folds (the
-Post-processing window sets how). Clear shapes and flat colour regions read best in it; fine
-surface detail the light's steps would band is left out, a texture's soft gradients too. Its
-prop is added toon (`kit.finish` sets the record's `toon`); the asset browser's toon tag
-switches it off when it's wanted otherwise.
+Every request's model is drawn with the game's toon look: the light in steps and ink lines
+round it and along its sharp folds (the Post-processing window sets how). Clear shapes and
+flat colour regions read best in it; fine surface detail the light's steps would band is left
+out, a texture's soft gradients too. Its prop is added toon (`kit.finish` sets the record's
+`toon`); the asset browser's toon tag switches it off when it's wanted otherwise.
 
 ## What the ratings teach
 
