@@ -6,7 +6,7 @@
 // (downloads) what changed.
 // Screenshots go to screenshots/assets-*.png.
 //     node tools/assetcheck.mjs
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
@@ -188,6 +188,33 @@ try {
   const catalogue = got('props.glb') ? readFileSync(join(downloads, 'props.glb')) : Buffer.alloc(0);
   check('every prop exported for Blender', catalogue.length > 10000 && catalogue.subarray(0, 4).toString() === 'glTF', `${catalogue.length} bytes`);
   check('  with the lamps\' lights', catalogue.includes('KHR_lights_punctual') && catalogue.includes('lamp_post light'));
+
+  // 8. the lamp renamed, its id too, from the pencil on its row (in Town, where it was
+  // moved): its record downloaded under its new id and its model's file after it, the map
+  // placing it written again naming it anew, its row's mark following
+  await press('uiFolder_Town');
+  await press('uiRename_garden_lamp');
+  await sleep(500);
+  const typeInto = async (name, text) => {
+    await press(name);
+    await browser.key('a', { ctrl: true });
+    await browser.type(text);
+  };
+  await typeInto('uiRenameName', 'Garden lantern');
+  await typeInto('uiRenameId', 'garden_lantern');
+  await sleep(200);
+  await press('uiRenameOk');
+  await sleep(1500);
+  check('the lamp renamed, its id too', (await data('renamed')) === 'garden_lamp->garden_lantern' && (await data('uiAsset_garden_lantern')) !== '', `${await data('renamed')} · ${await data('status')}`);
+  for (let i = 0; i < 50 && !(got('garden_lantern.json') && got('garden_lantern.glb')); i++) await sleep(200);
+  check("  its record under its new id, its model's file after it", got('garden_lantern.json') && got('garden_lantern.glb'), `record ${got('garden_lantern.json')}, model ${got('garden_lantern.glb')}`);
+  if (got('garden_lantern.json')) {
+    const lantern = JSON.parse(readFileSync(join(downloads, 'garden_lantern.json'), 'utf8'));
+    check('  called so, its model named after it', lantern.name === 'Garden lantern' && lantern.model === 'models/garden_lantern.glb', `${lantern.name} · ${lantern.model}`);
+  }
+  const meadows = readdirSync(downloads).filter((f) => f.startsWith('test_meadow') && f.endsWith('.json'));
+  check('  the map placing it written again, naming it anew', meadows.some((f) => readFileSync(join(downloads, f), 'utf8').includes('"garden_lantern"')), meadows.join(', '));
+  await shot('8-renamed');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

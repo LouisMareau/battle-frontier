@@ -11,6 +11,7 @@
 //! browser, a space's files are packed into one `bundle.json` (`content bundle <space>`).
 
 pub mod diff;
+pub mod rename;
 pub mod building;
 pub mod model;
 pub mod ramp;

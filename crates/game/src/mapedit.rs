@@ -1889,6 +1889,7 @@ impl MapEditor {
         self.light_window(ui);
         self.terrain_window(&ctx);
         self.fx_windows(&ctx);
+        self.rename_window(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;

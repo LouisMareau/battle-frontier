@@ -621,7 +621,11 @@ shows), turns, scales and deletes props, and a prop's Tweak (in the inspector) m
 within its cells instead (drag it, or the inspector's x and z),
 and its inspector edits the prop's record too: name, category, cells and height, blocking,
 its light (the same window as the asset browser's), its sound and the asset-browser folder
-it's in ("Move to a folder"), with "Save prop" (or Ctrl+S) writing the record. "Edit in
+it's in ("Move to a folder"), with "Save prop" (or Ctrl+S) writing the record. The pencil by
+its id (in the inspector and on its row in the asset browser) renames it: its name, and its
+id too, which moves its record (and its model's file when that's named after it) and follows
+wherever it's named, on every map and template and in every terrain growing it, all written
+at once. "Edit in
 Blender" opens Blender on it, the add-on set up and the prop imported; what you change
 there is written back to the project by itself (a moment after each change, and on
 Ctrl+S: the .blend lives in `build/blender/`), into the space it came from (a placeholder

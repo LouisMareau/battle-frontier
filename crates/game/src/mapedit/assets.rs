@@ -69,6 +69,8 @@ pub(super) struct Assets {
     pub dirty: BTreeSet<String>,
     /// creatures changed here and not saved yet
     pub creatures_dirty: BTreeSet<String>,
+    /// a prop being renamed (the Rename dialog)
+    pub renaming: Option<Renaming>,
     /// where dropped files go: temporary/ (placeholders, never committed), else content/
     pub to_temporary: bool,
     /// files dropped, read (in the browser, when the page has read them)
@@ -96,6 +98,23 @@ impl Assets {
     /// How many records wait to be saved.
     pub fn changed(&self) -> usize {
         self.dirty.len() + self.creatures_dirty.len()
+    }
+}
+
+/// A prop being renamed (the Rename dialog): which, what it was called, its name and id as
+/// typed, and what went wrong with the last try.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Renaming {
+    pub id: String,
+    pub was: String,
+    pub name: String,
+    pub new_id: String,
+    pub trouble: String,
+}
+
+impl Renaming {
+    fn of(p: &Prop) -> Renaming {
+        Renaming { id: p.id.clone(), was: p.name.clone(), name: p.name.clone(), new_id: p.id.clone(), trouble: String::new() }
     }
 }
 
@@ -243,6 +262,244 @@ impl MapEditor {
     }
 
     // ------------------------------------------------------------ the panel
+
+    /// The Rename dialog (a prop's name and its id), while one is open: Rename does it
+    /// (`rename_prop`: an id change writes everything it touches at once), Cancel or a click
+    /// outside closes it; what went wrong stays in it.
+    pub(super) fn rename_window(&mut self, ctx: &egui::Context) {
+        let Some(mut r) = self.assets.renaming.clone() else { return };
+        let mut done: Option<bool> = None;
+        let taken = r.new_id.trim() != r.id && self.content.props.contains(r.new_id.trim());
+        let modal = egui::Modal::new(egui::Id::new("editor-rename")).frame(crate::title::dialog_frame()).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.label(RichText::new(format!("Rename {}", r.was)).size(18.0).strong());
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let name = ui.add(egui::TextEdit::singleline(&mut r.name).desired_width(f32::INFINITY));
+                mark("uiRenameName", &name);
+            });
+            ui.horizontal(|ui| {
+                ui.label("Id");
+                let id = ui.add(egui::TextEdit::singleline(&mut r.new_id).font(egui::TextStyle::Monospace).desired_width(f32::INFINITY));
+                mark("uiRenameId", &id);
+            });
+            hint(ui, "The id names its record (data/props/<id>.json) and its model's file when that's named after it; every map, template and terrain naming it follows. An id change writes all of it at once.");
+            if taken {
+                super::warn(ui, &format!("{} is a prop already", r.new_id.trim()));
+            } else if !r.new_id.trim().is_empty() && !content::rename::id_ok(r.new_id.trim()) {
+                super::warn(ui, "An id is lowercase letters, digits, _ and -");
+            }
+            if !r.trouble.is_empty() {
+                super::warn(ui, &r.trouble);
+            }
+            ui.add_space(6.0);
+            let changed = r.new_id.trim() != r.id || r.name.trim() != r.was;
+            let ok = changed && !r.name.trim().is_empty() && content::rename::id_ok(r.new_id.trim()) && !taken;
+            ui.horizontal(|ui| {
+                let go = ui.add_enabled(ok, egui::Button::new("Rename"));
+                mark("uiRenameOk", &go);
+                if go.clicked() {
+                    done = Some(true);
+                }
+                let cancel = ui.button("Cancel");
+                mark("uiRenameCancel", &cancel);
+                if cancel.clicked() {
+                    done = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            done = Some(false);
+        }
+        match done {
+            Some(true) => {
+                let (old, name, new) = (r.id.clone(), r.name.trim().to_string(), r.new_id.trim().to_string());
+                if self.rename_prop(&old, &name, &new) {
+                    self.assets.renaming = None;
+                } else {
+                    r.trouble = self.status.clone();
+                    self.assets.renaming = Some(r);
+                }
+            }
+            Some(false) => self.assets.renaming = None,
+            None => self.assets.renaming = Some(r),
+        }
+    }
+
+    /// The prop `old` called `name` and, when `new` differs, renamed `new` wherever it's
+    /// named (`content::rename`): its record written under its new id and the old one
+    /// removed, its model's file moved when it was named after it, the maps, templates and
+    /// terrains naming it written at once; the open map, the picked prop and the models
+    /// loaded follow. Whether it was done (the status line says what was, or what went wrong:
+    /// nothing changed then).
+    pub(super) fn rename_prop(&mut self, old: &str, name: &str, new: &str) -> bool {
+        if self.review.is_some() {
+            self.status = "Reviewing a pull request: nothing is renamed".into();
+            return false;
+        }
+        let (name, new) = (name.trim(), new.trim());
+        if name.is_empty() {
+            self.status = "Not renamed: a prop needs a name".into();
+            return false;
+        }
+        if new == old {
+            self.change_prop(old, |p| p.name = name.to_string());
+            self.status = format!("{old} is called {name}");
+            return true;
+        }
+        let mut c = (*self.content).clone();
+        let r = match c.rename_prop(old, new) {
+            Ok(r) => r,
+            Err(e) => {
+                self.status = format!("Not renamed: {e}");
+                return false;
+            }
+        };
+        c.sort();
+        self.content = Arc::new(c);
+        self.change_prop(new, |p| p.name = name.to_string());
+        // the open map is the editor's own copy
+        let mut map_changed = false;
+        for p in self.map.props.iter_mut().filter(|p| p.prop == old) {
+            p.prop = new.to_string();
+            map_changed = true;
+        }
+        for t in self.map.tree_areas.iter_mut().flat_map(|a| a.trees.iter_mut()).filter(|t| *t == old) {
+            *t = new.to_string();
+            map_changed = true;
+        }
+        let (was, is) = (format!("prop:{old}"), format!("prop:{new}"));
+        for a in self.map.actors.iter_mut().filter(|a| a.look == was) {
+            a.look = is.clone();
+            map_changed = true;
+        }
+        if map_changed {
+            self.dirty = true;
+        }
+        // whoever held its id
+        if self.prop.as_deref() == Some(old) {
+            self.prop = Some(new.to_string());
+        }
+        if let Some(d) = self.draft.as_mut() {
+            for held in [&mut d.inside_prop, &mut d.outside_prop] {
+                if held.as_deref() == Some(old) {
+                    *held = Some(new.to_string());
+                }
+            }
+        }
+        self.assets.dirty.remove(old);
+        self.assets.dirty.insert(new.to_string());
+        if let Some(m) = self.models.remove(old) {
+            self.models.insert(new.to_string(), m);
+        }
+        if self.model_failed.remove(old) {
+            self.model_failed.insert(new.to_string());
+        }
+        self.skinned_sent.remove(old);
+        self.need_props = true;
+        self.need_trees = true;
+        self.need_buildings = true;
+        self.extra_changed = true;
+        self.blocked = None;
+        // the files: the old record gone, the model moved, whatever else names it written
+        let mut said = vec![format!("{old} is {new} now")];
+        let mut written = 0;
+        let others: Vec<String> = r.maps.iter().filter(|m| **m != self.map.id).cloned().collect();
+        let content = self.content.clone();
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
+            let _ = std::fs::remove_file(root.join(r.space.dir()).join("data").join("props").join(format!("{old}.json")));
+            if let Some((from, to)) = &r.model {
+                let (a, b) = (r.space.asset(from), r.space.asset(to));
+                match std::fs::rename(root.join(&a), root.join(&b)) {
+                    Ok(_) => said.push(format!("its model moved to {b}")),
+                    Err(e) => {
+                        // (it stays where it was, and the record says so)
+                        self.change_prop(new, |p| p.model = Some(from.clone()));
+                        said.push(format!("its model stays at {a} ({e})"));
+                    }
+                }
+                self.files.forget(&a);
+            }
+            for e in others.iter().filter_map(|id| content.maps.entry(id)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in r.templates.iter().filter_map(|id| content.templates.entry(id)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in r.terrains.iter().filter_map(|id| content.terrains.entry(id)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            self.assets.seen = snapshot(&root);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            use super::saving::{browser_save, browser_save_record, keeps};
+            if keeps() {
+                crate::keep::keep_removed(&format!("{}/data/props/{old}.json", r.space.dir()));
+            }
+            if let Some((from, to)) = &r.model {
+                let (a, b) = (r.space.asset(from), r.space.asset(to));
+                // dropped and not saved yet: saved under its new name
+                for (path, _) in self.assets.new_models.iter_mut().filter(|(p, _)| *p == a) {
+                    *path = b.clone();
+                }
+                if let Some(bytes) = self.files.peek(&a) {
+                    let file = b.rsplit('/').next().unwrap_or(&b).to_string();
+                    match browser_save(&b, &file, (*bytes).clone(), "model/gltf-binary") {
+                        Ok(_) => {
+                            if keeps() {
+                                crate::keep::keep_removed(&a);
+                            }
+                            said.push(format!("its model moved to {b}"));
+                        }
+                        Err(e) => said.push(e),
+                    }
+                    self.files.insert(&b, (*bytes).clone());
+                }
+            }
+            for e in others.iter().filter_map(|id| content.maps.entry(id)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in r.templates.iter().filter_map(|id| content.templates.entry(id)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in r.terrains.iter().filter_map(|id| content.terrains.entry(id)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+        }
+        // its record under its new id, with whatever else waits; the map when it names it
+        self.save_some(map_changed);
+        if written > 0 {
+            said.push(format!("{written} other record{} written", if written == 1 { "" } else { "s" }));
+        }
+        if !self.status.is_empty() {
+            said.push(std::mem::take(&mut self.status));
+        }
+        self.status = said.join(" · ");
+        platform::set_hook("renamed", &format!("{old}->{new}"));
+        true
+    }
 
     pub(super) fn assets_panel(&mut self, ui: &mut egui::Ui) {
         let folders = self.asset_folders();
@@ -403,6 +660,7 @@ impl MapEditor {
         }
         let mut picked = None;
         let mut light_edit = None;
+        let mut rename: Option<Renaming> = None;
         let mut changes: Vec<(String, Change)> = vec![];
         let mut out_of: Option<(String, String)> = None;
         egui::Grid::new("asset-grid").striped(true).num_columns(8).spacing([14.0, 5.0]).show(ui, |ui| {
@@ -420,7 +678,12 @@ impl MapEditor {
                 if r.clicked() {
                     picked = Some(p.id.clone());
                 }
-                ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
+                    if super::row_icon(ui, egui::include_image!("../../icons/edit.svg"), false, "Rename it: its name, its id (wherever it's named follows)", &format!("uiRename_{}", p.id)).clicked() {
+                        rename = Some(Renaming::of(p));
+                    }
+                });
                 ui.horizontal(|ui| {
                     badge(ui, e.space);
                     if let Some(k) = self.review_kind("props", &p.id) {
@@ -496,6 +759,9 @@ impl MapEditor {
         for (id, change) in changes {
             self.change_prop(&id, change);
         }
+        if let Some(r) = rename {
+            self.assets.renaming = Some(r);
+        }
         if let Some((id, f)) = out_of {
             self.take_from_folder(&id, &f);
         }
@@ -565,6 +831,9 @@ impl MapEditor {
                 review::change_badge(ui, k).on_hover_text(self.review_changes("props", id, "").map(|(_, about)| about).unwrap_or_default());
             }
             ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
+            if super::row_icon(ui, egui::include_image!("../../icons/edit.svg"), false, "Rename it: its name, its id (wherever it's named follows)", "uiRenameProp").clicked() {
+                self.assets.renaming = Some(Renaming::of(&p));
+            }
             if self.assets.dirty.contains(id) {
                 let save = ui.small_button("Save prop").on_hover_text("Writes its record (Ctrl+S does too)");
                 mark("uiSaveProp", &save);
@@ -1202,6 +1471,36 @@ fn snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, std::time::Syste
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A prop renamed from the editor: the open map's placed props follow, the picked prop
+    /// and the loaded model too, its record is written under its new id and the old one is
+    /// gone from the disk; a new id that isn't one is refused, nothing changed; a name alone
+    /// changes just the name.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_prop_renamed_in_the_editor_follows_everywhere() {
+        let root = std::env::temp_dir().join(format!("bf-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("content/data/props")).unwrap();
+        std::env::set_var("GAME_ROOT", &root);
+        let mut c = content::Content::default();
+        c.props.put(Prop { id: "rock".into(), name: "Rock".into(), ..Default::default() }, Space::Content);
+        content::disk::save(&root, Space::Content, c.props.get("rock").unwrap()).unwrap();
+        let mut ed = MapEditor::new(Arc::new(c), None, crate::platform::Files::new("."));
+        ed.map.props.push(content::Placed { prop: "rock".into(), at: [2.5, 2.5], ..Default::default() });
+        ed.prop = Some("rock".into());
+        ed.models.insert("rock".into(), world::gltf_in::Model::default());
+        assert!(!ed.rename_prop("rock", "Rock", "Boulder"), "{}", ed.status);
+        assert!(ed.content.props.contains("rock") && ed.map.props[0].prop == "rock", "nothing changed: {}", ed.status);
+        assert!(ed.rename_prop("rock", "Boulder", "boulder"), "{}", ed.status);
+        assert!(ed.content.props.get("boulder").is_some_and(|p| p.name == "Boulder") && !ed.content.props.contains("rock"), "{}", ed.status);
+        assert_eq!((ed.map.props[0].prop.as_str(), ed.prop.as_deref()), ("boulder", Some("boulder")));
+        assert!(ed.models.contains_key("boulder") && !ed.models.contains_key("rock"));
+        assert!(root.join("content/data/props/boulder.json").exists() && !root.join("content/data/props/rock.json").exists(), "{}", ed.status);
+        assert!(ed.rename_prop("boulder", "Big boulder", "boulder"), "{}", ed.status);
+        assert_eq!(ed.content.props.get("boulder").unwrap().name, "Big boulder");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn names_from_files() {
