@@ -211,7 +211,7 @@ impl MapEditor {
                             .filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter) || e.value.ty.contains(&filter))
                             .collect();
                         crate::platform::set_hook("abilitiesshown", &rows.len().to_string());
-                        let review = self.review.clone();
+                        let changes = self.changes();
                         for e in rows {
                             let m = &e.value;
                             let dot = if self.abilities.dirty.contains_key(&m.id) { " •" } else { "" };
@@ -221,7 +221,7 @@ impl MapEditor {
                                 if r.clicked() {
                                     pick = Some(m.id.clone());
                                 }
-                                super::review::record_mark(ui, review.as_deref(), "moves", &m.id, "");
+                                super::review::record_mark(ui, changes.as_ref(), "moves", &m.id, "");
                             });
                         }
                         if content.moves.is_empty() {
@@ -238,18 +238,18 @@ impl MapEditor {
                         };
                         let m = &e.value;
                         let mut a = m.clone();
-                        let review = self.review.clone();
+                        let changes = self.changes();
                         ui.horizontal(|ui| {
                             ui.label(RichText::new(&m.name).size(16.0).strong());
                             badge(ui, e.space);
-                            super::review::record_mark(ui, review.as_deref(), "moves", &m.id, "");
+                            super::review::record_mark(ui, changes.as_ref(), "moves", &m.id, "");
                             ui.label(RichText::new(&m.id).monospace().size(11.0).color(Color32::GRAY));
                             if self.abilities.dirty.contains_key(&m.id) && ui.small_button("Revert").on_hover_text("Back to how it was saved").clicked() {
                                 revert = Some(m.id.clone());
                             }
                         });
                         let changed = |prefixes: &[&str]| {
-                            let found: Vec<(content::diff::Kind, String)> = prefixes.iter().filter_map(|p| super::review::changes_of(review.as_deref(), "moves", &m.id, p)).collect();
+                            let found: Vec<(content::diff::Kind, String)> = prefixes.iter().filter_map(|p| super::review::changes_of(changes.as_ref(), "moves", &m.id, p)).collect();
                             (!found.is_empty()).then(|| (if found.iter().all(|(k, _)| *k == found[0].0) { found[0].0 } else { content::diff::Kind::Modified }, found.iter().map(|(_, a)| a.clone()).collect::<Vec<_>>().join("\n")))
                         };
                         section_with(ui, "In battle", changed(&["name", "type", "category", "power", "accuracy", "pp", "priority", "effects", "description", "target"]));

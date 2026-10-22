@@ -592,7 +592,7 @@ impl MapEditor {
             self.evt.placing = if self.evt.placing == Some(Placing::Actor) { None } else { Some(Placing::Actor) };
         }
         let ids: Vec<(String, String)> = self.map.actors.iter().map(|a| (a.id.clone(), a.name.clone())).collect();
-        let (review, map_id) = (self.review.clone(), self.map.id.clone());
+        let (changes, map_id) = (self.changes(), self.map.id.clone());
         for (i, (id, name)) in ids.iter().enumerate() {
             ui.horizontal(|ui| {
                 let r = ui.selectable_label(self.evt.actor_sel == Some(i), format!("{name} ({id})"));
@@ -601,7 +601,7 @@ impl MapEditor {
                     self.evt.actor_sel = Some(i);
                     self.evt.event_sel = None;
                 }
-                super::review::record_mark(ui, review.as_deref(), "maps", &map_id, &format!("actors[{id}]"));
+                super::review::record_mark(ui, changes.as_ref(), "maps", &map_id, &format!("actors[{id}]"));
             });
         }
         if let Some(i) = self.evt.actor_sel.filter(|&i| i < self.map.actors.len()) {
@@ -641,7 +641,7 @@ impl MapEditor {
                     EventRef::Map(_) => format!("events[{id}]"),
                     EventRef::Actor(a, _) => format!("actors[{}].events[{id}]", self.map.actors.get(a).map(|x| x.id.as_str()).unwrap_or("")),
                 };
-                super::review::record_mark(ui, review.as_deref(), "maps", &map_id, &prefix);
+                super::review::record_mark(ui, changes.as_ref(), "maps", &map_id, &prefix);
             });
         }
         if self.evt.event_sel.is_some() {

@@ -3,10 +3,12 @@
 //! and how, so the editor can mark every place a change shows (a dot on a window's button, a
 //! badge on an asset, a mark by a field) and a reviewer can read the whole of it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+
+use crate::{Content, Space};
 
 /// How a file or a field changed.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -291,6 +293,47 @@ impl Review {
         format!("{collection}/{id}")
     }
 
+    /// The editor's own edits: what `current` changes from `saved` (the content as last
+    /// written) in the collections the editor edits (`Content::EDITED`), each record added,
+    /// removed or modified field by field, as a pull request's changes are told. The rest
+    /// of a review (its number, its code) is empty.
+    pub fn between(saved: &Content, current: &Content) -> Review {
+        let mut r = Review::default();
+        for collection in Content::EDITED {
+            let before: BTreeMap<String, (Space, Value)> = saved.records_json(collection).into_iter().map(|(id, s, v)| (id, (s, v))).collect();
+            let after: BTreeMap<String, (Space, Value)> = current.records_json(collection).into_iter().map(|(id, s, v)| (id, (s, v))).collect();
+            let ids: BTreeSet<&String> = before.keys().chain(after.keys()).collect();
+            for id in ids {
+                let (kind, space, changes) = match (before.get(id), after.get(id)) {
+                    (Some((s, a)), Some((_, b))) => {
+                        let changes = fields(a, b);
+                        if changes.is_empty() {
+                            continue;
+                        }
+                        (Kind::Modified, *s, changes)
+                    }
+                    (None, Some((s, _))) => (Kind::Added, *s, vec![]),
+                    (Some((s, _)), None) => (Kind::Removed, *s, vec![]),
+                    (None, None) => continue,
+                };
+                let path = format!("{}/data/{collection}/{id}.json", space.dir());
+                r.files.push(FileChange { path, kind, from: None, additions: 0, deletions: 0, patch: None });
+                let key = Review::key(collection, id);
+                let name = after.get(id).or_else(|| before.get(id)).and_then(|(_, v)| v.get("name")).and_then(Value::as_str).map(str::to_string);
+                if let Some(name) = name {
+                    r.names.insert(key.clone(), name);
+                }
+                r.fields.insert(key, changes);
+            }
+        }
+        r
+    }
+
+    /// Whether anything changed.
+    pub fn is_empty(&self) -> bool {
+        self.files.is_empty()
+    }
+
     /// The file change of a record, if the pull request touches it (a chunked map's by any of
     /// its chunk files).
     pub fn record(&self, collection: &str, id: &str) -> Option<&FileChange> {
@@ -420,6 +463,33 @@ impl Review {
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+
+    /// The editor's own edits, between the content as saved and as it is: a record changed
+    /// field by field, one added, one removed, the rest untouched; nothing when nothing
+    /// changed.
+    #[test]
+    fn the_editors_own_edits_are_told_as_a_review() {
+        let mut saved = Content::default();
+        saved.props.put(crate::Prop { id: "rock".into(), name: "Rock".into(), ..Default::default() }, Space::Content);
+        saved.props.put(crate::Prop { id: "tree".into(), name: "Tree".into(), ..Default::default() }, Space::Content);
+        saved.terrains.put(crate::Terrain { id: "grass".into(), priority: 1, ..Default::default() }, Space::Content);
+        let mut now = saved.clone();
+        assert!(Review::between(&saved, &now).is_empty());
+        now.props.put(crate::Prop { id: "rock".into(), name: "Boulder".into(), ..Default::default() }, Space::Content);
+        now.props.remove("tree");
+        now.props.put(crate::Prop { id: "bush".into(), name: "Bush".into(), ..Default::default() }, Space::Temporary);
+        let r = Review::between(&saved, &now);
+        assert_eq!(r.record_kind("props", "rock"), Some(Kind::Modified));
+        assert_eq!(r.record_kind("props", "tree"), Some(Kind::Removed));
+        assert_eq!(r.record_kind("props", "bush"), Some(Kind::Added));
+        assert_eq!(r.record_kind("terrains", "grass"), None);
+        let name = r.changed("props", "rock", "name");
+        assert!(name.len() == 1 && name[0].detail.contains("Boulder"), "{name:?}");
+        assert_eq!((r.name_of("props", "tree"), r.name_of("props", "bush")), ("Tree".to_string(), "Bush".to_string()));
+        assert!(r.files.iter().any(|f| f.path == "temporary/data/props/bush.json"), "{:?}", r.files);
+        let props = r.collections().remove("props").unwrap();
+        assert_eq!((props.added, props.modified, props.removed), (1, 1, 1));
+    }
 
     use super::*;
 

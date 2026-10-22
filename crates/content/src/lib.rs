@@ -10,6 +10,7 @@
 //! name). When both spaces have a record with the same id, the game's own wins. For the
 //! browser, a space's files are packed into one `bundle.json` (`content bundle <space>`).
 
+pub mod delete;
 pub mod diff;
 pub mod rename;
 pub mod building;
@@ -334,6 +335,53 @@ impl Content {
             other => return Err(format!("{path}: no collection named \"{other}\"")),
         }
         Ok(())
+    }
+
+    /// The collections the editor edits (the rest never change in it).
+    pub const EDITED: [&'static str; 10] = ["props", "creatures", "terrains", "templates", "maps", "settings", "moves", "fx", "worlds", "spawns"];
+
+    /// Every record of a collection as JSON, by id, with its space (`EDITED` ones, else none).
+    pub fn records_json(&self, collection: &str) -> Vec<(String, Space, serde_json::Value)> {
+        macro_rules! go {
+            ($field:ident) => {
+                self.$field.entries().iter().map(|e| (e.value.id().to_string(), e.space, serde_json::to_value(&e.value).unwrap_or(serde_json::Value::Null))).collect()
+            };
+        }
+        match collection {
+            "props" => go!(props),
+            "creatures" => go!(creatures),
+            "terrains" => go!(terrains),
+            "templates" => go!(templates),
+            "maps" => go!(maps),
+            "settings" => go!(settings),
+            "moves" => go!(moves),
+            "fx" => go!(fx),
+            "worlds" => go!(worlds),
+            "spawns" => go!(spawns),
+            _ => vec![],
+        }
+    }
+
+    /// A collection taken as `other` has it (the editor: what's saved, noted as it saves).
+    pub fn take_collection(&mut self, other: &Content, collection: &str) {
+        macro_rules! go {
+            ($field:ident) => {
+                self.$field = other.$field.clone()
+            };
+        }
+        match collection {
+            "props" => go!(props),
+            "creatures" => go!(creatures),
+            "terrains" => go!(terrains),
+            "templates" => go!(templates),
+            "maps" => go!(maps),
+            "settings" => go!(settings),
+            "moves" => go!(moves),
+            "fx" => go!(fx),
+            "worlds" => go!(worlds),
+            "spawns" => go!(spawns),
+            _ => {}
+        }
     }
 
     /// Takes out the record a file under data/ holds ("<collection>/<id>.json", as `add` puts

@@ -6,7 +6,7 @@
 // (downloads) what changed.
 // Screenshots go to screenshots/assets-*.png.
 //     node tools/assetcheck.mjs
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Browser } from './cdp.mjs';
@@ -96,6 +96,8 @@ try {
   await press('uiFolder_Nature');
   check('and still in Nature', (await shown()).includes('flowers'));
   await expect('one prop changed', 'assetsdirty', 1);
+  await sleep(700);
+  check('  marked as changed, unsaved: a dot by its row, one on the Assets toggle', (await data('uiChanged_props_flowers')) !== '' && (await data('editdots')).includes('assets:'), `row ${await data('uiChanged_props_flowers')} · dots ${await data('editdots')}`);
 
   // 3. flowers made unstackable
   await press('uiUnstackable_flowers');
@@ -181,6 +183,8 @@ try {
     check('  with the light and the blocking set from the inspector', lamp.light?.kind === 'spot' && lamp.blocks !== true, `light ${JSON.stringify(lamp.light)} · blocks ${lamp.blocks}`);
   }
   await expect('nothing left to save', 'assetsdirty', 0);
+  await sleep(700);
+  check('  no marks left once saved', (await data('editdots')) === '', `dots "${await data('editdots')}"`);
 
   // 7. every prop to Blender, in one file
   await press('uiExportProps');
@@ -215,6 +219,18 @@ try {
   const meadows = readdirSync(downloads).filter((f) => f.startsWith('test_meadow') && f.endsWith('.json'));
   check('  the map placing it written again, naming it anew', meadows.some((f) => readFileSync(join(downloads, f), 'utf8').includes('"garden_lantern"')), meadows.join(', '));
   await shot('8-renamed');
+
+  // 9. the lantern deleted from the bin on its row: the dialog says it's placed on the map;
+  // gone from the list, the map written again without it
+  const before9 = Number(await data('assets'));
+  await press('uiDelete_garden_lantern');
+  await sleep(500);
+  await press('uiDeleteOk');
+  await sleep(1500);
+  check('the lantern deleted, its use on the map with it', (await data('deleted')) === 'garden_lantern' && Number(await data('assets')) === before9 - 1, `${await data('deleted')} · ${await data('assets')} of ${before9} props · ${await data('status')}`);
+  const latest = readdirSync(downloads).filter((f) => f.startsWith('test_meadow') && f.endsWith('.json')).map((f) => join(downloads, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
+  check('  the map written again without it', !!latest && !readFileSync(latest, 'utf8').includes('garden_lantern'), latest ?? 'no map downloaded');
+  await shot('9-deleted');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

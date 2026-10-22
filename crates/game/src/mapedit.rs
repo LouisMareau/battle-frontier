@@ -227,6 +227,12 @@ pub struct MapEditor {
     review: Option<Arc<review::Opened>>,
     review_enter: Option<Box<review::Opened>>,
     review_leave: bool,
+    /// the content as last saved (noted collection by collection as it's written), and the
+    /// editor's own edits since, told as a review is (marked wherever they show), looked for
+    /// now and then while something's unsaved
+    saved: Arc<Content>,
+    edits: Option<Arc<content::diff::Review>>,
+    edits_at: f64,
     /// signed in to Claude, for the model requests (the top bar's Claude sign-in)
     claude: claude::Claude,
     /// saving by itself (the top bar's Auto-save), and "Saved in this browser" (the Menu's, in
@@ -796,6 +802,9 @@ impl MapEditor {
             review: None,
             review_enter: None,
             review_leave: false,
+            saved: content.clone(),
+            edits: None,
+            edits_at: 0.0,
             claude: Default::default(),
             autosave: Default::default(),
             kept_window: Default::default(),
@@ -1258,22 +1267,25 @@ impl MapEditor {
                 return;
             }
             said.push(std::mem::take(&mut self.status));
+            self.note_saved_map();
             if let Some(note) = self.save_spawns() {
                 said.push(note);
             }
+            self.note_saved(&["spawns"]);
         }
         let parts = [
-            (self.assets.changed() > 0, Self::save_assets as fn(&mut Self)),
-            (self.post_changed(), Self::save_post),
-            (!self.abilities.dirty.is_empty(), Self::save_abilities),
-            (!self.tl.fx_dirty.is_empty(), Self::save_fx),
-            (!self.tpl.dirty.is_empty(), Self::save_templates),
-            (!self.terrains_dirty.is_empty(), Self::save_terrains),
+            (self.assets.changed() > 0, Self::save_assets as fn(&mut Self), ["props", "creatures"].as_slice()),
+            (self.post_changed(), Self::save_post, ["settings"].as_slice()),
+            (!self.abilities.dirty.is_empty(), Self::save_abilities, ["moves"].as_slice()),
+            (!self.tl.fx_dirty.is_empty(), Self::save_fx, ["fx"].as_slice()),
+            (!self.tpl.dirty.is_empty(), Self::save_templates, ["templates"].as_slice()),
+            (!self.terrains_dirty.is_empty(), Self::save_terrains, ["terrains"].as_slice()),
         ];
-        for (changed, save) in parts {
+        for (changed, save, collections) in parts {
             if changed {
                 save(self);
                 said.push(std::mem::take(&mut self.status));
+                self.note_saved(collections);
             }
         }
         said.retain(|s| !s.is_empty());
@@ -1742,6 +1754,8 @@ impl MapEditor {
         // the layout told what the panels' own flags say (an ability's Timeline opens its
         // panel, say)
         self.layout_as_opened();
+        // the editor's own edits, marked wherever they show (not while a pull request is)
+        self.refresh_edits(now);
         egui::Panel::top("maps-top").show(ui, |ui| {
             ui.add_space(4.0);
             // its first row: the panels' toggles at its right end; the rest from the left, one
@@ -1897,6 +1911,7 @@ impl MapEditor {
         self.terrain_window(&ctx);
         self.fx_windows(&ctx);
         self.rename_window(&ctx);
+        self.delete_window(&ctx);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -1968,6 +1983,94 @@ impl MapEditor {
             back = Some(Leave::EndReview);
         }
         back
+    }
+
+    /// Whether anything of the editor's waits to be saved.
+    fn any_unsaved(&self) -> bool {
+        self.dirty || self.assets.changed() > 0 || self.post_changed() || !self.abilities.dirty.is_empty() || !self.tl.fx_dirty.is_empty() || !self.tpl.dirty.is_empty() || !self.terrains_dirty.is_empty() || self.worlds.dirty
+    }
+
+    /// The editor's own edits since the last save (`edits`), as a review is told, looked
+    /// for a few times a second while something's unsaved (the map open as it is now, the
+    /// rest from the content): what the marks show when no pull request is under review.
+    fn refresh_edits(&mut self, now: f64) {
+        if self.review.is_some() {
+            self.edits = None;
+            return;
+        }
+        if !self.any_unsaved() && self.edits.is_none() {
+            return;
+        }
+        if now - self.edits_at < 400.0 {
+            return;
+        }
+        self.edits_at = now;
+        let mut current = (*self.content).clone();
+        // (the map open as it is now, once it's been edited; else as the content has it)
+        if self.dirty {
+            let space = self.content.maps.entry(&self.map.id).map_or(Space::Content, |e| e.space);
+            current.maps.put(self.map.records().0, space);
+        }
+        let edits = content::diff::Review::between(&self.saved, &current);
+        self.edits = (!edits.is_empty()).then(|| Arc::new(edits));
+    }
+
+    /// Collections written: as saved now (their marks go).
+    pub(super) fn note_saved(&mut self, collections: &[&str]) {
+        let mut saved = (*self.saved).clone();
+        for c in collections {
+            saved.take_collection(&self.content, c);
+        }
+        self.saved = Arc::new(saved);
+        self.edits_at = 0.0;
+    }
+
+    /// Some records of a collection written (maps, templates or terrains): as saved now, the
+    /// rest of the collection as it was.
+    pub(super) fn note_saved_records(&mut self, collection: &str, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut saved = (*self.saved).clone();
+        for id in ids {
+            match collection {
+                "maps" => {
+                    if let Some(e) = self.content.maps.entry(id) {
+                        saved.maps.put(e.value.clone(), e.space);
+                    }
+                }
+                "templates" => {
+                    if let Some(e) = self.content.templates.entry(id) {
+                        saved.templates.put(e.value.clone(), e.space);
+                    }
+                }
+                "terrains" => {
+                    if let Some(e) = self.content.terrains.entry(id) {
+                        saved.terrains.put(e.value.clone(), e.space);
+                    }
+                }
+                _ => {}
+            }
+        }
+        self.saved = Arc::new(saved);
+        self.edits_at = 0.0;
+    }
+
+    /// A record removed for good (its file gone): no longer anything to save.
+    pub(super) fn note_saved_removed(&mut self, collection: &str, id: &str) {
+        let mut saved = (*self.saved).clone();
+        saved.remove_file(&format!("{collection}/{id}.json"));
+        self.saved = Arc::new(saved);
+        self.edits_at = 0.0;
+    }
+
+    /// The map open written: as saved now.
+    pub(super) fn note_saved_map(&mut self) {
+        let mut saved = (*self.saved).clone();
+        let space = self.content.maps.entry(&self.map.id).map_or(Space::Content, |e| e.space);
+        saved.maps.put(self.map.records().0, space);
+        self.saved = Arc::new(saved);
+        self.edits_at = 0.0;
     }
 
     /// A panel's own open flag (its module's), for those that have one.

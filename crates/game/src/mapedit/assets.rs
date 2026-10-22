@@ -71,6 +71,8 @@ pub(super) struct Assets {
     pub creatures_dirty: BTreeSet<String>,
     /// a prop being renamed (the Rename dialog)
     pub renaming: Option<Renaming>,
+    /// a prop being deleted (the Delete dialog)
+    pub deleting: Option<Deleting>,
     /// where dropped files go: temporary/ (placeholders, never committed), else content/
     pub to_temporary: bool,
     /// files dropped, read (in the browser, when the page has read them)
@@ -115,6 +117,26 @@ pub(super) struct Renaming {
 impl Renaming {
     fn of(p: &Prop) -> Renaming {
         Renaming { id: p.id.clone(), was: p.name.clone(), name: p.name.clone(), new_id: p.id.clone(), trouble: String::new() }
+    }
+}
+
+/// A prop being deleted (the Delete dialog): which, its name, where it's named, its model's
+/// file if it has one and whether that goes too.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Deleting {
+    pub id: String,
+    pub name: String,
+    pub uses: content::delete::Uses,
+    pub model: Option<String>,
+    pub model_too: bool,
+}
+
+impl Deleting {
+    fn of(p: &Prop, content: &content::Content) -> Deleting {
+        // (its model's file goes with it when it's named after it: the usual way)
+        let model = p.model.clone();
+        let own = model.as_deref().is_some_and(|m| m.rsplit('/').next().and_then(|f| f.rsplit_once('.')).is_some_and(|(stem, _)| stem == p.id));
+        Deleting { id: p.id.clone(), name: p.name.clone(), uses: content.uses_of_prop(&p.id), model, model_too: own }
     }
 }
 
@@ -488,7 +510,12 @@ impl MapEditor {
                 }
             }
         }
-        // its record under its new id, with whatever else waits; the map when it names it
+        // what was written is saved now; its record under its new id, with whatever else
+        // waits; the map when it names it
+        self.note_saved_records("maps", &others);
+        self.note_saved_records("templates", &r.templates);
+        self.note_saved_records("terrains", &r.terrains);
+        self.note_saved_removed("props", old);
         self.save_some(map_changed);
         if written > 0 {
             said.push(format!("{written} other record{} written", if written == 1 { "" } else { "s" }));
@@ -498,6 +525,196 @@ impl MapEditor {
         }
         self.status = said.join(" · ");
         platform::set_hook("renamed", &format!("{old}->{new}"));
+        true
+    }
+
+    /// The Delete dialog (a prop and every use of it), while one is open: what deleting it
+    /// means (where it's named), its model's file too or not, Delete does it at once
+    /// (`delete_prop`), Cancel or a click outside closes it; what went wrong stays in it.
+    pub(super) fn delete_window(&mut self, ctx: &egui::Context) {
+        let Some(mut d) = self.assets.deleting.clone() else { return };
+        let mut done: Option<bool> = None;
+        let modal = egui::Modal::new(egui::Id::new("editor-delete")).frame(crate::title::dialog_frame()).show(ctx, |ui| {
+            ui.set_width(400.0);
+            ui.label(RichText::new(format!("Delete {}?", d.name)).size(18.0).strong());
+            ui.add_space(6.0);
+            let uses = d.uses.text();
+            if uses.is_empty() {
+                hint(ui, "It's named nowhere: its record goes, and that's all.");
+            } else {
+                super::warn(ui, &format!("It's {uses}: all of that goes with it (an actor that looked like it looks like nothing), written at once."));
+            }
+            if let Some(m) = &d.model {
+                ui.add_space(4.0);
+                let tick = ui.checkbox(&mut d.model_too, format!("Its model's file too ({m})")).on_hover_text("Off, the file stays where it is for another prop to use");
+                mark("uiDeleteModel", &tick);
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                let go = ui.add(egui::Button::new(RichText::new("Delete").color(Color32::from_rgb(255, 170, 160))));
+                mark("uiDeleteOk", &go);
+                if go.clicked() {
+                    done = Some(true);
+                }
+                let cancel = ui.button("Cancel");
+                mark("uiDeleteCancel", &cancel);
+                if cancel.clicked() {
+                    done = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            done = Some(false);
+        }
+        match done {
+            Some(true) => {
+                let (id, model_too) = (d.id.clone(), d.model_too);
+                self.delete_prop(&id, model_too);
+                self.assets.deleting = None;
+            }
+            Some(false) => self.assets.deleting = None,
+            None => self.assets.deleting = Some(d),
+        }
+    }
+
+    /// The prop `id` deleted everywhere it's named (`content::delete`): its record removed, its
+    /// model's file too when asked, the maps, templates and terrains that named it written
+    /// at once (the map open saved when it did); whatever held it lets go. Whether it was
+    /// done (the status line says what was, or what went wrong: nothing changed then).
+    pub(super) fn delete_prop(&mut self, id: &str, model_too: bool) -> bool {
+        if self.review.is_some() {
+            self.status = "Reviewing a pull request: nothing is deleted".into();
+            return false;
+        }
+        let mut c = (*self.content).clone();
+        let d = match c.delete_prop(id) {
+            Ok(d) => d,
+            Err(e) => {
+                self.status = format!("Not deleted: {e}");
+                return false;
+            }
+        };
+        self.content = Arc::new(c);
+        // the open map is the editor's own copy
+        let look = format!("prop:{id}");
+        let before = (self.map.props.len(), self.map.tree_areas.iter().map(|a| a.trees.len()).sum::<usize>(), self.map.actors.iter().filter(|a| a.look == look).count());
+        self.map.props.retain(|p| p.prop != id);
+        for a in self.map.tree_areas.iter_mut() {
+            a.trees.retain(|t| t != id);
+        }
+        for a in self.map.actors.iter_mut().filter(|a| a.look == look) {
+            a.look = String::new();
+        }
+        let map_changed = before != (self.map.props.len(), self.map.tree_areas.iter().map(|a| a.trees.len()).sum::<usize>(), 0);
+        if map_changed {
+            self.dirty = true;
+            self.selected = None;
+        }
+        // whatever held it
+        if self.prop.as_deref() == Some(id) {
+            self.prop = None;
+        }
+        if let Some(dr) = self.draft.as_mut() {
+            for held in [&mut dr.inside_prop, &mut dr.outside_prop] {
+                if held.as_deref() == Some(id) {
+                    *held = None;
+                }
+            }
+        }
+        self.assets.dirty.remove(id);
+        self.models.remove(id);
+        self.model_failed.remove(id);
+        self.skinned_sent.remove(id);
+        self.need_props = true;
+        self.need_trees = true;
+        self.need_buildings = true;
+        self.extra_changed = true;
+        self.blocked = None;
+        // the files: the record gone, its model when asked, whatever else named it written
+        let mut said = vec![format!("{} deleted", d.prop.name)];
+        let mut written = 0;
+        let others: Vec<String> = d.maps.iter().filter(|m| **m != self.map.id).cloned().collect();
+        let content = self.content.clone();
+        let model = d.prop.model.as_deref().filter(|_| model_too).map(|m| d.space.asset(m));
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let root = std::path::PathBuf::from(std::env::var("GAME_ROOT").unwrap_or_else(|_| ".".into()));
+            let _ = std::fs::remove_file(root.join(d.space.dir()).join("data").join("props").join(format!("{id}.json")));
+            if let Some(m) = &model {
+                match std::fs::remove_file(root.join(m)) {
+                    Ok(_) => said.push(format!("its model {m} gone")),
+                    Err(e) => said.push(format!("its model {m} stays ({e})")),
+                }
+                self.files.forget(m);
+            }
+            for e in others.iter().filter_map(|i| content.maps.entry(i)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in d.templates.iter().filter_map(|i| content.templates.entry(i)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in d.terrains.iter().filter_map(|i| content.terrains.entry(i)) {
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            self.assets.seen = snapshot(&root);
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            use super::saving::{browser_save_record, keeps};
+            if keeps() {
+                crate::keep::keep_removed(&format!("{}/data/props/{id}.json", d.space.dir()));
+                if let Some(m) = &model {
+                    crate::keep::keep_removed(m);
+                    said.push(format!("its model {m} gone"));
+                }
+            }
+            if let Some(m) = &model {
+                self.files.forget(m);
+            }
+            for e in others.iter().filter_map(|i| content.maps.entry(i)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in d.templates.iter().filter_map(|i| content.templates.entry(i)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+            for e in d.terrains.iter().filter_map(|i| content.terrains.entry(i)) {
+                match browser_save_record(e.space, &e.value, &format!("{}.json", e.value.id)) {
+                    Ok(_) => written += 1,
+                    Err(e) => said.push(e),
+                }
+            }
+        }
+        // what was written is saved now; the map when it named it
+        self.note_saved_records("maps", &others);
+        self.note_saved_records("templates", &d.templates);
+        self.note_saved_records("terrains", &d.terrains);
+        self.note_saved_removed("props", id);
+        if map_changed {
+            self.save_some(true);
+        }
+        if written > 0 {
+            said.push(format!("{written} other record{} written", if written == 1 { "" } else { "s" }));
+        }
+        if !self.status.is_empty() {
+            said.push(std::mem::take(&mut self.status));
+        }
+        self.status = said.join(" · ");
+        platform::set_hook("deleted", id);
         true
     }
 
@@ -565,9 +782,15 @@ impl MapEditor {
                         self.assets.rows.push((f.clone(), r.rect));
                     }
                     ui.separator();
-                    if let Some(r) = self.reviewing() {
-                        let n = r.collections().get("props").map(|c| c.total()).unwrap_or(0) + r.assets().len();
-                        let changed = ui.selectable_label(self.assets.folder.as_deref() == Some(REVIEWED), format!("Changed in the PR ({n})")).on_hover_text("The props and the assets the pull request under review adds, changes or takes out");
+                    if let Some(c) = self.changes() {
+                        let r = c.review();
+                        let n = r.collections().get("props").map(|c| c.total()).unwrap_or(0) + if c.own() { 0 } else { r.assets().len() };
+                        let (label, about) = if c.own() {
+                            (format!("Changed, unsaved ({n})"), "The props you've changed, added or taken out since the last save")
+                        } else {
+                            (format!("Changed in the PR ({n})"), "The props and the assets the pull request under review adds, changes or takes out")
+                        };
+                        let changed = ui.selectable_label(self.assets.folder.as_deref() == Some(REVIEWED), label).on_hover_text(about);
                         mark("uiFolder_Changed", &changed);
                         if changed.clicked() {
                             self.assets.folder = Some(REVIEWED.into());
@@ -631,7 +854,7 @@ impl MapEditor {
             .collect();
         crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
         // what the pull request takes out: no longer here, listed by name
-        let removed: Vec<(String, String)> = self.reviewing().map(|r| r.records_of("props").into_iter().filter(|(_, k)| *k == content::diff::Kind::Removed).map(|(id, _)| (r.name_of("props", &id), id)).collect()).unwrap_or_default();
+        let removed: Vec<(String, String)> = self.changes().map(|c| c.review().records_of("props").into_iter().filter(|(_, k)| *k == content::diff::Kind::Removed).map(|(id, _)| (c.review().name_of("props", &id), id)).collect()).unwrap_or_default();
         let assets: Vec<(String, String, content::diff::Kind)> = if reviewed { self.reviewing().map(|r| r.assets()).unwrap_or_default() } else { vec![] };
         if rows.is_empty() && !reviewed {
             hint(ui, "Nothing here yet: drag rows from another folder, or drop .glb files on this one.");
@@ -661,6 +884,7 @@ impl MapEditor {
         let mut picked = None;
         let mut light_edit = None;
         let mut rename: Option<Renaming> = None;
+        let mut delete: Option<Deleting> = None;
         let mut changes: Vec<(String, Change)> = vec![];
         let mut out_of: Option<(String, String)> = None;
         egui::Grid::new("asset-grid").striped(true).num_columns(8).spacing([14.0, 5.0]).show(ui, |ui| {
@@ -683,11 +907,15 @@ impl MapEditor {
                     if super::row_icon(ui, egui::include_image!("../../icons/edit.svg"), false, "Rename it: its name, its id (wherever it's named follows)", &format!("uiRename_{}", p.id)).clicked() {
                         rename = Some(Renaming::of(p));
                     }
+                    if super::row_icon(ui, egui::include_image!("../../icons/trash.svg"), false, "Delete it, and every use of it in the project", &format!("uiDelete_{}", p.id)).clicked() {
+                        delete = Some(Deleting::of(p, &content));
+                    }
                 });
                 ui.horizontal(|ui| {
                     badge(ui, e.space);
                     if let Some(k) = self.review_kind("props", &p.id) {
-                        review::change_badge(ui, k).on_hover_text(self.review_changes("props", &p.id, "").map(|(_, about)| about).unwrap_or_default());
+                        let b = review::change_badge(ui, k).on_hover_text(self.review_changes("props", &p.id, "").map(|(_, about)| about).unwrap_or_default());
+                        mark(&format!("uiChanged_props_{}", p.id), &b);
                     }
                 });
                 let mut category = p.category.clone();
@@ -762,6 +990,9 @@ impl MapEditor {
         if let Some(r) = rename {
             self.assets.renaming = Some(r);
         }
+        if let Some(d) = delete {
+            self.assets.deleting = Some(d);
+        }
         if let Some((id, f)) = out_of {
             self.take_from_folder(&id, &f);
         }
@@ -833,6 +1064,9 @@ impl MapEditor {
             ui.label(RichText::new(&p.id).monospace().size(11.0).color(Color32::GRAY));
             if super::row_icon(ui, egui::include_image!("../../icons/edit.svg"), false, "Rename it: its name, its id (wherever it's named follows)", "uiRenameProp").clicked() {
                 self.assets.renaming = Some(Renaming::of(&p));
+            }
+            if super::row_icon(ui, egui::include_image!("../../icons/trash.svg"), false, "Delete it, and every use of it in the project", "uiDeleteProp").clicked() {
+                self.assets.deleting = Some(Deleting::of(&p, &self.content));
             }
             if self.assets.dirty.contains(id) {
                 let save = ui.small_button("Save prop").on_hover_text("Writes its record (Ctrl+S does too)");
@@ -1472,6 +1706,17 @@ fn snapshot(root: &std::path::Path) -> Vec<(std::path::PathBuf, std::time::Syste
 mod tests {
     use super::*;
 
+    /// Where the tests that write go: one folder in the temp dir for the process (GAME_ROOT
+    /// is one for the process: each test setting its own would race the others), each test
+    /// with props of its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn test_root() -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("bf-editor-tests-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("content/data/props")).unwrap();
+        std::env::set_var("GAME_ROOT", &root);
+        root
+    }
+
     /// A prop renamed from the editor: the open map's placed props follow, the picked prop
     /// and the loaded model too, its record is written under its new id and the old one is
     /// gone from the disk; a new id that isn't one is refused, nothing changed; a name alone
@@ -1479,10 +1724,7 @@ mod tests {
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_prop_renamed_in_the_editor_follows_everywhere() {
-        let root = std::env::temp_dir().join(format!("bf-rename-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        std::fs::create_dir_all(root.join("content/data/props")).unwrap();
-        std::env::set_var("GAME_ROOT", &root);
+        let root = test_root();
         let mut c = content::Content::default();
         c.props.put(Prop { id: "rock".into(), name: "Rock".into(), ..Default::default() }, Space::Content);
         content::disk::save(&root, Space::Content, c.props.get("rock").unwrap()).unwrap();
@@ -1499,7 +1741,48 @@ mod tests {
         assert!(root.join("content/data/props/boulder.json").exists() && !root.join("content/data/props/rock.json").exists(), "{}", ed.status);
         assert!(ed.rename_prop("boulder", "Big boulder", "boulder"), "{}", ed.status);
         assert_eq!(ed.content.props.get("boulder").unwrap().name, "Big boulder");
-        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A prop deleted from the editor: gone from the content and the open map (the placed
+    /// one, the actor that looked like it looks like nothing), the picked prop and the model
+    /// let go, its record gone from the disk; one that isn't, refused.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_prop_deleted_in_the_editor_goes_from_everywhere() {
+        let root = test_root();
+        let mut c = content::Content::default();
+        c.props.put(Prop { id: "stone".into(), name: "Stone".into(), ..Default::default() }, Space::Content);
+        content::disk::save(&root, Space::Content, c.props.get("stone").unwrap()).unwrap();
+        let mut ed = MapEditor::new(Arc::new(c), None, crate::platform::Files::new("."));
+        ed.map.props.push(content::Placed { prop: "stone".into(), at: [2.5, 2.5], ..Default::default() });
+        ed.map.actors.push(content::Actor { id: "statue".into(), look: "prop:stone".into(), ..Default::default() });
+        ed.prop = Some("stone".into());
+        ed.models.insert("stone".into(), world::gltf_in::Model::default());
+        assert!(ed.delete_prop("stone", false), "{}", ed.status);
+        assert!(!ed.content.props.contains("stone"));
+        assert!(ed.map.props.is_empty() && ed.map.actors[0].look.is_empty(), "{:?}", ed.map.actors);
+        assert!(ed.prop.is_none() && !ed.models.contains_key("stone"));
+        assert!(!root.join("content/data/props/stone.json").exists(), "{}", ed.status);
+        assert!(!ed.delete_prop("stone", false));
+    }
+
+    /// The editor's own edits show as a review's do: a prop changed is marked modified until
+    /// it's noted saved.
+    #[test]
+    fn own_edits_are_marked_until_saved() {
+        let mut c = content::Content::default();
+        c.props.put(Prop { id: "rock".into(), name: "Rock".into(), ..Default::default() }, Space::Content);
+        let mut ed = MapEditor::new(Arc::new(c), None, crate::platform::Files::new("."));
+        ed.refresh_edits(1000.0);
+        assert!(ed.edits.is_none() && ed.review_kind("props", "rock").is_none(), "nothing changed");
+        ed.change_prop("rock", |p| p.name = "Boulder".into());
+        ed.refresh_edits(2000.0);
+        assert_eq!(ed.review_kind("props", "rock"), Some(content::diff::Kind::Modified));
+        assert!(ed.review_changes("props", "rock", "name").is_some_and(|(_, about)| about.contains("Boulder")));
+        assert!(ed.changes().is_some_and(|c| c.own()));
+        ed.note_saved(&["props"]);
+        ed.refresh_edits(3000.0);
+        assert!(ed.edits.is_none(), "saved: no marks");
     }
 
     #[test]

@@ -11,7 +11,7 @@
 //! browser), shown in a window of its own.
 
 use std::collections::BTreeMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc};
 
 use content::diff::{fields, place_of, Counts, FileChange, Kind, Place, Review};
 use content::Content;
@@ -427,13 +427,45 @@ fn pane_of(collection: &str) -> Option<dock::Pane> {
     })
 }
 
-/// What of a record changed under `prefix` in a pull request (`review`): how, and the changes in
-/// words; None when nothing did (`MapEditor::review_changes`, for closures holding the review).
-pub(super) fn changes_of(review: Option<&Opened>, collection: &str, id: &str, prefix: &str) -> Option<(Kind, String)> {
-    let r = &review?.review;
+/// What the marks show: the pull request under review, or the editor's own edits since the
+/// last save (`MapEditor::edits`), told alike.
+#[derive(Clone)]
+pub(super) enum Changes {
+    Pr(Arc<Opened>),
+    Own(Arc<Review>),
+}
+
+impl Changes {
+    pub fn review(&self) -> &Review {
+        match self {
+            Changes::Pr(o) => &o.review,
+            Changes::Own(r) => r,
+        }
+    }
+
+    pub fn own(&self) -> bool {
+        matches!(self, Changes::Own(_))
+    }
+
+    /// Where a change comes from, for a mark's words.
+    fn whence(&self) -> &'static str {
+        if self.own() {
+            "unsaved"
+        } else {
+            "in the pull request"
+        }
+    }
+}
+
+/// What of a record changed under `prefix` (`changes`: the pull request's, or the editor's own):
+/// how, and the changes in words; None when nothing did (`MapEditor::review_changes`, for
+/// closures holding the changes).
+pub(super) fn changes_of(changes: Option<&Changes>, collection: &str, id: &str, prefix: &str) -> Option<(Kind, String)> {
+    let c = changes?;
+    let r = c.review();
     let kind = r.record_kind(collection, id)?;
     if matches!(kind, Kind::Added | Kind::Removed) {
-        return Some((kind, format!("{} in the pull request", kind.word())));
+        return Some((kind, format!("{} {}", kind.word(), c.whence())));
     }
     let changes = r.changed(collection, id, prefix);
     if changes.is_empty() {
@@ -444,10 +476,10 @@ pub(super) fn changes_of(review: Option<&Opened>, collection: &str, id: &str, pr
     Some((kind, changes.iter().map(|c| format!("{} {}: {}", c.kind.word(), c.path, c.detail)).collect::<Vec<_>>().join("\n")))
 }
 
-/// A dot by a record's row or field when a pull request (`review`) changed it
-/// (`MapEditor::change_mark`, for closures holding the review).
-pub(super) fn record_mark(ui: &mut egui::Ui, review: Option<&Opened>, collection: &str, id: &str, prefix: &str) {
-    if let Some((kind, about)) = changes_of(review, collection, id, prefix) {
+/// A dot by a record's row or field when the pull request under review, or the editor's own
+/// unsaved edits, changed it (`MapEditor::change_mark`, for closures holding the changes).
+pub(super) fn record_mark(ui: &mut egui::Ui, changes: Option<&Changes>, collection: &str, id: &str, prefix: &str) {
+    if let Some((kind, about)) = changes_of(changes, collection, id, prefix) {
         let r = dot(ui, kind, &about);
         mark(&format!("uiChanged_{collection}_{id}{}", if prefix.is_empty() { String::new() } else { format!("_{}", prefix.replace(['.', '[', ']'], "_")) }), &r);
     }
@@ -459,16 +491,22 @@ impl MapEditor {
         self.review.as_deref().map(|o| &o.review)
     }
 
+    /// What the marks show: the pull request under review, else the editor's own unsaved
+    /// edits (none when nothing's changed).
+    pub(super) fn changes(&self) -> Option<Changes> {
+        self.review.clone().map(Changes::Pr).or_else(|| self.edits.clone().map(Changes::Own))
+    }
+
     /// How a record changed in the pull request under review, whole; None when it didn't (or
     /// nothing's reviewed).
     pub(super) fn review_kind(&self, collection: &str, id: &str) -> Option<Kind> {
-        self.reviewing()?.record_kind(collection, id)
+        self.changes()?.review().record_kind(collection, id)
     }
 
     /// What of a record changed under `prefix` (a section's fields, or one field: ""
     /// for all of it): how, and the changes in words; None when nothing did.
     pub(super) fn review_changes(&self, collection: &str, id: &str, prefix: &str) -> Option<(Kind, String)> {
-        changes_of(self.review.as_deref(), collection, id, prefix)
+        changes_of(self.changes().as_ref(), collection, id, prefix)
     }
 
     /// What of a record changed in any of `prefixes` (a box of fields), as `review_changes`.
@@ -486,14 +524,15 @@ impl MapEditor {
     /// A dot by a section or a field of a record, when the pull request under review changed
     /// it (`prefix`: the field's path, or a section's; "" for the whole record); nothing else.
     pub(super) fn change_mark(&self, ui: &mut egui::Ui, collection: &str, id: &str, prefix: &str) {
-        record_mark(ui, self.review.as_deref(), collection, id, prefix);
+        record_mark(ui, self.changes().as_ref(), collection, id, prefix);
     }
 
     /// How many changes each panel holds: the records its windows show, the assets, and the
     /// map open (the Inspector's, and the tools').
     pub(super) fn pane_changes(&self) -> BTreeMap<dock::Pane, Counts> {
         let mut out: BTreeMap<dock::Pane, Counts> = BTreeMap::new();
-        let Some(r) = self.reviewing() else { return out };
+        let Some(c) = self.changes() else { return out };
+        let r = c.review();
         for (collection, counts) in r.collections() {
             if let Some(pane) = pane_of(&collection) {
                 out.entry(pane).or_default().add(counts);
@@ -513,8 +552,10 @@ impl MapEditor {
     /// saying how many when hovered; the hook `reviewdots` lists them.
     pub(super) fn review_dots(&self, ui: &mut egui::Ui, toggles: &BTreeMap<dock::Pane, egui::Response>) {
         let changes = self.pane_changes();
-        let listed: Vec<String> = changes.iter().map(|(p, c)| format!("{}:{}", p.key(), c.total())).collect();
-        crate::platform::set_hook("reviewdots", &listed.join(";"));
+        let own = self.changes().is_some_and(|c| c.own());
+        let listed = changes.iter().map(|(p, c)| format!("{}:{}", p.key(), c.total())).collect::<Vec<_>>().join(";");
+        crate::platform::set_hook("reviewdots", if own { "" } else { &listed });
+        crate::platform::set_hook("editdots", if own { &listed } else { "" });
         for (pane, counts) in changes {
             let Some(r) = toggles.get(&pane) else { continue };
             let kind = if counts.modified > 0 || (counts.added > 0 && counts.removed > 0) {
@@ -528,7 +569,7 @@ impl MapEditor {
             ui.painter().circle_filled(at, 4.0, colour(kind));
             ui.painter().circle_stroke(at, 4.0, egui::Stroke::new(1.0, Color32::from_gray(30)));
             let hover = ui.interact(egui::Rect::from_center_size(at, egui::vec2(12.0, 12.0)), r.id.with("review dot"), egui::Sense::hover());
-            hover.on_hover_text(format!("In the pull request: {}", counts.text()));
+            hover.on_hover_text(format!("{}: {}", if own { "Unsaved" } else { "In the pull request" }, counts.text()));
         }
     }
 

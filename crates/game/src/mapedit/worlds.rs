@@ -181,7 +181,7 @@ impl MapEditor {
             ui.vertical(|ui| {
                 ui.set_width(170.0);
                 section(ui, "Maps");
-                let review = self.review.clone();
+                let changes = self.changes();
                 egui::ScrollArea::vertical().id_salt("world-maps").max_height((height - 40.0).max(40.0)).show(ui, |ui| {
                     for m in content.maps.iter() {
                         let placed = world.piece_of(&m.id).is_some();
@@ -190,7 +190,7 @@ impl MapEditor {
                             let r = ui.selectable_label(false, text).interact(Sense::drag()).on_hover_text(if placed { "In the world already" } else { "Drag it onto the grid" });
                             r.dnd_set_drag_payload(format!("map:{}", m.id));
                             mark(&format!("uiMapRow_{}", m.id), &r);
-                            super::review::record_mark(ui, review.as_deref(), "maps", &m.id, "");
+                            super::review::record_mark(ui, changes.as_ref(), "maps", &m.id, "");
                         });
                     }
                 });

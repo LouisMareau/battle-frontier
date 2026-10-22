@@ -205,7 +205,7 @@ impl MapEditor {
             hint(ui, "None yet: capture an area, or use \"Make a template\" on what's selected.");
         }
         let mut delete = None;
-        let review = self.review.clone();
+        let changes = self.changes();
         for (id, name, about, space) in list {
             let chosen = self.tpl.selected.as_deref() == Some(id.as_str());
             let dirty = if self.tpl.dirty.contains(&id) { " •" } else { "" };
@@ -214,7 +214,7 @@ impl MapEditor {
                     let r = ui
                         .add(egui::Button::selectable(chosen, RichText::new(format!("{name}{dirty}"))).sense(Sense::click_and_drag()))
                         .on_hover_text(format!("{about}{} · drag onto the map", if space == Space::Temporary { " · temporary" } else { "" }));
-                    super::review::record_mark(ui, review.as_deref(), "templates", &id, "");
+                    super::review::record_mark(ui, changes.as_ref(), "templates", &id, "");
                     r
                 })
                 .inner;

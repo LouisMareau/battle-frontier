@@ -644,7 +644,10 @@ it's in ("Move to a folder"), with "Save prop" (or Ctrl+S) writing the record. T
 its id (in the inspector and on its row in the asset browser) renames it: its name, and its
 id too, which moves its record (and its model's file when that's named after it) and follows
 wherever it's named, on every map and template and in every terrain growing it, all written
-at once. "Edit in
+at once. The bin by it deletes it with every use of it in the project: the dialog says where
+it's named first (placed on which maps and templates, picked by tree areas, grown by terrains,
+looked like by actors) and whether its model's file goes too, then all of it is written at
+once. "Edit in
 Blender" opens Blender on it, the add-on set up and the prop imported; what you change
 there is written back to the project by itself (a moment after each change, and on
 Ctrl+S: the .blend lives in `build/blender/`), into the space it came from (a placeholder
@@ -840,7 +843,11 @@ models, World for maps, Abilities, Post-processing...), hovered for how many; **
 PR** folder lists the props it touches and names those it takes out); a dot by each section
 and field that changed (a terrain's name, colours or look, a plant's card, a map's cells
 painted, an ability's level-ups, an actor, an event: hovered, what changed, from what to
-what). The Review window lists it all: the records by collection with their fields, the
+what). The same marks show your own edits while nothing's under review: what you've added,
+changed or taken out since the last save (the content as last written is kept, and the
+edits since are told the same way), a dot on each panel's button holding some, the badges
+and dots by the rows, sections and fields, saying "unsaved" (the Assets panel's folder
+then reads **Changed, unsaved**); they go as each part is saved. The Review window lists it all: the records by collection with their fields, the
 assets, the code by area (the engine's crates, the tools, the site's functions, the
 workflows) with each file's lines and its diff to unfold, and the rest (docs). **Review by
 Claude** sends the whole of it (the summary and the diffs, the long ones cut) to Claude on
