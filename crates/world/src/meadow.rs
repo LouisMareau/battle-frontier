@@ -127,15 +127,18 @@ fn clustered(p: &Plant, i: usize, at: Vec2) -> f32 {
     1.0 - c * (1.0 - smoothstep(0.7, 0.8, n))
 }
 
-/// A meadow's plants grown through cell x, z (its terrain's kinds from `first`): so many on
-/// average, fewer in its patches, spread evenly over it (standing where `foot` says, from its
-/// north-west corner: none where it's cut away), each one of its plants by their weights
-/// there, sized and leaning as its clump says; the engine's into `blades`, the models into
-/// `tufts`. The same every time.
-pub fn grow(m: &Meadow, first: u32, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> Option<f32>, blades: &mut Vec<Blade>, tufts: &mut Vec<Tuft>) {
+/// A terrain's meadow's plants grown through cell x, z (the terrain's kinds from `first`): so
+/// many on average, fewer in its patches, spread evenly over it (standing where `foot` says,
+/// from its north-west corner: none where it's cut away), each one of its plants by their
+/// weights there, sized and leaning as its clump says; the engine's into `blades`, the models
+/// into `tufts`. The same every time.
+pub fn grow(t: &Terrain, first: u32, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> Option<f32>, blades: &mut Vec<Blade>, tufts: &mut Vec<Tuft>) {
+    let m = &t.growth.meadow;
     if m.plants.is_empty() {
         return;
     }
+    // (its models' tufts carry the terrain's rigidity; its blades' kinds have it)
+    let rigidity = t.rigidity as f32;
     let density = m.density.clamp(0.0, Meadow::MOST) as f32;
     let n = (density + hash(x, z, 211)).floor() as i32;
     // spread evenly: a sequence that fills the cell however many there are (R2), from a
@@ -186,7 +189,7 @@ pub fn grow(m: &Meadow, first: u32, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> O
                 let (lo, hi) = (p.scale[0].min(p.scale[1]), p.scale[0].max(p.scale[1]));
                 // (a tuft's turn: degrees, clockwise seen from above)
                 let turn = (-lean.y).atan2(lean.x).to_degrees();
-                tufts.push(Tuft { prop: p.prop.clone(), at: foot, turn: -turn, scale: (lo + (hi - lo) * big as f64) as f32, far: true });
+                tufts.push(Tuft { prop: p.prop.clone(), at: foot, turn: -turn, scale: (lo + (hi - lo) * big as f64) as f32, far: true, rigidity });
             }
             continue;
         }
@@ -205,11 +208,17 @@ mod tests {
         Meadow { plants, ..Default::default() }
     }
 
+    /// A terrain growing `m`.
+    fn of(m: &Meadow) -> Terrain {
+        Terrain { growth: Growth { meadow: m.clone(), ..Default::default() }, ..Default::default() }
+    }
+
     fn grown(m: &Meadow, cells: i32) -> (Vec<Blade>, Vec<Tuft>) {
         let (mut blades, mut tufts) = (vec![], vec![]);
+        let t = of(m);
         for z in 0..cells {
             for x in 0..cells {
-                grow(m, 0, x, z, &|_, _| Some(0.5), &mut blades, &mut tufts);
+                grow(&t, 0, x, z, &|_, _| Some(0.5), &mut blades, &mut tufts);
             }
         }
         (blades, tufts)
@@ -229,14 +238,14 @@ mod tests {
         }
         // spread evenly over a cell: each quarter of it has about a quarter of its blades
         let mut one = vec![];
-        grow(&m, 0, 3, 5, &|_, _| Some(0.0), &mut one, &mut vec![]);
+        grow(&of(&m), 0, 3, 5, &|_, _| Some(0.0), &mut one, &mut vec![]);
         for (qx, qz) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
             let n = one.iter().filter(|b| ((b.at.x - 3.0) * 2.0) as i32 == qx && ((b.at.z - 5.0) * 2.0) as i32 == qz).count();
             assert!((8..=16).contains(&n), "a quarter of the cell: {n} of {}", one.len());
         }
         // none where its foot is cut away
         let mut half = vec![];
-        grow(&m, 0, 0, 0, &|u, _| (u < 0.5).then_some(0.0), &mut half, &mut vec![]);
+        grow(&of(&m), 0, 0, 0, &|u, _| (u < 0.5).then_some(0.0), &mut half, &mut vec![]);
         assert!(half.iter().all(|b| b.at.x < 0.5) && half.len() > 15 && half.len() < 35);
     }
 

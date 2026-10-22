@@ -639,6 +639,9 @@ impl Content {
                     }
                 }
             }
+            if !(0.0..=1.0).contains(&t.rigidity) {
+                out.push(format!("terrains/{}: rigidity {} (0 to 1)", t.id, t.rigidity));
+            }
             let g = &t.growth;
             for p in &g.props {
                 if !self.props.contains(&p.prop) {

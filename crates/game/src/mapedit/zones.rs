@@ -574,8 +574,8 @@ mod tests {
         assert!(ed.pushers(0.0).is_empty(), "nobody about");
         ed.walk_to(3, 3);
         let p = ed.pushers(1000.0);
-        assert_eq!(p.len(), 1);
-        assert!((3.0..4.0).contains(&p[0].0.x) && (3.0..4.0).contains(&p[0].0.z) && p[0].1 > 0.3 && p[0].1 < 1.0, "{p:?}");
+        assert_eq!(p.len(), 1, "just arrived: no trail yet");
+        assert!((3.0..4.0).contains(&p[0].at.x) && (3.0..4.0).contains(&p[0].at.z) && p[0].reach > 0.3 && p[0].reach < 1.0 && p[0].strength == 1.0, "{p:?}");
         ed.trample = false;
         assert!(ed.pushers(1000.0).is_empty(), "turned off for the checks");
     }

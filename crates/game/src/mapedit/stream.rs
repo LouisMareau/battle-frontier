@@ -317,7 +317,7 @@ pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
                 bend: [p.lean as f32, p.bend as f32, p.sway as f32, if flower { p.bloom as f32 } else { 0.0 }],
                 foot: [foot[0], foot[1], foot[2], p.petals as f32],
                 tip: [tip[0], tip[1], tip[2], if t.growth.meadow.toon { 1.0 } else { 0.0 }],
-                petal: [petal[0], petal[1], petal[2], 0.0],
+                petal: [petal[0], petal[1], petal[2], t.rigidity.clamp(0.0, 1.0) as f32],
                 heart: [heart[0], heart[1], heart[2], p.glow as f32],
             }
         })

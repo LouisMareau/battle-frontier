@@ -36,6 +36,7 @@ mod stream;
 mod terrains;
 mod templates;
 mod timeline;
+mod trample;
 mod walk;
 mod welcome;
 mod worlds;
@@ -329,6 +330,8 @@ pub struct MapEditor {
     hover_treeline: Vec<(i32, i32)>,
     zones_changed: bool,
     spawner: world::spawn::Spawner,
+    /// where whoever tramples the grass has just been (the grass springing back behind them)
+    trails: trample::Trails,
     /// who lives in the zones (the map's spawns record)
     spawns: content::Spawns,
     creatures_on: bool,
@@ -852,6 +855,7 @@ impl MapEditor {
             hover_treeline: vec![],
             zones_changed: false,
             spawner: world::spawn::Spawner::new(7),
+            trails: Default::default(),
             spawns: content::Spawns::default(),
             creatures_on: true,
             debug: false,
@@ -3161,33 +3165,6 @@ impl MapEditor {
             pushers,
             radiance: crate::stage::radiance_look(&self.light_settings()),
         }
-    }
-
-    /// Who tramples the grass this frame: the walker, the actors (where they stand or step),
-    /// the creatures roaming (as much as they're there), the nearest the camera's target
-    /// first, at most `MAX_PUSHERS`; none while the checks say `trample:off`.
-    fn pushers(&self, now: f64) -> Vec<(Vec3, f32)> {
-        if !self.trample {
-            return vec![];
-        }
-        let mut out: Vec<(Vec3, f32)> = vec![];
-        if let Some(w) = &self.walker {
-            out.push((w.pos(now), 0.9));
-        }
-        for i in 0..self.live.len() {
-            if !self.live[i].hidden {
-                out.push((self.actor_pos(i, now), 0.8));
-            }
-        }
-        for r in &self.spawner.roamers {
-            if r.presence > 0.05 {
-                out.push((Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y), r.pos.y), 0.7 * r.presence));
-            }
-        }
-        let target = self.cam.target;
-        out.sort_by(|a, b| a.0.distance_squared(target).total_cmp(&b.0.distance_squared(target)));
-        out.truncate(render::scene::MAX_PUSHERS);
-        out
     }
 
     /// The map's cells the camera can see round its target (x0, z0, x1, z1, out): what the

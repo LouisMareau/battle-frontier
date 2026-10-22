@@ -862,6 +862,11 @@ pub struct Terrain {
     /// where two terrains meet, the one with the higher priority reaches further
     #[serde(skip_serializing_if = "is_default")]
     pub priority: i16,
+    /// how stiff what grows on it is (0 to 1): the wind and whoever tramples it bend its
+    /// meadow and its grass that much less, from the ground up (what's within that much of a
+    /// plant's sway weight stays still; its tip gives what's left)
+    #[serde(skip_serializing_if = "is_default")]
+    pub rigidity: f64,
     /// water, and how it moves: "inland" (lakes, ponds, rivers: ripples going with the wind,
     /// small waves landing on the shore it blows towards) or "oceanic" (the sea: waves always
     /// rolling in to the land, stronger when the wind blows to land too). A terrain drawn as

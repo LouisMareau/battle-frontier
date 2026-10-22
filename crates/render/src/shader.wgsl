@@ -66,10 +66,13 @@ struct Globals {
     // region's north-west corner (x, z), z the lamps' bounce, w the screen's glow's share
     gi: vec4<f32>,
     gi_b: vec4<f32>,
-    // who tramples the grass (the walker, the actors, the creatures roaming): x how many; each:
-    // xyz where they stand (their feet), w how wide they push (cells)
+    // who tramples the grass (the walker, the actors, the creatures roaming), and ghosts of
+    // them where they've just been: x how many; each: xyz where they stand (their feet), w how
+    // wide they push (cells); `pushed`: x how much each bends it (1 standing there, less the
+    // longer gone, as the grass springs back)
     push: vec4<f32>,
-    pushers: array<vec4<f32>, 16>,
+    pushers: array<vec4<f32>, 48>,
+    pushed: array<vec4<f32>, 48>,
     lights: array<vec4<f32>, 96>, // per lamp: xyz + range, direction + cos outer, colour + cos inner
 };
 
@@ -247,12 +250,15 @@ fn gust_at(p: vec2<f32>) -> f32 {
     return mix(1.0, 0.35 + 1.45 * n, g.wind.w);
 }
 
-// how far a point of the grass is pushed aside by whoever stands on it or walks through it
-// (`g.pushers`): away from each of them, the more the nearer (nothing past their reach), only
-// what's about their feet (never a crown over their heads, nor a foot's grass under a cliff
-// they stand on), `bend` how far the point gives (0 at a root, 1 at a tip)
+// how far a point of the grass is pushed aside by whoever stands on it or has just walked
+// through it (`g.pushers`: where each stands, and ghosts of it where it has just been, each
+// bending the grass as much as is left as it springs back, `g.pushed`): away from whichever
+// bends it most, the more the nearer (nothing past their reach), only what's about their feet
+// (never a crown over their heads, nor a foot's grass under a cliff they stand on), `bend` how
+// far the point gives (0 at a root, 1 at a tip)
 fn trampled(p: vec3<f32>, bend: f32) -> vec3<f32> {
     var out = vec3<f32>(0.0);
+    var most = 0.0;
     let n = i32(g.push.x);
     for (var k = 0; k < n; k++) {
         let q = g.pushers[k];
@@ -265,8 +271,11 @@ fn trampled(p: vec3<f32>, bend: f32) -> vec3<f32> {
         let near = (1.0 - smoothstep(1.1, 1.8, up)) * smoothstep(-0.8, -0.3, up);
         let away = select(normalize(d), vec2<f32>(1.0, 0.0), dist < 0.001);
         let s = 1.0 - (dist / q.w) * (dist / q.w);
-        let push = s * q.w * 0.8 * near * bend;
-        out = out + vec3<f32>(away.x, 0.0, away.y) * push;
+        let push = s * q.w * 0.4 * near * bend * g.pushed[k].x;
+        if (push > most) {
+            most = push;
+            out = vec3<f32>(away.x, 0.0, away.y) * push;
+        }
     }
     return out;
 }

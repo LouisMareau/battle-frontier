@@ -46,6 +46,14 @@ pub fn wind_of(sway: f32, flutter: f32, phase: f32, height: f32) -> [u8; 4] {
     [byte(sway), byte(flutter), byte(phase), byte(height / WIND_REACH)]
 }
 
+/// A sway weight on a terrain of `rigidity` (`Terrain::rigidity`, 0 to 1): the rigidity
+/// taken off it, so what's painted under it stays still (the plant stiff from the ground up
+/// that far along its spine) and the rest gives that much less (a tip at 1 gives 1 less the
+/// rigidity); the wind and whoever tramples it both go by it.
+pub fn stiffened(weight: f32, rigidity: f32) -> f32 {
+    (weight - rigidity.clamp(0.0, 1.0)).max(0.0)
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Mesh {
     pub vertices: Vec<Vertex>,
@@ -102,6 +110,10 @@ impl Mesh {
             if wind != [0; 4] && (up - 1.0).abs() > 1e-4 {
                 wind[3] = (wind[3] as f32 * up).round().min(255.0) as u8;
             }
+            // grown on stiff ground: its sway weights that much less, from the ground up
+            if put.rigidity > 0.0 && wind[0] > 0 {
+                wind[0] = (stiffened(wind[0] as f32 / 255.0, put.rigidity) * 255.0).round() as u8;
+            }
             self.vertices.push(Vertex { pos: pos.to_array(), normal: normal.to_array(), wind, ..*v });
         }
         // put down mirrored (a floor tile laid flipped), its faces would be wound inside out:
@@ -154,11 +166,13 @@ impl Along {
 pub struct Put {
     pub m: Mat4,
     pub along: Option<Along>,
+    /// its terrain's rigidity (what grows there: `stiffened`); 0 for what's placed by hand
+    pub rigidity: f32,
 }
 
 impl Put {
     pub fn plain(m: Mat4) -> Put {
-        Put { m, along: None }
+        Put { m, along: None, rigidity: 0.0 }
     }
 
     /// A point of the model, put down.
@@ -990,6 +1004,8 @@ pub struct Tuft {
     pub turn: f32,
     pub scale: f32,
     pub far: bool,
+    /// its terrain's rigidity: its model's sway weights that much less (`stiffened`)
+    pub rigidity: f32,
 }
 
 /// The most vertices grass grown through tall ground may cost a cell at its thinnest (the
@@ -1032,10 +1048,12 @@ struct Growing<'a> {
     props: Vec<(&'a content::Grower, [i32; 2])>,
     shapes: Vec<([i32; 2], f64)>,
     block: [i32; 2],
+    /// the terrain's rigidity, for what grows (`Tuft::rigidity`)
+    rigidity: f32,
 }
 
 impl<'a> Growing<'a> {
-    fn of(g: &'a content::Growth, content: &Content, weigh: &dyn Fn(&Prop) -> usize) -> Self {
+    fn of(g: &'a content::Growth, rigidity: f32, content: &Content, weigh: &dyn Fn(&Prop) -> usize) -> Self {
         let props: Vec<(&content::Grower, [i32; 2])> = g
             .props
             .iter()
@@ -1056,7 +1074,7 @@ impl<'a> Growing<'a> {
         // split between two of the editor's squares, CHUNK cells a side)
         let side = |k: usize| (props.iter().map(|(_, f)| f[k]).max().unwrap_or(1).clamp(1, 8) as u32).next_power_of_two() as i32;
         let block = [side(0), side(1)];
-        Growing { g, props, shapes, block }
+        Growing { g, props, shapes, block, rigidity }
     }
 }
 
@@ -1102,6 +1120,7 @@ fn grow(g: &Growing, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> Option<f32>, out
             turn: if growth.turn { r(3) * 360.0 } else { 0.0 },
             scale: (lo + (hi - lo) * r(4) as f64) as f32,
             far: false,
+            rigidity: g.rigidity,
         });
     }
     true
@@ -1139,7 +1158,7 @@ fn tile(g: &Growing, x: i32, z: i32, fits: &dyn Fn(i32, i32) -> bool, lowest: &d
             (true, false) => (r * 2.0).floor().min(1.0) * 180.0,
         };
         let foot = Vec3::new(at[0] as f32 + size[0] as f32 / 2.0, lowest(at, size), at[1] as f32 + size[1] as f32 / 2.0);
-        out.push(Tuft { prop: p.prop.clone(), at: foot, turn, scale: 1.0, far: false });
+        out.push(Tuft { prop: p.prop.clone(), at: foot, turn, scale: 1.0, far: false, rigidity: g.rigidity });
     }
     true
 }
@@ -1152,7 +1171,8 @@ pub fn grown(tufts: &[Tuft], content: &Content, models: &Models) -> Scene {
     for t in tufts {
         let Some(prop) = content.props.get(&t.prop) else { continue };
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
-        out.append(scene, placement(t.at, t.turn, t.scale));
+        // (on stiff ground, its sway weights that much less)
+        out.append_put(scene, &Put { m: placement(t.at, t.turn, t.scale), along: None, rigidity: t.rigidity });
     }
     out
 }
@@ -1343,7 +1363,7 @@ pub struct Grown {
 /// meadow grows in place of the engine's own tufts, with its props or alone.
 pub fn ground_region_all(map: &WorldMap, content: &Content, level_height: f32, region: [i32; 4], beyond: &dyn Beyond, weigh: &dyn Fn(&Prop) -> usize) -> Grown {
     // what each tall terrain grows, as it can
-    let growing: HashMap<&str, Growing> = content.terrains.iter().filter(|t| t.pattern == "tall" && t.growth.grows_props()).map(|t| (t.id.as_str(), Growing::of(&t.growth, content, weigh))).collect();
+    let growing: HashMap<&str, Growing> = content.terrains.iter().filter(|t| t.pattern == "tall" && t.growth.grows_props()).map(|t| (t.id.as_str(), Growing::of(&t.growth, t.rigidity as f32, content, weigh))).collect();
     // the meadows' plants, and the cells nothing grows on (a building's, a floor's)
     let kinds = crate::meadow::Kinds::of(content);
     let mut covered: std::collections::HashSet<(i32, i32)> = map.floors.iter().map(|t| (t.cell[0], t.cell[1])).filter(|&(x, z)| in_region(region, x, z)).collect();
@@ -1471,7 +1491,7 @@ pub fn ground_region_all(map: &WorldMap, content: &Content, level_height: f32, r
             // (none through what lies along it)
             if let Some(t) = terrain(x, z).filter(|_| !even(r)) {
                 let foot = |u: f32, v: f32| Some(at(fx + u, fz + v));
-                let meadow = first_kind(t, x, z).map(|first| crate::meadow::grow(&t.growth.meadow, first, x, z, &foot, &mut blades, &mut tufts)).is_some();
+                let meadow = first_kind(t, x, z).map(|first| crate::meadow::grow(t, first, x, z, &foot, &mut blades, &mut tufts)).is_some();
                 // (scattered, on its slope; what's tiled lies flat: not on a ramp)
                 let grows = t.pattern == "tall" && growing.get(t.id.as_str()).is_some_and(|g| !g.g.tiled && grow(g, x, z, &foot, &mut tufts));
                 if t.pattern == "tall" && !grows && !meadow {
@@ -1553,7 +1573,7 @@ pub fn ground_region_all(map: &WorldMap, content: &Content, level_height: f32, r
         }
         // a meadow, standing on the top (on its rim too)
         let foot = |u: f32, v: f32| (!e.cut_away(u, v)).then(|| y + e.height(u, v));
-        let meadow = terrain(x, z).and_then(|t| first_kind(t, x, z).map(|first| crate::meadow::grow(&t.growth.meadow, first, x, z, &foot, &mut blades, &mut tufts))).is_some();
+        let meadow = terrain(x, z).and_then(|t| first_kind(t, x, z).map(|first| crate::meadow::grow(t, first, x, z, &foot, &mut blades, &mut tufts))).is_some();
         // tall grass: tufts of blades (or the grass props its terrain grows, or its meadow),
         // standing on the top (on its rim too)
         if let Some(t) = terrain(x, z).filter(|t| t.pattern == "tall") {
@@ -1901,7 +1921,7 @@ mod room_tests {
         assert!(n.distance(Vec3::new(1.0, 1.0, 0.0).normalize()) < 1e-5, "{n:?}");
         // twice as long along x: the plane x / 2 + y = 1, steeper no more
         let mut out = Mesh::default();
-        out.append_put(&face, &Put { m: Mat4::IDENTITY, along: Some(Along { half: 1.0, to: 2.0, ends: 0.0 }) });
+        out.append_put(&face, &Put { m: Mat4::IDENTITY, along: Some(Along { half: 1.0, to: 2.0, ends: 0.0 }), rigidity: 0.0 });
         assert_eq!(out.vertices[0].pos, [2.0, 0.0, 0.0]);
         // (past its width as made, a part keeps its size)
         assert_eq!(Along { half: 0.5, to: 1.0, ends: 0.0 }.x(0.75), 1.25);
@@ -1946,6 +1966,39 @@ mod tile_tests {
         turned.append(&tile, tile_placement(at, 1, true));
         let p = Vec3::from(turned.vertices[0].pos) - at;
         assert!((p.x - 0.4).abs() < 1e-5 && (p.z + 0.3).abs() < 1e-5, "{p}");
+    }
+}
+
+#[cfg(test)]
+mod stiff_tests {
+    use super::*;
+    use content::Part;
+
+    /// On stiff ground, what grows sways less: the rigidity comes off a model's sway weights
+    /// as it's put down there, so its lower reaches stay still and its tip gives what's left;
+    /// placed by hand (no rigidity), the weights are as painted; nothing else of the wind
+    /// changes.
+    #[test]
+    fn stiff_ground_stiffens_what_grows_on_it() {
+        assert_eq!((stiffened(1.0, 0.3), stiffened(0.3, 0.3), stiffened(0.1, 0.3), stiffened(0.5, 0.0)), (0.7, 0.0, 0.0, 0.5));
+        let mut grass = Prop { id: "grass".into(), footprint: [1, 1], height: 1.0, ..Default::default() };
+        grass.parts = vec![Part { shape: "cylinder".into(), size: [0.2, 1.0, 0.2], color: "#4c9a3e".into(), ..Default::default() }];
+        grass.wind = content::Breeze { sway: 1.0, flutter: 0.5 };
+        let m = prop_model(&grass);
+        let mut stiff = Mesh::default();
+        stiff.append_put(&m, &Put { m: Mat4::IDENTITY, along: None, rigidity: 0.3 });
+        let mut plain = Mesh::default();
+        plain.append(&m, Mat4::IDENTITY);
+        assert_eq!(stiff.vertices.len(), m.vertices.len());
+        for (a, b) in m.vertices.iter().zip(&stiff.vertices) {
+            let want = ((a.wind[0] as f32 / 255.0 - 0.3).max(0.0) * 255.0).round() as u8;
+            assert_eq!(b.wind[0], want, "{:?} -> {:?}", a.wind, b.wind);
+            assert_eq!(&b.wind[1..], &a.wind[1..], "only its sway: {:?} -> {:?}", a.wind, b.wind);
+        }
+        assert!(plain.vertices.iter().zip(&m.vertices).all(|(a, b)| a.wind == b.wind), "placed by hand: as painted");
+        let top = stiff.vertices.iter().max_by(|a, b| a.pos[1].total_cmp(&b.pos[1])).unwrap();
+        let low = stiff.vertices.iter().filter(|v| v.pos[1] < 0.3).map(|v| v.wind[0]).max().unwrap();
+        assert!(top.wind[0] > 150 && low == 0, "its tip gives what's left ({}), its lower reaches stay still ({low})", top.wind[0]);
     }
 }
 

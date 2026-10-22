@@ -367,7 +367,7 @@ impl MapEditor {
             // (clear of the scroll bar, which floats over what's under it)
             egui::ScrollArea::vertical().max_height(room).show(ui, |ui| egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 }).show(ui, |ui| {
                 ui.set_width(330.0);
-                fieldset_with(ui, "Terrain", self.review_changes_in("terrains", &id, &["name", "category", "walk"]), |ui| {
+                fieldset_with(ui, "Terrain", self.review_changes_in("terrains", &id, &["name", "category", "walk", "rigidity"]), |ui| {
                     form(ui, "terrain-what", |ui| {
                         ui.horizontal(|ui| {
                             ui.label("Name");
@@ -395,6 +395,13 @@ impl MapEditor {
                                 }
                             }
                         });
+                        ui.end_row();
+                        ui.horizontal(|ui| {
+                            ui.label("Rigidity");
+                            self.change_mark(ui, "terrains", &id, "rigidity");
+                        });
+                        let r = ui.add(egui::Slider::new(&mut t.rigidity, 0.0..=1.0).fixed_decimals(2)).on_hover_text("How stiff what grows on it is (its meadow, its grass): 0 bends from its foot, swaying with the wind and giving way to whoever walks through it as far as they push; more and it's still that far up from the ground, its tip giving that much less; 1 never moves");
+                        mark("uiTerrainRigidity", &r);
                         ui.end_row();
                     });
                 });

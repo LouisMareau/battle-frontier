@@ -238,7 +238,9 @@ maps).
   makes a new kind, a terrain of its own look from a preset (volcanic rock, a lava lake,
   arcane moss with its glowing meadow, a crystal field, snow, ice, a swamp, autumn leaves,
   dunes, ash, mossy flagstones, glowing moss). The panel's sections fold (Terrain folded
-  still shows the one picked, under its group's name); under **Terrain details**, Grows
+  still shows the one picked, under its group's name); under **Terrain details**, the
+  terrain's Rigidity (how stiff what grows on it is, to the wind and to feet alike: see the
+  meadows below) and Grows
   here's plants are cards whose headers line up (colour and name, how often and ✕), their
   settings in boxes; the Paint tab's brush is pinned at the Toolbox's foot. Raised cells get
   cliff faces of rock (layered
@@ -301,11 +303,19 @@ maps).
   flower's stem stiffer: the presets' 0.45, so the flowers nod while the grass bends over);
   and whoever walks through it pushes it aside (`trampled`: the frame's `pushers`, the walker,
   the actors where they stand or step and the creatures roaming as much as they're there, the
-  nearest the camera first, up to `MAX_PUSHERS`; each pushes what's within its reach away from
-  its feet, the more the nearer, blades by up to their height and a bit, flowers nodding away;
-  what's painted for the wind gives way too, by its sway weight, so grass props and bushes
-  part round a walker while a tree's crown over their head never moves: the push only takes
-  what's about their feet). The checks turn it off with `trample:off`. How fine each is drawn goes by how many
+  nearest the camera first, up to `MAX_PUSHERS` with the ghosts of where each has just been;
+  each pushes what's within its reach away from its feet, the more the nearer, blades by up to
+  their height and a bit, flowers nodding away; what's painted for the wind gives way too, by
+  its sway weight, so grass props and bushes part round a walker while a tree's crown over
+  their head never moves: the push only takes what's about their feet; behind them the grass
+  springs back over a time that goes by their weight (`trample.rs`: a small creature's trail
+  gone in a moment, a person's in about a second, the heaviest creatures' in nearly two):
+  ghosts of where each was follow it along its trail, each bending the grass as much as is
+  left, and a point gives to whichever bends it most). The checks turn it off with
+  `trample:off`. A terrain's **Rigidity** (0 to 1, in its window) stiffens what grows on it
+  from the ground up: a meadow's blade or a grass model's sway weight loses that much, so it
+  stays still that far up its spine and its tip gives that much less, to the wind and to
+  whoever tramples it alike. How fine each is drawn goes by how many
   pixels a cell spans where it stands: from 40 every blade, under it fewer (the share drawn
   going with the pixels a cell covers, so the picture holds about as many blades whatever the
   distance), each kept one wider across and growing in as it comes, under 10 shorter, none

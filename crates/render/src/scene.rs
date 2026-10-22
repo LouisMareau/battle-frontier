@@ -272,9 +272,11 @@ struct Globals {
     /// glow's share
     gi: [f32; 4],
     gi_b: [f32; 4],
-    /// who tramples the grass: x how many; each xyz where they stand, w how wide they push
+    /// who tramples the grass, and ghosts of them where they've just been: x how many; each
+    /// xyz where they stand, w how wide they push; `pushed`: x how much each bends it
     push: [f32; 4],
     pushers: [[f32; 4]; MAX_PUSHERS],
+    pushed: [[f32; 4]; MAX_PUSHERS],
     /// per light: position + range, direction + cos of the outer angle, colour + cos of
     /// the inner angle
     lights: [[f32; 4]; MAX_LIGHTS * 3],
@@ -283,9 +285,19 @@ struct Globals {
 /// How many lights a frame can hold: the nearest ones.
 pub const MAX_LIGHTS: usize = 32;
 
-/// The most who trample the grass in a frame (the walker, the actors, the creatures roaming;
-/// the nearest the camera's target).
-pub const MAX_PUSHERS: usize = 16;
+/// The most who trample the grass in a frame, with the ghosts of where they've just been (the
+/// walker, the actors, the creatures roaming; the nearest the camera's target).
+pub const MAX_PUSHERS: usize = 48;
+
+/// Someone trampling the grass, or a ghost of them where they've just been: where (their
+/// feet), how wide they push (cells), and how much they bend it (1 standing there; less the
+/// longer gone, as the grass springs back).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Pusher {
+    pub at: Vec3,
+    pub reach: f32,
+    pub strength: f32,
+}
 
 /// The way the clouds drift (cells, a unit long): east, and a little south.
 const CLOUD_WIND: glam::Vec2 = glam::Vec2::new(0.928, 0.371);
@@ -485,10 +497,11 @@ pub struct Frame {
     /// what's kept in sight through the trees and props in front of it (the walker): where,
     /// and how wide the see-through cone is round it (cells); none: nothing is
     pub see_through: Option<(Vec3, f32)>,
-    /// who tramples the grass: each where they stand (their feet) and how wide they push
-    /// (cells); the meadows' blades and what's painted for the wind give way round them (the
+    /// who tramples the grass, and ghosts of them where they've just been: each where it is
+    /// (their feet), how wide it pushes (cells) and how much; the meadows' blades and what's
+    /// painted for the wind give way round them, the most to whichever bends them most (the
     /// first `MAX_PUSHERS` count)
-    pub pushers: Vec<(Vec3, f32)>,
+    pub pushers: Vec<Pusher>,
     /// the picture's light: its exposure and tone map, the bloom, the indirect light
     pub radiance: Radiance,
 }
@@ -2003,8 +2016,15 @@ impl SceneRenderer {
             push: [frame.pushers.len().min(MAX_PUSHERS) as f32, 0.0, 0.0, 0.0],
             pushers: {
                 let mut out = [[0.0f32; 4]; MAX_PUSHERS];
-                for (k, (p, r)) in frame.pushers.iter().take(MAX_PUSHERS).enumerate() {
-                    out[k] = [p.x, p.y, p.z, r.max(0.01)];
+                for (k, p) in frame.pushers.iter().take(MAX_PUSHERS).enumerate() {
+                    out[k] = [p.at.x, p.at.y, p.at.z, p.reach.max(0.01)];
+                }
+                out
+            },
+            pushed: {
+                let mut out = [[0.0f32; 4]; MAX_PUSHERS];
+                for (k, p) in frame.pushers.iter().take(MAX_PUSHERS).enumerate() {
+                    out[k] = [p.strength.clamp(0.0, 1.0), 0.0, 0.0, 0.0];
                 }
                 out
             },

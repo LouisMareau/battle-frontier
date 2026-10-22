@@ -59,13 +59,18 @@ fn blade_wind(at: vec3<f32>, phase: f32, sway: f32) -> vec3<f32> {
 // a point of a blade's curve (`at`: its point and its way at `t`, 0 its foot to 1 its tip) bent
 // by the wind: pushed `wind` (how far its tip goes) more the further up it is, as t squared, so
 // its foot stays rooted and its tip goes furthest, as a blade painted for the wind would (no
-// weight at its root, the most at its tip); coming down a little as it bends over, its length
-// kept, about
-fn blown(at: array<vec3<f32>, 2>, wind: vec3<f32>, t: f32, tall: f32) -> array<vec3<f32>, 2> {
-    let w = wind * t * t;
-    let over = dot(wind, wind) / (2.0 * max(tall, 0.05));
-    let down = vec3<f32>(0.0, over * t * t * t, 0.0);
-    return array<vec3<f32>, 2>(at[0] + w - down, at[1] + wind * 2.0 * t - down * 3.0 / max(t, 0.05));
+// weight at its root, the most at its tip); on stiff ground (`rigid`: its terrain's rigidity)
+// still that far up from its foot and bending from there, its tip giving that much less (as
+// the rigidity comes off a painted blade's weights); coming down a little as it bends over,
+// its length kept, about
+fn blown(at: array<vec3<f32>, 2>, wind: vec3<f32>, t: f32, tall: f32, rigid: f32) -> array<vec3<f32>, 2> {
+    let r = clamp(rigid, 0.0, 0.95);
+    let give = 1.0 - r;
+    let te = max(t - r, 0.0) / give;
+    let w = wind * give * te * te;
+    let over = dot(wind, wind) * give * give / (2.0 * max(tall, 0.05));
+    let down = vec3<f32>(0.0, over * te * te * te, 0.0);
+    return array<vec3<f32>, 2>(at[0] + w - down, at[1] + wind * 2.0 * te - vec3<f32>(0.0, 3.0 * over * te * te / give, 0.0));
 }
 
 // a point of a template: its part (0 a blade's rows, 1 a flower's stem, 2 a petal, 3 its
@@ -193,7 +198,7 @@ fn made(b: Blade, id: u32) -> Made {
     if (p.part <= 1u) {
         // a blade's rows, or a flower's stem: two points a row across it, its tip one
         let t = f32(p.row) / f32(p.rows);
-        let at = blown(bezier(b.at, ctrl, tip, t), wind, t, tall);
+        let at = blown(bezier(b.at, ctrl, tip, t), wind, t, tall, k.petal.w);
         var half = 0.5 * k.form.w * (0.8 + 0.4 * r4) * wide;
         if (flower) {
             half = half * (1.0 - 0.5 * t);
@@ -220,7 +225,7 @@ fn made(b: Blade, id: u32) -> Made {
         // a flower's head at its stem's tip, facing up and nodding the way it leans (and the
         // wind bends it): its petals round its heart (fewer than eight: the rest none), or far
         // off a dot of its colour
-        let top = blown(bezier(b.at, ctrl, tip, 1.0), wind, 1.0, tall);
+        let top = blown(bezier(b.at, ctrl, tip, 1.0), wind, 1.0, tall, k.petal.w);
         let face = normalize(mix(up, normalize(top[1]), 0.35));
         let e1 = normalize(cross(face, side));
         let e2 = cross(face, e1);

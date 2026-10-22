@@ -95,7 +95,7 @@ pub fn lay(r: &Ramp, fit: &RampFit, width: u8, top: f32, level_height: f32) -> V
         .map(|k| {
             let at = centre + along * (-length / 2.0 + (k as f32 + 0.5) * each);
             let m = Mat4::from_translation(at) * turn * Mat4::from_scale(Vec3::new(1.0, rise, 1.0));
-            Put { m, along: Some(Along { half: width / 2.0, to: each / 2.0, ends: fit.ends as f32 }) }
+            Put { m, along: Some(Along { half: width / 2.0, to: each / 2.0, ends: fit.ends as f32 }), rigidity: 0.0 }
         })
         .collect()
 }

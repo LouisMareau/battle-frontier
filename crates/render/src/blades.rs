@@ -74,7 +74,7 @@ pub struct BladeInstance {
 /// flower), its shortest and tallest (cells) and its width at its foot; how far it leans, how
 /// much it curves, how much the wind moves it, a flower's head's width; its colours (linear)
 /// at its foot (with a flower's petals) and its tip (with 1 when it's toon), a flower's petals'
-/// and heart's (with how much it glows of itself, 0 to 4).
+/// (with its terrain's rigidity, 0 to 1) and heart's (with how much it glows of itself, 0 to 4).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct BladeKind {
