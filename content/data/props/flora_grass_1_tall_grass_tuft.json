@@ -1,0 +1,12 @@
+{
+  "id": "flora_grass_1_tall_grass_tuft",
+  "name": "Flora grass 1 tall grass tuft",
+  "category": "grass",
+  "footprint": [1, 1],
+  "height": 0.8,
+  "blocks": true,
+  "parts": [],
+  "model": "models/flora_grass_1_tall_grass_tuft.glb",
+  "folders": ["Nature"],
+  "toon": true
+}

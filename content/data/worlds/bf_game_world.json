@@ -1,0 +1,7 @@
+{
+  "id": "bf_game_world",
+  "name": "bf game world",
+  "pieces": [
+    { "map": "route_1", "at": [24, 12] }
+  ]
+}

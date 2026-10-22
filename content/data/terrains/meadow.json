@@ -15,9 +15,9 @@
           "name": "Meadow grass",
           "shape": "blade",
           "height": [0.14, 0.3],
-          "width": 0.03,
+          "width": 0.041,
           "bend": 0.35,
-          "color": "#6aa846",
+          "color": "#8fcd5d",
           "tip": "#b0da74"
         },
         {

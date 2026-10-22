@@ -19,11 +19,22 @@
     "depth_step": 0.005,
     "crease": 60.0,
     "color_steps": 16,
-    "color_softness": 0.0
+    "color_softness": 0.0,
+    "cloud_shadow": 0.45,
+    "cloud_size": 26.0,
+    "cloud_speed": 0.8,
+    "cloud_cover": 0.45
   },
   "start": {
-    "map": "test_meadow",
-    "at": [19, 22],
+    "map": "route_1",
+    "at": [45, 251],
     "facing": 180.0
-  }
+  },
+  "wind": {
+    "direction": 150.0,
+    "strength": 0.2,
+    "gusts": 0.0
+  },
+  "lifeforce": 100,
+  "lifeforce_ko_cap": 20
 }
