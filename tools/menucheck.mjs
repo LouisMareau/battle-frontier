@@ -79,7 +79,15 @@ const github = async (req, res, path) => {
   if (at === `${repo}/pulls`) return reply(res, 201, { html_url: 'https://github.com/LouisMareau/battle-frontier/pull/9' });
   return reply(res, 404, { message: 'Not Found' });
 };
-const server = await serve(0, { handle: github });
+// the site's bundle with the check's own start: where the test meadow's story begins, whatever
+// the game's start is now (the check knows these cells)
+const rewrite = (path, body) => {
+  if (path !== 'content/bundle.json') return body;
+  const bundle = JSON.parse(body.toString('utf8'));
+  bundle.files['settings/world.json'].start = { map: 'test_meadow', at: [19, 22], facing: 180 };
+  return Buffer.from(JSON.stringify(bundle));
+};
+const server = await serve(0, { handle: github, rewrite });
 const browser = await Browser.launch({ width: 1400, height: 900, port: 9496, profiles: join(root, 'build', 'chrome'), args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu'] });
 const url = `http://127.0.0.1:${server.address().port}/index.html`;
 const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(key)}] ?? ''`);

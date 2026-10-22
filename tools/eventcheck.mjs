@@ -55,13 +55,15 @@ try {
   await sleep(1500);
   await browser.click(700, 500);
 
-  // 0. the props built without the flag pole's model, then again with it when it comes
-  check('the flag pole\'s model held back', Number(await data('models')) <= 1, `${await data('models')} models`);
+  // 0. the props built without the flag pole's model (the others, not held back, are in by
+  // now), then again with it when it comes: one model more, the props heavier
+  const before = Number(await data('models'));
   await waitFor('document.body.dataset.squares === "1/1"', 'the map built');
   const bare = Number(await data('propsverts'));
-  await waitFor('Number(document.body.dataset.models) >= 2', 'the flag pole\'s model, late');
+  await waitFor(`Number(document.body.dataset.models) > ${before}`, 'the flag pole\'s model, late');
   await sleep(400);
   const whole = Number(await data('propsverts'));
+  check('the flag pole\'s model held back, then in', Number(await data('models')) === before + 1, `${before} models, then ${await data('models')}`);
   check('the props built again when it came', whole > bare, `${bare} -> ${whole} vertices`);
   // the asset browser closed (it comes open, along the bottom: after the above, which counts
   // on the editor's first seconds): the view as these steps knew it
