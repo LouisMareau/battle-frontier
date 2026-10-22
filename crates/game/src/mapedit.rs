@@ -21,6 +21,7 @@ mod dock;
 mod events;
 mod floors;
 mod growth;
+mod meadow;
 mod jumps;
 mod models;
 mod post;

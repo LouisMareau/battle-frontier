@@ -17,6 +17,7 @@ use std::hash::{Hash, Hasher};
 
 use content::{Building, Content, Placed, Prop, CHUNK};
 use glam::{Mat4, Vec3};
+use render::blades::{BladeInstance, BladeKind};
 use render::grass::{GrassCopy, GrassModel};
 use render::scene::{Place, SceneRenderer, WorldGround, CLIFFS, WHITE};
 use world::buildings::{building, Cut, Sides};
@@ -269,18 +270,55 @@ pub(super) fn grass_weight(cache: &RefCell<world::grass::Cache>, prop: &Prop, mo
     }
 }
 
-/// What the grass props grown through tall ground are made from: each tall terrain's growth,
-/// with its props' records and their models' generations (a model arriving shows on them).
+/// What the grass grown through the ground is made from: each tall terrain's grass props, with
+/// their records and their models' generations (a model arriving shows on them), and each
+/// meadow's placing (how many, which plants, the clumps and patches, the models it grows; not
+/// its plants' looks, which the renderer has as they change: `blade_kinds`).
 fn growth_digest(content: &content::Content, versions: &HashMap<String, u64>) -> u64 {
     let mut h = Quick::default();
-    for t in content.terrains.iter().filter(|t| t.pattern == "tall" && !t.growth.is_empty()) {
-        (&t.id, format!("{:?}", t.growth)).hash(&mut h);
+    for t in content.terrains.iter().filter(|t| t.pattern == "tall" && t.growth.grows_props()) {
+        let g = content::Growth { meadow: Default::default(), ..t.growth.clone() };
+        (&t.id, format!("{g:?}")).hash(&mut h);
         for g in &t.growth.props {
             content.props.get(&g.prop).map(|p| format!("{p:?}")).hash(&mut h);
             versions.get(&g.prop).hash(&mut h);
         }
     }
+    for t in content.terrains.iter().filter(|t| world::meadow::grows_meadow(t)) {
+        let m = &t.growth.meadow;
+        (&t.id, m.density.to_bits(), m.patchy.to_bits(), m.clump.to_bits(), m.clumping.to_bits()).hash(&mut h);
+        for p in &m.plants {
+            (&p.shape, &p.prop, p.weight.to_bits(), p.scale.map(f64::to_bits), p.clusters.to_bits()).hash(&mut h);
+            if p.shape == "model" {
+                content.props.get(&p.prop).map(|q| format!("{q:?}")).hash(&mut h);
+                versions.get(&p.prop).hash(&mut h);
+            }
+        }
+    }
     h.finish()
+}
+
+/// Every meadow's kinds of blade and flower as the renderer has them (`world::meadow::Kinds`,
+/// in its order): their shapes, heights, widths, how they lean and curve and sway, their
+/// colours (their terrain's where they have none), whether they're toon.
+pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
+    world::meadow::Kinds::of(content)
+        .list
+        .iter()
+        .map(|(t, p)| {
+            let [foot, tip, petal, heart] = world::meadow::colours(t, p);
+            let flower = p.shape == "flower";
+            let (lo, hi) = (p.height[0].min(p.height[1]) as f32, p.height[0].max(p.height[1]) as f32);
+            BladeKind {
+                form: [if flower { 1.0 } else { 0.0 }, lo, hi, p.width as f32],
+                bend: [p.lean as f32, p.bend as f32, p.sway as f32, if flower { p.bloom as f32 } else { 0.0 }],
+                foot: [foot[0], foot[1], foot[2], p.petals as f32],
+                tip: [tip[0], tip[1], tip[2], if t.growth.meadow.toon { 1.0 } else { 0.0 }],
+                petal: [petal[0], petal[1], petal[2], 0.0],
+                heart: [heart[0], heart[1], heart[2], 0.0],
+            }
+        })
+        .collect()
 }
 
 /// A building's digest: its record and the records of the props it's made of.
@@ -393,8 +431,8 @@ impl Feed<'_> {
         if edges {
             due.extend(squares.iter().filter(|s| s.0 == 0 || s.1 == 0 || s.0 == gx - 1 || s.1 == gz - 1));
         }
-        // the terrains grass props grow through (by their place in the map's list)
-        let growing: Vec<u16> = (0..m.terrains.len() as u16).filter(|&k| self.content.terrains.get(&m.terrains[k as usize]).is_some_and(|t| t.pattern == "tall" && !t.growth.is_empty())).collect();
+        // the terrains grass props or a meadow grow through (by their place in the map's list)
+        let growing: Vec<u16> = (0..m.terrains.len() as u16).filter(|&k| self.content.terrains.get(&m.terrains[k as usize]).is_some_and(|t| (t.pattern == "tall" && t.growth.grows_props()) || world::meadow::grows_meadow(t))).collect();
         for s in due.into_iter().filter(|s| (0..gx).contains(&s.0) && (0..gz).contains(&s.1)) {
             let r = region(s);
             let mut h = Quick::default();
@@ -410,7 +448,7 @@ impl Feed<'_> {
                     }
                 }
             }
-            // grass props grow through its cells: built again when they change
+            // grass props or a meadow grow through its cells: built again when they change
             if grows {
                 gpu.lit_growth.hash(&mut h);
             }
@@ -570,7 +608,7 @@ impl Feed<'_> {
         match layer {
             "ground" => {
                 let weigh = |p: &Prop| grass_weight(self.grass, p, self.models, self.model_versions);
-                let (tops, cliffs, grass, tufts) = mesh::ground_region_grown(self.map, self.content, lh, reg, self.beyond, &weigh);
+                let mesh::Grown { tops, cliffs, grass, tufts, blades } = mesh::ground_region_all(self.map, self.content, lh, reg, self.beyond, &weigh);
                 r.set_chunk(device, id, "tops", s, &[(WHITE.to_string(), gpu(&tops.vertices), tops.indices)]);
                 r.set_chunk(device, id, CLIFFS, s, &[(WHITE.to_string(), gpu(&cliffs.vertices), cliffs.indices)]);
                 // the engine's blades; the grass props grown through tall ground as copies of
@@ -578,8 +616,10 @@ impl Feed<'_> {
                 r.set_chunk(device, id, "grass", s, &models::batches(&Scene::from(grass)));
                 let mut copies: BTreeMap<String, Vec<GrassCopy>> = BTreeMap::new();
                 for t in &tufts {
-                    copies.entry(t.prop.clone()).or_default().push(GrassCopy { at: t.at.to_array(), turn: -t.turn.to_radians(), scale: t.scale, ..Default::default() });
+                    copies.entry(t.prop.clone()).or_default().push(GrassCopy { at: t.at.to_array(), turn: -t.turn.to_radians(), scale: t.scale, far: if t.far { 1.0 } else { 0.0 }, ..Default::default() });
                 }
+                // the meadows' blades and flowers, for the GPU to make
+                r.set_blades(id, s, blades.iter().map(|b| BladeInstance { at: b.at.to_array(), turn: b.turn, size: b.size, kind: b.kind, seed: b.seed, ..Default::default() }).collect());
                 for key in copies.keys() {
                     let Some(prop) = self.content.props.get(key) else { continue };
                     let version = grass_version(prop, self.model_versions);
@@ -651,8 +691,11 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
         *f.gpu = GpuState { around: f.gpu.around, ..Default::default() };
         need = Needs::all();
     }
-    // the grass props grown through tall ground: changed (their settings, a record, a model
-    // come), every square's ground looked at again (those they grow on are built again)
+    // the meadows' kinds as they look now (the renderer has them as they change)
+    r.set_blade_kinds(&blade_kinds(f.content));
+    // the grass props grown through tall ground and the meadows: changed (their settings, a
+    // record, a model come, what grows where), every square's ground looked at again (those
+    // they grow on are built again)
     let growth = growth_digest(f.content, f.model_versions);
     let grew = std::mem::replace(&mut f.gpu.lit_growth, growth) != growth;
     if grew {
@@ -780,6 +823,7 @@ pub(super) fn stream(r: &mut SceneRenderer, rs: &eframe::egui_wgpu::RenderState,
             r.set_chunk(&rs.device, f.id, layer, s, &[]);
         }
         r.set_grass(f.id, s, vec![]);
+        r.set_blades(f.id, s, vec![]);
         for layer in LAYERS {
             if let Some(b) = f.gpu.built.get_mut(layer) {
                 b.remove(&s);

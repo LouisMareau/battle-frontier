@@ -1,9 +1,10 @@
-//! Grass props grown through tall ground (`content::Growth`): the Ground tool's "Grows here",
-//! for the tall terrain picked to paint (the grass props ticked, each with how often it's
-//! picked, and how they grow: tiled, each whole over its cells, or scattered, so many to a
-//! cell, their sizes, patches; turned their own ways), and the asset browser's "Grows in" for
-//! a grass prop (the tall terrains it grows through). Both change the terrain's record, saved
-//! with the rest (Ctrl+S, or by itself); the map's squares show it as it changes (`stream`).
+//! What grows through the ground (`content::Growth`): the Ground tool's "Grows here", for the
+//! terrain picked to paint (any but water): its meadow (`meadow.rs`), and on tall ground the
+//! grass props ticked, each with how often it's picked, and how they grow (tiled, each whole
+//! over its cells, or scattered, so many to a cell, their sizes, patches; turned their own
+//! ways); and the asset browser's "Grows in" for a grass prop (the tall terrains it grows
+//! through). Both change the terrain's record, saved with the rest (Ctrl+S, or by itself); the
+//! map's squares show it as it changes (`stream`).
 //! The renderer draws a grass prop's copies thinner the further off they are (its model in
 //! levels, `world::grass`): one too heavy to grow even at its thinnest
 //! (`world::mesh::GROWN_MOST` vertices a cell), or as made (`GROWN_HEAVIEST`), is said so, and
@@ -79,18 +80,24 @@ impl MapEditor {
         }
     }
 
-    /// The Ground tool's "Grows here", under the terrains, when the one picked to paint is tall
-    /// ground: the grass props grown through it in place of the engine's own blades, and how.
+    /// The Ground tool's "Grows here", under the terrains, for the one picked to paint (any but
+    /// water): its meadow, and on tall ground the grass props grown through it in place of the
+    /// engine's own tufts, and how.
     pub(super) fn growth_section(&mut self, ui: &mut egui::Ui) {
-        let Some(t) = self.content.terrains.get(&self.terrain).filter(|t| t.pattern == "tall").cloned() else { return };
+        let Some(t) = self.content.terrains.get(&self.terrain).filter(|t| t.walk != "water" && t.pattern != "water").cloned() else { return };
         section(ui, "Grows here");
+        self.meadow_section(ui, &t);
+        // (the meadow may have changed it)
+        let Some(t) = self.content.terrains.get(&self.terrain).filter(|t| t.pattern == "tall").cloned() else { return };
+        ui.add_space(6.0);
+        ui.label(egui::RichText::new("Grass props").strong());
         let props = grass_props(&self.content);
         if props.is_empty() {
-            hint(ui, &format!("{} grows the engine's own blades. A prop in the grass category (the asset browser) can grow through it instead.", t.name));
+            hint(ui, &format!("{} grows the engine's own tufts (unless its meadow grows). A prop in the grass category (the asset browser) can grow through it instead.", t.name));
             return;
         }
         let mut g = t.growth.clone();
-        let was_empty = g.is_empty();
+        let was_empty = !g.grows_props();
         for (id, name) in &props {
             ui.horizontal(|ui| {
                 let mut on = g.props.iter().any(|p| &p.prop == id);
@@ -106,11 +113,11 @@ impl MapEditor {
             });
         }
         // the first ticked made to fill its cells (a grass request's): tiled, as it's made to be
-        if was_empty && !g.is_empty() {
+        if was_empty && g.grows_props() {
             g.tiled = self.fills_its_cells(&g.props[0].prop);
         }
-        if g.is_empty() {
-            hint(ui, "None ticked: the engine's own blades.");
+        if !g.grows_props() {
+            hint(ui, if g.meadow.is_empty() { "None ticked: the engine's own tufts." } else { "None ticked: its meadow alone." });
         } else {
             ui.horizontal(|ui| {
                 let tiled = ui.radio_value(&mut g.tiled, true, "Tiled").on_hover_text("Each whole over its cells, lined up with them, so copies side by side join: grass made to fill its cells (a grass request's)");
@@ -185,7 +192,7 @@ impl MapEditor {
         let mut changes = vec![];
         for t in &talls {
             let mut g = t.growth.clone();
-            let was_empty = g.is_empty();
+            let was_empty = !g.grows_props();
             ui.horizontal(|ui| {
                 let mut on = g.props.iter().any(|p| p.prop == prop);
                 let r = ui.checkbox(&mut on, t.name.as_str()).on_hover_text(format!("Grows through {}'s cells (the Ground tool's Grows here says how)", t.name));
@@ -198,7 +205,7 @@ impl MapEditor {
                 }
             });
             // the first there, made to fill its cells: tiled
-            if was_empty && !g.is_empty() {
+            if was_empty && g.grows_props() {
                 g.tiled = self.fills_its_cells(prop);
             }
             let cost = self.grown_cost(&g, prop);
@@ -340,7 +347,7 @@ mod tests {
         assert_eq!(crate::platform::hook("growthheavy").as_deref(), Some("0"));
         // untick it, tick the clover (a stand-in, not made to fill its cell): scattered
         click(&ctx, &mut ed, "uiGrows_tuft");
-        assert!(growth(&ed).is_empty());
+        assert!(!growth(&ed).grows_props() && growth(&ed).is_empty());
         click(&ctx, &mut ed, "uiGrows_clover");
         assert!(!growth(&ed).tiled && growth(&ed).props.len() == 1);
         // and switched by hand

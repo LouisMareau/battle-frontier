@@ -751,9 +751,10 @@ impl MapEditor {
             self.change_prop(id, move |q| *q = after);
             self.need_props = true;
         }
-        // a grass prop: the tall ground it grows through
+        // a grass prop: the tall ground it grows through, the meadows it grows in
         if self.content.props.get(id).is_some_and(|q| q.category == "grass") {
             self.grows_in(ui, id);
+            self.in_meadows(ui, id);
         }
     }
 

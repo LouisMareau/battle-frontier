@@ -8,7 +8,10 @@
 //! ground of the copies behind it): a field costs about as much as the picture it fills,
 //! however finely its grass is made. Culled and picked on the GPU
 //! (`grass.wgsl`, the draws indirect), or, with no compute shaders (WebGL 2), the same on the
-//! CPU (`pick`). The sun's shadow draws the same copies a couple of levels thinner.
+//! CPU (`pick`). The sun's shadow draws the same copies a couple of levels thinner. A copy
+//! of one of a meadow's models (`GrassCopy::far`) is also left out further off, and drawn
+//! shorter at the furthest, as the meadow's own blades are (`blades`: by how many pixels a cell
+//! spans where it stands).
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::atomic::{AtomicU8, Ordering};
@@ -43,7 +46,8 @@ type Copies = Vec<(String, Vec<GrassCopy>)>;
 
 /// A copy of a grass model: where its foot stands (in its map's own space as it's sent; the
 /// scene's once its map is placed), its turn (radians about y, as `Mat4::from_rotation_y`
-/// turns), its size against the model as made, and how dimmed its map is (0: not at all).
+/// turns), its size against the model as made, how dimmed its map is (0: not at all), and
+/// whether it's one of a meadow's (1: left out further off and shortened as its blades are).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct GrassCopy {
@@ -51,7 +55,25 @@ pub struct GrassCopy {
     pub turn: f32,
     pub scale: f32,
     pub dim: f32,
-    pub pad: [f32; 2],
+    pub far: f32,
+    pub pad: f32,
+}
+
+/// A meadow's copy's own random bits, from where it stands (as `grass.wgsl`'s `far_seed`):
+/// the same whatever else is gathered with it.
+pub fn far_seed(c: &GrassCopy) -> u32 {
+    crate::blades::mix_bits(c.at[0].to_bits().wrapping_mul(73_856_093) ^ c.at[2].to_bits().wrapping_mul(19_349_663))
+}
+
+/// How big a meadow's copy is drawn against its own size (shorter at the furthest), or none
+/// when it's left out (too far off, or one of the share left out there), where a cell spans
+/// `px` pixels; any other copy as it is.
+pub fn far_scale(c: &GrassCopy, px: f32) -> Option<f32> {
+    if c.far < 0.5 {
+        return Some(1.0);
+    }
+    let seed = far_seed(c);
+    crate::blades::kept(px, seed).then(|| crate::blades::tallness(px, seed))
 }
 
 /// A level of a grass model: its batches by texture (`WHITE` for vertex colours alone).
@@ -85,12 +107,19 @@ impl Cull {
         Cull { view_proj, planes, screen: Vec2::new(size[0].max(1) as f32, size[1].max(1) as f32) }
     }
 
+    /// How many pixels a cell spans at one unit of the eye's depth (`blades::px_scale`).
+    fn px_scale(&self) -> f32 {
+        crate::blades::px_scale(&self.view_proj, self.screen.y)
+    }
+
     fn uniform(&self) -> CullUniform {
+        use crate::blades::{FADE, FULL_PX, GONE_PX, SHRINK_PX};
         CullUniform {
             view_proj: self.view_proj.to_cols_array_2d(),
             planes: self.planes.map(|p| p.to_array()),
-            margin: [MARGIN, 0.0, 0.0, 0.0],
+            margin: [MARGIN, self.px_scale(), 0.0, 0.0],
             screen: [self.screen.x, self.screen.y, FEWEST_PIXELS, DENSITY],
+            far: [FULL_PX, SHRINK_PX, GONE_PX, FADE],
         }
     }
 }
@@ -121,10 +150,12 @@ impl Shape {
     }
 }
 
-/// The level copy `i` of a model is drawn at (its shape, its levels' vertices `costs`), or none
-/// when it isn't: out of sight, or too small to see. Just outside the eye's sight (casting its
-/// shadow in): its thinnest. As `grass.wgsl` picks it.
-pub fn pick(cull: &Cull, shape: &Shape, costs: &[f32], c: &GrassCopy, i: u32) -> Option<usize> {
+/// The level copy `i` of a model is drawn at (its shape, its levels' vertices `costs`), and
+/// how big against its own size (a meadow's copy shorter at the furthest), or none when it
+/// isn't drawn: out of sight, too small to see, or a meadow's left out where it stands (as
+/// its blades are). Just outside the eye's sight (casting its shadow in): its thinnest. As
+/// `grass.wgsl` picks it.
+pub fn pick(cull: &Cull, shape: &Shape, costs: &[f32], c: &GrassCopy, i: u32) -> Option<(usize, f32)> {
     let Shape { middle, reach, cells, tall } = *shape;
     let (s, k) = c.turn.sin_cos();
     let m = middle * c.scale;
@@ -138,9 +169,10 @@ pub fn pick(cull: &Cull, shape: &Shape, costs: &[f32], c: &GrassCopy, i: u32) ->
         }
         seen &= d >= MARGIN - r;
     }
+    let size = far_scale(c, crate::blades::cell_px(cull.px_scale(), (cull.view_proj * mid.extend(1.0)).w))?;
     let last = costs.len().saturating_sub(1);
     if !seen {
-        return Some(last);
+        return Some((last, size));
     }
     // the pixels its ground covers, and it standing up
     let at = |p: Vec3| cull.view_proj * p.extend(1.0);
@@ -157,7 +189,7 @@ pub fn pick(cull: &Cull, shape: &Shape, costs: &[f32], c: &GrassCopy, i: u32) ->
         return None;
     }
     let want = DENSITY * area * (0.75 + 0.5 * jitter(i));
-    Some(costs.iter().position(|&v| v / cells <= want).unwrap_or(last))
+    Some((costs.iter().position(|&v| v / cells <= want).unwrap_or(last), size))
 }
 
 /// The culling's settings as the compute shader reads them (`Cull` there).
@@ -168,6 +200,7 @@ struct CullUniform {
     planes: [[f32; 4]; 6],
     margin: [f32; 4],
     screen: [f32; 4],
+    far: [f32; 4],
 }
 
 /// A model as the compute shader reads it (`Model` there).
@@ -685,8 +718,8 @@ impl Grass {
                 lists.resize(m.levels.len(), vec![]);
                 let costs: Vec<f32> = m.levels.iter().map(|l| l.vertices).collect();
                 for (i, c) in m.copies.iter().enumerate() {
-                    if let Some(l) = pick(&cull, &m.shape, &costs, c, i as u32) {
-                        lists[l].push(*c);
+                    if let Some((l, size)) = pick(&cull, &m.shape, &costs, c, i as u32) {
+                        lists[l].push(GrassCopy { scale: c.scale * size, ..*c });
                     }
                 }
                 for (l, list) in lists.iter().enumerate() {
@@ -809,7 +842,10 @@ mod tests {
 
     fn level(cull: &Cull, x: f32, z: f32, i: u32) -> Option<usize> {
         let c = GrassCopy { at: [x, 0.0, z], scale: 1.0, ..Default::default() };
-        pick(cull, &Shape { middle: Vec3::new(0.0, 0.3, 0.0), reach: 1.0, cells: 1.0, tall: 0.6 }, &COSTS, &c, i)
+        pick(cull, &Shape { middle: Vec3::new(0.0, 0.3, 0.0), reach: 1.0, cells: 1.0, tall: 0.6 }, &COSTS, &c, i).map(|(l, size)| {
+            assert_eq!(size, 1.0, "a copy that isn't a meadow's as big as it is");
+            l
+        })
     }
 
     #[test]
@@ -844,12 +880,34 @@ mod tests {
         let cull = eye();
         let c = GrassCopy { at: [32.0, 0.0, -100.0], scale: 1.0, ..Default::default() };
         let shape = Shape { middle: Vec3::ZERO, reach: 1.0, cells: 1.0, tall: 0.6 };
-        assert_eq!(pick(&cull, &shape, &COSTS, &c, 3), Some(COSTS.len() - 1), "its thinnest, however far");
-        assert_eq!(pick(&cull, &shape, &[10.0, 5.0], &c, 3), Some(0), "as made, when that's light enough");
+        assert_eq!(pick(&cull, &shape, &COSTS, &c, 3), Some((COSTS.len() - 1, 1.0)), "its thinnest, however far");
+        assert_eq!(pick(&cull, &shape, &[10.0, 5.0], &c, 3), Some((0, 1.0)), "as made, when that's light enough");
         // its middle turned with it: a copy turned half round, its box's middle off to one side
         let off = GrassCopy { at: [70.0, 0.0, 50.0], turn: std::f32::consts::PI, scale: 1.0, ..Default::default() };
         let seen = |middle: Vec3| pick(&cull, &Shape { middle, reach: 0.5, cells: 1.0, tall: 0.6 }, &COSTS, &off, 3).is_some();
         assert!(seen(Vec3::new(30.0, 0.0, 0.0)) && !seen(Vec3::new(-30.0, 0.0, 0.0)), "turned, +30 east is 30 west");
+    }
+
+    #[test]
+    fn a_meadow_s_copies_are_fewer_further_off_and_shorter_at_the_furthest() {
+        let cull = eye();
+        let shape = Shape { middle: Vec3::new(0.0, 0.15, 0.0), reach: 0.3, cells: 1.0, tall: 0.3 };
+        let copies = |z: f32| (0..400).map(move |k| GrassCopy { at: [24.0 + (k % 20) as f32 * 0.8, 0.0, z + (k / 20) as f32 * 0.1], scale: 1.0, far: 1.0, ..Default::default() });
+        let drawn = |z: f32| copies(z).enumerate().filter_map(|(i, c)| pick(&cull, &shape, &COSTS, &c, i as u32)).collect::<Vec<_>>();
+        // near the eye every one as big as it is; far off fewer, the furthest shorter
+        let (near, far) = (drawn(50.0), drawn(-60.0));
+        assert!(near.len() == 400 && near.iter().all(|&(_, s)| s == 1.0), "{}", near.len());
+        assert!(!far.is_empty() && far.len() < 100, "{} far off", far.len());
+        // the same copy, the same every time, whatever else is gathered with it
+        let c = GrassCopy { at: [30.5, 0.0, -60.2], scale: 1.0, far: 1.0, ..Default::default() };
+        assert_eq!(pick(&cull, &shape, &COSTS, &c, 3).is_some(), pick(&cull, &shape, &COSTS, &c, 99).is_some());
+        // as the blades: left out where they would be, shorter where they are
+        assert_eq!(far_scale(&c, 2.0), None);
+        let s = far_scale(&GrassCopy { far: 0.0, ..c }, 2.0);
+        assert_eq!(s, Some(1.0), "a copy that isn't a meadow's isn't");
+        let near_seed = (0..2000).map(|k| GrassCopy { at: [k as f32, 0.0, 1.0], far: 1.0, ..c }).find(|c| crate::blades::unit(far_seed(c)) < 0.05).unwrap();
+        let shorter = far_scale(&near_seed, (crate::blades::SHRINK_PX + crate::blades::GONE_PX) / 2.0).unwrap();
+        assert!(shorter > 0.0 && shorter < 0.9, "{shorter}");
     }
 
     /// The culling's shader as WebGPU reads it (CI has no GPU to make it on).

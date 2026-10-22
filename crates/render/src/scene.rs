@@ -5,13 +5,15 @@
 //! the host gives (egui's, in the game), with the toon look's ink lines found in the looks,
 //! and the pixelation and an old handheld's LCD colours if the game asks; a small blurred
 //! copy of the picture besides, for frosted glass over it (`frost_view`). The grass grown
-//! through tall ground is drawn as copies of its models, culled each frame (`grass`).
+//! through tall ground is drawn as copies of its models, culled each frame (`grass`); the
+//! meadows' blades and flowers are made on the GPU as they're drawn (`blades`).
 
 use std::collections::{BTreeMap, HashMap};
 
 use glam::{Mat4, Vec2, Vec3, Vec4};
 use wgpu::util::DeviceExt;
 
+use crate::blades::{BladeInstance, BladeKind, BladePipelines, Blades};
 use crate::grass::{Grass, GrassCopy, GrassModel};
 use crate::map::{build_meshes, MapScene, MapVertex, Spot};
 
@@ -152,19 +154,26 @@ pub struct DrawStats {
     pub grass_on_gpu: bool,
     /// the grass copies drawn at each level (0 the finest: up close)
     pub grass_levels: [u32; crate::grass::MOST_LEVELS],
+    /// the meadows' blades drawn (as the grass's copies are known), their vertices, how many
+    /// with each template (a blade's finest, middle and simplest, then a flower's), and
+    /// whether they're culled on the GPU
+    pub blades: u32,
+    pub blade_vertices: u64,
+    pub blade_templates: [u32; 6],
+    pub blades_on_gpu: bool,
 }
 
 /// A view's six planes (from its view-projection; depth 0 to 1, as wgpu has it).
-struct Frustum([Vec4; 6]);
+pub(crate) struct Frustum([Vec4; 6]);
 
 impl Frustum {
-    fn new(m: &Mat4) -> Frustum {
+    pub(crate) fn new(m: &Mat4) -> Frustum {
         let (r0, r1, r2, r3) = (m.row(0), m.row(1), m.row(2), m.row(3));
         Frustum([r3 + r0, r3 - r0, r3 + r1, r3 - r1, r2, r3 - r2])
     }
 
     /// Can any of the box be in it?
-    fn sees(&self, lo: Vec3, hi: Vec3) -> bool {
+    pub(crate) fn sees(&self, lo: Vec3, hi: Vec3) -> bool {
         self.0.iter().all(|p| {
             let far = Vec3::new(if p.x >= 0.0 { hi.x } else { lo.x }, if p.y >= 0.0 { hi.y } else { lo.y }, if p.z >= 0.0 { hi.z } else { lo.z });
             p.x * far.x + p.y * far.y + p.z * far.z + p.w >= 0.0
@@ -788,6 +797,8 @@ pub struct SceneRenderer {
     fade: Vec<(String, GpuMesh)>,
     /// the grass grown through tall ground: copies of its models
     grass: Grass,
+    /// the meadows' blades and flowers, made on the GPU
+    blades: Blades,
     textures: HashMap<String, Texture>,
     meshes: Vec<Mesh>,
     pub map_name: Option<String>,
@@ -804,6 +815,9 @@ pub struct SceneRenderer {
 }
 
 pub const WHITE: &str = "#white";
+/// The scene's shaders: its own, and the meadows' blades' (what they are and how fine, then how
+/// they're made and drawn).
+const SHADER: &str = concat!(include_str!("shader.wgsl"), include_str!("blade_lod.wgsl"), include_str!("blades_draw.wgsl"));
 /// The world layer of cliff faces: drawn by the terrain shader (as rock), like the tops.
 pub const CLIFFS: &str = "cliffs";
 pub const GLOW: &str = "#glow";
@@ -811,10 +825,7 @@ pub const GLOW: &str = "#glow";
 impl SceneRenderer {
     /// `output` is the format of the pass the scene is blitted into.
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, output: wgpu::TextureFormat) -> SceneRenderer {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("scene"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
-        });
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("scene"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let globals = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("globals"),
             size: std::mem::size_of::<Globals>() as u64,
@@ -1097,6 +1108,32 @@ impl SceneRenderer {
             pipeline("grass cut-out", &main_layout, "vs_grass", "fs_map", &grass_buffers, solid(true), Some(depth(true))),
             pipeline("grass shadow", &shadow_pass_layout, "vs_grass_shadow", "fs_map_shadow", &grass_buffers, vec![], Some(shadow_depth.clone())),
         );
+        // the meadows' blades: a blade an instance (each square's, the drawing culling them), or
+        // with compute shaders from the culling's lists (the blades and a list read from storage)
+        let (blade_kinds_layout, blade_store_layout) = Blades::layouts(device);
+        let layout = |label: &str, groups: &[Option<&wgpu::BindGroupLayout>]| device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor { label: Some(label), bind_group_layouts: groups, immediate_size: 0 });
+        let blade_layout = layout("blades", &[Some(&globals_layout), Some(&blade_kinds_layout), Some(&shadow_layout)]);
+        let blade_shadow_layout = layout("blades shadow", &[Some(&globals_layout), Some(&blade_kinds_layout)]);
+        let blade_attrs = wgpu::vertex_attr_array![6 => Float32x3, 7 => Float32, 8 => Float32, 9 => Float32, 10 => Uint32, 11 => Uint32];
+        let blade_buffers = [Some(wgpu::VertexBufferLayout { array_stride: std::mem::size_of::<BladeInstance>() as u64, step_mode: wgpu::VertexStepMode::Instance, attributes: &blade_attrs })];
+        let listed = blade_store_layout.as_ref().map(|store| {
+            let main = layout("blades listed", &[Some(&globals_layout), Some(&blade_kinds_layout), Some(&shadow_layout), Some(store)]);
+            let sun = layout("blades listed shadow", &[Some(&globals_layout), Some(&blade_kinds_layout), Some(&empty_layout), Some(store)]);
+            (
+                pipeline("blades listed", &main, "vs_blade_listed", "fs_blade", &[], solid(true), Some(depth(true))),
+                pipeline("blades listed shadow", &sun, "vs_blade_listed_shadow", "fs_blade_shadow", &[], vec![], Some(shadow_depth.clone())),
+            )
+        });
+        let blades = Blades::new(
+            device,
+            BladePipelines {
+                main: pipeline("blades", &blade_layout, "vs_blade", "fs_blade", &blade_buffers, solid(true), Some(depth(true))),
+                shadow: pipeline("blades shadow", &blade_shadow_layout, "vs_blade_shadow", "fs_blade_shadow", &blade_buffers, vec![], Some(shadow_depth.clone())),
+                listed,
+            },
+            &blade_kinds_layout,
+            blade_store_layout,
+        );
         let skinned_pipeline = pipeline("skinned", &skinned_layout, "vs_skinned", "fs_map", &skinned_buffers, solid(true), Some(depth(true)));
         let skinned_shadow_pipeline = pipeline("skinned shadow", &skinned_shadow_layout, "vs_skinned_shadow", "fs_map_shadow", &skinned_buffers, vec![], Some(shadow_depth.clone()));
         // depth only, in the see-through pass: a colour target it never writes to
@@ -1121,7 +1158,7 @@ impl SceneRenderer {
             shadow_size: SHADOW_SIZE, quality: Quality::default(), stats: DrawStats::default(),
             map_pipeline, opaque_pipeline, through_pipeline, opaque_through_pipeline, map_shadow_pipeline, sprite_pipeline, sprite_shadow_pipeline, blend_pipeline, add_pipeline, blit_pipeline,
             frost_pipeline, frost_x_pipeline, frost_y_pipeline, frost_layout, frost: None, frost_generation: 0, wind_clock: WindClock::default(),
-            ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![], grass,
+            ground_pipeline, ground_layout, worlds: BTreeMap::new(), extra: vec![], fade: vec![], grass, blades,
             textures: HashMap::new(), meshes: vec![], map_name: None, spot: None, target: None, sprite_buffer: None,
             sprite_draws: vec![], blend_draws: vec![], add_draws: vec![], overlay_draws: vec![], overlay_pipeline, sky: [0.1, 0.1, 0.1],
             output_srgb: output.is_srgb(),
@@ -1197,6 +1234,8 @@ impl SceneRenderer {
             pass.set_vertex_buffer(1, zeros.slice(..));
             self.grass.warm_up(&mut pass, true);
             pass.set_bind_group(2, &self.empty_bind, &[]);
+            self.blades.warm_up(&mut pass, true, &zeros);
+            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_shadow_pipeline);
             pass.draw(0..3, 0..1);
@@ -1213,6 +1252,8 @@ impl SceneRenderer {
             }
             pass.set_vertex_buffer(1, zeros.slice(..));
             self.grass.warm_up(&mut pass, false);
+            self.blades.warm_up(&mut pass, false, &zeros);
+            pass.set_bind_group(1, &self.textures[WHITE].bind, &[]);
             pass.set_bind_group(3, &self.bones.bind, &[0]);
             pass.set_pipeline(&self.skinned_pipeline);
             pass.draw(0..3, 0..1);
@@ -1495,6 +1536,7 @@ impl SceneRenderer {
             Some(w) if w.size == g.size => (w.tops, w.layers, w.place),
             Some(w) => {
                 self.grass.drop_map(map);
+                self.blades.drop_map(map);
                 (BTreeMap::new(), BTreeMap::new(), w.place)
             }
             None => (BTreeMap::new(), BTreeMap::new(), Place::default()),
@@ -1546,6 +1588,7 @@ impl SceneRenderer {
             w.place = place;
         }
         self.grass.place(map, place.offset, place.dim);
+        self.blades.place(map, place.offset, place.dim);
     }
 
     /// A grass model to draw copies of (`set_grass`), by its key (a grass prop's id), with
@@ -1572,6 +1615,23 @@ impl SceneRenderer {
         self.grass.culled_on_gpu()
     }
 
+    /// Every meadow's kinds of blade and flower (`world::meadow::Kinds`, in its order: a
+    /// blade's `kind` is its place in it).
+    pub fn set_blade_kinds(&mut self, kinds: &[BladeKind]) {
+        self.blades.set_kinds(kinds);
+    }
+
+    /// One square's meadows' blades on a world map (after `set_world_ground`), in the map's own
+    /// space, replacing what that square held (none: they go).
+    pub fn set_blades(&mut self, map: &str, square: (i32, i32), blades: Vec<BladeInstance>) {
+        self.blades.set_blades(map, square, blades);
+    }
+
+    /// Whether the meadows' blades are culled on the GPU (else on the CPU: no compute shaders).
+    pub fn blades_on_gpu(&self) -> bool {
+        self.blades.culled_on_gpu()
+    }
+
     /// One square of one layer of a world map (after `set_world_ground`), replacing what
     /// that square held: "tops" is the ground's cell tops and CLIFFS its cliff faces (the
     /// terrain shader); any other name ("grass", "props", "trees", "buildings") draws like
@@ -1591,6 +1651,7 @@ impl SceneRenderer {
     /// Drops a world map's squares that `keep` doesn't want, in every layer.
     pub fn keep_chunks(&mut self, map: &str, keep: &dyn Fn((i32, i32)) -> bool) {
         self.grass.keep(map, keep);
+        self.blades.keep(map, keep);
         let Some(w) = self.worlds.get_mut(map) else { return };
         w.tops.retain(|s, _| keep(*s));
         for squares in w.layers.values_mut() {
@@ -1602,6 +1663,7 @@ impl SceneRenderer {
     pub fn keep_worlds(&mut self, keep: &dyn Fn(&str) -> bool) {
         self.worlds.retain(|id, _| keep(id));
         self.grass.keep_maps(keep);
+        self.blades.keep_maps(keep);
     }
 
     /// The world maps on the GPU.
@@ -1625,6 +1687,7 @@ impl SceneRenderer {
         self.extra.clear();
         self.fade.clear();
         self.grass.clear();
+        self.blades.clear();
     }
 
     /// Forgets the battle map.
@@ -1906,8 +1969,21 @@ impl SceneRenderer {
         // how fine the grass is (picked by the pixelation's few big pixels, it went sparse)
         let unpixelated = [((screen[0] as f32 * self.quality.scale).round() as u32).max(1), ((screen[1] as f32 * self.quality.scale).round() as u32).max(1)];
         self.grass.prepare(device, queue, encoder, &frame.view_proj, unpixelated);
+        self.blades.prepare(device, queue, encoder, &frame.view_proj, unpixelated);
         let (grass, grass_vertices, grass_levels) = self.grass.drawn();
-        let mut stats = DrawStats { pixel: pixel.unwrap_or(1), grass, grass_vertices, grass_on_gpu: self.grass.culled_on_gpu(), grass_levels, ..Default::default() };
+        let (blades, blade_vertices, blade_templates) = self.blades.drawn();
+        let mut stats = DrawStats {
+            pixel: pixel.unwrap_or(1),
+            grass,
+            grass_vertices,
+            grass_on_gpu: self.grass.culled_on_gpu(),
+            grass_levels,
+            blades,
+            blade_vertices,
+            blade_templates,
+            blades_on_gpu: self.blades.culled_on_gpu(),
+            ..Default::default()
+        };
         let eye = Frustum::new(&frame.view_proj);
         let sun = Frustum::new(&light_view_proj);
 
@@ -1968,6 +2044,8 @@ impl SceneRenderer {
             }
             pass.set_bind_group(0, &self.globals_bind, &[0]);
             self.grass.draw(&mut pass, true, &|k| &self.textures.get(k).unwrap_or(&self.textures[WHITE]).bind, &mut stats);
+            pass.set_bind_group(2, &self.empty_bind, &[]);
+            self.blades.draw(&mut pass, true, &mut stats);
             pass.set_pipeline(&self.sprite_shadow_pipeline);
             pass.set_vertex_buffer(0, sprite_buffer.slice(..));
             for d in &self.sprite_draws {
@@ -2072,9 +2150,11 @@ impl SceneRenderer {
                     }
                 }
             }
-            // the grass's copies (in the scene's space: its own placement), over the ground
+            // the grass's copies and the meadows' blades (in the scene's space: its own
+            // placement), over the ground
             pass.set_bind_group(0, &self.globals_bind, &[0]);
             self.grass.draw(&mut pass, false, &|k| &self.textures.get(k).unwrap_or(&self.textures[WHITE]).bind, &mut stats);
+            self.blades.draw(&mut pass, false, &mut stats);
             // the ground last, its cliffs too: what stands on it hides most of it, and its
             // shader is the costliest
             pass.set_pipeline(&self.ground_pipeline);
@@ -2312,6 +2392,13 @@ mod tests {
         block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
+    /// A device on OpenGL (as WebGL 2 is, through ANGLE or the driver), where this machine has one.
+    fn gl() -> Option<(wgpu::Device, wgpu::Queue)> {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor { backends: wgpu::Backends::GL, ..wgpu::InstanceDescriptor::new_without_display_handle() });
+        let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok()?;
+        block_on(adapter.request_device(&wgpu::DeviceDescriptor { required_limits: adapter.limits(), ..Default::default() })).ok()
+    }
+
     /// A frame of nothing but `animated`, from a camera looking down at the origin.
     fn frame_of(animated: Vec<Animated>) -> Frame {
         let light = Lighting {
@@ -2523,7 +2610,8 @@ mod tests {
         let levels = grass_levels(&[500, 250, 125, 62]);
         let (lo, hi) = (Vec3::new(-0.5, 0.0, -0.5), Vec3::new(0.5, 0.6, 0.5));
         r.set_grass_model(&device, "tuft", 1, &GrassModel { levels: &levels, cells: 1.0, lo, hi });
-        let copies = |x0: i32| (x0..x0 + 48).flat_map(|x| (0..96).map(move |z| GrassCopy { at: [x as f32 + 0.5, 0.0, z as f32 + 0.5], turn: (x * 7 + z) as f32 * 0.3, scale: 1.0, ..Default::default() })).collect::<Vec<_>>();
+        // (one in three a meadow's: fewer further off, shorter at the furthest)
+        let copies = |x0: i32| (x0..x0 + 48).flat_map(|x| (0..96).map(move |z| GrassCopy { at: [x as f32 + 0.5, 0.0, z as f32 + 0.5], turn: (x * 7 + z) as f32 * 0.3, scale: 1.0, far: if (x + z) % 3 == 0 { 1.0 } else { 0.0 }, ..Default::default() })).collect::<Vec<_>>();
         r.set_grass("field", (0, 0), vec![("tuft".into(), copies(0))]);
         r.set_grass("field", (1, 0), vec![("tuft".into(), copies(48))]);
         r.set_world_place("field", Place { offset: Vec3::new(10.0, 0.0, 0.0), ..Default::default() });
@@ -2551,7 +2639,7 @@ mod tests {
         let mut want = vec![0u32; 4];
         let mut lists: Vec<Vec<[i32; 2]>> = vec![vec![]; 4];
         for (i, c) in gathered.iter().enumerate() {
-            if let Some(l) = crate::grass::pick(&cull, &shape, &costs, c, i as u32) {
+            if let Some((l, _)) = crate::grass::pick(&cull, &shape, &costs, c, i as u32) {
                 want[l] += 1;
                 lists[l].push([c.at[0] as i32, c.at[2] as i32]);
             }
@@ -2602,16 +2690,130 @@ mod tests {
         assert_eq!(r.grass.copies("tuft").len(), 48 * 96);
     }
 
+    /// A meadow of blades and flowers, 96 x 96 cells, four to a cell (a flower in twenty), in
+    /// two squares of a map placed 10 cells east: gathered into the scene's space, culled and
+    /// their templates picked on the GPU as on the CPU (`blades::pick`; a float's rounding may
+    /// tip a blade or two over), drawn with no error from the GPU; and where there are no
+    /// compute shaders, each square drawn as a whole, at least as many of its blades as the
+    /// GPU draws of it.
+    #[test]
+    fn blades_cull_on_the_gpu_as_on_the_cpu() {
+        let Some((device, queue)) = gpu() else {
+            eprintln!("no GPU here: the blades' culling not checked");
+            return;
+        };
+        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        let kinds = [
+            BladeKind { form: [0.0, 0.3, 0.6, 0.035], bend: [0.3, 0.4, 1.0, 0.0], foot: [0.1, 0.3, 0.1, 5.0], tip: [0.4, 0.7, 0.3, 0.0], ..Default::default() },
+            BladeKind { form: [1.0, 0.3, 0.5, 0.012], bend: [0.1, 0.2, 1.0, 0.1], foot: [0.1, 0.3, 0.1, 5.0], tip: [0.3, 0.5, 0.2, 0.0], petal: [0.9, 0.9, 0.9, 0.0], heart: [0.9, 0.7, 0.1, 0.0] },
+        ];
+        r.set_blade_kinds(&kinds);
+        let blades = |x0: i32| {
+            (x0..x0 + 48)
+                .flat_map(|x| (0..96).flat_map(move |z| (0..4u32).map(move |k| (x, z, k))))
+                .map(|(x, z, k)| {
+                    let seed = crate::blades::mix_bits((x as u32) * 7919 + (z as u32) * 104_729 + k);
+                    BladeInstance { at: [x as f32 + 0.25 + 0.5 * (k % 2) as f32, 0.0, z as f32 + 0.25 + 0.25 * k as f32], turn: k as f32, size: crate::blades::unit(seed >> 16), kind: u32::from(seed.is_multiple_of(20)), seed, ..Default::default() }
+                })
+                .collect::<Vec<_>>()
+        };
+        r.set_blades("field", (0, 0), blades(0));
+        r.set_blades("field", (1, 0), blades(48));
+        r.set_world_place("field", Place { offset: Vec3::new(10.0, 0.0, 0.0), ..Default::default() });
+        let mut frame = frame_of(vec![]);
+        let eye = Vec3::new(58.0, 14.0, 106.0);
+        frame.view_proj = Mat4::perspective_rh(30f32.to_radians(), 1.6, 0.1, 600.0) * Mat4::look_at_rh(eye, Vec3::new(58.0, 0.0, 60.0), Vec3::Y);
+        frame.camera_pos = eye;
+        let size = [640, 400];
+        let run = |r: &mut SceneRenderer| {
+            let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+            let mut encoder = device.create_command_encoder(&Default::default());
+            r.prepare(&device, &queue, &mut encoder, &frame, size);
+            queue.submit([encoder.finish()]);
+            let error = block_on(scope.pop());
+            assert!(error.is_none(), "{error:?}");
+        };
+        run(&mut r);
+        let gathered = r.blades.gathered();
+        assert_eq!(gathered.len(), 96 * 96 * 4);
+        assert!(gathered.iter().all(|b| b.at[0] >= 10.0), "in the scene's space: their map's placement added");
+        // the CPU's picks of the same
+        let sight = crate::blades::Sight::new(frame.view_proj, size);
+        let mut want = [0u32; 6];
+        for b in &gathered {
+            if let Some(l) = crate::blades::pick(&sight, &kinds, b) {
+                want[l] += 1;
+            }
+        }
+        let drawn: u32 = want.iter().sum();
+        assert!(drawn > 2000 && drawn < 96 * 96 * 4 / 2, "some out of sight, fewer further off: {want:?}");
+        assert!(want[..3].iter().filter(|&&n| n > 0).count() >= 2 && want[3] + want[4] + want[5] > 0, "blades with more than one template, and flowers: {want:?}");
+        if r.blades_on_gpu() {
+            let got = r.blades.counts_now(&device, &queue);
+            for l in 0..6 {
+                let (g, w) = (got[l] as i64, want[l] as i64);
+                assert!((g - w).abs() <= (w / 100).max(3), "list {l}: the GPU's {got:?}, the CPU's {want:?}");
+            }
+        }
+        // on the CPU: each square of each shape whole, as many as its nearest point needs
+        r.blades.on_cpu();
+        run(&mut r);
+        let (n, vertices, templates) = r.blades.drawn();
+        assert!(n >= drawn && n < 96 * 96 * 4, "{n} drawn as wholes for {drawn} culled one by one");
+        assert_eq!(templates.iter().sum::<u32>(), n);
+        assert!(vertices > n as u64 * 3);
+        assert_eq!(r.stats().blades, n);
+        // the square gone, its blades with it
+        r.set_blades("field", (1, 0), vec![]);
+        run(&mut r);
+        assert_eq!(r.blades.gathered().len(), 48 * 96 * 4);
+        assert_eq!(r.blades.kinds().len(), 2);
+    }
+
+    /// On OpenGL (as WebGL 2 is), the blades drawn as each patch's instances, the drawing
+    /// leaving out what isn't drawn: no error from the GPU, blades and flowers drawn.
+    #[test]
+    fn blades_draw_on_opengl_as_instances() {
+        let Some((device, queue)) = gl() else {
+            eprintln!("no OpenGL here: the blades' WebGL 2 way not checked");
+            return;
+        };
+        let mut r = SceneRenderer::new(&device, &queue, wgpu::TextureFormat::Rgba8Unorm);
+        r.blades.on_cpu();
+        r.set_blade_kinds(&[
+            BladeKind { form: [0.0, 0.3, 0.6, 0.035], bend: [0.3, 0.4, 1.0, 0.0], foot: [0.1, 0.3, 0.1, 5.0], tip: [0.4, 0.7, 0.3, 0.0], ..Default::default() },
+            BladeKind { form: [1.0, 0.3, 0.5, 0.012], bend: [0.1, 0.2, 1.0, 0.1], foot: [0.1, 0.3, 0.1, 5.0], petal: [0.9, 0.9, 0.9, 0.0], heart: [0.9, 0.7, 0.1, 0.0], ..Default::default() },
+        ]);
+        let blades: Vec<BladeInstance> = (0..40 * 40 * 8u32)
+            .map(|k| {
+                let seed = crate::blades::mix_bits(k);
+                BladeInstance { at: [(k % 40) as f32 + crate::blades::unit(seed >> 3), 0.0, (k / 40 % 40) as f32 + crate::blades::unit(seed >> 7)], turn: k as f32, size: 0.5, kind: u32::from(k.is_multiple_of(17)), seed, ..Default::default() }
+            })
+            .collect();
+        r.set_blades("field", (0, 0), blades);
+        let mut frame = frame_of(vec![]);
+        let eye = Vec3::new(20.0, 10.0, 52.0);
+        frame.view_proj = Mat4::perspective_rh(30f32.to_radians(), 1.6, 0.1, 400.0) * Mat4::look_at_rh(eye, Vec3::new(20.0, 0.0, 20.0), Vec3::Y);
+        frame.camera_pos = eye;
+        let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+        let mut encoder = device.create_command_encoder(&Default::default());
+        r.prepare(&device, &queue, &mut encoder, &frame, [640, 400]);
+        queue.submit([encoder.finish()]);
+        let error = block_on(scope.pop());
+        assert!(error.is_none(), "{error:?}");
+        let (n, _, templates) = r.blades.drawn();
+        assert!(!r.blades_on_gpu() && n > 1000 && templates[3..].iter().sum::<u32>() > 0, "{n} drawn, by template {templates:?}");
+    }
+
     #[test]
     fn the_shader_holds_for_webgpu_and_webgl() {
-        let module = naga::front::wgsl::parse_str(include_str!("shader.wgsl")).unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
-        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty())
-            .validate(&module)
-            .unwrap_or_else(|e| panic!("{}", e.emit_to_string(include_str!("shader.wgsl"))));
-        // every entry point as WebGL 2 gets it (the skinned ones read a storage buffer,
-        // which it hasn't got)
+        let module = naga::front::wgsl::parse_str(SHADER).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
+        let info = naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::empty()).validate(&module).unwrap_or_else(|e| panic!("{}", e.emit_to_string(SHADER)));
+        assert!(["vs_blade", "vs_blade_shadow", "vs_blade_listed", "vs_blade_listed_shadow", "fs_blade", "fs_blade_shadow"].iter().all(|n| module.entry_points.iter().any(|e| e.name == *n)));
+        // every entry point as WebGL 2 gets it (the skinned ones and the blades drawn from the
+        // culling's lists read a storage buffer, which it hasn't got)
         let options = naga::back::glsl::Options { version: naga::back::glsl::Version::Embedded { version: 300, is_webgl: true }, ..Default::default() };
-        for ep in module.entry_points.iter().filter(|e| !e.name.contains("skinned")) {
+        for ep in module.entry_points.iter().filter(|e| !e.name.contains("skinned") && !e.name.contains("listed")) {
             let pipeline = naga::back::glsl::PipelineOptions { shader_stage: ep.stage, entry_point: ep.name.clone(), multiview: None };
             let mut out = String::new();
             let mut w = naga::back::glsl::Writer::new(&mut out, &module, &info, &options, &pipeline, naga::proc::BoundsCheckPolicies::default()).unwrap_or_else(|e| panic!("{}: {e}", ep.name));

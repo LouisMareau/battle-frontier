@@ -788,17 +788,21 @@ pub struct Terrain {
     /// where water meets it, the water washes up onto it and back, as onto sand
     #[serde(skip_serializing_if = "is_default")]
     pub beach: bool,
-    /// tall ground (`pattern` "tall"): grass props grown through its cells in place of the
-    /// engine's own blades (none listed: the blades)
+    /// what grows through its cells: on tall ground (`pattern` "tall") grass props in place of
+    /// the engine's own tufts; on any ground but water, a meadow of blades and flowers the
+    /// engine grows itself (`Growth::meadow`; nothing listed: tall ground grows its tufts,
+    /// other ground nothing)
     #[serde(skip_serializing_if = "Growth::is_empty")]
     pub growth: Growth,
 }
 
-/// What grows through a tall terrain's cells in place of the engine's own blades: grass props
-/// (the "grass" category), each picked as often as its weight says among them. Scattered: so
-/// many to a cell on average, fewer where the ground thins in patches; each turned and sized
-/// its own way, the same each time. Tiled (grass made to fill its cells, as a tile is): each
-/// whole over its footprint's cells, lined up with them, so copies side by side join.
+/// What grows through a terrain's cells. On tall ground, in place of the engine's own tufts:
+/// grass props (the "grass" category), each picked as often as its weight says among them.
+/// Scattered: so many to a cell on average, fewer where the ground thins in patches; each
+/// turned and sized its own way, the same each time. Tiled (grass made to fill its cells, as a
+/// tile is): each whole over its footprint's cells, lined up with them, so copies side by side
+/// join. On any ground but water, a meadow (`Meadow`): blades and flowers the engine grows
+/// itself, with the props or alone.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Growth {
@@ -817,22 +821,150 @@ pub struct Growth {
     /// tiled: each whole over its footprint's cells, lined up with them (else scattered)
     #[serde(skip_serializing_if = "is_default")]
     pub tiled: bool,
+    /// the meadow the engine grows itself (no plants: none)
+    #[serde(skip_serializing_if = "Meadow::is_empty")]
+    pub meadow: Meadow,
 }
 
 impl Default for Growth {
     fn default() -> Self {
-        Growth { props: vec![], density: 4.0, scale: [0.8, 1.25], patchy: 0.35, turn: true, tiled: false }
+        Growth { props: vec![], density: 4.0, scale: [0.8, 1.25], patchy: 0.35, turn: true, tiled: false, meadow: Meadow::default() }
     }
 }
 
 impl Growth {
-    /// Nothing listed to grow: the engine's own blades instead.
+    /// Nothing listed to grow: on tall ground the engine's own tufts instead.
     pub fn is_empty(&self) -> bool {
-        self.props.is_empty()
+        self.props.is_empty() && self.meadow.is_empty()
+    }
+
+    /// Grass props listed to grow (on tall ground).
+    pub fn grows_props(&self) -> bool {
+        !self.props.is_empty()
+    }
+
+    /// The most props to a cell.
+    pub const MOST: f64 = 32.0;
+}
+
+/// A meadow: blades of grass and flowers the engine grows itself through a terrain's cells,
+/// made on the GPU as they're drawn. So many to a cell, each one of its plants (picked by their
+/// weights; one that keeps to clusters, mostly in its own), in clumps of blades alike, thinner
+/// in patches; the same every time. Up close every blade is drawn in full; further off fewer,
+/// each wider so the meadow looks as full and drawn more simply, and at the furthest shorter
+/// and shorter until only the ground's colour is left. Its plants' looks (how tall, wide,
+/// leaning, curved, coloured, swaying) change it as it's drawn; what grows where (how many,
+/// which, the clumps and the patches) once its cells are built again.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Meadow {
+    /// its plants, each with how often it grows
+    pub plants: Vec<Plant>,
+    /// how many to a cell, on average (0 to `MOST`)
+    pub density: f64,
+    /// how much it thins in patches a few cells across (0: as thick everywhere; 1: bare in
+    /// places)
+    pub patchy: f64,
+    /// its clumps: how wide (cells; 0: none), and how alike the blades of one are (0 to 1: as
+    /// tall, leaning the same way out from its middle)
+    pub clump: f64,
+    pub clumping: f64,
+    /// lit in the toon look's steps (as toon props are), else as the ground under it is
+    #[serde(skip_serializing_if = "is_default")]
+    pub toon: bool,
+}
+
+impl Default for Meadow {
+    fn default() -> Self {
+        Meadow { plants: vec![], density: 48.0, patchy: 0.3, clump: 0.6, clumping: 0.5, toon: false }
+    }
+}
+
+impl Meadow {
+    /// No plants: no meadow.
+    pub fn is_empty(&self) -> bool {
+        self.plants.is_empty()
     }
 
     /// The most to a cell.
-    pub const MOST: f64 = 32.0;
+    pub const MOST: f64 = 128.0;
+
+    /// The most petals a flower may have.
+    pub const PETALS: u8 = 8;
+}
+
+/// Whether a colour is written "#rrggbb".
+pub fn is_hex_colour(c: &str) -> bool {
+    c.len() == 7 && c.starts_with('#') && c[1..].chars().all(|d| d.is_ascii_hexdigit())
+}
+
+/// What a meadow's plant is: a blade of grass, a flower (a stem with a head of petals round its
+/// heart), both made by the engine, or a grass prop's model (one blade or a few, a flower: as
+/// it's made, placed as the meadow's own are and drawn thinner further off as they are).
+pub const PLANT_SHAPES: [&str; 3] = ["blade", "flower", "model"];
+
+/// A kind of plant in a meadow (`Meadow`), and how often it grows.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Plant {
+    /// what it's called in the editor (none: by its shape, or its model's prop)
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// what it is: "blade", "flower" or "model" (`PLANT_SHAPES`)
+    pub shape: String,
+    /// a model's: its grass prop
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub prop: String,
+    /// how often it grows, against the others
+    pub weight: f64,
+    /// a blade's or a flower's: how tall (cells), the shortest and the tallest
+    pub height: [f64; 2],
+    /// a model's: how big against its prop as made, the smallest and the biggest
+    pub scale: [f64; 2],
+    /// how wide at its foot (cells; a flower's stem)
+    pub width: f64,
+    /// how far over it leans (0: straight up; 1: lying down)
+    pub lean: f64,
+    /// how much it curves over as it rises (0: straight)
+    pub bend: f64,
+    /// "#rrggbb": at its foot and at its tip (empty: its terrain's colours)
+    pub color: String,
+    pub tip: String,
+    /// how much the wind moves it (0: not at all; 1: as grass)
+    pub sway: f64,
+    /// a flower's: how many petals (3 to `Meadow::PETALS`), their colour, its heart's colour,
+    /// how wide its head is (cells)
+    pub petals: u8,
+    pub petal: String,
+    pub heart: String,
+    pub bloom: f64,
+    /// how much it keeps to clusters of its own a few cells across (0: grows anywhere; 1: only
+    /// in them)
+    pub clusters: f64,
+}
+
+impl Default for Plant {
+    fn default() -> Self {
+        Plant {
+            name: String::new(),
+            shape: "blade".into(),
+            prop: String::new(),
+            weight: 1.0,
+            height: [0.35, 0.6],
+            scale: [0.8, 1.25],
+            width: 0.035,
+            lean: 0.25,
+            bend: 0.4,
+            color: String::new(),
+            tip: String::new(),
+            sway: 1.0,
+            petals: 5,
+            petal: "#f4f1e8".into(),
+            heart: "#e8b923".into(),
+            bloom: 0.08,
+            clusters: 0.0,
+        }
+    }
 }
 
 /// A grass prop grown through tall ground, and how often it's picked (its weight against the

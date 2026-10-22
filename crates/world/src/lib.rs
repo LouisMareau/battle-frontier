@@ -12,6 +12,7 @@ pub mod gltf_in;
 pub mod gltf_out;
 pub mod grass;
 pub mod lights;
+pub mod meadow;
 pub mod mesh;
 pub mod railings;
 pub mod ramps;

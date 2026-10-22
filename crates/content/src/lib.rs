@@ -617,7 +617,52 @@ impl Content {
                     out.push(format!("terrains/{}: growth: {} weighs {} (more than 0)", t.id, p.prop, p.weight));
                 }
             }
-            if !g.is_empty() {
+            let m = &g.meadow;
+            if !m.is_empty() {
+                let at = format!("terrains/{}: growth: meadow", t.id);
+                if t.walk == "water" || t.pattern == "water" {
+                    out.push(format!("{at} on water: nothing grows there"));
+                }
+                if !(0.0..=model::Meadow::MOST).contains(&m.density) {
+                    out.push(format!("{at}: density {} (0 to {})", m.density, model::Meadow::MOST));
+                }
+                for (what, v, most) in [("patchy", m.patchy, 1.0), ("clump", m.clump, 8.0), ("clumping", m.clumping, 1.0)] {
+                    if !(0.0..=most).contains(&v) {
+                        out.push(format!("{at}: {what} {v} (0 to {most})"));
+                    }
+                }
+                for (k, p) in m.plants.iter().enumerate() {
+                    let at = format!("{at}: plant {}", k + 1);
+                    if !model::PLANT_SHAPES.contains(&p.shape.as_str()) {
+                        out.push(format!("{at}: shape \"{}\" ({})", p.shape, model::PLANT_SHAPES.join(", ")));
+                    }
+                    if p.shape == "model" && !self.props.contains(&p.prop) {
+                        out.push(format!("{at}: no prop {}", p.prop));
+                    }
+                    if p.weight.is_nan() || p.weight <= 0.0 {
+                        out.push(format!("{at}: weighs {} (more than 0)", p.weight));
+                    }
+                    for (what, r) in [("height", p.height), ("scale", p.scale)] {
+                        if r.iter().any(|v| v.is_nan()) || r[0] <= 0.0 || r[0] > r[1] {
+                            out.push(format!("{at}: {what} {} to {} (more than 0, the least first)", r[0], r[1]));
+                        }
+                    }
+                    for (what, v, most) in [("width", p.width, 1.0), ("lean", p.lean, 1.0), ("bend", p.bend, 1.0), ("sway", p.sway, 2.0), ("bloom", p.bloom, 1.0), ("clusters", p.clusters, 1.0)] {
+                        if !(0.0..=most).contains(&v) {
+                            out.push(format!("{at}: {what} {v} (0 to {most})"));
+                        }
+                    }
+                    if !(3..=model::Meadow::PETALS).contains(&p.petals) {
+                        out.push(format!("{at}: {} petals (3 to {})", p.petals, model::Meadow::PETALS));
+                    }
+                    for (what, c) in [("color", &p.color), ("tip", &p.tip), ("petal", &p.petal), ("heart", &p.heart)] {
+                        if !c.is_empty() && !model::is_hex_colour(c) {
+                            out.push(format!("{at}: {what} \"{c}\" (#rrggbb, or nothing for its terrain's)"));
+                        }
+                    }
+                }
+            }
+            if g.grows_props() {
                 if t.pattern != "tall" {
                     out.push(format!("terrains/{}: growth on ground that isn't tall (pattern \"{}\"): nothing grows there", t.id, t.pattern));
                 }
@@ -1422,6 +1467,45 @@ mod tests {
         }
         assert_eq!(with(Terrain { pattern: "grass".into(), ..tall.clone() }).len(), 1, "growth on ground that isn't tall");
         assert!(!to_text(&Terrain { growth: Growth::default(), ..tall }).contains("growth"));
+    }
+
+    /// A meadow grows on any ground but water, with nothing said of it when all is well; its
+    /// numbers out of their ranges, a plant of a shape there's none of, a model of a prop
+    /// that isn't there, a colour that isn't one, each said; written with its terrain only when
+    /// it has plants, and read back as it was.
+    #[test]
+    fn a_meadow_is_checked_and_kept() {
+        let mut c = Content::default();
+        c.props.put(Prop { id: "tuft".into(), name: "Tuft".into(), category: "grass".into(), footprint: [1, 1], height: 0.4, ..Default::default() }, Space::Content);
+        let with = |t: Terrain| {
+            let mut c = c.clone();
+            c.terrains.put(t, Space::Content);
+            c.validate().into_iter().filter(|p| p.contains("meadow")).collect::<Vec<_>>()
+        };
+        let plants = vec![Plant::default(), Plant { shape: "flower".into(), color: "#3a7a2a".into(), clusters: 0.8, ..Default::default() }, Plant { shape: "model".into(), prop: "tuft".into(), ..Default::default() }];
+        let meadow = Meadow { plants, ..Default::default() };
+        let lawn = Terrain { id: "lawn".into(), pattern: "grass".into(), walk: "walk".into(), growth: Growth { meadow: meadow.clone(), ..Default::default() }, ..Default::default() };
+        assert!(with(lawn.clone()).is_empty(), "{:?}", with(lawn.clone()));
+        let mut bad = lawn.clone();
+        let m = &mut bad.growth.meadow;
+        m.density = 400.0;
+        m.clumping = 2.0;
+        m.plants[0].shape = "tree".into();
+        m.plants[1].height = [0.5, 0.2];
+        m.plants[1].petals = 20;
+        m.plants[1].tip = "green".into();
+        m.plants[2].prop = "nothing".into();
+        let said = with(bad);
+        for word in ["density 400", "clumping 2", "shape \"tree\"", "height 0.5 to 0.2", "20 petals", "tip \"green\"", "no prop nothing"] {
+            assert!(said.iter().any(|p| p.contains(word)), "{word}: {said:?}");
+        }
+        assert_eq!(with(Terrain { walk: "water".into(), pattern: "water".into(), ..lawn.clone() }), ["terrains/lawn: growth: meadow on water: nothing grows there"]);
+        // kept: with its plants only, read back as it was
+        let text = to_text(&lawn);
+        assert!(text.contains("meadow") && !text.contains("\"props\": [\n"), "{text}");
+        let back: Terrain = serde_json::from_str(&text).unwrap();
+        assert_eq!(back.growth.meadow, meadow);
+        assert!(!to_text(&Terrain { growth: Growth { meadow: Meadow::default(), ..Default::default() }, ..lawn }).contains("meadow"));
     }
 
     #[test]
