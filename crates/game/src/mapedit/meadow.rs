@@ -11,16 +11,15 @@ use content::{Meadow, Plant, Terrain};
 use super::{card, fieldset, fieldset_with, form, hint, mark, sign_button, warn, MapEditor, Sign};
 
 /// The plants to start from: grasses (a meadow's, a tall one, a short lawn, reeds, a dry one)
-/// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover), their stems stiffer
-/// in the wind than a blade.
+/// and flowers (daisies, poppies, bluebells, buttercups, lavender, clover); how much any of
+/// them sways is the wind's and the terrain's rigidity's to say.
 pub(super) fn presets() -> Vec<Plant> {
-    let grass = |name: &str, height: [f64; 2], width: f64, lean: f64, bend: f64, sway: f64, color: &str, tip: &str| Plant {
+    let grass = |name: &str, height: [f64; 2], width: f64, lean: f64, bend: f64, color: &str, tip: &str| Plant {
         name: name.into(),
         height,
         width,
         lean,
         bend,
-        sway,
         color: color.into(),
         tip: tip.into(),
         ..Default::default()
@@ -33,7 +32,6 @@ pub(super) fn presets() -> Vec<Plant> {
         width: 0.012,
         lean: 0.1,
         bend: 0.15,
-        sway: 0.45,
         petals,
         petal: petal.into(),
         heart: heart.into(),
@@ -42,11 +40,11 @@ pub(super) fn presets() -> Vec<Plant> {
         ..Default::default()
     };
     vec![
-        grass("Meadow grass", [0.3, 0.55], 0.035, 0.25, 0.4, 1.0, "", ""),
-        grass("Tall grass", [0.55, 0.95], 0.04, 0.3, 0.55, 1.0, "", ""),
-        grass("Short lawn", [0.06, 0.14], 0.03, 0.15, 0.2, 0.5, "", ""),
-        grass("Reeds", [0.8, 1.3], 0.03, 0.06, 0.1, 0.6, "#4a6a2a", "#a8b060"),
-        grass("Dry grass", [0.3, 0.6], 0.03, 0.35, 0.5, 1.0, "#6a5a2a", "#d9c47a"),
+        grass("Meadow grass", [0.3, 0.55], 0.035, 0.25, 0.4, "", ""),
+        grass("Tall grass", [0.55, 0.95], 0.04, 0.3, 0.55, "", ""),
+        grass("Short lawn", [0.06, 0.14], 0.03, 0.15, 0.2, "", ""),
+        grass("Reeds", [0.8, 1.3], 0.03, 0.06, 0.1, "#4a6a2a", "#a8b060"),
+        grass("Dry grass", [0.3, 0.6], 0.03, 0.35, 0.5, "#6a5a2a", "#d9c47a"),
         flower("Daisy", [0.18, 0.32], 8, "#f6f3ea", "#eab92a", 0.09),
         flower("Poppy", [0.3, 0.5], 4, "#d0301e", "#2a1a12", 0.12),
         flower("Bluebell", [0.2, 0.35], 6, "#5b6fd8", "#e8e2a8", 0.06),
@@ -190,9 +188,6 @@ impl MapEditor {
                                     ui.end_row();
                                     ui.label("Curve");
                                     ui.add(egui::Slider::new(&mut p.bend, 0.0..=1.0)).on_hover_text("How much it curves over as it rises");
-                                    ui.end_row();
-                                    ui.label("Sway");
-                                    ui.add(egui::Slider::new(&mut p.sway, 0.0..=2.0)).on_hover_text("How much the wind bends it, by the wind's strength: its foot rooted, its tip going furthest (0: rigid; a thin blade about 1, a stiff stem less)");
                                     ui.end_row();
                                     if flower {
                                         ui.label("At its foot");

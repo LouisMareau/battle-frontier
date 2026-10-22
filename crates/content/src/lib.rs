@@ -682,7 +682,7 @@ impl Content {
                             out.push(format!("{at}: {what} {} to {} (more than 0, the least first)", r[0], r[1]));
                         }
                     }
-                    for (what, v, most) in [("width", p.width, 1.0), ("lean", p.lean, 1.0), ("bend", p.bend, 1.0), ("sway", p.sway, 2.0), ("bloom", p.bloom, 1.0), ("clusters", p.clusters, 1.0), ("glow", p.glow, 4.0)] {
+                    for (what, v, most) in [("width", p.width, 1.0), ("lean", p.lean, 1.0), ("bend", p.bend, 1.0), ("bloom", p.bloom, 1.0), ("clusters", p.clusters, 1.0), ("glow", p.glow, 4.0)] {
                         if !(0.0..=most).contains(&v) {
                             out.push(format!("{at}: {what} {v} (0 to {most})"));
                         }

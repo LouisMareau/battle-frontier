@@ -5,7 +5,7 @@
 // finest templates, far off the simplest; what they cost in vertices within what the picture
 // can show; flowers among them; the frame rate; no error. Then the wind: up close, the blades
 // sway (the picture changes from one moment to the next), still when the wind is calm, and
-// still in the wind when the plants are rigid (their sway 0). With --webgl, the page without
+// still in the wind when the plants are rigid (their terrain's Rigidity 1). With --webgl, the page without
 // WebGPU (WebGL 2: no compute shaders, the CPU culling patch by patch). Screenshots to
 // screenshots/blades-*.png (blades-webgl-*.png). Exits 1 when something fails.
 //     node tools/bladecheck.mjs [--webgl]
@@ -45,11 +45,12 @@ const field = (id) => {
   return { id, name: id, width: S, height: S, legend: { g: 'grass', m: 'meadow_check' }, terrain, levels };
 };
 const plants = [
-  { name: 'Meadow grass', shape: 'blade', weight: 1, height: [0.3, 0.55], width: 0.035, lean: 0.25, bend: 0.4, sway: 1 },
-  { name: 'Daisy', shape: 'flower', weight: 0.1, height: [0.18, 0.32], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.45, petals: 8, petal: '#f6f3ea', heart: '#eab92a', bloom: 0.09 },
-  { name: 'Poppy', shape: 'flower', weight: 0.08, height: [0.3, 0.5], width: 0.012, lean: 0.1, bend: 0.15, sway: 0.45, petals: 4, petal: '#d0301e', heart: '#2a1a12', bloom: 0.12, clusters: 0.6 },
+  { name: 'Meadow grass', shape: 'blade', weight: 1, height: [0.3, 0.55], width: 0.035, lean: 0.25, bend: 0.4 },
+  { name: 'Daisy', shape: 'flower', weight: 0.1, height: [0.18, 0.32], width: 0.012, lean: 0.1, bend: 0.15, petals: 8, petal: '#f6f3ea', heart: '#eab92a', bloom: 0.09 },
+  { name: 'Poppy', shape: 'flower', weight: 0.08, height: [0.3, 0.5], width: 0.012, lean: 0.1, bend: 0.15, petals: 4, petal: '#d0301e', heart: '#2a1a12', bloom: 0.12, clusters: 0.6 },
 ];
 // the wind as the page is opened (a breeze from the west), and whether the plants give to it
+// (their terrain's Rigidity: 0, or 1 for plants that never move)
 let wind = { direction: 90, strength: 0.7, gusts: 0.3 };
 let giving = true;
 const rewrite = (path, body) => {
@@ -57,8 +58,7 @@ const rewrite = (path, body) => {
   const bundle = JSON.parse(body.toString('utf8'));
   bundle.files['maps/meadow_check.json'] = field('meadow_check');
   const tall = bundle.files['terrains/tall_grass.json'];
-  const grown = plants.map((p) => ({ ...p, sway: giving ? p.sway : 0 }));
-  bundle.files['terrains/meadow_check.json'] = { ...tall, id: 'meadow_check', name: 'Meadow check', growth: { meadow: { plants: grown, density: 48, patchy: 0.3, clump: 0.6, clumping: 0.5 } } };
+  bundle.files['terrains/meadow_check.json'] = { ...tall, id: 'meadow_check', name: 'Meadow check', rigidity: giving ? 0 : 1, growth: { meadow: { plants, density: 48, patchy: 0.3, clump: 0.6, clumping: 0.5 } } };
   // the colours as they are: no cloud shadows drifting over, no colour steps
   const world = bundle.files['settings/world.json'];
   world.toon = { ...(world.toon ?? {}), cloud_shadow: 0, color_steps: 0 };
@@ -203,7 +203,7 @@ try {
   console.log(`  moving: ${windy} pixels in the wind, ${calm} calm, ${rigid} rigid in the wind`);
   check('the blades sway in the wind', windy > 1500 && windy > 10 * Math.max(calm, 1), `${windy} pixels change, ${calm} when calm`);
   check('  still when the wind is calm', calm < 150, `${calm} pixels`);
-  check('  rigid plants (their sway 0) stand still in the wind', rigid < 150, `${rigid} pixels`);
+  check("  a rigid terrain's plants (its Rigidity 1) stand still in the wind", rigid < 150, `${rigid} pixels`);
   check('no error in the page', browser.errors.length === 0, browser.errors.slice(0, 3).join(' | '));
 } catch (e) {
   check('ran to its end', false, e.message);

@@ -40,19 +40,19 @@ fn unseen() -> MapOut {
 }
 
 // the wind on a blade: how far its tip goes downwind, as a share of its height, by the wind's
-// strength (with its gusts, swaying in its own time) and the plant's own give (`sway`: a thin
-// blade 1, a stiff stem less, 0 rigid); and a flutter across
-fn blade_wind(at: vec3<f32>, phase: f32, sway: f32) -> vec3<f32> {
+// strength alone (`wind_give`, with its gusts, swaying in its own time; its terrain's
+// rigidity takes its share off in `blown`); and a flutter across
+fn blade_wind(at: vec3<f32>, phase: f32) -> vec3<f32> {
     let s = g.wind.z;
-    if (s <= 0.0 || sway <= 0.0) {
+    if (s <= 0.0) {
         return vec3<f32>(0.0);
     }
     let way = vec3<f32>(g.wind.x, 0.0, g.wind.y);
     let ph = phase * 6.2832 + dot(at.xz, vec2<f32>(0.11, 0.07));
     let gust = gust_at(at.xz);
-    let push = s * gust * (0.5 + 0.5 * sin(g.wind_b.z + ph)) * 0.85 * sway;
+    let push = wind_give(s) * gust * (0.5 + 0.5 * sin(g.wind_b.z + ph));
     let across = vec3<f32>(-way.z, 0.0, way.x);
-    let flutter = sway * (0.25 + 0.75 * s) * gust * 0.08 * sin(g.wind_b.w + ph * 3.1);
+    let flutter = (0.25 + 0.75 * s) * gust * 0.08 * sin(g.wind_b.w + ph * 3.1);
     return way * push + across * flutter;
 }
 
@@ -192,7 +192,7 @@ fn made(b: Blade, id: u32) -> Made {
     // the wind, and whoever walks through it (pushing its tip aside by up to its height and a
     // bit, whatever its give)
     let trample = trampled(b.at, 1.0);
-    let wind = blade_wind(b.at, r3, k.bend.z) * tall + trample * min(1.0, 1.2 * tall / max(length(trample), 0.001));
+    let wind = blade_wind(b.at, r3) * tall + trample * min(1.0, 1.2 * tall / max(length(trample), 0.001));
     let dimmed = 1.0 - b.dim;
     m.toon = k.tip.w;
     if (p.part <= 1u) {

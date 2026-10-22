@@ -280,6 +280,14 @@ fn trampled(p: vec3<f32>, bend: f32) -> vec3<f32> {
     return out;
 }
 
+// how far the wind at strength `s` (0 to 1) bends what gives to it, as a share of its height
+// at the tip: a breeze shows (a fifth at 0.1, a third at 0.2), a gale lays it nearly flat;
+// what's stiffer gives less by its weights (a painted model's, a terrain's rigidity), never
+// by a setting of its own
+fn wind_give(s: f32) -> f32 {
+    return 0.9 * pow(max(s, 0.0), 0.6);
+}
+
 // a point of something painted for the wind, moved by it: `w` its weights (sway, flutter,
 // phase, its height above its foot over 8 cells). It leans downwind as far as its sway, its
 // height and the wind (with its gust) say, swaying about that, and flutters quickly up and
@@ -307,8 +315,8 @@ fn swayed(p: vec3<f32>, w: vec4<f32>) -> vec3<f32> {
     // its own time, and a little of where it stands (a gust goes through a wood, not all at once)
     let phase = w.z * 6.2832 + dot(p.xz, vec2<f32>(0.11, 0.07));
     let gust = gust_at(p.xz);
-    let lean = s * gust * (0.5 + 0.5 * sin(g.wind_b.z + phase));
-    let bend = w.x * lean * (0.16 + 0.14 * height);
+    let lean = wind_give(s) * gust * (0.5 + 0.5 * sin(g.wind_b.z + phase));
+    let bend = w.x * lean * (0.18 + 0.22 * height);
     var q = out + way * bend;
     // bent over, a tip comes down a little
     q.y = q.y - w.x * bend * bend * 0.35 / max(height, 0.3);

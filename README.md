@@ -286,7 +286,7 @@ maps).
   props or alone), made on the GPU as they're drawn, Ghost of Tsushima's way
   (`render::blades`). A meadow has `plants`, each a `blade`, a `flower` (a stem with a head of
   `petals` round its heart) or a `model` (a grass prop's: one blade or a few, a flower), with
-  its `weight`, its `height` (or a model's `scale`), `width`, `lean`, `bend`, `sway`, its
+  its `weight`, its `height` (or a model's `scale`), `width`, `lean`, `bend`, its
   colours at its foot and tip (its terrain's where it has none), a flower's `petal`, `heart`
   and `bloom`, `clusters` (how much it keeps to clusters of its own a few cells across) and
   `glow` (how much it glows of itself: a flower its petals and heart, a blade its tip);
@@ -299,8 +299,10 @@ maps).
   way, curving over, narrowing to its point; its normals rounded across it and turned half
   way up, lit as the ground is), bent by the wind from its rooted foot, its tip going furthest
   (as a blade painted for the wind would: no weight at its root, the most at its tip), as far
-  as the wind's strength, its gusts and the plant's own `sway` say (a thin blade about 1, a
-  flower's stem stiffer: the presets' 0.45, so the flowers nod while the grass bends over);
+  as the wind's strength and its gusts say (`wind_give`: a breeze shows, a fifth of the
+  height at 0.1 and a third at 0.2, a gale lays it nearly flat; what's painted for the wind
+  goes by the same), less by its terrain's Rigidity: no plant has a sway setting of its own,
+  how much anything sways being the wind's and the rigidity's to say;
   and whoever walks through it pushes it aside (`trampled`: the frame's `pushers`, the walker,
   the actors where they stand or step and the creatures roaming as much as they're there, the
   nearest the camera first, up to `MAX_PUSHERS` with the ghosts of where each has just been;

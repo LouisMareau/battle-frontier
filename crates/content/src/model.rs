@@ -32,7 +32,6 @@ as_default!(Plant:
     plant_width => width: f64,
     plant_lean => lean: f64,
     plant_bend => bend: f64,
-    plant_sway => sway: f64,
     plant_petals => petals: u8,
     plant_petal => petal: String,
     plant_heart => heart: String,
@@ -1272,9 +1271,6 @@ pub struct Plant {
     pub color: String,
     #[serde(skip_serializing_if = "String::is_empty")]
     pub tip: String,
-    /// how much the wind moves it (0: not at all; 1: as grass)
-    #[serde(skip_serializing_if = "plant_sway")]
-    pub sway: f64,
     /// a flower's: how many petals (3 to `Meadow::PETALS`), their colour, its heart's colour,
     /// how wide its head is (cells)
     #[serde(skip_serializing_if = "plant_petals")]
@@ -1309,7 +1305,6 @@ impl Default for Plant {
             bend: 0.4,
             color: String::new(),
             tip: String::new(),
-            sway: 1.0,
             petals: 5,
             petal: "#f4f1e8".into(),
             heart: "#e8b923".into(),

@@ -14,8 +14,9 @@ struct Kind {
     // x: its shape (0 a blade, 1 a flower), y: the shortest, z: the tallest (cells), w: its
     // width at its foot
     form: vec4<f32>,
-    // x: how far over it leans (0 to 1), y: how much it curves, z: how much the wind moves it,
-    // w: a flower's head's width (cells)
+    // x: how far over it leans (0 to 1), y: how much it curves, z: 1 (the wind's strength
+    // and its terrain's rigidity alone say how much the wind moves it), w: a flower's head's
+    // width (cells)
     bend: vec4<f32>,
     // rgb: at its foot (linear); w: a flower's petals
     foot: vec4<f32>,
