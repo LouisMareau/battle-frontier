@@ -1876,74 +1876,15 @@ impl MapEditor {
                 }
             });
         });
-        // the panels, as laid out: those along the bottom first (across the window, under the
-        // side ones), then the sides', then those that float as they come
-        self.pane(ui, dock::Pane::Assets, "Assets", |ed, ui| ed.assets_panel(ui));
-        self.pane(ui, dock::Pane::World, "World", |ed, ui| ed.worlds_panel(ui));
-        self.pane(ui, dock::Pane::Timeline, "Timeline", |ed, ui| ed.timeline_panel(ui));
-        self.pane(ui, dock::Pane::Toolbox, "Toolbox", |ed, ui| {
-            ed.toolbar(ui);
-            // painting, the brush pinned under what scrolls
-            if ed.painting() {
-                egui::Panel::bottom(egui::Id::new("toolbox-brush"))
-                    .resizable(false)
-                    .show_separator_line(false)
-                    .frame(egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 4, bottom: 4 }))
-                    .show(ui, |ui| ed.brush_box(ui));
-            }
-            // (clear of the scroll bar, which floats over what's under it)
-            egui::ScrollArea::vertical().show(ui, |ui| egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 }).show(ui, |ui| ed.tools_panel(ui)));
-        });
-        self.pane(ui, dock::Pane::Inspector, "Inspector", |ed, ui| {
-            // as wide as it's made (it fits the rows to its width), else it scrolls
-            let shown = egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| ed.inspector(ui));
-            crate::platform::set_hook("inspectorfits", if shown.content_size.x <= shown.inner_rect.width() + 1.0 { "1" } else { "" });
-        });
+        // the panels, as laid out: those docked along the bottom first (across the window,
+        // under the side ones), then the sides' (each side's outermost first), then the rest
+        // as they come
+        for p in self.dock.sequence() {
+            self.show_pane(ui, p);
+        }
         self.light_window(ui);
         self.terrain_window(&ctx);
-        self.post_window(ui);
-        self.abilities_window(ui);
         self.fx_windows(&ctx);
-        let mut requests = self.dock.get(dock::Pane::Requests);
-        let used = self.requests.window(ui, &mut requests, &self.content);
-        requests.open = self.requests.open;
-        self.dock.set(dock::Pane::Requests, requests);
-        if let Some(id) = used {
-            if let Some(set) = world::floors::set_of(&self.content, &id).map(str::to_string) {
-                // a set of floor tiles: the Ground tool's Floors tab lays it
-                self.tool = Tool::Ground;
-                (self.ramp.on, self.floorer.on, self.jump.on, self.ramp.drag) = (false, true, false, None);
-                self.floorer.brush = format!("{}{set}", floors::SET);
-                self.status = format!("{}: the Floors tab lays it out of doors (in a building, the Build tool's Flooring)", floors::set_name(&set));
-            } else {
-                self.use_prop(&id);
-                self.tool = Tool::Place;
-                self.status = format!("{id}: the Place tool puts it down");
-            }
-        }
-        if let Some(said) = self.requests.said.take() {
-            self.status = said;
-        }
-        if std::mem::take(&mut self.requests.sign_in) {
-            self.claude.open = true;
-        }
-        // what a run made in the cloud (the browser's): its props and models, saved at once
-        #[cfg(target_arch = "wasm32")]
-        {
-            let made = self.requests.take_made();
-            if !made.is_empty() {
-                for (path, bytes) in made {
-                    self.take_made(&path, bytes);
-                }
-                self.save_assets();
-            }
-        }
-        let mut builds = self.dock.get(dock::Pane::Builds);
-        if let Some(said) = self.builds.window(ui, &mut builds) {
-            self.status = said;
-        }
-        builds.open = self.builds.open;
-        self.dock.set(dock::Pane::Builds, builds);
         egui::CentralPanel::default().frame(egui::Frame::new()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
             self.viewport = rect;
@@ -1952,6 +1893,8 @@ impl MapEditor {
             let frame = self.frame(now, rect);
             ui.painter().add(eframe::egui_wgpu::Callback::new_paint_callback(rect, crate::app::SceneCallback { frame }));
         });
+        // a panel being dragged: the targets on the view's sides, and where it lands
+        self.dock.settle(&ctx, self.viewport);
         self.welcome_modal(&ctx);
         self.publish_window(&ctx);
         self.review_window(&ctx);
@@ -2055,6 +1998,81 @@ impl MapEditor {
         for p in dock::Pane::ALL {
             if let Some(open) = self.pane_flag(p) {
                 self.dock.set_open(p, open);
+            }
+        }
+    }
+
+    /// One of the panels, as the layout has it: `pane` for those the editor fills itself,
+    /// their own windows for the rest (the Requests' says what to use after, the Builds' what
+    /// the status line says).
+    fn show_pane(&mut self, ui: &mut egui::Ui, p: dock::Pane) {
+        match p {
+            dock::Pane::Assets => self.pane(ui, p, "Assets", |ed, ui| ed.assets_panel(ui)),
+            dock::Pane::World => self.pane(ui, p, "World", |ed, ui| ed.worlds_panel(ui)),
+            dock::Pane::Timeline => self.pane(ui, p, "Timeline", |ed, ui| ed.timeline_panel(ui)),
+            dock::Pane::Toolbox => self.pane(ui, p, "Toolbox", |ed, ui| {
+                ed.toolbar(ui);
+                // painting, the brush pinned under what scrolls
+                if ed.painting() {
+                    egui::Panel::bottom(egui::Id::new("toolbox-brush"))
+                        .resizable(false)
+                        .show_separator_line(false)
+                        .frame(egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 0, top: 4, bottom: 4 }))
+                        .show(ui, |ui| ed.brush_box(ui));
+                }
+                // (clear of the scroll bar, which floats over what's under it)
+                egui::ScrollArea::vertical().show(ui, |ui| egui::Frame::new().inner_margin(egui::Margin { left: 0, right: 8, top: 0, bottom: 0 }).show(ui, |ui| ed.tools_panel(ui)));
+            }),
+            dock::Pane::Inspector => self.pane(ui, p, "Inspector", |ed, ui| {
+                // as wide as it's made (it fits the rows to its width), else it scrolls
+                let shown = egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| ed.inspector(ui));
+                crate::platform::set_hook("inspectorfits", if shown.content_size.x <= shown.inner_rect.width() + 1.0 { "1" } else { "" });
+            }),
+            dock::Pane::Post => self.post_window(ui),
+            dock::Pane::Abilities => self.abilities_window(ui),
+            dock::Pane::Requests => {
+                let mut requests = self.dock.get(p);
+                let used = self.requests.window(ui, &mut requests, &self.content);
+                requests.open = self.requests.open;
+                self.dock.set(p, requests);
+                if let Some(id) = used {
+                    if let Some(set) = world::floors::set_of(&self.content, &id).map(str::to_string) {
+                        // a set of floor tiles: the Ground tool's Floors tab lays it
+                        self.tool = Tool::Ground;
+                        (self.ramp.on, self.floorer.on, self.jump.on, self.ramp.drag) = (false, true, false, None);
+                        self.floorer.brush = format!("{}{set}", floors::SET);
+                        self.status = format!("{}: the Floors tab lays it out of doors (in a building, the Build tool's Flooring)", floors::set_name(&set));
+                    } else {
+                        self.use_prop(&id);
+                        self.tool = Tool::Place;
+                        self.status = format!("{id}: the Place tool puts it down");
+                    }
+                }
+                if let Some(said) = self.requests.said.take() {
+                    self.status = said;
+                }
+                if std::mem::take(&mut self.requests.sign_in) {
+                    self.claude.open = true;
+                }
+                // what a run made in the cloud (the browser's): its props and models, saved at once
+                #[cfg(target_arch = "wasm32")]
+                {
+                    let made = self.requests.take_made();
+                    if !made.is_empty() {
+                        for (path, bytes) in made {
+                            self.take_made(&path, bytes);
+                        }
+                        self.save_assets();
+                    }
+                }
+            }
+            dock::Pane::Builds => {
+                let mut builds = self.dock.get(p);
+                if let Some(said) = self.builds.window(ui, &mut builds) {
+                    self.status = said;
+                }
+                builds.open = self.builds.open;
+                self.dock.set(p, builds);
             }
         }
     }

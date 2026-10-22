@@ -1139,7 +1139,7 @@ mod tests {
         out.textures_delta.clear();
         assert!(crate::platform::hook("uiChanged_terrains_grass").is_some() && crate::platform::hook("uiChanged_terrains_lava").is_some(), "marks by the terrains changed");
         assert!(crate::platform::hook("uiTerrain_lava").is_some(), "the terrain added, listed");
-        assert_eq!(ed.review_changes("terrains", "grass", "priority").map(|(k, a)| (k, a)), Some((Kind::Modified, "modified priority: 1 -> 2".to_string())));
+        assert_eq!(ed.review_changes("terrains", "grass", "priority"), Some((Kind::Modified, "modified priority: 1 -> 2".to_string())));
         assert!(ed.review_changes("terrains", "grass", "look").is_none() && ed.review_changes("terrains", "lava", "look").is_some());
         crate::platform::clear_hooks();
         let mut out = ctx.run_ui(egui::RawInput { screen_rect: Some(screen), ..Default::default() }, |ui| ed.assets_panel(ui));

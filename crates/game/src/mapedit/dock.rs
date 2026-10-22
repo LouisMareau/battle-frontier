@@ -1,15 +1,18 @@
 //! The map editor's panels (all but the top bar and the status line): each docked on a side of
 //! the window (left, right, along the bottom) or floating in a window of its own, moved, sized,
-//! folded, open or closed as the user likes. A docked one's header floats it or closes it; a
-//! floating one's button docks it again, on the side its window is nearest. The top bar's
-//! right end has a toggle for each, their names folding away to leave their icons; a toggle
-//! right-clicked pings its panel, to find it on a busy screen (opened if it was closed): shaken
-//! a moment, rings round it (in from a docked one's edges, lit a moment; out round a window).
-//! The layout is kept (`platform::store_text`, "editor_layout") and comes back the next run.
+//! folded, open or closed as the user likes. A docked one's header floats it or closes it, and
+//! drags it: let go on a side of the view (the targets that come up on its three sides, or the
+//! panels docked there already) it docks there, innermost; let go anywhere else it floats where
+//! it's dropped. A window dragged by its title bar docks the same way, let go on a side; its
+//! button docks it on the side its window is nearest. The top bar's right end has a toggle for
+//! each, their names folding away to leave their icons; a toggle right-clicked pings its panel,
+//! to find it on a busy screen (opened if it was closed): shaken a moment, rings round it (in
+//! from a docked one's edges, lit a moment; out round a window). The layout is kept
+//! (`platform::store_text`, "editor_layout") and comes back the next run.
 
 use std::collections::BTreeMap;
 
-use egui::{Color32, Id, Pos2, Rect, RichText, Stroke, Vec2};
+use egui::{Color32, CursorIcon, Id, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 
 use super::mark;
 use crate::platform;
@@ -22,6 +25,10 @@ const KEEP_AFTER_MS: f64 = 600.0;
 const PING_S: f64 = 0.95;
 const SHAKE_S: f64 = 0.35;
 const RINGS: usize = 3;
+/// How far in from the view's edges a panel let go docks (where the targets come up).
+const ZONE: f32 = 72.0;
+/// A target's size.
+const TARGET: f32 = 44.0;
 
 /// One of the editor's panels.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize)]
@@ -47,8 +54,8 @@ pub(super) enum Side {
     Bottom,
 }
 
-/// How a panel is laid out: open or not; docked (on its side, so wide or so high) or floating
-/// (its window's place and size).
+/// How a panel is laid out: open or not; docked (on its side, so wide or so high, in its place
+/// among the side's) or floating (its window's place and size).
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub(super) struct PaneState {
@@ -57,6 +64,9 @@ pub(super) struct PaneState {
     pub side: Side,
     /// docked: its width (left, right) or height (bottom)
     pub size: f32,
+    /// docked: its place among the panels on its side (the lower the further out, by the
+    /// window's edge; one dropped on a side goes innermost, by the view)
+    pub order: u32,
     /// floating: its window's place and size (x, y, width, height)
     pub window: [f32; 4],
     /// floated again: its window made anew there (egui keeps a window where it last was)
@@ -69,7 +79,7 @@ pub(super) struct PaneState {
 
 impl Default for PaneState {
     fn default() -> Self {
-        PaneState { open: false, docked: false, side: Side::Right, size: 300.0, window: [300.0, 80.0, 420.0, 480.0], made: 0, ping: None }
+        PaneState { open: false, docked: false, side: Side::Right, size: 300.0, order: 0, window: [300.0, 80.0, 420.0, 480.0], made: 0, ping: None }
     }
 }
 
@@ -150,10 +160,12 @@ impl Pane {
     }
 
     /// How it first comes: the Toolbox on the left, the Inspector on the right and the
-    /// Assets along the bottom, open; the rest closed, the windows where they always were.
+    /// Assets along the bottom, open; the rest closed, the windows where they always were;
+    /// each in its place among its side's as they're listed.
     pub(super) fn first(self) -> PaneState {
-        let docked = |open: bool, side: Side, size: f32| PaneState { open, docked: true, side, size, ..Default::default() };
-        let floating = |side: Side, window: [f32; 4]| PaneState { side, window, ..Default::default() };
+        let order = Pane::ALL.iter().position(|&p| p == self).unwrap_or(0) as u32;
+        let docked = |open: bool, side: Side, size: f32| PaneState { open, docked: true, side, size, order, ..Default::default() };
+        let floating = |side: Side, window: [f32; 4]| PaneState { side, window, order, ..Default::default() };
         match self {
             Pane::Toolbox => docked(true, Side::Left, 250.0),
             Pane::Inspector => docked(true, Side::Right, 300.0),
@@ -247,6 +259,75 @@ impl Dock {
         self.set(p, s);
     }
 
+    /// The order the panels are shown in: those docked along the bottom first (across the
+    /// window, under the side ones), then the sides' (on each side the outermost first: as
+    /// they were docked, the last dropped there innermost), then the rest (floating or
+    /// closed) as they come.
+    pub fn sequence(&self) -> Vec<Pane> {
+        let mut docked: Vec<(bool, u32, Pane)> = Pane::ALL.into_iter().map(|p| (p, self.get(p))).filter(|(_, s)| s.open && s.docked).map(|(p, s)| (s.side != Side::Bottom, s.order, p)).collect();
+        docked.sort();
+        let docked: Vec<Pane> = docked.into_iter().map(|(.., p)| p).collect();
+        let rest = Pane::ALL.into_iter().filter(|p| !docked.contains(p));
+        docked.iter().copied().chain(rest).collect()
+    }
+
+    /// A drag going on, settled at the frame's end (`view`: what's between the docked
+    /// panels, where the targets come up): the targets on the view's three sides, the one
+    /// the pointer is over lit and where the panel would go shaded, the panel's name by the
+    /// pointer; let go, the panel where it lands (`landed`). The side under the pointer is in
+    /// a hook ("dockzone") for the checks.
+    pub fn settle(&mut self, ctx: &egui::Context, view: Rect) {
+        let Some(d) = dragging(ctx) else { return };
+        let at = ctx.pointer_latest_pos();
+        let zone = at.and_then(|at| zone_at(view, at));
+        platform::set_hook("dockzone", zone.map_or("", side_name));
+        if d.dropped {
+            if let Some(at) = at {
+                let order = self.panes.values().map(|s| s.order).max().unwrap_or(0) + 1;
+                let mut st = self.get(d.pane);
+                landed(&mut st, d.pane, d, at, view, ctx.content_rect(), order);
+                if st.docked {
+                    forget_size(ctx, d.pane, st.side);
+                }
+                self.set(d.pane, st);
+            }
+            set_dragging(ctx, None);
+            return;
+        }
+        let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, Id::new("pane-dock-zones")));
+        if let Some(side) = zone {
+            let size = docked_size(d.pane, side, d.from, view);
+            p.rect(preview(view, side, size), 4.0, Color32::from_rgba_unmultiplied(120, 180, 255, 40), Stroke::new(1.5, Color32::from_rgba_unmultiplied(150, 205, 255, 200)), egui::StrokeKind::Inside);
+        }
+        for side in [Side::Left, Side::Right, Side::Bottom] {
+            let lit = zone == Some(side);
+            let t = target(view, side);
+            let (fill, line) = if lit { (Color32::from_rgb(60, 120, 200), Color32::from_rgb(200, 230, 255)) } else { (Color32::from_rgba_unmultiplied(22, 30, 44, 235), Color32::from_gray(160)) };
+            p.rect(t, 7.0, fill, Stroke::new(1.0, line), egui::StrokeKind::Inside);
+            // the window, the panel on its side
+            let g = Rect::from_center_size(t.center(), Vec2::new(26.0, 19.0));
+            p.rect_stroke(g, 2.5, Stroke::new(1.5, line), egui::StrokeKind::Inside);
+            let strip = match side {
+                Side::Left => Rect::from_min_size(g.min, Vec2::new(9.0, g.height())),
+                Side::Right => Rect::from_min_max(Pos2::new(g.right() - 9.0, g.top()), g.max),
+                Side::Bottom => Rect::from_min_max(Pos2::new(g.left(), g.bottom() - 7.0), g.max),
+            };
+            p.rect_filled(strip.shrink(1.5), 1.0, line);
+        }
+        if let Some(at) = at {
+            egui::Area::new(Id::new("pane-drag-ghost")).order(egui::Order::Tooltip).fixed_pos(at + Vec2::new(16.0, 14.0)).interactable(false).show(ctx, |ui| {
+                egui::Frame::popup(ui.style()).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.add(egui::Image::new(d.pane.icon()).fit_to_exact_size(Vec2::splat(15.0)).tint(ui.visuals().text_color()));
+                        ui.label(RichText::new(d.pane.title()).strong());
+                    });
+                });
+            });
+        }
+        ctx.set_cursor_icon(CursorIcon::Grabbing);
+        ctx.request_repaint();
+    }
+
     /// What it's kept as.
     fn text(&self) -> String {
         serde_json::to_string(&Kept { panes: self.panes.clone(), words: Some(self.words) }).unwrap_or_default()
@@ -259,12 +340,10 @@ impl Dock {
             .iter()
             .map(|&p| {
                 let s = self.get(p);
-                let at = match (s.open, s.docked, s.side) {
-                    (false, ..) => "-",
-                    (true, false, _) => "float",
-                    (true, true, Side::Left) => "left",
-                    (true, true, Side::Right) => "right",
-                    (true, true, Side::Bottom) => "bottom",
+                let at = match (s.open, s.docked) {
+                    (false, _) => "-",
+                    (true, false) => "float",
+                    (true, true) => side_name(s.side),
                 };
                 format!("{}={at}", p.key())
             })
@@ -283,6 +362,140 @@ impl Dock {
             self.kept = text;
             self.changed = None;
         }
+    }
+}
+
+fn side_name(side: Side) -> &'static str {
+    match side {
+        Side::Left => "left",
+        Side::Right => "right",
+        Side::Bottom => "bottom",
+    }
+}
+
+/// A docked panel's id on `side`: one a side, so egui's own memory of its size (kept by id)
+/// never carries its width along the bottom over to a side.
+fn panel_id(pane: Pane, side: Side) -> Id {
+    Id::new(("editor-pane", pane.key(), side_name(side)))
+}
+
+/// egui's memory of a docked panel's size forgotten, so it comes as big as its state says
+/// (`PaneState::size`: docked anew, as big across as it was where it came from).
+fn forget_size(ctx: &egui::Context, pane: Pane, side: Side) {
+    ctx.data_mut(|d| d.remove::<egui::containers::panel::PanelState>(panel_id(pane, side)));
+}
+
+/// A panel taken hold of (a docked one by its header, a window by its title bar): which, what
+/// it's dragged from (the panel's rect, the window's), whether it was floating; `dropped` the
+/// frame it's let go. In the context's data while it lasts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct Drag {
+    pane: Pane,
+    from: Rect,
+    floating: bool,
+    dropped: bool,
+}
+
+fn drag_id() -> Id {
+    Id::new("pane-drag")
+}
+
+fn dragging(ctx: &egui::Context) -> Option<Drag> {
+    ctx.data(|d| d.get_temp(drag_id()))
+}
+
+fn set_dragging(ctx: &egui::Context, d: Option<Drag>) {
+    ctx.data_mut(|data| match d {
+        Some(d) => {
+            data.insert_temp(drag_id(), d);
+        }
+        None => data.remove::<Drag>(drag_id()),
+    });
+}
+
+/// What a header's grip or a window's title bar says of its drag: taken hold of (a drag
+/// begins, from `from`), let go (dropped: settled at the frame's end).
+fn follow(ctx: &egui::Context, r: &egui::Response, pane: Pane, from: Rect, floating: bool) {
+    if r.drag_started() {
+        set_dragging(ctx, Some(Drag { pane, from, floating, dropped: false }));
+    } else if r.drag_stopped() {
+        if let Some(d) = dragging(ctx).filter(|d| d.pane == pane) {
+            set_dragging(ctx, Some(Drag { dropped: true, ..d }));
+        }
+    }
+}
+
+/// The side a panel let go at `at` docks on: over the panels docked there already (left or
+/// right of the view, under it), or within `ZONE` of the view's edge (the nearest); none over
+/// the view's middle or the top bar.
+fn zone_at(view: Rect, at: Pos2) -> Option<Side> {
+    if at.y < view.top() {
+        return None;
+    }
+    if at.y > view.bottom() {
+        return Some(Side::Bottom);
+    }
+    if at.x < view.left() {
+        return Some(Side::Left);
+    }
+    if at.x > view.right() {
+        return Some(Side::Right);
+    }
+    let near = [(at.x - view.left(), Side::Left), (view.right() - at.x, Side::Right), (view.bottom() - at.y, Side::Bottom)];
+    near.into_iter().filter(|(d, _)| *d < ZONE).min_by(|a, b| a.0.total_cmp(&b.0)).map(|(_, s)| s)
+}
+
+/// Where a side's target is drawn: in from the middle of the view's edge.
+fn target(view: Rect, side: Side) -> Rect {
+    let c = match side {
+        Side::Left => Pos2::new(view.left() + ZONE / 2.0, view.center().y),
+        Side::Right => Pos2::new(view.right() - ZONE / 2.0, view.center().y),
+        Side::Bottom => Pos2::new(view.center().x, view.bottom() - ZONE / 2.0),
+    };
+    Rect::from_center_size(c, Vec2::splat(TARGET))
+}
+
+/// How big across its side a panel is once dropped there: as it was (a panel's width or
+/// height, a window's), within half the view (along the bottom, well under it), not less than
+/// its least.
+fn docked_size(pane: Pane, side: Side, from: Rect, view: Rect) -> f32 {
+    let (across, most) = match side {
+        Side::Bottom => (from.height(), view.height() * 0.6),
+        _ => (from.width(), view.width() * 0.5),
+    };
+    across.min(most).max(pane.least())
+}
+
+/// Where a panel docked on `side`, `size` across, would go (that much of the view).
+fn preview(view: Rect, side: Side, size: f32) -> Rect {
+    match side {
+        Side::Left => Rect::from_min_size(view.left_top(), Vec2::new(size, view.height())),
+        Side::Right => Rect::from_min_max(Pos2::new(view.right() - size, view.top()), view.right_bottom()),
+        Side::Bottom => Rect::from_min_max(Pos2::new(view.left(), view.bottom() - size), view.right_bottom()),
+    }
+}
+
+/// A panel let go at `at`: on a side (`zone_at`), docked there, innermost (`order`), as big
+/// across it as it was; off the sides, a docked one floats where it's dropped (its title bar
+/// under the pointer, as big as it was within the screen), a window stays where its drag left
+/// it.
+fn landed(st: &mut PaneState, pane: Pane, d: Drag, at: Pos2, view: Rect, screen: Rect, order: u32) {
+    match zone_at(view, at) {
+        Some(side) => {
+            st.size = docked_size(pane, side, d.from, view);
+            st.docked = true;
+            st.side = side;
+            st.order = order;
+        }
+        None if !d.floating => {
+            let least = pane.least_window();
+            let size = Vec2::new(d.from.width().min(screen.width() * 0.6).max(least.x), d.from.height().min(screen.height() * 0.8).max(least.y));
+            let corner = at - Vec2::new(80.0, 14.0);
+            st.window = [corner.x.clamp(screen.left(), (screen.right() - size.x).max(screen.left())), corner.y.clamp(screen.top(), (screen.bottom() - size.y).max(screen.top())), size.x, size.y];
+            st.docked = false;
+            st.made += 1;
+        }
+        None => {}
     }
 }
 
@@ -328,28 +541,55 @@ fn shaken(ping: Option<f64>) -> f32 {
     ping.filter(|&t| t < SHAKE_S).map_or(0.0, |t| ((t * 42.0).sin() * 7.0 * (1.0 - t / SHAKE_S)) as f32)
 }
 
-/// A docked panel's inside: its header (its name; float it; close it) over what `add` puts in
-/// it. Whether float or close was clicked.
-fn docked_inside(ui: &mut egui::Ui, pane: Pane, title: &str, add: impl FnOnce(&mut egui::Ui)) -> (bool, bool) {
+/// What a docked panel's header was asked: float it, close it; its grip (the drag).
+struct Header {
+    float: bool,
+    close: bool,
+    grip: egui::Response,
+}
+
+/// A grip (two columns of dots) where a docked panel's header is taken hold of.
+fn grip_dots(ui: &mut egui::Ui) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(10.0, 14.0), Sense::hover());
+    let c = ui.visuals().weak_text_color();
+    for x in 0..2 {
+        for y in 0..3 {
+            ui.painter().circle_filled(rect.left_top() + Vec2::new(2.5 + x as f32 * 5.0, 2.0 + y as f32 * 5.0), 1.3, c);
+        }
+    }
+}
+
+/// A docked panel's inside: its header (its grip and name, which drag it; float it; close it)
+/// over what `add` puts in it.
+fn docked_inside(ui: &mut egui::Ui, pane: Pane, title: &str, add: impl FnOnce(&mut egui::Ui)) -> Header {
     let mut asked = (false, false);
-    ui.horizontal(|ui| {
+    let mut buttons = f32::MAX;
+    let row = ui.horizontal(|ui| {
+        grip_dots(ui);
         ui.label(RichText::new(title).strong());
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = icon_button(ui, egui::include_image!("../../icons/close.svg"), "Close it (its toggle in the top bar opens it again)", &format!("uiPaneClose_{}", pane.key()));
             let float = icon_button(ui, egui::include_image!("../../icons/float.svg"), "Float it in a window of its own", &format!("uiPaneFloat_{}", pane.key()));
             asked = (float.clicked(), close.clicked());
+            buttons = float.rect.left();
         });
     });
+    // the header short of its buttons takes hold of the panel (a click there does nothing:
+    // the drag begins once the pointer has moved)
+    let handle = Rect::from_min_max(row.response.rect.min, Pos2::new((buttons - 6.0).max(row.response.rect.min.x + 1.0), row.response.rect.max.y));
+    let grip = ui.interact(handle, Id::new(("pane-grip", pane.key())), Sense::click_and_drag()).on_hover_cursor(CursorIcon::Grab).on_hover_text("Drag it to a side of the view to dock it there, or anywhere else to float it");
+    mark(&format!("uiPaneGrip_{}", pane.key()), &grip);
     ui.separator();
     add(ui);
-    asked
+    Header { float: asked.0, close: asked.1, grip }
 }
 
 /// `pane` as its state says (nothing when it's closed): docked, a panel on its side, its
-/// header (its name; float it; close it) over what `add` puts in it; floating, a window (its
-/// title bar folds it and closes it) with a button to dock it again. The state follows what
-/// the user does: sizes and places, floated and docked. Pinged, it shakes a moment, rings
-/// round it (coming in from a docked one's edges, going out round a window).
+/// header (its name; float it; close it; dragged, the panel goes with it) over what `add` puts
+/// in it; floating, a window (its title bar folds it, closes it and drags it) with a button to
+/// dock it again. The state follows what the user does: sizes and places, floated and docked
+/// (a drag lands at the frame's end: `Dock::settle`). Pinged, it shakes a moment, rings round
+/// it (coming in from a docked one's edges, going out round a window).
 pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &str, add: impl FnOnce(&mut egui::Ui)) {
     if !st.open {
         return;
@@ -365,9 +605,9 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
     }
     if st.docked {
         let panel = match st.side {
-            Side::Left => egui::Panel::left(id),
-            Side::Right => egui::Panel::right(id),
-            Side::Bottom => egui::Panel::bottom(id),
+            Side::Left => egui::Panel::left(panel_id(pane, st.side)),
+            Side::Right => egui::Panel::right(panel_id(pane, st.side)),
+            Side::Bottom => egui::Panel::bottom(panel_id(pane, st.side)),
         };
         let shake = shaken(ping);
         let r = panel.resizable(true).default_size(st.size).min_size(pane.least()).show(ui, |ui| {
@@ -388,7 +628,8 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
             p.rect_stroke(rect.shrink(1.0), 4.0, Stroke::new(2.0, Color32::from_rgba_unmultiplied(150, 205, 255, (flash * 255.0) as u8)), egui::StrokeKind::Inside);
             rings(ui.ctx(), rect, t, true);
         }
-        let (float, close) = r.inner;
+        let Header { float, close, grip } = r.inner;
+        follow(ui.ctx(), &grip, pane, rect, false);
         if float {
             // its window where it was docked, as big but not the screen's width (a panel
             // along the bottom is), centred there: docked again at once, it goes back
@@ -422,7 +663,7 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
                 // its own row, as high as the button (a layout of its own would take all the
                 // height there is)
                 ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    dock = icon_button(ui, egui::include_image!("../../icons/dock.svg"), "Dock it again (on the side of the window it's nearest)", &format!("uiPaneDock_{}", pane.key())).clicked();
+                    dock = icon_button(ui, egui::include_image!("../../icons/dock.svg"), "Dock it again (on the side of the window it's nearest; or drag it by its title bar onto a side)", &format!("uiPaneDock_{}", pane.key())).clicked();
                 });
                 add(ui);
                 (size, dock)
@@ -431,6 +672,11 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
             let rect = r.response.rect;
             if let Some(t) = ping {
                 rings(ui.ctx(), rect.translate(Vec2::new(shake, 0.0)), t, false);
+            }
+            // moved by its title bar (what egui's window takes the drag on: its widget's id
+            // is egui's own), it may be dropped on a side
+            if let Some(title) = ui.ctx().read_response(window_id.with("__title_click")) {
+                follow(ui.ctx(), &title, pane, rect, true);
             }
             st.window[0] = rect.left();
             st.window[1] = rect.top();
@@ -441,6 +687,7 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
                 if dock {
                     st.docked = true;
                     st.side = nearest_side(rect, ui.ctx().content_rect());
+                    forget_size(ui.ctx(), pane, st.side);
                 }
             }
         }
@@ -524,5 +771,55 @@ mod tests {
         let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1500.0, 900.0));
         let at = |x: f32| nearest_side(Rect::from_center_size(Pos2::new(x, 400.0), Vec2::splat(200.0)), screen);
         assert_eq!((at(200.0), at(750.0), at(1300.0)), (Side::Left, Side::Bottom, Side::Right));
+    }
+
+    /// Let go on a side (in from the view's edge, or over the panels docked there) a panel
+    /// docks there innermost, as big across as it was; off the sides a docked one floats where
+    /// it's dropped and a window stays; the panels show bottom first, then each side's
+    /// outermost first.
+    #[test]
+    fn a_panel_dropped_docks_where_it_lands() {
+        let view = Rect::from_min_max(Pos2::new(250.0, 40.0), Pos2::new(1100.0, 600.0));
+        assert_eq!(zone_at(view, Pos2::new(280.0, 300.0)), Some(Side::Left));
+        assert_eq!(zone_at(view, Pos2::new(100.0, 300.0)), Some(Side::Left), "over the panels docked there");
+        assert_eq!(zone_at(view, Pos2::new(1080.0, 300.0)), Some(Side::Right));
+        assert_eq!(zone_at(view, Pos2::new(600.0, 580.0)), Some(Side::Bottom));
+        assert_eq!(zone_at(view, Pos2::new(600.0, 700.0)), Some(Side::Bottom), "under the view");
+        assert_eq!(zone_at(view, Pos2::new(290.0, 590.0)), Some(Side::Bottom), "the nearer edge");
+        assert_eq!(zone_at(view, Pos2::new(600.0, 300.0)), None, "the middle");
+        assert_eq!(zone_at(view, Pos2::new(600.0, 20.0)), None, "the top bar");
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0));
+        let mut d = Dock::default();
+        assert_eq!(d.sequence()[..3], [Pane::Assets, Pane::Toolbox, Pane::Inspector]);
+        // the Inspector (on the right, 300 wide) dropped on the left: there, inside the Toolbox
+        let from = Rect::from_min_size(Pos2::new(1100.0, 40.0), Vec2::new(300.0, 560.0));
+        let drag = |from, floating| Drag { pane: Pane::Inspector, from, floating, dropped: true };
+        let mut st = d.get(Pane::Inspector);
+        landed(&mut st, Pane::Inspector, drag(from, false), Pos2::new(280.0, 300.0), view, screen, 9);
+        assert_eq!((st.docked, st.side, st.size, st.order), (true, Side::Left, 300.0, 9));
+        d.set(Pane::Inspector, st);
+        assert_eq!(d.sequence()[..3], [Pane::Assets, Pane::Toolbox, Pane::Inspector]);
+        assert!(d.sequence().len() == Pane::ALL.len() && Pane::ALL.iter().all(|p| d.sequence().contains(p)), "every panel, once");
+        // dropped along the bottom: as high as it was, within the view
+        landed(&mut st, Pane::Inspector, drag(from, false), Pos2::new(600.0, 590.0), view, screen, 10);
+        assert_eq!((st.side, st.size), (Side::Bottom, 336.0));
+        d.set(Pane::Inspector, st);
+        assert_eq!(d.sequence()[..3], [Pane::Assets, Pane::Inspector, Pane::Toolbox]);
+        // torn off into the middle: a window there, its title bar under the pointer
+        landed(&mut st, Pane::Inspector, drag(from, false), Pos2::new(600.0, 300.0), view, screen, 11);
+        assert!(!st.docked);
+        assert_eq!(st.window, [520.0, 286.0, 300.0, 560.0]);
+        // a window let go in the middle stays one; on a side, docks there
+        let window = Rect::from_min_size(Pos2::new(500.0, 200.0), Vec2::new(420.0, 480.0));
+        let before = st;
+        landed(&mut st, Pane::Inspector, drag(window, true), Pos2::new(650.0, 210.0), view, screen, 12);
+        assert_eq!(st, before);
+        landed(&mut st, Pane::Inspector, drag(window, true), Pos2::new(1090.0, 210.0), view, screen, 12);
+        assert_eq!((st.docked, st.side, st.size, st.order), (true, Side::Right, 420.0, 12));
+        // a layout kept before panels had their places: as they're listed
+        let old: Kept = serde_json::from_str(r#"{"panes":{"inspector":{"open":true,"docked":true,"side":"left"}}}"#).unwrap();
+        let mut d = Dock::default();
+        d.panes.extend(old.panes);
+        assert_eq!(d.sequence()[..3], [Pane::Assets, Pane::Toolbox, Pane::Inspector], "both at 0: the Toolbox first, as listed");
     }
 }

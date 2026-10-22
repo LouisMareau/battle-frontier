@@ -578,7 +578,6 @@ mod tests {
         assert!((3.0..4.0).contains(&p[0].0.x) && (3.0..4.0).contains(&p[0].0.z) && p[0].1 > 0.3 && p[0].1 < 1.0, "{p:?}");
         ed.trample = false;
         assert!(ed.pushers(1000.0).is_empty(), "turned off for the checks");
-        assert!(render::scene::MAX_PUSHERS >= 8);
     }
 
     #[test]

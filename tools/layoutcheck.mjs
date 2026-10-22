@@ -3,8 +3,11 @@
 // right end); the Inspector floated (a window, moved by its title bar), docked again on the
 // side it's nearest; a panel closed by its header and opened by its toggle; a toggle
 // right-clicked pinging its panel (a closed one opened); the toggles' names folded away; all of
-// it as it was left after the page is loaded again; and what's selected (props of each kind,
-// the buildings, the map itself) fitting the Inspector as it first comes. Screenshots to
+// it as it was left after the page is loaded again; what's selected (props of each kind,
+// the buildings, the map itself) fitting the Inspector as it first comes; and the panels
+// dragged: a docked one's header let go on the view's left side (docked there, inside the
+// Toolbox), then out in the middle of the view (a window there), the window's title bar let
+// go at the view's foot (docked along the bottom), kept so after a reload. Screenshots to
 // screenshots/layout-*.png. Exits 1 when something fails.
 //     node tools/layoutcheck.mjs
 import { mkdirSync } from 'node:fs';
@@ -137,6 +140,41 @@ try {
   await editor();
   check('loaded again: as it was left', (await data('layout')) === left && (await data('layoutwords')) === '', `${await data('layout')} (left ${left})`);
   await shot('7-again');
+
+  // 8. dragged and dropped: the Inspector's header taken over to the view's left side and
+  // let go there (the target in from the edge): docked on the left, inside the Toolbox; taken
+  // out to the middle of the view: a window where it's let go, its title bar under the
+  // pointer; the window's title bar taken down to the view's foot: docked along the bottom;
+  // and all of it kept
+  const view = async () => (await data('viewrect')).split(',').map(Number);
+  let [vl, vt, vr, vb] = await view();
+  const [gx, gy] = await at('uiPaneGrip_inspector');
+  const my = (vt + vb) / 2;
+  await browser.drag([[gx, gy], [gx - 40, gy + 20], [(gx + vl) / 2, my], [vl + 60, my], [vl + 36, my]]);
+  await sleep(700);
+  check("the Inspector's header dragged to the view's left side: docked on the left", (await place('inspector')) === 'left' && (await data('dockzone')) === 'left', `${await data('layout')} zone ${await data('dockzone')}`);
+  const [tx] = await at('uiPaneGrip_toolbox');
+  const [ix] = await at('uiPaneGrip_inspector');
+  check('  inside the Toolbox', ix > tx + 100, `toolbox ${tx}, inspector ${ix}`);
+  await shot('8-left');
+  [vl, vt, vr, vb] = await view();
+  const mx = (vl + vr) / 2;
+  const [gx2, gy2] = await at('uiPaneGrip_inspector');
+  await browser.drag([[gx2, gy2], [gx2 + 30, gy2 + 30], [(gx2 + mx) / 2, (gy2 + my) / 2], [mx, my]]);
+  await sleep(700);
+  check('  dragged out to the middle of the view: a window there', (await place('inspector')) === 'float' && (await data('dockzone')) === '', `${await data('layout')} zone ${await data('dockzone')}`);
+  const [dx, dy] = await at('uiPaneDock_inspector');
+  check('  its title bar under the pointer', Math.abs(dy - my) < 70 && dx > mx - 100 && dx < mx + 320, `dock button ${dx},${dy}; let go at ${mx},${my}`);
+  await shot('8-window');
+  [vl, vt, vr, vb] = await view();
+  await browser.drag([[dx - 120, dy - 30], [dx - 120, dy + 40], [mx, vb - 120], [mx, vb - 36]]);
+  await sleep(700);
+  check("  its window's title bar dragged to the view's foot: docked along the bottom", (await place('inspector')) === 'bottom' && (await data('dockzone')) === 'bottom', `${await data('layout')} zone ${await data('dockzone')}`);
+  await shot('8-bottom');
+  await sleep(800);
+  const dropped = await data('layout');
+  await editor();
+  check('  kept so', (await data('layout')) === dropped, `${await data('layout')} (left ${dropped})`);
   if (browser.errors.length) check('no page errors', false, browser.errors.join(' | '));
 } catch (e) {
   console.log(`FAIL ${e.message}`);
