@@ -847,6 +847,15 @@ mod run {
                         run.told = run.cost;
                         log(root, &id, &format!("So far: ${:.2} of the run's ${:.2}", run.cost / 100.0, run.cap as f64 / 100.0));
                     }
+                    // the run over (one way or another): what it cost, kept with the request
+                    let ended = match &end {
+                        Some(End::Idle(why)) => why != "requires_action",
+                        Some(End::Over) => true,
+                        None => false,
+                    };
+                    if ended {
+                        note_cost(root, &id, run.cost / 100.0);
+                    }
                     match end {
                         Some(End::Idle(why)) if why == "budget_reached" => {
                             let cap = run.cap as f64 / 100.0;
@@ -960,6 +969,14 @@ mod run {
 
     /// An event's lines in the log, the request's fields as the scripts wrote them, theirs in
     /// their logs.
+    /// What a run cost (dollars), added to its request's runs' costs.
+    fn note_cost(root: &Path, id: &str, dollars: f64) {
+        let path = folder(root).join(id).join("request.json");
+        let Some(mut r) = disk::read_to_string(&path).ok().and_then(|t| merged(Some(&t), &json!({}))) else { return };
+        r.costs.push((dollars * 100.0).round() / 100.0);
+        let _ = save(root, &r);
+    }
+
     fn apply(root: &Path, id: &str, f: &Followed) {
         for line in &f.log {
             log(root, id, line);

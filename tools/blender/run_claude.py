@@ -974,6 +974,10 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     for t in readers:
         t.join(timeout=10)
     raw.close()
+    # what the run cost, kept with the request (its runs' costs add up)
+    cost = (state.get("result") or {}).get("total_cost_usd")
+    if cost:
+        mr.update(root, rid, costs=list(mr.load(root, rid).get("costs", [])) + [round(float(cost), 2)])
     if ended == "cancelled":
         stop.unlink(missing_ok=True)
         say("Cancelled from the editor: Claude stopped, the request waits again")

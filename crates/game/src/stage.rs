@@ -50,6 +50,8 @@ pub struct Vis {
     pub placed: bool,
     pub spawn: Option<f64>,
     pub leaving: Option<(f64, bool)>,
+    /// taken into an IDP: when it went in, and when it comes back out (none: caught)
+    pub pocketed: Option<(f64, Option<f64>)>,
     pub flash_until: f64,
     pub flash_power: f32,
     pub shake_from: f64,
@@ -74,7 +76,18 @@ pub enum Effect {
     Burst { t0: f64, ms: f64, origin: Vec3, vel: Vec<Vec3>, color: [f32; 4] },
     Gather { t0: f64, ms: f64, center: Vec3, from: Vec<Vec3>, color: [f32; 4] },
     Wave { t0: f64, ms: f64, center: Vec3, color: [f32; 4] },
+    /// an IDP landed on a creature: the net spreading from it as the creature goes into the
+    /// pocket, then the pocket's seams lighting up as the creature strains against it
+    /// (`struggle`: how hard, 0 to 1), going dark once it gives up (caught) or bursting as it
+    /// forces its way out
+    Pocket { t0: f64, at: Vec3, struggle: f32, caught: bool },
 }
+
+/// An IDP's whole: the net (ms from its landing), when it's known (the light dark or the
+/// burst), and when it's over.
+const POCKET_NET_MS: f64 = 350.0;
+const POCKET_KNOWN_MS: f64 = 1650.0;
+const POCKET_MS: f64 = 1950.0;
 
 pub struct Person {
     pub texture: String,
@@ -409,7 +422,7 @@ impl Stage {
             texture: format!("{}/{species}", if back { "back" } else { "front" }),
             bbox: if back { back_box } else { front_box },
             lift, float: lift > 0.0, phase, home: Vec3::ZERO, pos: Vec3::ZERO, placed: false, spawn: Some(now),
-            leaving: None, flash_until: 0.0, flash_power: 4.0, shake_from: -1e9, pulse: None, aura: None, motion: None,
+            leaving: None, pocketed: None, flash_until: 0.0, flash_power: 4.0, shake_from: -1e9, pulse: None, aura: None, motion: None,
         });
     }
 
@@ -459,6 +472,22 @@ impl Stage {
         let xs: Vec<f32> = uids.iter().filter_map(|u| self.vis.get(u)).map(|v| v.home.x).collect();
         let x = if xs.is_empty() { self.spot.x } else { xs.iter().sum::<f32>() / xs.len() as f32 };
         self.cam_goal = Vec3::new(self.spot.x + (x - self.spot.x) * 0.35, 0.7, self.spot.z - 0.4);
+    }
+
+    /// An IDP landed on `uid`: the net takes it into the pocket, whose seams light up as it
+    /// strains (`struggle`, 0 to 1: how close it came to breaking out), then go dark as it
+    /// gives up (`caught`), or flare and burst as it forces its way out, the creature back
+    /// where it was. How long the whole takes (ms).
+    pub fn pocket(&mut self, uid: Uid, now: f64, struggle: f32, caught: bool) -> f64 {
+        let at = self.center_of(uid);
+        self.effects.push(Effect::Pocket { t0: now, at, struggle: struggle.clamp(0.0, 1.0), caught });
+        if !caught {
+            self.burst(at, [0.8, 0.9, 1.0, 1.0], 16, 1.1, now + POCKET_KNOWN_MS);
+        }
+        if let Some(v) = self.vis.get_mut(&uid) {
+            v.pocketed = Some((now, (!caught).then_some(now + POCKET_KNOWN_MS)));
+        }
+        POCKET_MS + 150.0
     }
 
     pub fn flash(&mut self, uid: Uid, now: f64, power: f32) {
@@ -551,6 +580,12 @@ impl Stage {
                     gone.push(u);
                 }
             }
+            // out of the pocket and grown back: as it was
+            if let Some((_, Some(back))) = v.pocketed {
+                if now > back + 400.0 {
+                    v.pocketed = None;
+                }
+            }
             let home = v.home;
             let (pos, done) = match &v.motion {
                 None => (home, false),
@@ -601,6 +636,7 @@ impl Stage {
         self.effects.retain(|e| {
             let (t0, ms) = match e {
                 Effect::Orb { t0, ms, .. } | Effect::Burst { t0, ms, .. } | Effect::Gather { t0, ms, .. } | Effect::Wave { t0, ms, .. } => (*t0, *ms),
+                Effect::Pocket { t0, .. } => (*t0, POCKET_MS),
             };
             now - t0 < ms
         });
@@ -690,6 +726,16 @@ impl Stage {
                 if (0.0..1.0).contains(&t) { (t * std::f32::consts::PI * 6.0).sin() * 0.12 * (1.0 - t) } else { 0.0 }
             };
             let mut flash = if now < v.flash_until { v.flash_power } else { 1.0 };
+            // into an IDP (gone in a moment), and out again if it forced its way out
+            if let Some((t0, back)) = v.pocketed {
+                scale *= 1.0 - (((now - t0) / POCKET_NET_MS) as f32).clamp(0.0, 1.0);
+                if let Some(b) = back.filter(|&b| now >= b) {
+                    scale = (((now - b) / 260.0) as f32).clamp(0.01, 1.0);
+                    if now < b + 300.0 {
+                        flash = 3.0;
+                    }
+                }
+            }
             if let Some(p) = poses.get(&u) {
                 // the timeline's motions: grown, flashing (its moves are in v.pos already)
                 scale *= p.scale;
@@ -755,6 +801,9 @@ impl Stage {
                     glows.push(Glow { pos: p, size: *size, color: *color });
                 }
                 Effect::Burst { t0, ms, origin, vel, color } => {
+                    if now < *t0 {
+                        continue; // set off a moment later
+                    }
                     let t = (((now - t0) / ms) as f32).clamp(0.0, 1.0);
                     for v in vel {
                         let mut c = *color;
@@ -774,6 +823,28 @@ impl Stage {
                     let mut c = *color;
                     c[3] = 0.85 * (1.0 - t * 0.6);
                     shapes.push(Shape { kind: ShapeKind::Ring { inner: 0.8 * s, outer: 1.2 * s }, center: *center + Vec3::Y * 0.08, color: c, additive: true });
+                }
+                Effect::Pocket { t0, at, struggle, caught } => {
+                    let t = now - t0;
+                    // the net, spreading from the pocket as the creature goes in
+                    let net = ((t / POCKET_NET_MS) as f32).clamp(0.0, 1.0);
+                    if net < 1.0 {
+                        let s = 0.3 + net * 2.2;
+                        shapes.push(Shape { kind: ShapeKind::Ring { inner: 0.7 * s, outer: s }, center: *at + Vec3::Y * 0.08, color: [0.55, 0.75, 1.0, 0.8 * (1.0 - net)], additive: true });
+                    }
+                    if (POCKET_NET_MS..POCKET_MS).contains(&t) {
+                        // the pocket, dark blue; its seams' light rising toward how hard the
+                        // creature strains, pulsing with its struggle; then, known: dark as it
+                        // gives up, or flaring as it bursts out
+                        let u = (((t - POCKET_NET_MS) / (POCKET_KNOWN_MS - POCKET_NET_MS)) as f32).clamp(0.0, 1.0);
+                        let peak = struggle.max(0.12);
+                        let mut light = 0.12 + (peak - 0.12) * u * u + 0.08 * u * ((u * 9.0) * std::f32::consts::PI).sin().abs();
+                        if t >= POCKET_KNOWN_MS {
+                            light = if *caught { peak * (1.0 - ((t - POCKET_KNOWN_MS) / 250.0) as f32).clamp(0.0, 1.0) } else { 1.0 };
+                        }
+                        glows.push(Glow { pos: *at, size: 0.26, color: [0.3, 0.45, 0.9, 0.95] });
+                        glows.push(Glow { pos: *at, size: 0.26 + 0.55 * light, color: [0.75, 0.88, 1.0, light] });
+                    }
                 }
             }
         }

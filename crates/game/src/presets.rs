@@ -8,7 +8,7 @@ use rules::mon::MonSpec;
 
 pub const DEFAULT_BAG: [(Item, u32); 9] = [
     (Item::Potion, 5), (Item::SuperPotion, 3), (Item::HyperPotion, 1), (Item::Ether, 3), (Item::FullHeal, 2),
-    (Item::Revive, 2), (Item::CaptureBall, 10), (Item::GreatBall, 5), (Item::UltraBall, 3),
+    (Item::Revive, 2), (Item::Idp, 10), (Item::ReinforcedIdp, 5), (Item::PrimeIdp, 3),
 ];
 
 pub fn kind_of(e: &Encounter) -> BattleKind {

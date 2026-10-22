@@ -310,13 +310,10 @@ impl Director {
                 0.0
             }
             Event::Catch { uid, shakes, caught } => {
-                for i in 0..shakes.min(3) {
-                    self.hud.pop(uid, "•".repeat(i as usize + 1), Color32::WHITE, 18.0, now + i as f64 * 420.0);
-                }
-                if !caught {
-                    self.stage.flash(uid, now, 4.0);
-                }
-                420.0 * shakes.min(3) as f64
+                // the IDP: the net takes the creature in, the pocket's seams light up as it
+                // strains (the harder the nearer it came to breaking out), then go dark as it
+                // gives up, or flare and burst as it forces its way out (no tilts)
+                self.stage.pocket(uid, now, shakes.min(4) as f32 / 4.0, caught)
             }
             Event::Outcome(o) => {
                 let (text, color) = match o {

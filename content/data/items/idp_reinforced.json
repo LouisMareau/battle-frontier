@@ -1,0 +1,14 @@
+{
+  "id": "idp_reinforced",
+  "name": "Reinforced IDP",
+  "number": 8,
+  "price": 600,
+  "pocket": "idps",
+  "description": "An IDP harder to break out of",
+  "battle_use": "idp_reinforced",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 1
+}

@@ -210,6 +210,14 @@ try {
   await browser.waitFor(`(document.body.dataset.request_${ID} ?? "").startsWith("waiting")`, { what: 'the request made' });
   check('  a picture dropped on it makes a request', (await request())[0] === 'waiting', (await request()).join(' '));
   await shot('3-request');
+  // its picture clicked: the viewer (no download), closed again
+  await press('uiRequestPicture_0');
+  await sleep(600);
+  check('  its picture clicked opens the viewer', (await data('picture')) === 'creature_front.png' && (await data('uiPictureShown')) !== '', `picture "${await data('picture')}"`);
+  await shot('3b-picture');
+  await press('uiPictureClose');
+  await sleep(300);
+  check('  closed again', (await data('picture')) === '', `picture "${await data('picture')}"`);
 
   // 4. Start: the run in the cloud, followed to its end
   const assets0 = Number(await data('assets'));
@@ -222,6 +230,7 @@ try {
   check('  done', (await request())[0] === 'done', (await request()).join(' | '));
   const log = await data('requestlog');
   check('  the console: what Claude said, the cost, the outputs back', log.includes('Claude: Made a creature') && log.includes('$2.12') && log.includes('3 files back from the cloud'), log);
+  check('  its cost kept with it, on its card', (await data(`requestcost_${ID}`)) === '$2.12', `cost "${await data(`requestcost_${ID}`)}"`);
   // the agent and its sandbox, made once, as the recipe makes them
   const agent = api.agents[0] ?? {};
   check('the agent made: its name, its prompt the recipe\'s, the web\'s tools off, nothing waits for a yes', api.made.agents === 1 && agent.name === 'Battle Frontier model requests'

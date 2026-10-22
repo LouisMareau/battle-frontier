@@ -96,6 +96,8 @@ FIELDS = {
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
+    # what each of its runs cost (dollars, at the API's prices), the first first
+    "costs": [],
     "bones": {},
     # with several (the editor's "Process multiple"), the drawings the user has outlined on the
     # pictures, by picture: [{"points": [[x, y]...], "height": 1.2, "cells": [1, 1]}], only those

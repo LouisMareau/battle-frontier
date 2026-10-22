@@ -1,0 +1,14 @@
+{
+  "id": "idp_prime",
+  "name": "Prime IDP",
+  "number": 9,
+  "price": 1200,
+  "pocket": "idps",
+  "description": "An IDP hardly ever broken out of",
+  "battle_use": "idp_prime",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 1
+}

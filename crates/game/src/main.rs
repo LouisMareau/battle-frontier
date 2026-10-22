@@ -14,6 +14,8 @@
 
 mod app;
 mod audio;
+mod bag;
+mod bag_ui;
 mod director;
 mod editor;
 mod hud;

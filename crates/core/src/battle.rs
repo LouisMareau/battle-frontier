@@ -72,9 +72,11 @@ pub enum Item {
     Ether,
     FullHeal,
     Revive,
-    CaptureBall,
-    GreatBall,
-    UltraBall,
+    /// the IDPs (inter-dimensional pockets): thrown at a wild creature, one unfolds into a
+    /// net that takes the creature into another dimension, unless it forces its way out
+    Idp,
+    ReinforcedIdp,
+    PrimeIdp,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -85,28 +87,49 @@ pub struct ItemInfo {
     pub mp: i32,
     pub cure: bool,
     pub revive: f32,
-    pub ball: f32,
+    /// an IDP: how well it holds (1 the plain one; 0 for anything else)
+    pub idp: f32,
 }
 
 impl Item {
     pub const ALL: [Item; 9] = [
         Item::Potion, Item::SuperPotion, Item::HyperPotion, Item::Ether, Item::FullHeal, Item::Revive,
-        Item::CaptureBall, Item::GreatBall, Item::UltraBall,
+        Item::Idp, Item::ReinforcedIdp, Item::PrimeIdp,
     ];
 
     pub fn info(self) -> ItemInfo {
         let i = ItemInfo::default();
         match self {
             Item::Potion => ItemInfo { name: "Potion", text: "Restores 20 HP", heal: 20, ..i },
-            Item::SuperPotion => ItemInfo { name: "Super Potion", text: "Restores 50 HP", heal: 50, ..i },
-            Item::HyperPotion => ItemInfo { name: "Hyper Potion", text: "Restores 200 HP", heal: 200, ..i },
+            Item::SuperPotion => ItemInfo { name: "Super potion", text: "Restores 50 HP", heal: 50, ..i },
+            Item::HyperPotion => ItemInfo { name: "Hyper potion", text: "Restores 200 HP", heal: 200, ..i },
             Item::Ether => ItemInfo { name: "Ether", text: "Restores 10 MP", mp: 10, ..i },
-            Item::FullHeal => ItemInfo { name: "Full Heal", text: "Cures any status", cure: true, ..i },
+            Item::FullHeal => ItemInfo { name: "Full heal", text: "Cures any status", cure: true, ..i },
             Item::Revive => ItemInfo { name: "Revive", text: "Revives a fainted creature to half HP", revive: 0.5, ..i },
-            Item::CaptureBall => ItemInfo { name: "Capture Ball", text: "Catches a wild creature", ball: 1.0, ..i },
-            Item::GreatBall => ItemInfo { name: "Great Ball", text: "Better catch rate", ball: 1.5, ..i },
-            Item::UltraBall => ItemInfo { name: "Ultra Ball", text: "Even better catch rate", ball: 2.0, ..i },
+            Item::Idp => ItemInfo { name: "IDP", text: "An inter-dimensional pocket: takes a wild creature into another dimension, unless it forces its way out", idp: 1.0, ..i },
+            Item::ReinforcedIdp => ItemInfo { name: "Reinforced IDP", text: "An IDP harder to break out of", idp: 1.5, ..i },
+            Item::PrimeIdp => ItemInfo { name: "Prime IDP", text: "An IDP hardly ever broken out of", idp: 2.0, ..i },
         }
+    }
+
+    /// Its key in the content's item records (`Item::battle_use`).
+    pub fn key(self) -> &'static str {
+        match self {
+            Item::Potion => "potion",
+            Item::SuperPotion => "super_potion",
+            Item::HyperPotion => "hyper_potion",
+            Item::Ether => "ether",
+            Item::FullHeal => "full_heal",
+            Item::Revive => "revive",
+            Item::Idp => "idp",
+            Item::ReinforcedIdp => "idp_reinforced",
+            Item::PrimeIdp => "idp_prime",
+        }
+    }
+
+    /// The item a record's `battle_use` names, if it names one.
+    pub fn from_key(key: &str) -> Option<Item> {
+        Item::ALL.into_iter().find(|i| i.key() == key)
     }
 }
 
@@ -932,7 +955,7 @@ impl Battle {
             }
             Action::Call => p.anim = Anim::Call,
             Action::Item { item, target, .. } => {
-                p.anim = if item.info().ball > 0.0 { Anim::Ball } else { Anim::Item };
+                p.anim = if item.info().idp > 0.0 { Anim::Ball } else { Anim::Item };
                 p.targets = target.into_iter().collect();
             }
             Action::Send { .. } | Action::Swap { .. } | Action::Run => {}
@@ -2028,8 +2051,8 @@ impl Battle {
         }
         self.sides[side.i()].bag.insert(item, count - 1);
         ev.push(Event::Msg(format!("You used a {}!", info.name)));
-        if info.ball > 0.0 {
-            self.throw_ball(target, info.ball, ev);
+        if info.idp > 0.0 {
+            self.throw_idp(target, info.idp, ev);
             return;
         }
         if info.revive > 0.0 {
@@ -2060,7 +2083,7 @@ impl Battle {
         }
     }
 
-    fn throw_ball(&mut self, target: Option<Uid>, ball: f32, ev: &mut Vec<Event>) {
+    fn throw_idp(&mut self, target: Option<Uid>, idp: f32, ev: &mut Vec<Event>) {
         if self.kind != BattleKind::Wild {
             ev.push(Event::Msg("You can't catch a trainer's creature!".into()));
             return;
@@ -2078,7 +2101,7 @@ impl Battle {
             None => 1.0,
         };
         let catch_rate = self.dex.species[m.species].catch_rate as f64;
-        let x = (((3 * m.stats.hp - 2 * m.hp) as f64 * catch_rate * ball as f64) / (3 * m.stats.hp) as f64) * status_mul;
+        let x = (((3 * m.stats.hp - 2 * m.hp) as f64 * catch_rate * idp as f64) / (3 * m.stats.hp) as f64) * status_mul;
         let mut shakes = 4u8;
         if x < 255.0 {
             let y = (1048560.0 / (16711680.0 / x.max(1.0)).sqrt().sqrt()).floor();

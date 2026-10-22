@@ -168,6 +168,26 @@ try {
   await browser.key('Escape');
   check('  Esc again: the ring off', (await data('hudring')) === '' && (await data('state')) === 'explore');
 
+  // 2b. the Bag: its window from the Bag button (bottom left, by the Team): the pockets'
+  // tabs, the usual few items in Consumables, the IDPs in their dispenser on the side; a
+  // stack dragged to free cells moves there; the Items tab; Close
+  const [bx, by] = await at('uiHudBag');
+  check('the Bag bottom left, by the Team', bx > tx && by === ty, `${bx},${by} (the Team ${tx},${ty})`);
+  await press('uiHudBag', 500);
+  check('  its window open on Consumables', (await data('hudbagwindow')) === 'open' && (await data('bagtab')) === 'consumables', `${await data('hudbagwindow')} ${await data('bagtab')}`);
+  const bag0 = await data('bag');
+  check('  the usual few in it: potions and the like in Consumables, IDPs in the dispenser', /consumables [1-9]\d*\/30/.test(bag0) && /idps [1-9]\/4/.test(bag0), bag0);
+  await shot('2b-bag');
+  const [s0x, s0y] = await at('uiBagSlot_consumables_0');
+  await browser.drag([[s0x, s0y], [s0x + 4, s0y + 30], [s0x, s0y + 49 * 2], [s0x, s0y + 49 * 3]]);
+  await sleep(400);
+  const [s1x, s1y] = await at('uiBagSlot_consumables_0');
+  check('  a stack dragged down to free cells moves there', Math.abs(s1x - s0x) < 10 && s1y > s0y + 100, `${s0x},${s0y} -> ${s1x},${s1y} · ${await data('bag')}`);
+  await press('uiBagTab_items', 300);
+  check('  the Items tab', (await data('bagtab')) === 'items', await data('bagtab'));
+  await press('uiBagClose', 400);
+  check('  closed', (await data('hudbagwindow')) === '', await data('hudbagwindow'));
+
   // 3. the Team's list: opens beside the Team; closes with the Team again
   const all = (await data('hudteamall')).split(',').filter(Boolean);
   // the one the story says is lost for good (part 6), none before
@@ -330,7 +350,9 @@ try {
   await tap(B.start);
   check('  Start: the ring on Settings', (await data('hudring')) === 'uiHudSettings', await data('hudring'));
   await tap(B.down);
-  check('  down: the Team', (await data('hudring')) === 'uiHudTeam', await data('hudring'));
+  check('  down: the Bag, the nearest below', (await data('hudring')) === 'uiHudBag', await data('hudring'));
+  await tap(B.left);
+  check('  left: the Team', (await data('hudring')) === 'uiHudTeam', await data('hudring'));
   await tap(B.south);
   await sleep(400);
   check('  A: the list open, the ring on its first', (await open('hudteam')) && (await data('hudring')) === (all.length ? 'uiTeam_0' : 'uiHudTeam'), `${await data('hudteam')} ${await data('hudring')}`);

@@ -1,0 +1,14 @@
+{
+  "id": "hyper_potion",
+  "name": "Hyper potion",
+  "number": 3,
+  "price": 1500,
+  "pocket": "consumables",
+  "description": "Restores 200 HP",
+  "battle_use": "hyper_potion",
+  "size": [
+    1,
+    2
+  ],
+  "stack": 5
+}

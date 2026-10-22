@@ -33,7 +33,7 @@ fn battle(kind: BattleKind, player: Vec<Mon>, foe: Vec<Mon>, size: usize, seed: 
         BattleSetup {
             kind, size, seed, config: config.unwrap_or_default(), period: Period::Day,
             player_name: "You".into(), player_party: player,
-            bag: BTreeMap::from([(Item::Potion, 3), (Item::CaptureBall, 5)]),
+            bag: BTreeMap::from([(Item::Potion, 3), (Item::Idp, 5)]),
             foe_name: "Leader".into(), foe_party: foe, pool,
         },
     )

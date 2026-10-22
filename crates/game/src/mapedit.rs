@@ -72,6 +72,8 @@ pub struct SaveGame {
     pub flags: std::collections::BTreeMap<String, i64>,
     /// who of the team fought in the last battles, and the main (the HUD's Team)
     pub team: crate::team::TeamLog,
+    /// the Bag: what the player carries, in its pockets
+    pub bag: crate::bag::Bag,
 }
 
 /// The save's name (`platform::store_text`).
@@ -332,6 +334,8 @@ pub struct MapEditor {
     spawner: world::spawn::Spawner,
     /// where whoever tramples the grass has just been (the grass springing back behind them)
     trails: trample::Trails,
+    /// the story's Bag (the overworld's: the HUD opens it, battles take from it)
+    pub bag: crate::bag::Bag,
     /// who lives in the zones (the map's spawns record)
     spawns: content::Spawns,
     creatures_on: bool,
@@ -886,6 +890,7 @@ impl MapEditor {
             retro: Default::default(),
             frost: false,
             team: Default::default(),
+            bag: Default::default(),
             hud_busy: false,
             dock: dock::Dock::load(),
             dirty: false,
@@ -913,6 +918,8 @@ impl MapEditor {
         if let Some(s) = save {
             ed.story.flags = s.flags.clone();
             ed.team = s.team.clone();
+            // (a story saved before there was a Bag starts with the usual few)
+            ed.bag = if s.bag.pockets.is_empty() { crate::bag::Bag::starting(&ed.content) } else { s.bag.clone() };
             if s.map == ed.map.id && ed.map.index(s.at[0], s.at[1]).is_some() {
                 ed.arrive = Some(((s.at[0], s.at[1]), s.facing as f32));
             }
@@ -961,7 +968,7 @@ impl MapEditor {
             Some(w) => ([w.cell.0, w.cell.1], w.facing as f64),
             None => ([self.cam.target.x.floor() as i32, self.cam.target.z.floor() as i32], 0.0),
         };
-        SaveGame { map: self.map.id.clone(), at, facing, floor: self.walker_floor(), flags: self.story.flags.clone(), team: self.team.clone() }
+        SaveGame { map: self.map.id.clone(), at, facing, floor: self.walker_floor(), flags: self.story.flags.clone(), team: self.team.clone(), bag: self.bag.clone() }
     }
 
     fn first_terrain(content: &Content) -> String {

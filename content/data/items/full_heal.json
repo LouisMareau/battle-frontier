@@ -1,0 +1,14 @@
+{
+  "id": "full_heal",
+  "name": "Full heal",
+  "number": 5,
+  "price": 600,
+  "pocket": "consumables",
+  "description": "Cures any status",
+  "battle_use": "full_heal",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 5
+}

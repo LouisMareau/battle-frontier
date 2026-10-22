@@ -172,6 +172,9 @@ pub struct PlayHud {
     /// the window of all the player's creatures (View all), its board of cards
     team_window: bool,
     board: Board,
+    /// the Bag's window, and its own state
+    bag_window: bool,
+    bag_ui: crate::bag_ui::BagUi,
     /// the Options (Settings), and their own state
     options_open: bool,
     options_ui: OptionsUi,
@@ -193,7 +196,7 @@ impl PlayHud {
     /// Something of the HUD's has the game's buttons (the ring, the Options, the window): the
     /// overworld waits for it (no walking, no talking).
     pub fn holds(&self) -> bool {
-        self.focus.is_some() || self.options_open || self.team_window
+        self.focus.is_some() || self.options_open || self.team_window || self.bag_window
     }
 
     /// The HUD for a frame. `map`: the map's name; `story_busy`: a script or a dialog has the
@@ -201,8 +204,8 @@ impl PlayHud {
     /// `log`: their last battles and the main (pinned here). `options_changed` is set when the
     /// Options changed one.
     #[allow(clippy::too_many_arguments)]
-    pub fn ui(&mut self, ctx: &egui::Context, map: &str, story_busy: bool, team: &[Member], log: &mut TeamLog, options: &mut Options, input: &Input, options_changed: &mut bool) -> Out {
-        let enabled = !story_busy && !self.options_open && !self.team_window;
+    pub fn ui(&mut self, ctx: &egui::Context, map: &str, story_busy: bool, team: &[Member], log: &mut TeamLog, bag: &mut crate::bag::Bag, bag_of: (&crate::bag::Catalogue, &content::Content), options: &mut Options, input: &Input, options_changed: &mut bool) -> Out {
+        let enabled = !story_busy && !self.options_open && !self.team_window && !self.bag_window;
         if story_busy {
             self.focus = None;
             self.team_open = false;
@@ -251,10 +254,11 @@ impl PlayHud {
         // there's always a main (the story keeps it)
         log.settle(&ids);
         let shown = log.most_used(&ids, SHOWN);
-        let ((team_clicked, team_rect, list), bottom) = BOTTOM_LEFT.show(ctx, enabled, |row| {
+        let ((team_clicked, team_rect, list, bag_clicked), bottom) = BOTTOM_LEFT.show(ctx, enabled, |row| {
             let r = row.button(egui::include_image!("../icons/team.svg"), "Team: your creatures", TEAM);
             let list = (open > 0.0).then(|| team_list(row, open, team, &shown, log));
-            (r.clicked(), r.rect, list)
+            let b = row.button(egui::include_image!("../icons/bag.svg"), "Bag: what you carry", crate::bag_ui::BAG);
+            (r.clicked(), r.rect, list, b.clicked())
         });
         stops.extend(bottom);
 
@@ -313,6 +317,12 @@ impl PlayHud {
         if !self.team_open && self.focus.as_deref().is_some_and(in_list) {
             self.focus = Some(TEAM.into());
         }
+        // the Bag opens (the list closes), the A that opened it not its own
+        if (bag_clicked || hit(crate::bag_ui::BAG)) && !self.bag_window {
+            self.bag_window = true;
+            self.bag_ui.fresh = true;
+            self.team_open = false;
+        }
         // the Options open from the next frame (the A that opened them isn't theirs)
         let opening = !self.options_open && (settings || hit(SETTINGS));
         let out = if exit || hit(EXIT) { Out::Exit } else { Out::Stay };
@@ -351,6 +361,9 @@ impl PlayHud {
             if !self.team_window {
                 self.board.detail = None;
             }
+        }
+        if self.bag_window {
+            self.bag_window = crate::bag_ui::bag_window(ctx, bag, bag_of.0, bag_of.1, input, &mut self.bag_ui);
         }
         platform::set_hook("hudring", self.focus.as_deref().unwrap_or(""));
         platform::set_hook("hudteam", if self.team_open { "open" } else { "" });

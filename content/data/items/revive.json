@@ -1,0 +1,14 @@
+{
+  "id": "revive",
+  "name": "Revive",
+  "number": 6,
+  "price": 2000,
+  "pocket": "consumables",
+  "description": "Revives a fainted creature to half its HP",
+  "battle_use": "revive",
+  "size": [
+    2,
+    1
+  ],
+  "stack": 3
+}

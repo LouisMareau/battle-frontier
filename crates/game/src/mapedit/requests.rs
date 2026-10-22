@@ -305,6 +305,10 @@ pub(super) struct ModelRequest {
     pub progress: Progress,
     /// the reference pictures: files in its folder
     pub images: Vec<String>,
+    /// what each of its runs cost (dollars, at the API's prices), the first first: they add
+    /// up as it's made again
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub costs: Vec<f64>,
     /// the bones the user has drawn over the pictures (the Bones window), by picture: the body
     /// plan as they see it, which parts there are and where they join, for Claude to read the
     /// pictures by and to rig the creature on
@@ -366,6 +370,7 @@ impl Default for ModelRequest {
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
+            costs: vec![],
             bones: BTreeMap::new(),
             outlines: BTreeMap::new(),
             lines: vec![],
@@ -1010,6 +1015,8 @@ mod desk {
         renamed: Option<String>,
         /// asking whether to delete the selected request
         deleting: bool,
+        /// the browser: a picture clicked, shown full size in a window of its own
+        viewing: Option<PathBuf>,
         /// the model the runs ask for ("": Claude Code's default)
         model: String,
         /// the console open at the window's foot
@@ -1817,6 +1824,58 @@ mod desk {
 
         // ------------------------------------------------------------ drawing
 
+        /// A picture clicked, opened: the desktop in the system's viewer; the browser in a
+        /// window of its own (`viewer`), never a download. What went wrong, if it did.
+        fn open_picture(&mut self, path: &Path) -> Option<String> {
+            if cfg!(target_arch = "wasm32") {
+                self.viewing = Some(path.to_path_buf());
+                return None;
+            }
+            reveal(path).err()
+        }
+
+        /// The browser's picture viewer, while a picture is open: the picture as big as the
+        /// screen allows (at most its own size), its size in pixels, Download for a copy of
+        /// it, Close (Esc or the window's close too). A hook (picture) says which is open.
+        pub(in super::super) fn viewer(&mut self, ctx: &egui::Context) {
+            let Some(path) = self.viewing.clone() else {
+                platform::set_hook("picture", "");
+                return;
+            };
+            let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            platform::set_hook("picture", &name);
+            let (mut open, mut close) = (true, false);
+            let screen = ctx.content_rect();
+            let most = egui::vec2(screen.width() * 0.8, screen.height() * 0.8 - 40.0);
+            egui::Window::new(&name).id(egui::Id::new("request-picture")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+                match self.thumbs.at(ctx, &path, 1600) {
+                    Some(Ok((id, size))) => {
+                        let scale = (most.x / size.x.max(1.0)).min(most.y / size.y.max(1.0)).min(1.0);
+                        let r = ui.add(egui::Image::new((id, size * scale)).corner_radius(3.0));
+                        mark("uiPictureShown", &r);
+                        hint(ui, &format!("{:.0} × {:.0} pixels", size.x, size.y));
+                    }
+                    Some(Err(e)) => warn(ui, &e),
+                    None => hint(ui, "Reading it…"),
+                }
+                ui.horizontal(|ui| {
+                    let download = ui.button("Download").on_hover_text("A copy of it, saved by the browser");
+                    mark("uiPictureDownload", &download);
+                    if download.clicked() {
+                        if let Err(e) = reveal(&path) {
+                            self.problems.push(e);
+                        }
+                    }
+                    let c = ui.button("Close");
+                    mark("uiPictureClose", &c);
+                    close = c.clicked();
+                });
+            });
+            if !open || close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+                self.viewing = None;
+            }
+        }
+
         /// A picture, `height` points high (its width as it is); clicked, it opens.
         fn picture(&mut self, ui: &mut egui::Ui, path: &Path, height: f32, sense: Sense) -> egui::Response {
             match self.thumbs.get(ui.ctx(), path) {
@@ -1846,9 +1905,7 @@ mod desk {
                     let path = self.picture_path(id, f);
                     let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{}: click to open it", drawing_about(f)));
                     if shown.clicked() {
-                        if let Err(e) = reveal(&path) {
-                            said = Some(e);
-                        }
+                        said = self.open_picture(&path);
                     }
                 }
             });
@@ -2263,6 +2320,24 @@ mod desk {
                     ui.label(RichText::new(&r.id).monospace().size(11.0).color(Color32::GRAY)).on_hover_text("Its folder under private/requests/ (it follows the name while it waits)");
                 });
                 ui.end_row();
+                // what its runs have cost: the total, each run's under it when there's more
+                // than one
+                if !r.costs.is_empty() {
+                    ui.label("Cost");
+                    let total = costs_text(&r);
+                    if r.costs.len() == 1 {
+                        let c = ui.label(RichText::new(&total).size(12.5)).on_hover_text("At the API's prices, for its one run");
+                        mark("uiRequestCost", &c);
+                    } else {
+                        let fold = egui::CollapsingHeader::new(RichText::new(format!("{total} over {} runs", r.costs.len())).size(12.5)).id_salt(("request-costs", &r.id)).show(ui, |ui| {
+                            for (k, c) in r.costs.iter().enumerate() {
+                                ui.label(RichText::new(format!("run {}: ${c:.2}", k + 1)).size(11.5).color(Color32::from_gray(190)));
+                            }
+                        });
+                        mark("uiRequestCost", &fold.header_response);
+                    }
+                    ui.end_row();
+                }
                 ui.label("Kind");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.kind, Kind::Creature, "creature").on_hover_text("Rigged: a spine, a head, limbs and a tail, and an idle animation");
@@ -2504,14 +2579,13 @@ mod desk {
             }
             section(ui, &format!("Pictures ({})", r.images.len()));
             ui.horizontal_wrapped(|ui| {
-                for f in r.images.clone() {
+                for (i, f) in r.images.clone().into_iter().enumerate() {
                     ui.vertical(|ui| {
                         let path = self.picture_path(&r.id, &f);
                         let shown = self.picture(ui, &path, 96.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
+                        mark(&format!("uiRequestPicture_{i}"), &shown);
                         if shown.clicked() {
-                            if let Err(e) = reveal(&path) {
-                                said = Some(e);
-                            }
+                            said = self.open_picture(&path);
                         }
                         if ui.small_button("× take out").on_hover_text("Its copy in the request's folder goes too").clicked() {
                             remove = Some(f.clone());
@@ -2550,9 +2624,7 @@ mod desk {
                         let path = self.picture_path(&r.id, &f);
                         let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
                         if shown.clicked() {
-                            if let Err(e) = reveal(&path) {
-                                said = Some(e);
-                            }
+                            said = self.open_picture(&path);
                         }
                     }
                 });
@@ -3413,14 +3485,30 @@ mod desk {
             Status::Waiting => (0.0, WAITING, "waiting to be made".to_string()),
         };
         ui.add_space(3.0);
-        // (painted: egui's bar is never shorter than it's high, a dot where nothing's done)
-        let (rect, bar) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 4.0), Sense::hover());
+        // (painted: egui's bar is never shorter than it's high, a dot where nothing's done);
+        // what its runs have cost so far, small, at the bar's end
+        let cost = costs_text(r);
+        let cost_w = if cost.is_empty() { 0.0 } else { 44.0 };
+        let (rect, bar) = ui.allocate_exact_size(egui::vec2((ui.available_width() - cost_w).max(20.0), 4.0), Sense::hover());
         let p = ui.painter();
         p.rect_filled(rect, 2.0, Color32::from_gray(48));
         if fraction > 0.0 {
             p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width() * fraction.clamp(0.0, 1.0), rect.height())), 2.0, color);
         }
+        if !cost.is_empty() {
+            p.text(rect.right_center() + egui::vec2(6.0, 0.0), egui::Align2::LEFT_CENTER, &cost, egui::FontId::proportional(10.5), Color32::from_gray(170));
+            crate::platform::set_hook(&format!("requestcost_{}", r.id), &cost);
+        }
         mark(&format!("uiRequestFoot_{}", r.id), &bar.on_hover_text(format!("{}: {text}", r.name)));
+    }
+
+    /// What a request's runs have cost in all ("$2.12"; nothing before a run has ended).
+    fn costs_text(r: &ModelRequest) -> String {
+        if r.costs.is_empty() {
+            String::new()
+        } else {
+            format!("${:.2}", r.costs.iter().sum::<f64>())
+        }
     }
 
     /// A run asked for from the window.
@@ -3597,6 +3685,8 @@ mod desk {
                     }
                 }
             }
+            // the browser's picture viewer, when a picture is open
+            self.desk.viewer(ui.ctx());
             use_prop
         }
     }

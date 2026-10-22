@@ -1,0 +1,14 @@
+{
+  "id": "idp",
+  "name": "IDP",
+  "number": 7,
+  "price": 200,
+  "pocket": "idps",
+  "description": "An inter-dimensional pocket: thrown at a wild creature, it unfolds into a net that takes the creature into another dimension, unless the creature forces its way out",
+  "battle_use": "idp",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 1
+}

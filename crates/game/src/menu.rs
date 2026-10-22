@@ -93,7 +93,7 @@ impl Menu {
                     ),
                     "Use a move. Costs MP. Moves level up as you use them (more with timed hits).".into(),
                     if battle.kind == BattleKind::Trainer { "Swap a creature in.".into() } else { "Send another creature onto the field (up to 6), or swap one in.".into() },
-                    "Potions, Ethers, Capture Balls...".into(),
+                    "Potions, Ethers, IDPs...".into(),
                     "Try to get away.".into(),
                 ];
                 let title = format!("What will {} do?", battle.mon(actor).name);
@@ -341,7 +341,7 @@ impl Menu {
                 }
                 let items: Vec<Row> = keys
                     .iter()
-                    .map(|k| Row { label: format!("{} ×{}", k.info().name, bag[k]), disabled: k.info().ball > 0.0 && battle.kind != BattleKind::Wild, kind: RowKind::Text })
+                    .map(|k| Row { label: format!("{} ×{}", k.info().name, bag[k]), disabled: k.info().idp > 0.0 && battle.kind != BattleKind::Wild, kind: RowKind::Text })
                     .collect();
                 let tip = keys[self.sel.min(keys.len() - 1)].info().text;
                 self.info_text(ctx, tip);
@@ -349,7 +349,7 @@ impl Menu {
                     Some(Ok(i)) => {
                         let item = keys[i];
                         let info = item.info();
-                        if info.ball > 0.0 {
+                        if info.idp > 0.0 {
                             self.page = Page::Target(Pick { side: Side::Foe, modes: vec![Mode::Focus], mode: 0, i: usize::MAX, purpose: Purpose::Item(item) });
                         } else if info.revive > 0.0 {
                             self.page = Page::Revive(item);

@@ -1,0 +1,14 @@
+{
+  "id": "scooter",
+  "name": "Scooter",
+  "number": 10,
+  "price": 0,
+  "pocket": "tools",
+  "description": "A scooter, kept on the side of the bag, to hand wherever you are",
+  "key_item": true,
+  "size": [
+    1,
+    1
+  ],
+  "stack": 1
+}

@@ -458,6 +458,117 @@ pub struct Item {
     pub key_item: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
+    /// the room it takes in the Bag: cells across and down (none given: one cell); turned a
+    /// quarter, across and down swap
+    #[serde(skip_serializing_if = "is_default")]
+    pub size: [u8; 2],
+    /// how many of it fit in one of the Bag's slots (none given: one)
+    #[serde(skip_serializing_if = "is_default")]
+    pub stack: u16,
+}
+
+impl Item {
+    /// The cells it takes in the Bag, across and down (at least one each).
+    pub fn cells(&self) -> [u8; 2] {
+        [self.size[0].max(1), self.size[1].max(1)]
+    }
+
+    /// How many of it fit in one slot (at least one).
+    pub fn stack_size(&self) -> u16 {
+        self.stack.max(1)
+    }
+}
+
+/// The Bag's pockets (`Settings::bag`): each with its cells across and down.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct BagSettings {
+    pub pockets: Vec<Pocket>,
+}
+
+/// A pocket of the Bag: what items go in it (`Item::pocket`), what it's called, and its
+/// kind: "grid" (so many cells across and down inside the bag, each item taking its own),
+/// "dispenser" (on the side of the bag, so many tubes, each holding one kind of item up to
+/// `holds`: the IDPs, each kind in the tube the player puts it in) or "rack" (on the side
+/// too, so many hooks, one tool each, to hand wherever the player is).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Pocket {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+    /// a grid's cells across and down
+    pub cells: [u8; 2],
+    /// a dispenser's tubes, and how many each holds
+    pub tubes: u8,
+    pub holds: u16,
+    /// a rack's hooks
+    pub hooks: u8,
+}
+
+impl Default for Pocket {
+    fn default() -> Self {
+        Pocket { id: String::new(), name: String::new(), kind: "grid".into(), cells: [4, 4], tubes: 4, holds: 20, hooks: 4 }
+    }
+}
+
+impl Pocket {
+    pub fn is_grid(&self) -> bool {
+        self.kind != "dispenser" && self.kind != "rack"
+    }
+
+    /// Its room as a grid: cells across and down (a dispenser's tubes in a row, a rack's
+    /// hooks), at least one each.
+    pub fn room(&self) -> [u8; 2] {
+        match self.kind.as_str() {
+            "dispenser" => [self.tubes.max(1), 1],
+            "rack" => [self.hooks.max(1), 1],
+            _ => [self.cells[0].max(1), self.cells[1].max(1)],
+        }
+    }
+
+    /// The cells an item takes in it: its own in a grid; one tube, one hook elsewhere.
+    pub fn cells_of(&self, item: &Item) -> [u8; 2] {
+        if self.is_grid() {
+            item.cells()
+        } else {
+            [1, 1]
+        }
+    }
+
+    /// How many of an item one of its slots holds: the item's stack in a grid, what a tube
+    /// holds, one a hook.
+    pub fn stack_of(&self, item: &Item) -> u16 {
+        match self.kind.as_str() {
+            "dispenser" => self.holds.max(1),
+            "rack" => 1,
+            _ => item.stack_size(),
+        }
+    }
+}
+
+impl Default for BagSettings {
+    /// The pockets as the Bag first comes: Consumables and Items inside it, the IDPs in a
+    /// dispenser on its side, Key items inside, the Tools on a rack on its side.
+    fn default() -> Self {
+        let grid = |id: &str, name: &str, cells: [u8; 2]| Pocket { id: id.into(), name: name.into(), cells, ..Default::default() };
+        BagSettings {
+            pockets: vec![
+                grid("consumables", "Consumables", [6, 5]),
+                grid("items", "Items", [6, 4]),
+                Pocket { id: "idps".into(), name: "IDPs".into(), kind: "dispenser".into(), tubes: 4, holds: 20, ..Default::default() },
+                grid("key", "Key items", [4, 4]),
+                Pocket { id: "tools".into(), name: "Tools".into(), kind: "rack".into(), hooks: 4, ..Default::default() },
+            ],
+        }
+    }
+}
+
+impl BagSettings {
+    /// A pocket by its id.
+    pub fn pocket(&self, id: &str) -> Option<&Pocket> {
+        self.pockets.iter().find(|p| p.id == id)
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -597,11 +708,14 @@ pub struct Settings {
     /// the most lifeforce a knock-out costs: a creature loses its level's worth, up to this
     /// (20: from level 20 on, 20 a knock-out)
     pub lifeforce_ko_cap: u8,
+    /// the Bag's pockets and their room
+    #[serde(skip_serializing_if = "is_default")]
+    pub bag: BagSettings,
 }
 
 impl Default for Settings {
     fn default() -> Settings {
-        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), light: Radiance::default(), lifeforce: 100, lifeforce_ko_cap: 20 }
+        Settings { id: "world".into(), character_height: 1.5, level_padding: 0.5, max_level: 9, toon: Toon::default(), start: Start::default(), wind: Wind::default(), light: Radiance::default(), lifeforce: 100, lifeforce_ko_cap: 20, bag: BagSettings::default() }
     }
 }
 

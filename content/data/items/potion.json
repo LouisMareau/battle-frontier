@@ -1,0 +1,14 @@
+{
+  "id": "potion",
+  "name": "Potion",
+  "number": 1,
+  "price": 300,
+  "pocket": "consumables",
+  "description": "Restores 20 HP",
+  "battle_use": "potion",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 10
+}

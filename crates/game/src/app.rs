@@ -328,6 +328,9 @@ pub struct GameApp {
     /// the overworld asks to leave, and what it last saved (and when)
     leaving: bool,
     last_save: Option<SaveGame>,
+    /// what the Bag sent into the battle being fought (the story's; the test battles' usual
+    /// few), to take out what it used after
+    bag_in: BTreeMap<rules::battle::Item, u32>,
     last_save_at: f64,
     /// the main menu
     title: crate::title::Title,
@@ -432,7 +435,7 @@ impl GameApp {
         GameApp {
             files, content: None, dex: None, party: vec![], fielded: vec![], player_sprite: None, options, screen: Screen::Boot, input: Input::default(),
             stats: Stats::default(), icons: HashMap::new(), pictures: HashMap::new(), fx_failed: std::collections::HashSet::new(), fx_meshes_shown: false, error: None, cli, started_at: platform::now_ms(), menu_sel: 0, hitches: vec![],
-            draws: DrawStats::default(), perf_panel: false, audio, parked: None, parked_review: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0,
+            draws: DrawStats::default(), perf_panel: false, audio, parked: None, parked_review: None, pending: None, leaving: false, last_save: None, last_save_at: 0.0, bag_in: BTreeMap::new(),
             title: Default::default(), pads: crate::pads::Pads::new(), battles_options: false, battles_options_ui: Default::default(), menu_world: None, battles_back: false, editor_map: None, welcomed: false, no_battles: None, saved_at: (f64::NEG_INFINITY, None), last_state: "boot",
             hud: Default::default(), frost: None,
         }
@@ -593,7 +596,7 @@ impl GameApp {
         self.last_save = None;
         let start = c.world().start;
         let (map, arrival) = if c.maps.contains(&start.map) {
-            let at = SaveGame { map: start.map.clone(), at: start.at, facing: start.facing, ..Default::default() };
+            let at = SaveGame { map: start.map.clone(), at: start.at, facing: start.facing, bag: crate::bag::Bag::starting(&c), ..Default::default() };
             (Some(start.map.clone()), Some(at))
         } else {
             (c.maps.iter().next().map(|m| m.id.clone()), None)
@@ -775,9 +778,19 @@ impl GameApp {
         // the party as it goes into the battle, for the checks (the main first)
         let ids = crate::team::ids(&self.party);
         platform::set_hook("battleparty", &self.fielded.iter().filter_map(|&i| ids.get(i).map(String::as_str)).collect::<Vec<_>>().join(","));
+        self.bag_in = self.bag_for_battle();
         let director = self.make_battle(encounter, period, hours, spot, player_key, foe_key);
         self.screen = Screen::Battle(Box::new(director), encounter);
         Ok(true)
+    }
+
+    /// What goes into a battle to use: in the story, what the Bag holds that a battle knows;
+    /// in a test battle, the usual few of each.
+    fn bag_for_battle(&self) -> BTreeMap<rules::battle::Item, u32> {
+        match (self.parked.as_ref().filter(|ed| ed.playing()), self.content.as_ref()) {
+            (Some(ed), Some(c)) => ed.bag.battle_bag(c),
+            _ => BTreeMap::from(DEFAULT_BAG),
+        }
     }
 
     /// The party in the order it goes into a battle (its places): in the story, the main
@@ -820,7 +833,7 @@ impl GameApp {
             dex,
             BattleSetup {
                 kind, size: e.size.max(1) as usize, seed: rng.int(1, 1_000_000_000) as u32, config: cfg, period,
-                player_name: "You".into(), player_party: party, bag: BTreeMap::from(DEFAULT_BAG),
+                player_name: "You".into(), player_party: party, bag: self.bag_in.clone(),
                 foe_name: e.name.clone(), foe_party, pool: wild_pool,
             },
         );
@@ -1560,7 +1573,9 @@ impl eframe::App for GameApp {
                 crate::layout::set_frost(self.frost.map(|(id, _)| (id, ctx.content_rect())));
                 let map_name = ed.map_name().to_string();
                 let busy = ed.story_busy();
-                let out = self.hud.ui(&ctx, &map_name, busy, &team, &mut ed.team, &mut self.options, &self.input, &mut options_changed);
+                let content = self.content.clone().unwrap_or_default();
+                let cat = crate::bag::Catalogue::of(&content);
+                let out = self.hud.ui(&ctx, &map_name, busy, &team, &mut ed.team, &mut ed.bag, (&cat, &content), &mut self.options, &self.input, &mut options_changed);
                 let save = ed.save_game();
                 if out == crate::play_hud::Out::Exit {
                     self.leaving = true;
@@ -1640,6 +1655,10 @@ impl eframe::App for GameApp {
                         let ids = crate::team::ids(&self.party);
                         let in_battle: Vec<String> = self.fielded.iter().filter_map(|&i| ids.get(i).cloned()).collect();
                         ed.team.record(crate::team::fought(&director.battle, &in_battle));
+                        // what the battle used comes out of the Bag
+                        if let Some(c) = self.content.as_ref() {
+                            ed.bag.after_battle(c, &self.bag_in, &director.battle.side(Side::Player).bag);
+                        }
                         // each knocked out at the end loses lifeforce: its level's worth (its own,
                         // as its card says), up to the world's cap
                         let (max, cap) = self.content.as_ref().map(|c| c.world()).map_or((100, 20), |w| (w.lifeforce, w.lifeforce_ko_cap));

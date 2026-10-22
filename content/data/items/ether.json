@@ -1,0 +1,14 @@
+{
+  "id": "ether",
+  "name": "Ether",
+  "number": 4,
+  "price": 1200,
+  "pocket": "consumables",
+  "description": "Restores 10 MP",
+  "battle_use": "ether",
+  "size": [
+    1,
+    1
+  ],
+  "stack": 5
+}
