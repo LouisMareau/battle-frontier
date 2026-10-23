@@ -473,14 +473,41 @@ check("  its kind asks for variants from the first run on, as grass's, a rock's 
 fresh("test_oak", kind="tree", height=4.0)
 asked = rc.prompt(mr.load(SCRATCH, "test_oak"))
 check("a tree: its trunk a mesh, its foliage clusters of leaf cards crossing, cut to the leaves' silhouette, no billboards, painted for the wind, a tree prop",
-      "a tree 4.0 cells tall, its trunk a mesh and its foliage clusters of leaf cards" in asked and "Tree: its trunk and its main branches are meshes" in asked
+      "a tree 4.0 cells tall, its trunk a mesh and its foliage clusters of leaf cards" in asked and "- trunk: its trunk and its main branches are meshes" in asked
       and "3 or 4 cards" in asked and "no camera-facing billboards" in asked and "cut to the leaves' silhouette" in asked
       and 'category "tree", blocking the way' in asked and "the trunk rooted" in asked, asked[:3000])
+# the window's kinds (request_kinds.json): a kind's instructions in every run's prompt, a variety's
+# added to them (one named the same replacing the kind's), a kind the user added made as one of
+# the kit's and named so, and a project's own copy read before the standard one
+import json  # noqa: E402
+catalogue = mr.kinds()
+check("the standard kinds: the kit's eight, each made as itself, the flower's and the tree's instructions",
+      [k["id"] for k in catalogue] == list(mr.KINDS) and all(k["made_as"] == k["id"] for k in catalogue)
+      and [f["keyword"] for f in next(k for k in catalogue if k["id"] == "tree")["features"]] == ["trunk", "foliage", "colour", "wind"], str([k["id"] for k in catalogue]))
+own = [dict(k) for k in catalogue]
+tree = next(k for k in own if k["id"] == "tree")
+tree["varieties"] = [{"id": "pine", "name": "Pine", "params": tree["params"], "features": [
+    {"keyword": "Foliage", "text": "needles in tiers of drooping cards, darker green"}, {"keyword": "cones", "text": "a few brown cones hanging under the tiers"}]}]
+own.append({"id": "bush", "name": "Bush", "made_as": "environment", "params": ["height", "style"], "features": [{"keyword": "fur", "text": "no fur: leaves as small cards"}], "varieties": []})
+(SCRATCH / "private" / "requests").mkdir(parents=True, exist_ok=True)
+(SCRATCH / mr.OWN_KINDS).write_text(json.dumps({"kinds": own}), encoding="utf-8")
+fresh("test_pine", kind="tree", kind_id="tree", variety="pine", height=6.0)
+asked = rc.prompt(mr.load(SCRATCH, "test_pine"), root=SCRATCH)
+check("a variety: named so, its kind's instructions with its own, one named the same replacing the kind's",
+      "a pine (a variety of tree): a tree 6.0 cells tall" in asked and "- trunk: its trunk and its main branches are meshes" in asked
+      and "- Foliage: needles in tiers of drooping cards" in asked and "each cluster a few curved planes" not in asked and "- cones: a few brown cones" in asked, asked[:3000])
+fresh("test_bush", kind="environment", kind_id="bush", height=1.2)
+asked = rc.prompt(mr.load(SCRATCH, "test_bush"), root=SCRATCH)
+check("a kind of the user's own: made as its kit kind, named so, its own instructions", "a bush: an environment asset 1.2 cells tall" in asked
+      and "Environment: an asset that dresses the outdoors" in asked and "- fur: no fur: leaves as small cards" in asked and "- wind: what the wind moves" not in asked, asked[:2500])
+check("  the project's own kinds read first, the standard without a project", any(k["id"] == "bush" for k in mr.kinds(SCRATCH)) and not any(k["id"] == "bush" for k in mr.kinds())
+      and mr.kind_key(mr.load(SCRATCH, "test_bush")) == "bush" and mr.kind_key(mr.load(SCRATCH, "test_pine")) == "tree")
+(SCRATCH / mr.OWN_KINDS).unlink()
 fresh("test_boulder", kind="rock", cells=[2, 1], many=True)
 asked = rc.prompt(mr.load(SCRATCH, "test_boulder"))
 check("a rock: by its footprint, its height its pictures' proportions', fitted about its cells", "a rock on about 2 x 1 cells, as tall as its pictures' proportions make it" in asked
       and "Rock: made finely, on about 2 x 1 cells" in asked and "kit.fit_footprint(parts, job.cells) in place of kit.fit" in asked
-      and "moss in patches" in asked and 'category "rock", blocking the way' in asked, asked[:2500])
+      and "- moss: in patches where moss grows" in asked and 'category "rock", blocking the way' in asked, asked[:2500])
 check("  toon whatever the record said before (no toggle any more), drawn by the thousand when asked: as light as it can be", "Not toon" not in asked and "Toon: it's drawn" in asked
       and "Drawn by the thousand" in asked and f"about {rc.MANY_VERTICES} in all" in asked and "each loose piece (a leaf, a petal, a blade) a piece of its own" in asked)
 check("  in the record's layout: toon and drawn by the thousand after mine, the rating after the comments",

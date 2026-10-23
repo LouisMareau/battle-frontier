@@ -681,7 +681,8 @@ mod run {
     /// The request's files a run is given: its folder's (its log and the run's own notes aside),
     /// each at request/NAME; the props it made, kept in this browser, at project/PATH; and what
     /// the ratings teach of its kind (requests.md, "What the ratings teach"): its best and worst
-    /// rated models' records, renders and scripts, and the kind's lessons, at project/PATH.
+    /// rated models' records, renders and scripts, and the kind's lessons, at project/PATH; and the
+    /// window's kinds as this browser has them, when it has its own.
     fn given(root: &Path, r: &ModelRequest) -> Vec<(String, Vec<u8>)> {
         let mut out = vec![];
         for e in disk::read_dir(&folder(root).join(&r.id)).unwrap_or_default() {
@@ -707,7 +708,7 @@ mod run {
             }
         }
         let (all, _) = load_all(root);
-        let (best, worst) = best_and_worst(&all, r.kind, &r.id);
+        let (best, worst) = best_and_worst(&all, &r.kind_key(), &r.id);
         for q in best.into_iter().chain(worst) {
             let names = std::iter::once("request.json".to_string()).chain(q.previews.iter().cloned()).chain(std::iter::once("model.py".to_string()));
             for name in names {
@@ -716,9 +717,13 @@ mod run {
                 }
             }
         }
-        let word = serde_json::to_value(r.kind).ok().and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+        let word = r.kind_key();
         if let Ok(bytes) = disk::read(folder(root).join(".lessons").join(format!("{word}.md"))) {
             out.push((format!("project/private/requests/.lessons/{word}.md"), bytes));
+        }
+        // the window's kinds as this browser has them (its instructions): the run's prompt reads them
+        if let Ok(bytes) = disk::read(folder(root).join("kinds.json")) {
+            out.push(("project/private/requests/kinds.json".to_string(), bytes));
         }
         out
     }

@@ -9,7 +9,9 @@
 // console, the scripts' [request] lines moving the bar, the request done), its outputs back
 // (its render into its folder, the prop and its model into the asset browser), the uploads and
 // the outputs taken off the key's files; the page opened again, the request is still there,
-// done; a second Start finds the agent and its environment again, makes neither.
+// done; a second Start finds the agent and its environment again, makes neither. The kinds as
+// tabs: a kind's window, an instruction added to it (a keyword and how), a variety with one of
+// its own, a kind of the user's own made as one of the kit's, all of it kept in this browser.
 // Screenshots go to screenshots/requests-*.png.
 //     node tools/requestcheck.mjs
 import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -144,7 +146,7 @@ const server = await serve(0, { handle });
 // a profile of its own, empty: nothing kept from another run
 const profile = join(root, 'build', 'chrome-requestcheck');
 rmSync(profile, { recursive: true, force: true });
-const browser = await Browser.launch({ width: 1400, height: 900, port: 9493, profiles: profile, args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu'] });
+const browser = await Browser.launch({ width: 1400, height: 900, port: 9493, profiles: profile, args: ['--ignore-gpu-blocklist', '--use-angle=d3d11', '--enable-unsafe-webgpu', '--mute-audio'] });
 const data = (key) => browser.evaluate(`document.body.dataset[${JSON.stringify(key)}] ?? ''`);
 const cmd = async (c) => {
   await browser.evaluate(`(document.body.dataset.cmd = ${JSON.stringify(c)}, true)`);
@@ -271,6 +273,58 @@ try {
   const again = (api.sessions[1]?.resources ?? []).map((r) => r.mount_path).sort();
   check('  given what the first made: its render, and its prop and model (kept in the browser) for the project',
     again.includes(`/request/preview_front.png`) && again.includes(`/project/temporary/data/props/${ID}.json`) && again.includes(`/project/temporary/assets/models/${ID}.glb`), again.join(' '));
+
+  // 7. the kinds as tabs: the Tree tab (none of its requests listed); its window: an instruction
+  // added (a keyword and how), a variety (Pine) with one of its own; a kind of the user's own
+  // (Bush, made as environment from its tab: environment's instructions to start); all of it
+  // kept in this browser once the page is opened again
+  const typeInto = async (name, text) => {
+    await press(name);
+    await browser.key('a', { ctrl: true });
+    await browser.type(text);
+    await sleep(150);
+  };
+  await press('uiRequestTab_tree');
+  check('the kinds as tabs: Tree shown, none of its requests listed', (await data('requesttab')) === 'tree' && (await data('requestlisted')) === '', `${await data('requesttab')} · listed "${await data('requestlisted')}"`);
+  await press('uiRequestKindEdit');
+  await sleep(300);
+  check('  its window open', (await data('requestkind')) === 'tree', await data('requestkind'));
+  await browser.waitFor('(document.body.dataset.uiKindFeatureAdd ?? "") !== "" && (document.body.dataset.uiKindDone ?? "") !== ""', { what: "the kind window's buttons" });
+  await sleep(300);
+  await press('uiKindFeatureAdd');
+  await sleep(300);
+  await typeInto('uiKindFeatureKey_4', 'bark');
+  await typeInto('uiKindFeatureText_4', 'rough vertical ridges in the mesh, darker in the grooves');
+  await typeInto('uiKindVarietyName', 'Pine');
+  await press('uiKindVarietyAdd');
+  await sleep(300);
+  await press('uiKindFeatureAdd');
+  await sleep(300);
+  await typeInto('uiKindFeatureKey_0', 'foliage');
+  await typeInto('uiKindFeatureText_0', 'needles in drooping tiers of cards');
+  await sleep(1000);
+  const kinds = await data('requestkinds');
+  check('  an instruction added to the tree, a variety with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark[pine:foliage]'), kinds);
+  await shot('7-kind');
+  await press('uiKindDone');
+  await press('uiRequestTab_environment');
+  await press('uiRequestKindAdd');
+  await sleep(300);
+  await browser.waitFor('(document.body.dataset.uiKindNewName ?? "") !== ""', { what: 'the new kind dialog' });
+  await typeInto('uiKindNewName', 'Bush');
+  await press('uiKindNewOk');
+  await sleep(1000);
+  check("a kind of the user's own: Bush, made as environment, its instructions environment's to start, shown", (await data('requesttab')) === 'bush' && (await data('requestkinds')).includes('bush<environment>:wind'), `${await data('requesttab')} · ${await data('requestkinds')}`);
+  await shot('7-bush');
+  await press('uiKindDone');
+  await press('uiRequestTab_all');
+  check('  All: every request listed again', (await data('requestlisted')).split(',').includes(ID), await data('requestlisted'));
+  await editor();
+  await sleep(500);
+  if ((await data('requests')) !== 'open') await press('uiRequests');
+  await sleep(600);
+  const kept = await data('requestkinds');
+  check('  all of it kept in this browser, the page opened again', kept.includes('bark[pine:foliage]') && kept.includes('bush<environment>:wind'), kept);
   if (browser.errors.length) {
     failed++;
     console.log('PAGE ERRORS:\n' + browser.errors.join('\n'));

@@ -922,7 +922,22 @@ tail, wing, and misc for a piece you name yourself): a click adds each joint, ch
 root out, and a right-click ends the line. Claude works out which part of the creature each
 line is on when it draws its own lines, and rigs the creature on them. It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
-committed. The list shows each request as a card as wide as it, folded at first: its status
+committed. The kinds are **tabs** over the list (All, then each kind with how many requests it
+has): a tab shows that kind's requests, and pictures dropped while it's shown start a request of
+it. A kind's **Instructions…** opens its window: what every request of it asks Claude, a
+feature each, a keyword (fur, colour, the trunk...) and how a run handles it, added, changed or
+taken out as you like (the kinds' own, written so far, are there to start from: a flower's stem,
+leaves, petals, heart and wind, a rock's detail, colour, moss and plants, a tree's trunk,
+foliage, colours and wind...); the settings its requests are asked, ticked from the window's
+own (height, cells, style, pose, shapes, the bones, variants, drawn by the thousand, the lines
+checked first; those the kit needs stay ticked); and its **varieties** (a pine of the trees),
+each with settings of its own and instructions added to the kind's, one with the same keyword
+replacing the kind's. **+** adds a kind of your own, made as one of the eight (how the kit
+makes it and what it becomes in the game), its settings and instructions that kind's to start.
+A request's Kind row lists the kinds (and the varieties of its own), its kind's instructions
+folded under it with Edit…. The kinds are `tools/blender/request_kinds.json`, which the desktop
+edits (commit it to share what you've taught them); a browser keeps its own copy, which its
+runs are given. The list shows each request as a card as wide as it, folded at first: its status
 (waiting, in progress, failed, done) and its kind as tags, its name, an "i" with the rest of
 what it asks for when hovered (its height, its style, its cells, shapes, variants, where its
 model goes, its notes, its folder), and its button at the end, with a bar at its foot for how

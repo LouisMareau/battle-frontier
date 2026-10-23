@@ -841,6 +841,20 @@ make it on that footprint.
   never;
 - `kit.finish(..., category="rock")` (its default for the kind), blocking the way.
 
+## The kinds' instructions
+
+The window's kinds (its tabs) are `tools/blender/request_kinds.json` (a browser's own copy,
+`private/requests/kinds.json`, comes first when it's there: its runs are given it). Each is
+made as one of the eight kinds above (`made_as`: how the kit makes it, what it becomes), and
+has its instructions: a feature each, a keyword and how to handle it, the user's. A request's
+`kind_id` names its window kind when it isn't one of the eight (`kind` is then how it's made),
+and `variety` its variety of it: a variety's instructions are added to its kind's, one with
+the same keyword replacing the kind's. The prompt lists them all under "Its kind's
+instructions": follow every one, as the user wrote it, along with the recipe (where they
+disagree with a section here, the instruction is the user's word on this kind and wins; the
+kit's own rules, what `kit.finish` checks, still hold). `python tools/blender/model_requests.py
+new ... --kind bush --variety pine` asks for a kind of the window's and a variety of it.
+
 ## A tree
 
 A request of the kind `tree` is a tree: made as a prop is, `height` cells tall, with what a

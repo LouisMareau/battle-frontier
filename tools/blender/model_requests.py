@@ -74,6 +74,10 @@ FIELDS = {
     "id": "",
     "name": "",
     "kind": "creature",
+    # the window's kind it was asked as (a kind the user added names its own, made as `kind`;
+    # empty: `kind` itself), and its variety of that kind (empty: none): request_kinds.json
+    "kind_id": "",
+    "variety": "",
     "height": 1.0,
     # grass: the cells it fills to their edges (across x, deep z); a rock: its footprint, about
     "cells": [1, 1],
@@ -132,6 +136,10 @@ KINDS = ("creature", "prop", "grass", "flower", "rock", "tree", "environment", "
 VARYING = ("grass", "flower", "rock", "tree", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
 VARIANTS_CAP = 12
+# the window's kinds: the standard set (beside this file), and a browser's own copy (its runs
+# are given it), which a project reads first
+KINDS_FILE = Path(__file__).resolve().parent / "request_kinds.json"
+OWN_KINDS = Path("private") / "requests" / "kinds.json"
 # grass is grown over whole fields (the engine grows it through tall ground, one to a cell) and
 # drawn thinner further off by leaving out whole pieces of it (world::grass): the most vertices
 # it may have a cell as made, and at its thinnest (a piece, with any mat as wide as its cells),
@@ -311,10 +319,53 @@ BEST, WORST, SHOWN = 60, 40, 3
 LESSONS = Path("private") / "requests" / ".lessons"
 
 
+def kind_key(record):
+    """The window's kind a request was asked as (its tab): its `kind_id`, else its `kind`."""
+    return record.get("kind_id") or record["kind"]
+
+
+def kinds(root=None):
+    """The window's kinds (request_kinds.json's): a project's own copy first
+    (private/requests/kinds.json, a browser's, its runs given it), then the project's
+    tools/blender/request_kinds.json, then the one beside this file; none readable, none."""
+    places = [Path(root) / OWN_KINDS, Path(root) / "tools" / "blender" / "request_kinds.json"] if root is not None else []
+    for path in places + [KINDS_FILE]:
+        if path.is_file():
+            try:
+                return json.loads(path.read_text(encoding="utf-8")).get("kinds", [])
+            except (ValueError, OSError):
+                continue
+    return []
+
+
+def kind_of(record, catalogue):
+    """A request's kind in the catalogue (its window kind's; else the one its `kind` is) and its
+    variety there, each None when there's none."""
+    key = kind_key(record)
+    k = next((k for k in catalogue if k.get("id") == key), None) or next((k for k in catalogue if k.get("id") == record["kind"]), None)
+    v = next((v for v in (k or {}).get("varieties", []) if v.get("id") == record.get("variety")), None) if record.get("variety") else None
+    return k, v
+
+
+def instructions(record, catalogue):
+    """What a request's kind asks of every run, a feature each (keyword, how): its kind's, then its
+    variety's, one with the same keyword replacing the kind's where it was."""
+    k, v = kind_of(record, catalogue)
+    out = [(f.get("keyword", "").strip(), f.get("text", "").strip()) for f in (k or {}).get("features", [])]
+    for f in (v or {}).get("features", []):
+        key, text = f.get("keyword", "").strip(), f.get("text", "").strip()
+        at = next((i for i, (o, _) in enumerate(out) if o.lower() == key.lower()), None)
+        if at is None:
+            out.append((key, text))
+        else:
+            out[at] = (key, text)
+    return [(key, text) for key, text in out if key or text]
+
+
 def rated(root, kind, but=None):
     """The models of a kind the user has rated (made, with a rating), best first (by rating,
-    then by name), `but` (the request being made) left out."""
-    out = [r for r in every(root) if r["kind"] == kind and r["status"] == "done" and r.get("rating") is not None and r["id"] != but]
+    then by name), `but` (the request being made) left out. By the window's kind (`kind_key`)."""
+    out = [r for r in every(root) if kind_key(r) == kind and r["status"] == "done" and r.get("rating") is not None and r["id"] != but]
     return sorted(out, key=lambda r: (-int(r["rating"]), r["name"].lower(), r["id"]))
 
 
@@ -336,7 +387,7 @@ def lessons(root, rid):
     learnt, then its models rated best and worst, each with its notes, what the user said of it,
     what its run said, its renders and its model.py. Empty when there's nothing to learn yet."""
     record = load(root, rid)
-    kind = record["kind"]
+    kind = kind_key(record)
     best, worst = best_and_worst(rated(root, kind, but=rid))
     path = lessons_path(root, kind)
     learnt = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
@@ -380,7 +431,7 @@ def learnt(root, rid, works="", fails=""):
     """What a run takes from the ratings, for the next runs of its request's kind: the kind's
     lessons written again whole (what works, what fails; short, the style and the way of
     building, not one model's details), and a line in the request's log. Its path."""
-    kind = load(root, rid)["kind"]
+    kind = kind_key(load(root, rid))
     path = lessons_path(root, kind)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = f"Works:\n{works.strip() or '(nothing yet)'}\n\nFails:\n{fails.strip() or '(nothing yet)'}\n"
@@ -1043,7 +1094,7 @@ def main(argv):
         print(f"{r['id']}: " + ("not rated" if r["rating"] is None else f"rated {r['rating']}"))
     elif verb == "lessons":
         said = lessons(root, argv[0])
-        print("\n".join(said) if said else f"Nothing to learn yet: no {load(root, argv[0])['kind']} model is rated, and no run has learnt anything.")
+        print("\n".join(said) if said else f"Nothing to learn yet: no {kind_key(load(root, argv[0]))} model is rated, and no run has learnt anything.")
     elif verb == "learnt":
         works, fails = option("--works", ""), option("--fails", "")
         path = learnt(root, argv[0], works, fails)
@@ -1063,8 +1114,15 @@ def main(argv):
         if "--many" in argv:
             argv.remove("--many")
             fields["many"] = True
+        # a kind of the window's (one the user added): made as its own, asked as it; a variety of it
+        if fields["kind"] not in KINDS:
+            k = next((k for k in kinds(root) if k.get("id") == fields["kind"]), None)
+            if k is not None and k.get("made_as") in KINDS:
+                fields["kind_id"], fields["kind"] = fields["kind"], k["made_as"]
+        fields["variety"] = option("--variety", "")
         if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
-            raise SystemExit(f"kind: {' or '.join(KINDS)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
+            known = list(KINDS) + [k.get("id") for k in kinds(root) if k.get("id") not in KINDS]
+            raise SystemExit(f"kind: {' or '.join(known)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")
         r = new(root, argv[0], argv[1:], **fields)
         print(f"{r['id']}: a new request, {len(r['images'])} picture{'' if len(r['images']) == 1 else 's'} (private/requests/{r['id']}/)")
     else:

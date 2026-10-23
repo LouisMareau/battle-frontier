@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 mod cloud;
 mod disk;
+mod kinds;
 
 #[cfg_attr(not(target_arch = "wasm32"), allow(unused_imports))]
 pub(super) use cloud::may_write;
@@ -153,15 +154,41 @@ impl Kind {
         }
     }
 
-    /// Its settings ask for variants of it (each a prop of its own) from the first run on.
-    pub(super) fn varies(self) -> bool {
-        matches!(self, Kind::Grass | Kind::Flower | Kind::Rock | Kind::Tree | Kind::Environment)
-    }
-
     /// It can be drawn by the thousand (strewn over fields with the grass and the flowers): not
     /// a creature, not a set of floor tiles.
     pub(super) fn strewn(self) -> bool {
         !matches!(self, Kind::Creature | Kind::Floor)
+    }
+
+    /// The kit's eight, in the window's order.
+    pub(super) const ALL: [Kind; 8] = [Kind::Creature, Kind::Prop, Kind::Grass, Kind::Flower, Kind::Rock, Kind::Tree, Kind::Environment, Kind::Floor];
+
+    /// Its id, as the files have it ("floor" for a floor set).
+    pub(super) fn id(self) -> &'static str {
+        match self {
+            Kind::Creature => "creature",
+            Kind::Prop => "prop",
+            Kind::Grass => "grass",
+            Kind::Flower => "flower",
+            Kind::Rock => "rock",
+            Kind::Tree => "tree",
+            Kind::Environment => "environment",
+            Kind::Floor => "floor",
+        }
+    }
+
+    /// What it is, in a few words (its tab's and its button's tip).
+    pub(super) fn about(self) -> &'static str {
+        match self {
+            Kind::Creature => "Rigged: a spine, a head, limbs and a tail, and an idle animation",
+            Kind::Prop => "Anything put on a map: a barrel, a lamp, a sign",
+            Kind::Grass => "A patch of grass filling its cells to their edges, so copies side by side join without a gap: a grass prop (tall ground can grow it too)",
+            Kind::Flower => "A flower made finely: its stem, its leaves, its petals (curved, cupped, in rings) and its heart (a disc, a dome or a cone; stamens, long thin filaments tipped with pollen, where it has them). A meadow can grow it",
+            Kind::Rock => "A rock made finely: its facets, cracks and strata, its colours, moss, grass and flowers on it. Asked for by its footprint: Claude works out its height from the pictures' proportions",
+            Kind::Tree => "A tree: its trunk and branches as meshes, its foliage as clusters of leaves, each a few curved planes (cards) crossing, their edges cut to the leaves' silhouette, painted for the wind (the trunk rooted, the clusters swaying and fluttering). Tree areas grow it",
+            Kind::Environment => "What dresses the outdoors: rocks, bushes, flowers, logs, trees",
+            Kind::Floor => "A set of floor tiles, each a cell, laid to fit (by wave function collapse): a pavement, old ruins, marble, a wood tiling. Laid in buildings (the Build tool's Flooring) and out of doors (the Ground tool's Floors tab)",
+        }
     }
 }
 
@@ -272,7 +299,12 @@ pub(super) struct ModelRequest {
     /// its folder's name: a slug of its name (following the name while it waits)
     pub id: String,
     pub name: String,
+    /// how the kit makes it (one of its eight)
     pub kind: Kind,
+    /// the window's kind it was asked as (a kind the user added names its own, made as `kind`;
+    /// empty: `kind` itself), and its variety of that kind (empty: none): `kinds`
+    pub kind_id: String,
+    pub variety: String,
     /// how tall it stands, in cells
     pub height: f64,
     /// grass: the cells it fills to their edges, across x and z
@@ -360,6 +392,8 @@ impl Default for ModelRequest {
             id: String::new(),
             name: String::new(),
             kind: Kind::Creature,
+            kind_id: String::new(),
+            variety: String::new(),
             height: 1.0,
             cells: [1, 1],
             style: Style::Smooth,
@@ -405,8 +439,8 @@ pub(super) const SHOWN: usize = 3;
 /// runs of that kind look at (model_requests.py's best_and_worst; a browser's run is given
 /// their files, the desktop's runs find them themselves). By rating, then by name.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
-pub(super) fn best_and_worst<'a>(list: &'a [ModelRequest], kind: Kind, but: &str) -> (Vec<&'a ModelRequest>, Vec<&'a ModelRequest>) {
-    let mut rated: Vec<&ModelRequest> = list.iter().filter(|r| r.kind == kind && r.status == Status::Done && r.rating.is_some() && r.id != but).collect();
+pub(super) fn best_and_worst<'a>(list: &'a [ModelRequest], kind: &str, but: &str) -> (Vec<&'a ModelRequest>, Vec<&'a ModelRequest>) {
+    let mut rated: Vec<&ModelRequest> = list.iter().filter(|r| r.kind_key() == kind && r.status == Status::Done && r.rating.is_some() && r.id != but).collect();
     rated.sort_by(|a, b| b.rating.cmp(&a.rating).then(a.name.to_lowercase().cmp(&b.name.to_lowercase())).then(a.id.cmp(&b.id)));
     let best = rated.iter().filter(|r| r.rating >= Some(BEST)).take(SHOWN).copied().collect();
     let worst = rated.iter().rev().filter(|r| r.rating <= Some(WORST)).take(SHOWN).copied().collect();
@@ -418,6 +452,15 @@ pub(super) fn best_and_worst<'a>(list: &'a [ModelRequest], kind: Kind, but: &str
 pub(super) const LINES_READY: &str = "lines ready: check them";
 
 impl ModelRequest {
+    /// The window's kind it was asked as (its tab): its kind id, else its kind's.
+    pub(super) fn kind_key(&self) -> String {
+        if self.kind_id.is_empty() {
+            self.kind.id().to_string()
+        } else {
+            self.kind_id.clone()
+        }
+    }
+
     /// Its lines drawn, waiting for the user's check: the window shows them with "The lines
     /// look right: go on".
     pub(super) fn lines_ready(&self) -> bool {
@@ -501,6 +544,7 @@ mod desk {
     use super::super::assets::{slug, title};
     use super::super::{badge, hint, mark, section, warn};
     use super::disk;
+    use super::kinds::{KindDef, Param};
     use super::{bone_colour, bone_names, outline_colour, Bone, Kind, ModelRequest, Outline, Pose, Progress, Requests, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
     use crate::platform::{self, Dropped};
 
@@ -596,6 +640,39 @@ mod desk {
         let r = ModelRequest { id: free_id(root, &name), name, ..Default::default() };
         save(root, &r)?;
         Ok(r)
+    }
+
+    /// What a request's settings no longer ask (its kind's or its variety's params: `params`),
+    /// set back to what a new request has (a drawing's cells, from its outline, kept).
+    pub(in super::super) fn unasked(r: &mut ModelRequest, params: &[Param]) {
+        let fresh = ModelRequest::default();
+        if !params.contains(&Param::Pose) {
+            r.pose = fresh.pose;
+        }
+        if !params.contains(&Param::Cells) && r.parent.is_empty() {
+            r.cells = fresh.cells;
+        }
+        if !params.contains(&Param::Style) {
+            r.style = fresh.style;
+        }
+        if !params.contains(&Param::Shapes) {
+            r.shapes = fresh.shapes;
+        }
+        if !params.contains(&Param::Many) {
+            r.many = false;
+        }
+        if !params.contains(&Param::CheckLines) {
+            r.check_lines = false;
+        }
+        if !params.contains(&Param::Variants) && !r.can_vary() {
+            (r.variants, r.vary) = (0, String::new());
+        }
+    }
+
+    /// The first letter made a capital ("grass": "Grass"), for a mark's name.
+    fn capital(word: &str) -> String {
+        let mut c = word.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
     }
 
     /// The kind of picture the bytes are, as a file extension.
@@ -1056,6 +1133,10 @@ mod desk {
         /// the runs that would have started (the tests start none)
         #[cfg(test)]
         pub launched: Vec<Vec<String>>,
+        /// the window's kinds (its tabs), and how they're shown and edited
+        pub kinds: super::kinds::Catalogue,
+        pub kinds_ui: super::kinds::KindsUi,
+        kinds_loaded: bool,
     }
 
     /// The Bones window's state: which request and picture are drawn on, the part the next
@@ -1295,6 +1376,14 @@ mod desk {
             (self.list, self.problems) = load_all(&root);
             self.seen = snapshot(&root);
             self.loaded = true;
+            if !self.kinds_loaded {
+                let (kinds, trouble) = super::kinds::Catalogue::load(&root);
+                self.kinds = kinds;
+                self.kinds_loaded = true;
+                if let Some(t) = trouble {
+                    self.problems.push(t);
+                }
+            }
             if self.selected.as_ref().is_some_and(|id| !self.list.iter().any(|r| &r.id == id)) {
                 self.selected = None;
             }
@@ -1302,6 +1391,60 @@ mod desk {
 
         fn picture_path(&self, id: &str, file: &str) -> PathBuf {
             folder(&self.root()).join(id).join(file)
+        }
+
+        /// Whether a request is in the tab shown (all of them on All).
+        fn in_tab(&self, r: &ModelRequest) -> bool {
+            self.kinds_ui.tab.as_ref().is_none_or(|t| *t == r.kind_key())
+        }
+
+        /// A request made of a kind of the window's: made as its making, asked as it, no variety;
+        /// what its settings no longer ask set back.
+        pub(in super::super) fn set_kind(&self, r: &mut ModelRequest, k: &KindDef) {
+            r.kind_id = if k.built_in() { String::new() } else { k.id.clone() };
+            r.kind = k.made_as;
+            r.variety.clear();
+            let params = self.kinds.params_of(r);
+            unasked(r, &params);
+        }
+
+        /// A request made a variety of its kind (or none): what its settings no longer ask set back.
+        fn set_variety(&self, r: &mut ModelRequest, variety: &str) {
+            r.variety = variety.to_string();
+            let params = self.kinds.params_of(r);
+            unasked(r, &params);
+        }
+
+        /// The tab row over the list (All, each kind, +, Instructions…).
+        pub(in super::super) fn kind_tabs(&mut self, ui: &mut egui::Ui) {
+            let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+            for r in &self.list {
+                *counts.entry(r.kind_key()).or_default() += 1;
+            }
+            super::kinds::tabs(ui, &self.kinds, &mut self.kinds_ui, &counts, self.list.len());
+            platform::set_hook("requesttab", self.kinds_ui.tab.as_deref().unwrap_or("all"));
+        }
+
+        /// The kinds' windows (a kind added; a kind's own), the kinds written a moment after a
+        /// change: what to say when that went wrong.
+        pub(in super::super) fn kind_windows(&mut self, ctx: &egui::Context) -> Option<String> {
+            let now = ctx.input(|i| i.time);
+            let mut changed = super::kinds::add_window(ctx, &mut self.kinds, &mut self.kinds_ui);
+            changed |= super::kinds::kind_window(ctx, &mut self.kinds, &mut self.kinds_ui);
+            if changed {
+                self.kinds_ui.changed = Some(now);
+            }
+            if self.kinds_ui.changed.is_some() {
+                ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            }
+            let root = self.root();
+            let kept = self.kinds_ui.keep(&mut self.kinds, &root, now);
+            platform::set_hook("requestkinds", &self.kinds.summary());
+            platform::set_hook("requestkind", if self.kinds_ui.open { self.kinds_ui.tab.as_deref().unwrap_or("") } else { "" });
+            match kept {
+                Some(Err(e)) => Some(format!("The kinds weren't kept: {e}")),
+                _ => None,
+            }
         }
 
         /// The first request being modelled, if any.
@@ -1348,7 +1491,13 @@ mod desk {
                     Err(e) => return Some(e),
                 },
                 None => match create(&root, first) {
-                    Ok(r) => r,
+                    Ok(mut r) => {
+                        // the tab shown: a request of its kind
+                        if let Some(k) = self.kinds_ui.tab.as_deref().and_then(|t| self.kinds.kind(t)).cloned() {
+                            self.set_kind(&mut r, &k);
+                        }
+                        r
+                    }
                     Err(e) => return Some(e),
                 },
             };
@@ -2128,9 +2277,10 @@ mod desk {
 
         fn list_column(&mut self, ui: &mut egui::Ui) -> Option<Run> {
             let mut asked = self.queue_column(ui);
-            let list = self.list.clone();
+            let list: Vec<ModelRequest> = self.list.iter().filter(|r| self.in_tab(r)).cloned().collect();
+            platform::set_hook("requestlisted", &list.iter().map(|r| r.id.as_str()).collect::<Vec<_>>().join(","));
             if list.is_empty() && self.problems.is_empty() {
-                hint(ui, "No requests yet.");
+                hint(ui, if self.kinds_ui.tab.is_some() { "No requests of this kind yet: pictures dropped now start one." } else { "No requests yet." });
             }
             for r in &list {
                 // (for the checks: its status, how far along, its step)
@@ -2165,12 +2315,13 @@ mod desk {
                             } else if let Some(a) = self.run_button(ui, r, true) {
                                 asked = Some(a);
                             }
-                            let info = info_icon(ui).on_hover_text(details(r));
+                            let label = self.kinds.label(r);
+                            let info = info_icon(ui).on_hover_text(details_as(r, &label));
                             mark(&format!("uiRequestInfo_{}", r.id), &info);
                             if let Some(v) = r.rating {
                                 rating_tag(ui, v);
                             }
-                            kind_tag(ui, r.kind);
+                            kind_tag(ui, &label, r.kind);
                             // the name in what's left, cut short (whole when hovered)
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 ui.add(egui::Label::new(RichText::new(&r.name).strong()).truncate()).on_hover_text(&r.name);
@@ -2274,6 +2425,9 @@ mod desk {
             let before = self.list[i].clone();
             let mut r = before.clone();
             let mut remove = None;
+            // what its kind (or its variety) asks: the settings shown
+            let kinds = self.kinds.clone();
+            let params = kinds.params_of(&r);
             // the drawings Claude works from, as it makes them: see how well the lines sit
             let drawn: Vec<String> = r.lines.iter().filter(|f| disk::is_file(&self.picture_path(&r.id, f))).cloned().collect();
             if r.lines_ready() {
@@ -2345,40 +2499,65 @@ mod desk {
                     ui.end_row();
                 }
                 ui.label("Kind");
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut r.kind, Kind::Creature, "creature").on_hover_text("Rigged: a spine, a head, limbs and a tail, and an idle animation");
-                    ui.selectable_value(&mut r.kind, Kind::Prop, "prop");
-                    let grass = ui.selectable_value(&mut r.kind, Kind::Grass, "grass").on_hover_text(
-                        "A patch of grass filling its cells to their edges, so copies side by side join without a gap: a grass prop (tall ground can grow it too)",
-                    );
-                    mark("uiRequestKindGrass", &grass);
-                    let flower = ui.selectable_value(&mut r.kind, Kind::Flower, "flower").on_hover_text(
-                        "A flower made finely: its stem, its leaves, its petals (curved, cupped, in rings) and its heart (a disc, a dome or a cone; stamens, long thin filaments tipped with pollen, where it has them). A meadow can grow it",
-                    );
-                    mark("uiRequestKindFlower", &flower);
-                    let rock = ui.selectable_value(&mut r.kind, Kind::Rock, "rock").on_hover_text(
-                        "A rock made finely: its facets, cracks and strata, its colours, moss, grass and flowers on it. Asked for by its footprint: Claude works out its height from the pictures' proportions",
-                    );
-                    mark("uiRequestKindRock", &rock);
-                    let tree = ui.selectable_value(&mut r.kind, Kind::Tree, "tree").on_hover_text(
-                        "A tree: its trunk and branches as meshes, its foliage as clusters of leaves, each a few curved planes (cards) crossing, their edges cut to the leaves' silhouette, painted for the wind (the trunk rooted, the clusters swaying and fluttering). Tree areas grow it",
-                    );
-                    mark("uiRequestKindTree", &tree);
-                    let environment = ui.selectable_value(&mut r.kind, Kind::Environment, "environment").on_hover_text("What dresses the outdoors: rocks, bushes, flowers, logs, trees");
-                    mark("uiRequestKindEnvironment", &environment);
-                    let floor = ui.selectable_value(&mut r.kind, Kind::Floor, "floor set").on_hover_text(
-                        "A set of floor tiles, each a cell, laid to fit (by wave function collapse): a pavement, old ruins, marble, a wood tiling. Laid in buildings (the Build tool's Flooring) and out of doors (the Ground tool's Floors tab)",
-                    );
-                    mark("uiRequestKindFloor", &floor);
+                ui.vertical(|ui| {
+                    // the window's kinds (its tabs), and the varieties of its own
+                    ui.horizontal_wrapped(|ui| {
+                        for k in &kinds.kinds {
+                            let on = r.kind_key() == k.id;
+                            let about = if k.built_in() { k.made_as.about().to_string() } else { format!("A kind of your own, made as {}: {}", k.made_as.name(), super::kinds::making(k.made_as)) };
+                            let b = ui.selectable_label(on, k.name.to_lowercase()).on_hover_text(about);
+                            mark(&format!("uiRequestKind{}", capital(&k.id)), &b);
+                            if b.clicked() && !on {
+                                self.set_kind(&mut r, k);
+                            }
+                        }
+                    });
+                    // what its kind (and its variety) will ask of the run, folded; its window to edit it
+                    let says = kinds.features_of(&r);
+                    ui.horizontal(|ui| {
+                        egui::CollapsingHeader::new(RichText::new(format!("its kind's instructions ({})", says.len())).size(11.5)).id_salt(("request-kind-says", &r.id)).show(ui, |ui| {
+                            for f in &says {
+                                ui.label(RichText::new(format!("{}: {}", f.keyword.trim(), f.text.trim())).size(11.5).color(Color32::from_gray(185)));
+                            }
+                            if says.is_empty() {
+                                hint(ui, "none yet");
+                            }
+                        });
+                        let edit = ui.small_button("Edit…").on_hover_text("Its kind's instructions, settings and varieties: what every request of it asks");
+                        mark("uiRequestKindInstructions", &edit);
+                        if edit.clicked() {
+                            if let Some(k) = kinds.of(&r).0 {
+                                (self.kinds_ui.tab, self.kinds_ui.open) = (Some(k.id.clone()), true);
+                                self.kinds_ui.variety = (!r.variety.is_empty()).then(|| r.variety.clone());
+                            }
+                        }
+                    });
+                    if let Some(k) = kinds.of(&r).0.filter(|k| !k.varieties.is_empty()).cloned() {
+                        ui.horizontal_wrapped(|ui| {
+                            hint(ui, "variety");
+                            let none = ui.selectable_label(r.variety.is_empty(), "none").on_hover_text("The kind itself");
+                            mark("uiRequestVariety_", &none);
+                            if none.clicked() && !r.variety.is_empty() {
+                                self.set_variety(&mut r, "");
+                            }
+                            for v in &k.varieties {
+                                let b = ui.selectable_label(r.variety == v.id, v.name.to_lowercase()).on_hover_text(format!("{} of its own instructions, added to the kind's", v.features.len()));
+                                mark(&format!("uiRequestVariety_{}", v.id), &b);
+                                if b.clicked() && r.variety != v.id {
+                                    self.set_variety(&mut r, &v.id);
+                                }
+                            }
+                        });
+                    }
                 });
                 ui.end_row();
                 // (a rock's height is its pictures' proportions' on its footprint)
-                if r.kind != Kind::Floor && r.kind != Kind::Rock {
+                if params.contains(&Param::Height) {
                     ui.label("Height");
                     ui.add(egui::DragValue::new(&mut r.height).speed(0.05).range(0.1..=40.0).suffix(" cells").max_decimals(2)).on_hover_text("How tall it stands (a cell is a metre; the player is about 1.5)");
                     ui.end_row();
                 }
-                if r.kind == Kind::Grass || r.kind == Kind::Rock {
+                if params.contains(&Param::Cells) {
                     ui.label(if r.kind == Kind::Rock { "Footprint" } else { "Cells" });
                     ui.horizontal(|ui| {
                         let across = ui.add(egui::DragValue::new(&mut r.cells[0]).range(1..=8)).on_hover_text("Across (x)");
@@ -2386,14 +2565,15 @@ mod desk {
                         ui.label("×");
                         let deep = ui.add(egui::DragValue::new(&mut r.cells[1]).range(1..=8)).on_hover_text("Deep (z)");
                         mark("uiRequestCellsZ", &deep);
-                        hint(ui, if r.kind == Kind::Rock {
-                            "cells, about: its height comes from the pictures' proportions"
-                        } else {
-                            "filled to their edges, so copies side by side join without a gap"
+                        hint(ui, match r.kind {
+                            Kind::Rock => "cells, about: its height comes from the pictures' proportions",
+                            Kind::Grass => "filled to their edges, so copies side by side join without a gap",
+                            _ => "the ground it covers, about",
                         });
                     });
                     ui.end_row();
                 }
+                if params.contains(&Param::Style) {
                 ui.label("Style");
                 ui.horizontal(|ui| {
                     ui.selectable_value(&mut r.style, Style::Smooth, "smooth").on_hover_text("Rounded, smooth shaded");
@@ -2412,7 +2592,8 @@ mod desk {
                     mark("uiRequestDetails", &details);
                     ui.end_row();
                 }
-                if r.kind == Kind::Creature {
+                }
+                if params.contains(&Param::Pose) {
                     ui.label("Default pose");
                     ui.horizontal(|ui| {
                         ui.selectable_value(&mut r.pose, Pose::TPose, "T-pose").on_hover_text("Arms (or front legs) straight out to the sides, legs straight, tail straight back: the easiest to rig and animate");
@@ -2420,6 +2601,7 @@ mod desk {
                     });
                     ui.end_row();
                 }
+                if params.contains(&Param::Shapes) {
                 ui.label("Shapes");
                 ui.horizontal(|ui| {
                     let meter = ui
@@ -2433,13 +2615,14 @@ mod desk {
                     hint(ui, &if r.shapes.unlimited { format!("up to ~{SHAPES_CAP}") } else { format!("{} to {}", r.shapes.min, r.shapes.max) });
                 });
                 ui.end_row();
+                }
                 ui.label("Notes");
                 let notes = ui.add(egui::TextEdit::multiline(&mut r.notes).desired_rows(3).desired_width(330.0).hint_text("Colours, what the pictures don't show, what matters most"));
                 mark("uiRequestNotes", &notes);
                 ui.end_row();
                 // grass and environment from the first run on; any other once it's made
                 // (Make variants, below)
-                if r.kind.varies() || r.can_vary() {
+                if params.contains(&Param::Variants) || r.can_vary() {
                     ui.label("Variants");
                     ui.horizontal(|ui| {
                         let count = ui.add(egui::DragValue::new(&mut r.variants).range(0..=VARIANTS_CAP)).on_hover_text(
@@ -2471,7 +2654,7 @@ mod desk {
                 );
                 mark("uiRequestMine", &mine);
                 ui.end_row();
-                if r.kind.strewn() {
+                if params.contains(&Param::Many) {
                     ui.label("");
                     let many = ui.checkbox(&mut r.many, "Expect large rendered count").on_hover_text(
                         "It'll be drawn by the thousand, strewn over fields with the grass and the flowers (meadows, procedural ground): made as light as it can be, the fewest vertices that keep its look, in pieces the engine can leave out further off",
@@ -2480,7 +2663,7 @@ mod desk {
                     ui.end_row();
                 }
                 // (a set of floor tiles draws no lines: it's seen from above, laid out)
-                if r.kind != Kind::Floor {
+                if params.contains(&Param::CheckLines) {
                     ui.label("");
                     let check = ui.checkbox(&mut r.check_lines, "Let me check the lines first").on_hover_text(
                         "Claude stops once it has drawn its lines over the pictures and the front and the side from them: you look, say what's off, and it goes on to the model (the long part) from there",
@@ -2600,7 +2783,7 @@ mod desk {
             if r.images.is_empty() {
                 hint(ui, "Drop pictures on the window to add them.");
             }
-            if r.kind == Kind::Creature && !r.images.is_empty() {
+            if params.contains(&Param::Bones) && !r.images.is_empty() {
                 ui.horizontal(|ui| {
                     let open = self.bones.open && self.bones.of == r.id;
                     let b = ui.button(if open { "Drawing the bones…" } else { "Draw the bones…" }).on_hover_text(
@@ -3263,8 +3446,13 @@ mod desk {
 
     /// What it is, in a line: "creature · 1.2 cells · smooth · mine · lines checked first";
     /// grass, the cells it fills and how tall; its variants, how many.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn about(r: &ModelRequest) -> String {
-        let kind = r.kind.name();
+        about_as(r, r.kind.name())
+    }
+
+    /// As `about`, its kind named `kind` (the window's: "bush", "pine (tree)").
+    pub(super) fn about_as(r: &ModelRequest, kind: &str) -> String {
         let style = match r.style {
             Style::Smooth => "smooth",
             Style::LowPoly => "low-poly",
@@ -3367,7 +3555,7 @@ mod desk {
     }
 
     /// Its kind, as a tag, a colour each.
-    fn kind_tag(ui: &mut egui::Ui, kind: Kind) {
+    fn kind_tag(ui: &mut egui::Ui, label: &str, kind: Kind) {
         let color = match kind {
             Kind::Creature => Color32::from_rgb(196, 160, 238),
             Kind::Prop => Color32::from_rgb(158, 186, 220),
@@ -3378,7 +3566,7 @@ mod desk {
             Kind::Environment => Color32::from_rgb(118, 200, 182),
             Kind::Floor => Color32::from_rgb(220, 186, 132),
         };
-        tag(ui, kind.name(), color);
+        tag(ui, label, color);
     }
 
     /// The user's rating of its model, as a tag: greener the better.
@@ -3401,8 +3589,14 @@ mod desk {
     /// What a request asks for, beyond its name and kind: its height and style (`about`), then
     /// a line each for the rest it says (its cells, shapes, pose, variants, drawings outlined,
     /// lines checked first, where its model goes, its notes), and its folder.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(in super::super) fn details(r: &ModelRequest) -> String {
-        let mut out = vec![about(r)];
+        details_as(r, r.kind.name())
+    }
+
+    /// As `details`, its kind named `kind` (the window's).
+    pub(in super::super) fn details_as(r: &ModelRequest, kind: &str) -> String {
+        let mut out = vec![about_as(r, kind)];
         if r.kind == Kind::Rock {
             out.push(format!("Footprint: about {} × {} cells, as tall as its pictures' proportions make it", r.cells[0], r.cells[1]));
         } else if r.kind != Kind::Floor {
@@ -3618,7 +3812,9 @@ mod desk {
                 // its top edge drags), the list and the request in what's left
                 super::super::dock::show(ui, st, super::super::dock::Pane::Requests, &title, |ui| {
                         d.banner(ui, hovering);
-                        ui.add_space(4.0);
+                        ui.add_space(2.0);
+                        d.kind_tabs(ui);
+                        ui.add_space(2.0);
                         let shown = d.selected.clone().or_else(|| d.busy());
                         let console = if d.console_open {
                             egui::Panel::bottom("request-console-open").resizable(true).default_size(260.0).min_size(120.0).show(ui, |ui| d.console(ui, shown))
@@ -3652,6 +3848,9 @@ mod desk {
                             });
                         });
                     });
+                if let Some(s) = d.kind_windows(ui.ctx()) {
+                    said = Some(s);
+                }
                 match asked {
                     Some(Run::Start(id)) => said = Some(d.start_run(&id, How::Whole)),
                     Some(Run::GoOn(id)) => said = Some(d.start_run(&id, How::GoOn)),
@@ -3815,7 +4014,8 @@ mod tests {
         assert!(details(&boulder).contains("Drawn by the thousand") && details(&boulder).contains("Rated 85 of 100"));
         let daisy: ModelRequest = serde_json::from_str(r#"{ "kind": "flower", "height": 0.3 }"#).unwrap();
         assert_eq!((daisy.kind, daisy.toon, daisy.many, daisy.rating, about(&daisy)), (Kind::Flower, true, false, None, "flower · 0.3 cells · smooth".to_string()));
-        assert!(Kind::Flower.varies() && Kind::Rock.varies() && Kind::Rock.strewn() && !Kind::Creature.strewn() && !Kind::Floor.strewn());
+        let varies = |k: Kind| kinds::default_params(k).contains(&kinds::Param::Variants);
+        assert!(varies(Kind::Flower) && varies(Kind::Rock) && varies(Kind::Tree) && !varies(Kind::Creature) && Kind::Rock.strewn() && !Kind::Creature.strewn() && !Kind::Floor.strewn());
         assert!(content::to_text(&grass).contains("  \"kind\": \"grass\",\n") && content::to_text(&rock).contains("  \"kind\": \"environment\",\n"));
         assert!(!short.check_lines && !short.lines_ready(), "no check unless asked");
         let ready: ModelRequest = serde_json::from_str(r#"{ "check_lines": true, "status": "waiting", "progress": { "step": "lines ready: check them" } }"#).unwrap();
@@ -3843,11 +4043,11 @@ mod tests {
             ModelRequest { status: Status::Waiting, ..made("j", Kind::Flower, Some(99)) },
         ];
         let ids = |v: Vec<&ModelRequest>| v.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
-        let (best, worst) = best_and_worst(&list, Kind::Flower, "");
+        let (best, worst) = best_and_worst(&list, "flower", "");
         assert_eq!((ids(best), ids(worst)), (vec!["b".to_string(), "a".into(), "d".into()], vec!["f".to_string(), "g".into()]));
-        let (best, _) = best_and_worst(&list, Kind::Flower, "b");
+        let (best, _) = best_and_worst(&list, "flower", "b");
         assert_eq!(ids(best), ["a", "d", "c"], "the one being made left out");
-        let (best, worst) = best_and_worst(&list, Kind::Grass, "");
+        let (best, worst) = best_and_worst(&list, "grass", "");
         assert!(best.is_empty() && worst.is_empty(), "none of that kind");
     }
 

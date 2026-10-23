@@ -469,25 +469,17 @@ FLOOR_STYLES = {
                  "pictures put it, the colours measured off them (none of the drawing's light or shade), an image texture painted from the "
                  "picture for what's too fine to model; each tile still light, as a floor is laid on many cells (about 1500 triangles a tile)."),
 }
-# a flower, made finely: its stem, leaves, petals and heart (requests.md, "A flower")
-FLOWER = ("Flower: made finely, part by part (requests.md, \"A flower\"): its stem (kit.tube along a gentle curve, tapering up to the "
-          "head, a node or two where its leaves grow), its leaves (thin slabs bent along their length and cupped, each from a node or a "
-          "rosette at its foot), its petals (each its own thin curved surface: cupped, curving out, its tip curling, in rings that overlap, "
-          "the inner ones smaller), its heart (a disc, a dome or a cone; with stamens where the design has them: long thin filaments "
-          "fanning out of it, each tipped with an anther) and the sepals under its head; each petal's colour shading along it as the design "
-          "does. Painted for the wind in one kit.plant_wind call: the stem as stems, rooted at its foot, the petals and the leaves "
-          "fluttering. kit.finish's category \"flower\", never blocking the way: a meadow can grow it among its grass.")
+# a flower, made finely, part by part (requests.md, "A flower"): how it's made, the kit's own;
+# what it's made of, its kind's instructions (request_kinds.json)
+FLOWER = ("Flower: made finely, part by part (requests.md, \"A flower\"): its stem, its leaves, its petals and its heart, as its "
+          "kind's instructions say. kit.finish's category \"flower\", never blocking the way: a meadow can grow it among its grass.")
 # a rock, made finely on about its footprint, as tall as its pictures' proportions (requests.md,
 # "A rock"; {w} x {d}: its cells)
 ROCK = ("Rock: made finely, on about {w} x {d} cells (Blender's X and Y), as the user asks: its footprint, not its height "
         "(requests.md, \"A rock\"). Its height is the pictures' proportions': draw the front {w} cells wide and the side {d} long "
         "in their proportions, and python tools/blender/model_requests.py lines works out how tall that makes it and writes it in "
         "the request (profiles.png stands it so; job.height is it then). Fit it with kit.fit_footprint(parts, job.cells) in place of "
-        "kit.fit: about its cells, its proportions kept, not exactly. As fine as the design: its mass, then its facets, cracks, "
-        "ledges and strata; its colour varying over it (paint volumes for veins, lichen and weathering, or a texture painted from "
-        "the pictures); moss in patches where moss grows (its top, its shaded side, its hollows and cracks); grass and flowers at "
-        "its foot and out of its cracks where the design has them, each blade or stem a thin piece of its own, painted for the "
-        "wind (the rock never). kit.finish's category \"rock\", blocking the way.")
+        "kit.fit: about its cells, its proportions kept, not exactly. kit.finish's category \"rock\", blocking the way.")
 # a model drawn by the thousand: as light as it can be (requests.md, "Drawn by the thousand")
 MANY = ("Drawn by the thousand: it's strewn over whole fields with the grass and the flowers (meadows, procedural ground), so make it "
         "as light as it can be while it reads right a few cells off (requests.md, \"Drawn by the thousand\"): the fewest vertices that "
@@ -498,15 +490,13 @@ MANY = ("Drawn by the thousand: it's strewn over whole fields with the grass and
 TOON = ("Toon: it's drawn with the game's toon look (light in steps, ink lines round it and along its sharp folds; requests.md, "
         "\"The toon look\"): clear shapes and flat colour regions read best, fine surface detail the light's steps would band left out. "
         "The prop is added toon.")
-# a tree: a trunk and branches of mesh, the foliage as clusters of leaf cards (requests.md, "A tree")
-TREE = ("Tree: its trunk and its main branches are meshes (the trunk tapering, forking into a few branches that reach into the "
-        "foliage); its foliage is clusters of leaves, each cluster a few curved planes (3 or 4 cards, bent a little, crossing at "
-        "the cluster's middle at different angles) whose outline is cut to the leaves' silhouette (a scalloped, leafy edge, in the "
-        "mesh itself: no transparency, the engine draws no cut-out textures and no camera-facing billboards for a model's parts, "
-        "crossed cards read as a cluster from every side), coloured as the leaves are (darker toward the cluster's underside), "
-        "two-sided as a leaf is (requests.md, \"A tree\", \"The wind\"). Painted for the wind: the trunk rooted (0 at its foot, a "
-        "little at its top), the branches more, the clusters most, their flutter on the cards; a phase per cluster. "
-        "kit.finish's category \"tree\", blocking the way, its footprint the trunk's cells (the canopy may reach past them).")
+# a tree (requests.md, "A tree"): how it's made, the kit's own and the engine's; its trunk, its
+# foliage, its colours and its wind, its kind's instructions (request_kinds.json)
+TREE = ("Tree (requests.md, \"A tree\", \"The wind\"): its trunk, its foliage and how the wind moves it as its kind's instructions "
+        "say. Its leaves are geometry: no transparency, the engine draws no cut-out textures and no camera-facing billboards for a "
+        "model's parts. kit.finish's category \"tree\", blocking the way, its footprint the trunk's cells (the canopy may reach past them).")
+# the window's kind's instructions (request_kinds.json): a line each, the user's
+INSTRUCTIONS = "Its kind's instructions (the user's, a feature each: follow every one):"
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -517,9 +507,10 @@ POSES = {
 }
 
 
-def settings_lines(record):
+def settings_lines(record, root=None):
     """What the request's settings ask of the model, a line each (a set of floor tiles': of each
-    tile, and no lines: it draws none)."""
+    tile, and no lines: it draws none), with its kind's instructions (the window's kinds:
+    request_kinds.json, the project's own with `root`)."""
     floor = record["kind"] == "floor"
     styles = FLOOR_STYLES if floor else STYLES
     out = [styles.get(record["style"], styles["smooth"])]
@@ -532,15 +523,12 @@ def settings_lines(record):
     if record["kind"] == "grass":
         w, d = record["cells"]
         out.append(f"Grass: it fills {w} x {d} cell{'' if w * d == 1 else 's'} to the edges, as a tile does (requests.md, \"Grass\"): fit it with "
-                   f"kit.fit_cells(parts, ({w}, {d}), job.height) in place of kit.fit, so its bounds are exactly its cells; its blades (or "
-                   "leaves) evenly dense right up to the borders, none past them, no bare margin and no soil or base showing at an edge: "
-                   "copies in the cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way. "
+                   f"kit.fit_cells(parts, ({w}, {d}), job.height) in place of kit.fit, so its bounds are exactly its cells: copies in the "
+                   "cells side by side join without a gap. A grass prop: kit.finish's category \"grass\", never blocking the way. "
                    f"In pieces: it's grown over whole fields and drawn thinner further off by leaving out whole pieces (what's joined "
-                   "together: a blade, a leaf, a stalk with its seeds), so each blade or leaf a piece of its own, none heavy, not one mesh "
-                   f"joined up: at its thinnest (its biggest piece, with any mat under them as wide as its cells) at most "
-                   f"{mr.GRASS_THINNEST * w * d} vertices, and at most {mr.GRASS_MOST * w * d} in all ({mr.GRASS_MOST} a cell, as the engine "
-                   "counts them in its .glb: flat faces and seams split vertices); as dense and fine as the pictures want within that. "
-                   "kit.finish refuses more.")
+                   "together: a blade, a leaf, a stalk with its seeds): at its thinnest (its biggest piece, with any mat under them as wide "
+                   f"as its cells) at most {mr.GRASS_THINNEST * w * d} vertices, and at most {mr.GRASS_MOST * w * d} in all ({mr.GRASS_MOST} a "
+                   "cell, as the engine counts them in its .glb: flat faces and seams split vertices). kit.finish refuses more.")
     elif record["kind"] == "rock":
         w, d = record["cells"]
         out.append(ROCK.format(w=w, d=d))
@@ -551,12 +539,15 @@ def settings_lines(record):
     if record["kind"] == "environment":
         out.append("Environment: an asset that dresses the outdoors (requests.md, \"Environment\"): a rock, a bush, flowers, a log, a "
                    "tree... kit.finish's category the one that fits (tree, flora, rock, grass, decoration), blocking the way when it's big "
-                   "enough to walk round (a rock, a tree, a log), not when it's walked through (flowers, a low bush); what the wind moves "
-                   "painted for it.")
+                   "enough to walk round (a rock, a tree, a log), not when it's walked through (flowers, a low bush).")
     if record["kind"] == "flower":
         out.append(FLOWER)
     if record["kind"] == "tree":
         out.append(TREE)
+    # what its kind (and its variety) asks of every run, the user's: a feature each
+    said = mr.instructions(record, mr.kinds(root))
+    if said:
+        out.append(INSTRUCTIONS + "".join(f"\n  - {key}: {text}" if key else f"\n  - {text}" for key, text in said))
     if record["kind"] != "floor" and record.get("many"):
         out.append(MANY)
     out.append(TOON)
@@ -622,7 +613,7 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     made with its model. With the project (`root`), a run that builds the model reads first what
     the ratings teach of its kind, when they teach anything yet."""
     rid = record["id"]
-    lessons = LESSONS.format(kind=record["kind"], id=rid) if root is not None and mr.lessons(root, rid) else ""
+    lessons = LESSONS.format(kind=mr.kind_key(record), id=rid) if root is not None and mr.lessons(root, rid) else ""
     note = (note.strip() or record["comments"].strip()) if again else note.strip()
     said = indented(note)
     if note:
@@ -666,13 +657,20 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
         what = f"a rock on about {w} x {d} cells, as tall as its pictures' proportions make it"
     else:
         what = f"a {kind} {height} cells tall"
+    # asked as a kind of the window's own (a kind the user added), or a variety of one: named so
+    k, v = mr.kind_of(record, mr.kinds(root))
+    named = (k or {}).get("name", "").strip()
+    if v is not None:
+        what = f"a {v.get('name', '').strip().lower()} (a variety of {named.lower() or kind}): {what}"
+    elif k is not None and k.get("id") != kind and named:
+        what = f"a {named.lower()}: {what}"
     count = record["variants"]
     vary = vary_text(record)
     # the variants made with the model (a run that makes it), as the settings ask
     step = VARIANT_STEP.format(count=count, vary=vary, last=count + 1) if count > 0 and kind != "floor" else ""
     made = f" (with its variants {', '.join(record['variant_props'])})" if record["variant_props"] else ""
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
-                           settings=settings_lines(record), checked=checked, noted=noted, bones=bones, rig=rig,
+                           settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
                            variants=step, count=len(shapes) if part == "split" and shapes else count, vary=vary, made=made,
                            outlined=outlines_said(record, shapes), lessons=lessons)

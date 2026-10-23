@@ -1,0 +1,194 @@
+{
+  "about": "The Model requests' kinds, as the window's tabs: each made as one of the kit's eight (made_as: how the kit makes it and what it becomes in the game), the settings its requests are asked (params, from the window's own: height, cells, style, pose, shapes, bones, variants, many, check_lines), its instructions (features: a keyword and how a run handles it, each a line of every run's prompt) and its varieties (each with its own params and instructions, added to the kind's: one with the same keyword replaces the kind's). The editor edits this file on the desktop; a browser keeps its own copy (private/requests/kinds.json), which its runs are given.",
+  "kinds": [
+    {
+      "id": "creature",
+      "name": "Creature",
+      "made_as": "creature",
+      "params": [
+        "height",
+        "style",
+        "pose",
+        "shapes",
+        "bones",
+        "check_lines"
+      ],
+      "features": [],
+      "varieties": []
+    },
+    {
+      "id": "prop",
+      "name": "Prop",
+      "made_as": "prop",
+      "params": [
+        "height",
+        "style",
+        "shapes",
+        "many",
+        "check_lines"
+      ],
+      "features": [],
+      "varieties": []
+    },
+    {
+      "id": "grass",
+      "name": "Grass",
+      "made_as": "grass",
+      "params": [
+        "height",
+        "cells",
+        "style",
+        "shapes",
+        "variants",
+        "many",
+        "check_lines"
+      ],
+      "features": [
+        {
+          "keyword": "edges",
+          "text": "its blades (or leaves) evenly dense right up to the borders, none past them, no bare margin and no soil or base showing at an edge: copies in the cells side by side join without a gap"
+        },
+        {
+          "keyword": "pieces",
+          "text": "each blade or leaf a piece of its own, none heavy, not one mesh joined up"
+        },
+        {
+          "keyword": "density",
+          "text": "as dense and fine as the pictures want, within its vertex budget"
+        }
+      ],
+      "varieties": []
+    },
+    {
+      "id": "flower",
+      "name": "Flower",
+      "made_as": "flower",
+      "params": [
+        "height",
+        "style",
+        "shapes",
+        "variants",
+        "many",
+        "check_lines"
+      ],
+      "features": [
+        {
+          "keyword": "stem",
+          "text": "kit.tube along a gentle curve, tapering up to the head, a node or two where its leaves grow"
+        },
+        {
+          "keyword": "leaves",
+          "text": "thin slabs bent along their length and cupped, each from a node or a rosette at its foot"
+        },
+        {
+          "keyword": "petals",
+          "text": "each its own thin curved surface: cupped, curving out, its tip curling, in rings that overlap, the inner ones smaller; each petal's colour shading along it as the design does"
+        },
+        {
+          "keyword": "heart",
+          "text": "a disc, a dome or a cone, with stamens where the design has them (long thin filaments fanning out of it, each tipped with an anther), and the sepals under the head"
+        },
+        {
+          "keyword": "wind",
+          "text": "painted in one kit.plant_wind call: the stem as stems, rooted at its foot, the petals and the leaves fluttering"
+        }
+      ],
+      "varieties": []
+    },
+    {
+      "id": "rock",
+      "name": "Rock",
+      "made_as": "rock",
+      "params": [
+        "cells",
+        "style",
+        "shapes",
+        "variants",
+        "many",
+        "check_lines"
+      ],
+      "features": [
+        {
+          "keyword": "detail",
+          "text": "as fine as the design: its mass, then its facets, cracks, ledges and strata"
+        },
+        {
+          "keyword": "colour",
+          "text": "varying over it: paint volumes for veins, lichen and weathering, or a texture painted from the pictures"
+        },
+        {
+          "keyword": "moss",
+          "text": "in patches where moss grows: its top, its shaded side, its hollows and cracks"
+        },
+        {
+          "keyword": "plants",
+          "text": "grass and flowers at its foot and out of its cracks where the design has them, each blade or stem a thin piece of its own, painted for the wind (the rock never)"
+        }
+      ],
+      "varieties": []
+    },
+    {
+      "id": "tree",
+      "name": "Tree",
+      "made_as": "tree",
+      "params": [
+        "height",
+        "style",
+        "shapes",
+        "variants",
+        "many",
+        "check_lines"
+      ],
+      "features": [
+        {
+          "keyword": "trunk",
+          "text": "its trunk and its main branches are meshes: the trunk tapering from its foot, forking into a few branches (two to five) that reach into the foliage"
+        },
+        {
+          "keyword": "foliage",
+          "text": "clusters of leaves, each cluster a few curved planes (3 or 4 cards, bent a little, crossing at the cluster's middle at different angles), each card's outline cut to the leaves' silhouette (a scalloped, leafy edge) in the mesh itself: crossed cards read as a cluster from every side; as many clusters as the crown's shape asks, each on a branch or in reach of one"
+        },
+        {
+          "keyword": "colour",
+          "text": "the leaves' colour, darker toward a cluster's underside and lighter on top; two-sided as a leaf is"
+        },
+        {
+          "keyword": "wind",
+          "text": "the trunk rooted (0 at its foot, a little at its top), the branches more, the clusters most, their flutter on the cards; a phase of its own per cluster, so the crown doesn't move as one block"
+        }
+      ],
+      "varieties": []
+    },
+    {
+      "id": "environment",
+      "name": "Environment",
+      "made_as": "environment",
+      "params": [
+        "height",
+        "style",
+        "shapes",
+        "variants",
+        "many",
+        "check_lines"
+      ],
+      "features": [
+        {
+          "keyword": "wind",
+          "text": "what the wind moves painted for it"
+        }
+      ],
+      "varieties": []
+    },
+    {
+      "id": "floor",
+      "name": "Floor set",
+      "made_as": "floor",
+      "params": [
+        "style",
+        "shapes"
+      ],
+      "features": [],
+      "varieties": []
+    }
+  ]
+}
