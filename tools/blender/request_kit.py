@@ -664,36 +664,195 @@ def fuse(parts, name, colours=None, smooth=True, voxel=None, faces=None, cuts=()
     out.to_mesh(body.data)
     out.free()
     # the budget in triangles (what decimating counts, and what the engine draws)
-    n, target = sum(len(p.vertices) - 2 for p in body.data.polygons), faces or (6000 if smooth else 800)
-    if n > target:
-        group = body.vertex_groups.new(name="decimate")
-        group.add(range(len(body.data.vertices)), 1.0, "REPLACE")
-        group.add(border, 0.0, "REPLACE")
-        _apply(body, "DECIMATE", decimate_type="COLLAPSE", ratio=target / n, use_collapse_triangulate=True, vertex_group="decimate", vertex_group_factor=1.0)
-        body.vertex_groups.remove(body.vertex_groups["decimate"])
-        # long thin triangles where it's nearly flat shade in streaks: their edges turned
-        # to make them even (only within a region, only where turning changes nothing)
-        bm = bmesh.new()
-        bm.from_mesh(body.data)
-        flat = [e for e in bm.edges if len(e.link_faces) == 2 and e.link_faces[0].material_index == e.link_faces[1].material_index and e.calc_face_angle(1.0) < math.radians(6)]
-        bmesh.ops.beautify_fill(bm, faces=bm.faces[:], edges=flat, method="ANGLE")
-        bm.to_mesh(body.data)
-        bm.free()
+    _decimated(body, faces or (6000 if smooth else 800), border)
     if smooth:
         body.data.use_auto_smooth = True
         body.data.auto_smooth_angle = math.radians(60)
         # normals weighted by the faces' areas: flat parts shade flat, curves stay smooth
         _apply(body, "WEIGHTED_NORMAL", mode="FACE_AREA", weight=50, keep_sharp=True)
     if not keep:
-        for o in list(parts) + list(cuts) + list(paint):
-            me = o.data
-            bpy.data.objects.remove(o, do_unlink=True)
-            if me.users == 0:
-                bpy.data.meshes.remove(me)
+        _discard(list(parts) + list(cuts) + list(paint))
     apart = pieces(body)
     print(f"{name}: {len(body.data.polygons)} faces, regions {', '.join(regions)}"
           + (f"; IN {apart} PIECES: a part doesn't touch the rest (move it in, or give it more overlap)" if apart > 1 else ""), flush=True)
     return body
+
+
+def _decimated(body, target, border=None):
+    """`body` decimated to about `target` triangles when it has more: the vertices where its
+    colour regions meet (`border`, else found) kept as fine as they are, long thin triangles
+    where it's nearly flat evened out. Whether it was."""
+    n = sum(len(p.vertices) - 2 for p in body.data.polygons)
+    if n <= target:
+        return False
+    if border is None:
+        bm = bmesh.new()
+        bm.from_mesh(body.data)
+        border = [v.index for v in bm.verts if len({f.material_index for f in v.link_faces}) > 1]
+        bm.free()
+    group = body.vertex_groups.new(name="decimate")
+    group.add(range(len(body.data.vertices)), 1.0, "REPLACE")
+    group.add(border, 0.0, "REPLACE")
+    _apply(body, "DECIMATE", decimate_type="COLLAPSE", ratio=target / n, use_collapse_triangulate=True, vertex_group="decimate", vertex_group_factor=1.0)
+    body.vertex_groups.remove(body.vertex_groups["decimate"])
+    # long thin triangles where it's nearly flat shade in streaks: their edges turned
+    # to make them even (only within a region, only where turning changes nothing)
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    flat = [e for e in bm.edges if len(e.link_faces) == 2 and e.link_faces[0].material_index == e.link_faces[1].material_index and e.calc_face_angle(1.0) < math.radians(6)]
+    bmesh.ops.beautify_fill(bm, faces=bm.faces[:], edges=flat, method="ANGLE")
+    bm.to_mesh(body.data)
+    bm.free()
+    return True
+
+
+def _discard(objects):
+    for o in objects:
+        me = o.data
+        bpy.data.objects.remove(o, do_unlink=True)
+        if me.users == 0:
+            bpy.data.meshes.remove(me)
+
+
+# ---------------------------------------------------------------- the body in one skin (accurate)
+
+def wrap(blockout, name, colours=None, voxel=None, smoothing=8, subdivisions=1, faces=None, cuts=(), paint=(), keep=False):
+    """The accurate body: one fresh skin wrapped over the block-out. `blockout` is the
+    primitives laid out for every mass of the body (torso, neck, head with the upper jaw,
+    limbs, tail, fleshy ears: any of the kit's shapes, with their colour regions), a scaffold:
+    a surface is wrapped round all of them at once (a voxel wrap, `voxel` wide, the body's
+    size / 160 by default: dense), the seams between them melted (`smoothing` passes), then
+    subdivided (`subdivisions`, Catmull-Clark) for an even organic skin that takes sculpting,
+    decimated to about `faces` triangles (20000) with the colour regions' borders kept, the
+    faces coloured by the nearest primitive's region, then `paint` volumes, `cuts` carved.
+    The block-out goes once it's wrapped (unless `keep`): it only ever gave the masses.
+
+    Then sculpt the skin to the profiles (`sculpt`: grab, inflate, flatten, smooth, crease;
+    `editing`), not just to the scaffold: the pictures' proportions decide, and a primitive
+    left showing through isn't accurate. The parts that stay detached (the lower jaw, its
+    teeth, the tongue, the eyes and lids, claws, horns, plates, wings' spars) are `part`s of
+    their own, overlapping it; the detail the skin can't carry grows on it as `cards` (tufts
+    of fur, feathers, scales, leaves) or `fur` (a coat of strands) once it's fitted. One skin
+    rigs as one: `rig` weights it by bone heat over every bone. Returns the body."""
+    lo, hi = bounds(blockout)
+    size = max(hi - lo)
+    body = fuse(blockout, name, colours, smooth=True, voxel=voxel or size / 160, faces=10 ** 9, cuts=cuts, paint=paint, keep=True)
+    if smoothing:
+        _apply(body, "SMOOTH", factor=0.5, iterations=smoothing)
+    if subdivisions:
+        _apply(body, "SUBSURF", levels=subdivisions, render_levels=subdivisions)
+    for f in body.data.polygons:
+        f.use_smooth = True
+    _decimated(body, faces or 20000)
+    body.data.use_auto_smooth = True
+    body.data.auto_smooth_angle = math.radians(60)
+    _apply(body, "WEIGHTED_NORMAL", mode="FACE_AREA", weight=50, keep_sharp=True)
+    if not keep:
+        _discard(list(blockout) + list(cuts) + list(paint))
+    body["bf_part"] = name
+    apart = pieces(body)
+    print(f"{name}: one skin over {len(blockout)} shapes, {len(body.data.polygons)} faces"
+          + (f"; IN {apart} PIECES: a shape of the block-out doesn't touch the rest (move it in, or give it more overlap)" if apart > 1 else ""), flush=True)
+    return body
+
+
+def cards(body, region, count=120, size=(0.06, 0.12), bend=0.35, lean=0.6, along=(0, 0, -1), seed=1, colour=None, sway=0.5, flutter=0.5):
+    """Detail grown on a colour region of `body` as curved cards, small bent planes drawn on
+    both sides: tufts of fur, feathers, scales, leaves, petals, spines, where the pictures show
+    detail the skin alone can't carry (the engine draws no cut-out textures: a card is its
+    shape). `count` cards from the region's faces (spread by their area), each about `size`
+    (width, length) cells (a little more or less), rooted on the surface, leaning by `lean`
+    (0: straight out along the normal, 1: flat along the body) the way `along` points (down
+    by default: fur and feathers lie that way; give a direction for a crest or a mane), bending
+    by `bend` back toward the body along its length, in the region's material (or a material of
+    `colour`), painted for the wind (rooted at its base, swaying and fluttering to its tip).
+    Part of the body: grow them once it's fitted (sizes in cells), then `rig`. Returns how
+    many grew."""
+    import bisect
+    import random
+    me = body.data
+    index = next((i for i, m in enumerate(me.materials) if m and m.name.endswith(f" {region}")), None)
+    if index is None:
+        raise ValueError(f"{body.name} has no region {region!r}: {[m.name for m in me.materials]}")
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    faces = [f for f in bm.faces if f.material_index == index]
+    if not faces:
+        bm.free()
+        return 0
+    if colour:
+        me.materials.append(material(f"{body.name} {region} cards", colour))
+        index = len(me.materials) - 1
+    areas, total = [], 0.0
+    for f in faces:
+        total += f.calc_area()
+        areas.append(total)
+    rng = random.Random(seed)
+    phases = random.Random(seed + 101)
+    way = Vector(along)
+    width, length = size
+    rows = 4
+    grown, windy = [], {}
+    for _ in range(count):
+        f = faces[min(bisect.bisect(areas, rng.random() * total), len(faces) - 1)]
+        corners = [v.co for v in f.verts]
+        i = rng.randrange(1, len(corners) - 1)
+        a, b, c = corners[0], corners[i], corners[i + 1]
+        u, w = rng.random(), rng.random()
+        if u + w > 1:
+            u, w = 1 - u, 1 - w
+        root = a + (b - a) * u + (c - a) * w
+        n = f.normal.normalized()
+        # the way it lies: `along` laid flat on the surface, turned a little either way
+        flat = way - n * way.dot(n)
+        if flat.length < 1e-6:
+            flat = n.orthogonal()
+        flat.normalize()
+        flat.rotate(Matrix.Rotation(math.radians(rng.uniform(-25, 25)), 3, n))
+        d = (n * (1 - lean) + flat * lean).normalized()
+        across = d.cross(n).normalized() * width * (0.8 + 0.4 * rng.random()) * 0.5
+        long = length * (0.75 + 0.5 * rng.random())
+        step = long / (rows - 1)
+        # its two sides as two sheets of faces (the back's vertices its own, at the same
+        # places: a face can't be made twice on the same vertices)
+        at, front, back = root.copy(), [], []
+        for k in range(rows):
+            l, r = at - across, at + across
+            front.append((bm.verts.new(l), bm.verts.new(r)))
+            back.append((bm.verts.new(l), bm.verts.new(r)))
+            t = k / (rows - 1)
+            phase = phases.random()
+            for v in front[-1] + back[-1]:
+                windy[v] = (sway * t ** 1.5, flutter * t, phase)
+            # bending back toward the body as it goes
+            d = (d - n * bend * step / max(long, 1e-6)).normalized()
+            at = at + d * step
+        for k in range(rows - 1):
+            (fl, fr), (fl2, fr2) = front[k], front[k + 1]
+            (bl, br), (bl2, br2) = back[k], back[k + 1]
+            for quad in ((fl, fr, fr2, fl2), (bl2, br2, br, bl)):
+                made = bm.faces.new(quad)
+                made.material_index = index
+                made.smooth = True
+                grown.append(made)
+    bm.verts.index_update()
+    weights = {v.index: w for v, w in windy.items()}
+    bm.to_mesh(me)
+    bm.free()
+    layers = bf.colour_layers(me)
+    fresh = layers.get(bf.WIND) is None
+    layer = layers.get(bf.WIND) or layers.new(name=bf.WIND)
+    colours = [0.0] * (len(me.loops) * 4)
+    layer.data.foreach_get("color", colours)
+    for i, loop in enumerate(me.loops):
+        w = weights.get(loop.vertex_index)
+        if w:
+            colours[i * 4:i * 4 + 4] = [w[0], w[1], w[2], 1.0]
+        elif fresh:
+            colours[i * 4:i * 4 + 4] = [0.0, 0.0, 0.0, 1.0]
+    layer.data.foreach_set("color", colours)
+    print(f"{body.name}: {count} cards on {region} ({len(me.polygons)} faces now)", flush=True)
+    return count
 
 
 # ---------------------------------------------------------------- a model in parts

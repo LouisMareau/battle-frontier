@@ -376,7 +376,8 @@ here). Everything runs from the project folder.
 6. **Write `private/requests/ID/model.py`** with the kit (below), on the profiles:
    `job.profiles()` has each line in cells, as the model will stand, so each shape's size and
    place come from them (and `fit` gives it the request's height). Build it **in parts**
-   (below, "Parts"), never as one lump fused and sculpted: list the parts first, as a comment
+   (below, "Parts"; accurate: the body in one skin wrapped over a block-out and sculpted to
+   the pictures, its detached parts as parts: below, "Accurate"): list the parts first, as a comment
    at the top of `model.py` (what each is made of, which bones move it); then for each part,
    block its general shape in from a few shapes (`kit.part(name, [shapes], colours, bone=` or
    `bones=)`), and refine that part on its own: more shapes, `editing` and `extrude` (pull a
@@ -665,7 +666,9 @@ weights may use). A creature's:
 - **the tail, wings, fins, flaps**: a part each, on their chains.
 
 Parts meet by overlapping: a limb's root sinks into the body, the neck into the head, as on any
-game model; the weights move them together. Shapes that only touch make a lumpy part: give them
+game model; the weights move them together. (Accurate: the body, head, limbs and tail are one
+skin wrapped over their block-out, `kit.wrap`, and only what moves on its own or stays crisp
+is a part beside it: below, "Accurate".) Shapes that only touch make a lumpy part: give them
 real overlap, or remesh the part (the default). The budget is the whole model's: about 6000
 triangles smooth (the head and the body most of it), 800 low-poly, 20000 or more accurate; a
 part takes `faces=` (1500 by default, 300 low-poly).
@@ -749,21 +752,40 @@ before the rig, never after: its weights are made for the parts as they are then
 
 `"style": "accurate"` asks for the closest match to the pictures, whatever it takes, and the
 request's `details` say what matters most. Measure the proportions off the pictures (heights
-in heads, widths against heights), model every part, marking and colour they show, and use the
-most fitting tool for each part rather than the quickest:
+in heads, widths against heights), model every part, marking and colour they show. The body
+is made **in one skin**, in this order (a creature made of primitives left as they are,
+however many, isn't accurate):
 
-- **fur and hair**: `kit.fur(part, region, ...)`, strands grown on a colour region as
-  Blender's hair grows them, made mesh (glTF and the game have no particle hair), painted for
-  the wind: thousands of strands for a coat (`count`), their `length`, `thickness` and
-  `droop`; then `fit` again so it stands its height with its fur on, then the rig. Short
-  dense fur reads better than long sparse fur, and each strand is 6 faces: mind the budget;
-- **details**: more parts and shapes, `cuts` for openings and grooves, `slab`s for thin flat
-  parts (claws, fins, leaves, feathers), a finer remesh (`voxel=size/180`) and a bigger budget
-  for each `part` (20000 triangles or more in all);
-- **patterns**: `paint` volumes for each marking, one per patch, shaped to the pictures;
-- anything else Blender does that ends as meshes with materials (the game draws triangles,
-  base colours and base colour textures): a texture painted from the pictures, displacement,
-  subdivision applied on a part.
+1. **Block it out**: lay the primitives for every mass of the body, torso, neck, head with
+   the upper jaw, limbs, tail, fleshy ears (`ellipsoid`, `capsule`, `blob`, `tube`, each with
+   its colour region), on the profiles, overlapping where they join. They're a scaffold: they
+   give the masses and the regions, nothing else, and they go once the skin is on.
+2. **Wrap one fresh skin over them**: `kit.wrap(blockout, "body", colours)` wraps one surface
+   round all of them at once (a dense voxel wrap), melts the seams between them, subdivides
+   it into an even organic mesh that takes sculpting, colours its faces by the nearest
+   primitive's region (`paint` volumes and `cuts` as `fuse` takes them), and removes the
+   block-out. One skin, so it rigs as one piece (`rig` weights it by bone heat over every
+   bone); `wrap` says when a primitive didn't touch the rest.
+3. **Sculpt it to the pictures**: `kit.sculpt` (grab, inflate, flatten, smooth, pinch, crease)
+   and `kit.editing` on the skin, measuring against the profiles (`job.profiles()`) and the
+   lines' overlap on `compare.png`: the brow, the cheeks, the belly's curve, the haunches,
+   where the neck thins, the tail's taper, each as the pictures have it. The scaffold is
+   where sculpting starts, not where it ends: the proportions and silhouette must match the
+   artwork, not the primitives.
+4. **The detached parts and the detail**: what moves on its own or stays crisp is a `part`
+   of its own overlapping the skin (the lower jaw with its teeth and the tongue, the eyes
+   and lids, claws, horns, plates, wings' spars), as "Parts" has them; then, once the model
+   is fitted, the detail the skin can't carry grows on it where the pictures show it:
+   `kit.cards(body, region, count, size, lean, along, ...)` for tufts of fur, feathers,
+   scales, leaves and spines, curved cards (small bent planes, drawn on both sides, never
+   cut-out textures) rooted on the surface and painted for the wind; `kit.fur` for a coat of
+   strands (short dense fur reads better than long sparse fur: mind the budget); `paint`
+   volumes for markings, one per patch, shaped to the pictures. Then `fit` again when the
+   cards or the fur changed its height, then the rig.
+
+The budget is bigger (20000 triangles or more in all); anything else Blender does that ends
+as meshes with materials (the game draws triangles, base colours and base colour textures) is
+fair: a texture painted from the pictures, displacement, subdivision applied on a part.
 
 It may take a long time, and that's fine; the editor's bar runs on a longer estimate, and the
 run keeps going while Claude writes a long script.

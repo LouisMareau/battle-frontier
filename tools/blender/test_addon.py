@@ -397,6 +397,32 @@ except ValueError:
 check("  smooth too; a brush it doesn't know is refused", smoothed > 0 and refused)
 clear()
 
+# the accurate body in one skin: a block-out (a torso, a head, two legs, a tail) wrapped in one
+# fresh surface, melted and subdivided, coloured by the nearest primitive, the block-out gone;
+# detail grown on it as curved cards, painted for the wind
+blockout = [kit.ellipsoid((0, 0, 0.5), (0.3, 0.45, 0.28), "hide"), kit.sphere((0, -0.5, 0.75), 0.22, "hide"),
+            kit.capsule((0.18, -0.2, 0.3), (0.2, -0.2, 0.0), 0.07, "hide"), kit.capsule((-0.18, -0.2, 0.3), (-0.2, -0.2, 0.0), 0.07, "hide"),
+            kit.capsule((0, 0.4, 0.5), (0, 0.9, 0.7), 0.06, "tail", radius_b=0.03)]
+skin = kit.wrap(blockout, "test_skin", {"hide": "#8a6a3a", "tail": "#5a4020"}, faces=8000)
+meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+tris = sum(len(p.vertices) - 2 for p in skin.data.polygons)
+check("one skin wrapped over the block-out: one mesh in one piece, the block-out gone, within its budget, both regions on it",
+      meshes == [skin] and kit.pieces(skin) == 1 and 3000 < tris <= 8200 and [m.name for m in skin.data.materials] == ["test_skin hide", "test_skin tail"] and skin.get("bf_part") == "test_skin",
+      f"{len(meshes)} meshes, {kit.pieces(skin)} pieces, {tris} triangles, {[m.name for m in skin.data.materials]}")
+lo, hi = kit.bounds([skin])
+check("  it reaches where the block-out did (the head's top, the tail's tip, the feet)", hi.z > 0.9 and lo.z < 0.04 and hi.y > 0.82 and lo.y < -0.66, f"{[round(c, 2) for c in lo]} to {[round(c, 2) for c in hi]}")
+seams = bmesh.new()
+seams.from_mesh(skin.data)
+sharp = sum(1 for e in seams.edges if len(e.link_faces) == 2 and e.calc_face_angle(0.0) > math.radians(45))
+total_edges = len(seams.edges)
+seams.free()
+check("  the seams melted: hardly an edge folds sharply", sharp < total_edges * 0.01, f"{sharp} of {total_edges} edges fold past 45 degrees")
+before_cards = len(skin.data.polygons)
+grown = kit.cards(skin, "hide", count=60, size=(0.05, 0.1))
+check("  cards grown on a region: each a bent plane of three quads drawn on both sides, painted for the wind", grown == 60 and len(skin.data.polygons) == before_cards + 60 * 6 and bf.colour_layers(skin.data).get(bf.WIND) is not None,
+      f"{len(skin.data.polygons) - before_cards} faces more")
+clear()
+
 picture = bpy.data.images.new("critter_ref", 32, 24)
 picture.pixels = [0.45, 0.62, 0.3, 1.0] * (32 * 24)
 picture.filepath_raw = str(scratch / "critter.png")

@@ -450,10 +450,16 @@ STYLES = {
     "smooth": "Style: smooth: rounded shapes, smooth shaded (parts with smooth=True, about 6000 triangles in all).",
     "low_poly": "Style: low-poly: few faces, flat shaded (parts with smooth=False, about 800 triangles in all).",
     "accurate": ("Style: accurate: make it match the pictures as closely as you can, whatever that takes: every part, marking and colour "
-                 "of the design (none of the drawing's light, shade or lines), the proportions measured off the pictures. Use the most fitting tool for each part (requests.md, \"Accurate\"): kit.fur for fur "
-                 "and hair, kit.sculpt and kit.editing for what the shapes can't do, kit.tube for curved parts, painted colours for patterns, more shapes, "
-                 "cuts and slabs for the details, a finer voxel and a bigger budget for each part "
-                 "(20000 triangles or more in all). It may take a long time: that's fine."),
+                 "of the design (none of the drawing's light, shade or lines), the proportions measured off the pictures. The body is made in "
+                 "one skin, in this order (requests.md, \"Accurate\"): 1. block it out: the primitives laid out for every mass (torso, neck, "
+                 "head with the upper jaw, limbs, tail, fleshy ears), a scaffold that goes after; 2. kit.wrap(blockout, name, colours) wraps "
+                 "one fresh surface over them all, melted, subdivided, dense; 3. sculpt that skin to the profiles (kit.sculpt: grab, "
+                 "inflate, flatten, smooth, crease; kit.editing), measuring against the lines, until it matches the pictures' proportions "
+                 "and not just the scaffold: a primitive left showing through unchanged isn't accurate; 4. what stays detached (the lower "
+                 "jaw, teeth, tongue, eyes, lids, claws, horns, plates) as kit.part parts overlapping it, and the detail the skin can't carry "
+                 "grown where the pictures show it as curved cards or meshes: kit.cards for tufts of fur, feathers, scales, leaves (kit.fur "
+                 "for a coat of strands), painted colours for patterns. A bigger budget (20000 triangles or more in all). It may take a long "
+                 "time: that's fine."),
 }
 LINES = {
     "smooth": "Lines: the outline and the main parts, over the pictures and in the front and the side.",

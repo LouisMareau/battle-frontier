@@ -923,7 +923,8 @@ each a few curved planes crossing with their edges cut to the leaves' silhouette
 for the wind (the engine draws no camera-facing billboards for a model's parts, crossed
 cards stand in for one); environment: what dresses the outdoors, rocks, bushes, flowers, logs,
 trees; or floor set: a set of floor tiles, each a cell, laid to fit), its height in cells (not a floor set's), a style (smooth, low-poly, or accurate: as close to the pictures as it can be, whatever
-it takes, with its model details), a creature's default pose (T-pose or as-is), how many shapes
+it takes, with its model details: the body in one skin wrapped over a block-out and sculpted
+to the pictures, its detail as curved cards), a creature's default pose (T-pose or as-is), how many shapes
 to build it from (a range on a meter, or unlimited: as many as the design needs, up to about
 100), notes, grass's and environment's **Variants** (how many more of it, each a prop of its
 own, with Process multiple of each drawing) and **What changes** (how they differ: its size,

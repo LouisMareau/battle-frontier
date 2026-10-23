@@ -209,7 +209,8 @@ check("a second run: done, the first run's log still there", rec["status"] == "d
 # 8. an accurate creature, as the pictures stand, as many shapes as it needs: all in its prompt
 fresh("test_eight", kind="creature", style="accurate", details="long brown fur, short round ears", pose="as_is", shapes={"min": 1, "max": 100, "unlimited": True})
 code, out, rec, log = run("test_eight", "finish")
-check("an accurate creature's prompt: the closest match, its details, its pose, its shapes", rec["status"] == "done" and "Style: accurate" in log and "kit.fur" in log
+check("an accurate creature's prompt: the closest match, in one skin (block-out, wrap, sculpt, the detail as cards), its details, its pose, its shapes", rec["status"] == "done" and "Style: accurate" in log and "kit.fur" in log
+      and "1. block it out" in log and "kit.wrap(blockout, name, colours)" in log and "3. sculpt that skin to the profiles" in log and "kit.cards for tufts of fur, feathers, scales, leaves" in log
       and "Model details from the user: long brown fur, short round ears" in log and "Pose: as-is" in log and "as many as the design needs, up to about 100" in log)
 check("  and its estimate is longer", rec["progress"]["minutes"] >= 0 and mr.estimate(rec) > mr.estimate(mr.normal(dict(rec, style="smooth", shapes={"unlimited": False}))))
 check("  every tool allowed, for every style: edits, modifiers, sculpting", "The kit is a start" in log and "not a limit" in log and "kit.sculpt (grab, inflate" in log
