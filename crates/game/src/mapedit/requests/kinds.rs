@@ -482,14 +482,19 @@ pub(in super::super) fn about_kind(k: &KindDef) -> String {
     }
 }
 
-/// A tab: its name, lit when it's the one shown, with an edit icon at its right end while the
-/// pointer is over it (to open its window). (the tab clicked, the icon clicked)
-pub(in super::super) fn tab(ui: &mut egui::Ui, selected: bool, text: &str, tip: &str, name: &str, edit_name: &str, edit_tip: &str) -> (bool, bool) {
+/// A tab: its name with its count as a small tag ("Prop" and a 3), lit when it's the one
+/// shown; while the pointer is over it, an edit icon in the tag's place (to open its window),
+/// so nothing moves. `marks`: the tab's and the icon's. (the tab clicked, the icon clicked)
+pub(in super::super) fn tab(ui: &mut egui::Ui, selected: bool, text: &str, count: Option<usize>, tip: &str, marks: (&str, &str), edit_tip: &str) -> (bool, bool) {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, ui.visuals().text_color());
+    let counted = count.map(|n| ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(10.0), ui.visuals().text_color()));
     let pad = ui.spacing().button_padding;
-    let icon = 13.0;
-    let size = egui::vec2(galley.size().x + pad.x * 2.0 + icon + 5.0, galley.size().y + pad.y * 2.0);
+    let icon = 12.0;
+    // the slot after the name: the tag's width (its number, padded), or the icon's, whichever is wider
+    let tag = counted.as_ref().map(|c| egui::vec2(c.size().x + 8.0, c.size().y + 3.0));
+    let slot = tag.map_or(icon, |t| t.x.max(icon));
+    let size = egui::vec2(galley.size().x + pad.x * 2.0 + 5.0 + slot, galley.size().y + pad.y * 2.0);
     let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
     let hovered = ui.rect_contains_pointer(rect);
     let visuals = ui.style().interact_selectable(&r, selected);
@@ -497,24 +502,48 @@ pub(in super::super) fn tab(ui: &mut egui::Ui, selected: bool, text: &str, tip: 
         ui.painter().rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
     }
     ui.painter().galley(rect.min + pad, galley, visuals.text_color());
-    let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.max.x - pad.x - icon / 2.0, rect.center().y), egui::vec2(icon, icon));
-    let tint = if hovered { visuals.text_color() } else { Color32::TRANSPARENT };
-    let image = egui::Image::new(egui::include_image!("../../../icons/edit.svg")).fit_to_exact_size(egui::vec2(icon, icon)).tint(tint);
-    let e = ui.put(icon_rect, egui::Button::image(image).frame(false));
+    let slot_rect = egui::Rect::from_min_size(egui::pos2(rect.max.x - pad.x - slot, rect.min.y), egui::vec2(slot, rect.height()));
+    if let (Some(c), Some(t), false) = (counted, tag, hovered) {
+        let tag_rect = egui::Rect::from_center_size(slot_rect.center(), t);
+        let fill = if selected { Color32::from_white_alpha(36) } else { Color32::from_gray(72) };
+        ui.painter().rect_filled(tag_rect, 5.0, fill);
+        ui.painter().galley(egui::pos2(tag_rect.center().x - c.size().x / 2.0, tag_rect.center().y - c.size().y / 2.0), c, visuals.text_color());
+    }
+    // the icon, painted in the slot (no room of its own in the row: the tabs line up), its
+    // own click over the tab's
+    let icon_rect = egui::Rect::from_center_size(slot_rect.center(), egui::vec2(icon, icon));
+    let e = ui.interact(icon_rect, egui::Id::new(("tab-edit", marks.1)), egui::Sense::click());
+    if hovered {
+        egui::Image::new(egui::include_image!("../../../icons/edit.svg")).fit_to_exact_size(egui::vec2(icon, icon)).tint(visuals.text_color()).paint_at(ui, icon_rect);
+    }
     let e = if hovered { e.on_hover_text(edit_tip) } else { e };
     let r = r.on_hover_text(tip);
-    mark(name, &r);
-    mark(edit_name, &e);
-    (r.clicked(), e.clicked())
+    mark(marks.0, &r);
+    mark(marks.1, &e);
+    (r.clicked() && !e.clicked(), e.clicked())
 }
 
-/// The tab row over the list: All, each category that has requests (how many), each with an
+/// A box round a row's widgets (the new request's +; the categories).
+fn boxed<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    egui::Frame::new().stroke(egui::Stroke::new(1.0, Color32::from_gray(70))).corner_radius(4.0).inner_margin(egui::Margin::symmetric(4, 3)).show(ui, add).inner
+}
+
+/// The tab row over the list: first, in a box of its own, + for a new request (the page);
+/// then, boxed together, All and each category that has requests (how many), each with an
 /// edit icon while hovered (its window; All's: the instructions for every category), and +
-/// for a category of your own.
-pub(in super::super) fn tabs(ui: &mut egui::Ui, cat: &Catalogue, st: &mut KindsUi, counts: &BTreeMap<String, usize>, all: usize) {
-    ui.horizontal_wrapped(|ui| {
+/// for a category of your own. Whether a new request was asked for.
+pub(in super::super) fn tabs(ui: &mut egui::Ui, cat: &Catalogue, st: &mut KindsUi, counts: &BTreeMap<String, usize>, all: usize) -> bool {
+    let mut new = false;
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        boxed(ui, |ui| {
+            let r = ui.button("+").on_hover_text("A new request: the model, its category and a variety, then its artwork dropped on the window");
+            mark("uiRequestNew", &r);
+            new = r.clicked();
+        });
+        boxed(ui, |ui| ui.horizontal_wrapped(|ui| {
         ui.spacing_mut().item_spacing.x = 4.0;
-        let (clicked, edit) = tab(ui, st.tab.is_none(), &format!("All ({all})"), "Every request, whatever its category", "uiRequestTab_all", "uiRequestTab_allEdit", "The instructions for every category, whatever a request's (a category's with the same keyword replaces one)");
+        let (clicked, edit) = tab(ui, st.tab.is_none(), "All", Some(all), &format!("Every request, whatever its category: {all}"), ("uiRequestTab_all", "uiRequestTab_allEdit"), "The instructions for every category, whatever a request's (a category's with the same keyword replaces one)");
         if clicked {
             st.tab = None;
             st.open = false;
@@ -528,8 +557,8 @@ pub(in super::super) fn tabs(ui: &mut egui::Ui, cat: &Catalogue, st: &mut KindsU
             if n == 0 && !on {
                 continue;
             }
-            let tip = format!("{}\nIts requests; pictures dropped while it's shown start one of it", about_kind(k));
-            let (clicked, edit) = tab(ui, on, &format!("{} ({n})", k.name), &tip, &format!("uiRequestTab_{}", k.id), &format!("uiRequestTab_{}Edit", k.id), &format!("{}'s instructions, settings and varieties", k.name));
+            let tip = format!("{}\nIts {n} request{}; pictures dropped while it's shown start one of it", about_kind(k), if n == 1 { "" } else { "s" });
+            let (clicked, edit) = tab(ui, on, &k.name, Some(n), &tip, (&format!("uiRequestTab_{}", k.id), &format!("uiRequestTab_{}Edit", k.id)), &format!("{}'s instructions, settings and varieties", k.name));
             if clicked && !on {
                 st.tab = Some(k.id.clone());
                 st.variety = None;
@@ -544,7 +573,9 @@ pub(in super::super) fn tabs(ui: &mut egui::Ui, cat: &Catalogue, st: &mut KindsU
             let made = st.tab.as_deref().and_then(|t| cat.kind(t)).map_or(Kind::Prop, |k| k.made_as);
             st.adding = Some((String::new(), made));
         }
+        }));
     });
+    new
 }
 
 /// The dialog adding a category of your own (while one is being added): whether one was.

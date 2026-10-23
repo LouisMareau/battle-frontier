@@ -1501,7 +1501,7 @@ mod desk {
                     hint(ui, "Category");
                     for k in &kinds.kinds {
                         let on = k.id == kid;
-                        let (clicked, edit) = super::kinds::tab(ui, on, &k.name.to_lowercase(), &super::kinds::about_kind(k), &format!("uiRequestKind{}", capital(&k.id)), &format!("uiRequestKind{}Edit", capital(&k.id)), &format!("{}'s instructions, settings and varieties", k.name));
+                        let (clicked, edit) = super::kinds::tab(ui, on, &k.name.to_lowercase(), None, &super::kinds::about_kind(k), (&format!("uiRequestKind{}", capital(&k.id)), &format!("uiRequestKind{}Edit", capital(&k.id))), &format!("{}'s instructions, settings and varieties", k.name));
                         if clicked && !on {
                             let generic = k.variety_of("").map(|v| v.id.clone()).unwrap_or_default();
                             self.kinds_ui.next = Some((k.id.clone(), generic));
@@ -1570,13 +1570,15 @@ mod desk {
             ui.add_space(2.0);
         }
 
-        /// The tab row over the list (All, each kind, +, Instructions…).
+        /// The tab row over the list: + for a new request (the page), All, each category, +.
         pub(in super::super) fn kind_tabs(&mut self, ui: &mut egui::Ui) {
             let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
             for r in &self.list {
                 *counts.entry(r.kind_key()).or_default() += 1;
             }
-            super::kinds::tabs(ui, &self.kinds, &mut self.kinds_ui, &counts, self.list.len());
+            if super::kinds::tabs(ui, &self.kinds, &mut self.kinds_ui, &counts, self.list.len()) {
+                self.open_page();
+            }
             platform::set_hook("requesttab", self.kinds_ui.tab.as_deref().unwrap_or("all"));
         }
 
@@ -2538,7 +2540,7 @@ mod desk {
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
                     ui.label(RichText::new("No request shown").size(18.0).color(Color32::from_gray(170)));
-                    hint(ui, "Pick one on the left, or + in the header for a new one: pictures dropped on the window start it.");
+                    hint(ui, "Pick one on the left, or + by the tabs for a new one: pictures dropped on the window start it.");
                 });
                 return (None, None, None);
             };
@@ -3928,15 +3930,7 @@ mod desk {
                 let (mut said, mut asked) = (None, None);
                 // resizable every way (its corner too); the console in a panel at its foot (open,
                 // its top edge drags), the list and the request in what's left
-                let plus = std::cell::Cell::new(false);
-                let header = |ui: &mut egui::Ui| {
-                    let r = ui.small_button("+").on_hover_text("A new request: the model, its kind, then its pictures dropped on the window");
-                    mark("uiRequestNew", &r);
-                    if r.clicked() {
-                        plus.set(true);
-                    }
-                };
-                super::super::dock::show_with(ui, st, super::super::dock::Pane::Requests, &title, header, |ui| {
+                super::super::dock::show(ui, st, super::super::dock::Pane::Requests, &title, |ui| {
                         // nothing yet, or + pressed: the new request page alone
                         if d.kinds_ui.page || d.list.is_empty() {
                             d.new_page(ui, hovering);
@@ -3979,9 +3973,6 @@ mod desk {
                             });
                         });
                     });
-                if plus.get() {
-                    d.open_page();
-                }
                 if let Some(s) = d.kind_windows(ui.ctx()) {
                     said = Some(s);
                 }

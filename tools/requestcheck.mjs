@@ -366,6 +366,7 @@ try {
   await sleep(400);
   check('back to the requests: the tabs only of the kinds that have requests (and the one shown)', (await data('requestpage')) === '' && (await data('uiRequestTab_character')) !== '' && (await data('uiRequestTab_environment')) === '' && (await data('uiRequestTab_prop')) === '',
     `character "${await data('uiRequestTab_character')}" environment "${await data('uiRequestTab_environment')}"`);
+  await shot('7-tabs');
   await press('uiRequestTab_all');
   await sleep(200);
   check('  All: every request listed', (await data('requestlisted')).split(',').includes(ID), await data('requestlisted'));

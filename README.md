@@ -936,11 +936,11 @@ line is on when it draws its own lines, and rigs the creature on them. It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
 committed. The **categories** (the files and the kit call them kinds) are **tabs** over the
 list (All, then each category that has requests, with how many): a tab shows that category's
-requests, and pictures dropped while it's shown start a request of it; hovering a tab shows
-its **edit icon**, which opens the category's window (All's: the **instructions for every
-category**, whatever a request's; a category's with the same keyword replaces one). **+** in
-the window's header opens the **new request page** in place of the list (the window opens on
-it while there's no request): the model Claude runs on (in a browser, the most a run may cost
+requests, and pictures dropped while it's shown start a request of it, its count a small tag;
+hovering a tab puts its **edit icon** in the tag's place, which opens the category's window (All's: the **instructions for every
+category**, whatever a request's; a category's with the same keyword replaces one). **+** first
+in that row, in a box of its own, opens the **new request page** in place of the list (the
+window opens on it while there's no request): the model Claude runs on (in a browser, the most a run may cost
 too), the category and a variety of it (the tabs there have the edit icon too), then the
 artwork dropped on the window begins the request, which takes what was picked (pictures
 hovering over the window show a strip saying where they'll go; the model for a request's next
