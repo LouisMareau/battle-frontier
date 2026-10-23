@@ -347,7 +347,7 @@ try {
   await sleep(1000);
   const kinds = await data('requestkinds');
   check('  an instruction added to the tree, a variety of your own (Pine) with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark;pine:foliage]'), kinds);
-  check("  the category's settings held for the variety, its own toggled", (await data('uiVarietyParam_pine_height')) !== '' && (await data('uiKindParam_height')) !== '', `${await data('uiVarietyParam_pine_height')}`);
+  check("  the variety's own settings only (the category's asked already): cells, not the height", (await data('uiVarietyParam_pine_cells')) !== '' && (await data('uiVarietyParam_pine_height')) === '' && (await data('uiKindParam_height')) !== '', `cells "${await data('uiVarietyParam_pine_cells')}" height "${await data('uiVarietyParam_pine_height')}"`);
   await shot('7-kind');
   await pressIn('uiKindDone');
   await sleep(300);

@@ -957,9 +957,11 @@ A category's window holds what every request of it asks Claude, a feature each, 
 (fur, colour, the trunk...) and how a run handles it, added, changed or taken out as you like,
 and the settings its requests are asked, lit from the window's own (height, cells, style,
 pose, shapes, the bones, variants, drawn by the thousand, the lines checked first; those the
-kit needs stay lit); then its varieties, each folded: its own instructions under the inherited
-ones (the category's, shown as they are), its own settings beside the inherited ones (held),
-and how it's made (as the category, unless it says: a pine made as a tree). The **+** on the
+kit needs stay lit); then its varieties, each folded: its own instructions (with the
+category's, which every variety gets; one with the same keyword replaces the category's), its
+own settings beyond the category's (asked of every variety already), and how it's made (as
+the category, unless it says: a pine made as a tree). The tab shown has its name white and
+its count tag cut through to the background. The **+** on the
 Varieties header adds a variety, named by the edit icon on its row (the icons say more on
 hover). **+** by the tabs (or on the page) adds a category of your own, made as one of the
 kit's eight (how it makes it and what it becomes in the game), its settings and instructions

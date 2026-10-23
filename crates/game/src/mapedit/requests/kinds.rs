@@ -488,7 +488,7 @@ pub(in super::super) fn about_kind(k: &KindDef) -> String {
 pub(in super::super) fn tab(ui: &mut egui::Ui, selected: bool, text: &str, count: Option<usize>, tip: &str, marks: (&str, &str), edit_tip: &str) -> (bool, bool) {
     let font = egui::TextStyle::Button.resolve(ui.style());
     let galley = ui.painter().layout_no_wrap(text.to_string(), font, ui.visuals().text_color());
-    let counted = count.map(|n| ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(10.0), ui.visuals().text_color()));
+    let counted = count.map(|n| ui.painter().layout_no_wrap(n.to_string(), egui::FontId::proportional(9.0), ui.visuals().text_color()));
     let pad = ui.spacing().button_padding;
     let icon = 12.0;
     // the slot after the name: the tag's width (its number, padded), or the icon's, whichever is wider
@@ -501,20 +501,22 @@ pub(in super::super) fn tab(ui: &mut egui::Ui, selected: bool, text: &str, count
     if selected || hovered {
         ui.painter().rect(rect, visuals.corner_radius, visuals.weak_bg_fill, visuals.bg_stroke, egui::StrokeKind::Inside);
     }
-    ui.painter().galley(rect.min + pad, galley, visuals.text_color());
+    // the one shown: its name white, its tag a hole in the panel's background
+    let text_color = if selected { Color32::WHITE } else { visuals.text_color() };
+    ui.painter().galley(rect.min + pad, galley, text_color);
     let slot_rect = egui::Rect::from_min_size(egui::pos2(rect.max.x - pad.x - slot, rect.min.y), egui::vec2(slot, rect.height()));
     if let (Some(c), Some(t), false) = (counted, tag, hovered) {
         let tag_rect = egui::Rect::from_center_size(slot_rect.center(), t);
-        let fill = if selected { Color32::from_white_alpha(36) } else { Color32::from_gray(72) };
-        ui.painter().rect_filled(tag_rect, 5.0, fill);
-        ui.painter().galley(egui::pos2(tag_rect.center().x - c.size().x / 2.0, tag_rect.center().y - c.size().y / 2.0), c, visuals.text_color());
+        let fill = if selected { ui.visuals().panel_fill } else { Color32::from_gray(72) };
+        ui.painter().rect_filled(tag_rect, 3.0, fill);
+        ui.painter().galley(egui::pos2(tag_rect.center().x - c.size().x / 2.0, tag_rect.center().y - c.size().y / 2.0), c, text_color);
     }
     // the icon, painted in the slot (no room of its own in the row: the tabs line up), its
     // own click over the tab's
     let icon_rect = egui::Rect::from_center_size(slot_rect.center(), egui::vec2(icon, icon));
     let e = ui.interact(icon_rect, egui::Id::new(("tab-edit", marks.1)), egui::Sense::click());
     if hovered {
-        egui::Image::new(egui::include_image!("../../../icons/edit.svg")).fit_to_exact_size(egui::vec2(icon, icon)).tint(visuals.text_color()).paint_at(ui, icon_rect);
+        egui::Image::new(egui::include_image!("../../../icons/edit.svg")).fit_to_exact_size(egui::vec2(icon, icon)).tint(text_color).paint_at(ui, icon_rect);
     }
     let e = if hovered { e.on_hover_text(edit_tip) } else { e };
     let r = r.on_hover_text(tip);
@@ -681,24 +683,17 @@ fn features_editor(ui: &mut egui::Ui, features: &mut Vec<Feature>, prefix: &str)
     }
 }
 
-/// Instructions shown as they are (inherited: a category's, under its varieties).
-fn features_shown(ui: &mut egui::Ui, features: &[Feature]) {
-    for f in features {
-        ui.label(RichText::new(format!("{}: {}", f.keyword.trim(), f.text.trim())).size(11.5).color(Color32::from_gray(180)));
-    }
-    if features.is_empty() {
-        hint(ui, "none");
-    }
-}
-
-/// The settings toggled: lit when asked; those `fixed` (the kit's needs, a variety's
-/// inherited) lit and left alone. Marked `{prefix}{param id}`.
-fn params_toggles(ui: &mut egui::Ui, params: &mut Vec<Param>, made: Kind, fixed: &[Param], prefix: &str) {
+/// The settings toggled: lit when asked; those the kit needs lit and left alone, those
+/// `fixed` (a variety's inherited) left out: the category's, asked already. Marked
+/// `{prefix}{param id}`. Whether any was shown.
+fn params_toggles(ui: &mut egui::Ui, params: &mut Vec<Param>, made: Kind, fixed: &[Param], prefix: &str) -> bool {
+    let mut shown = false;
     ui.horizontal_wrapped(|ui| {
-        for p in Param::ALL.into_iter().filter(|p| p.fits(made)) {
-            let held = p.needed(made) || fixed.contains(&p);
+        for p in Param::ALL.into_iter().filter(|p| p.fits(made) && !fixed.contains(p) && !(p.needed(made) && !fixed.is_empty())) {
+            shown = true;
+            let held = p.needed(made);
             let on = held || params.contains(&p);
-            let r = ui.add_enabled(!held, egui::Button::selectable(on, p.name())).on_disabled_hover_text(if p.needed(made) { "The kit makes it by it: always asked" } else { "Inherited from the category: asked of every variety" });
+            let r = ui.add_enabled(!held, egui::Button::selectable(on, p.name())).on_disabled_hover_text("The kit makes it by it: always asked");
             mark(&format!("{prefix}{}", p.id()), &r);
             if r.clicked() && !held {
                 if on {
@@ -710,6 +705,7 @@ fn params_toggles(ui: &mut egui::Ui, params: &mut Vec<Param>, made: Kind, fixed:
             }
         }
     });
+    shown
 }
 
 /// The window of the instructions for every category (All's edit icon): whether anything
@@ -796,7 +792,6 @@ pub(in super::super) fn kind_window(ctx: &egui::Context, cat: &mut Catalogue, st
                 st.renaming = Some(vid.clone());
                 st.variety = Some(vid);
             }
-            let inherited = k.features.clone();
             let base = k.params.clone();
             let mut gone = None;
             let mut named: Option<(String, String)> = None;
@@ -852,15 +847,15 @@ pub(in super::super) fn kind_window(ctx: &egui::Context, cat: &mut Catalogue, st
                         });
                         mark(&format!("uiVarietyMade_{vid}"), &r.response);
                     });
-                    hint(ui, "Inherited instructions (the category's: changed there)");
-                    features_shown(ui, &inherited);
-                    ui.add_space(4.0);
-                    hint(ui, "Its own instructions (one with the same keyword replaces the inherited one)");
+                    hint(ui, "Its own instructions, with the category's (one with the same keyword replaces the category's)");
                     features_editor(ui, &mut k.varieties[vi].features, &format!("uiVarietyFeature_{vid}_"));
                     ui.add_space(4.0);
-                    hint(ui, "Settings its requests are asked (the category's held: asked of every variety)");
+                    hint(ui, "Its own settings, with the category's (asked of every variety already)");
                     let v_made = k.varieties[vi].making(made);
-                    params_toggles(ui, &mut k.varieties[vi].params, v_made, &base, &format!("uiVarietyParam_{vid}_"));
+                    let held: Vec<Param> = base.iter().copied().chain(Param::ALL.into_iter().filter(|p| p.needed(v_made))).collect();
+                    if !params_toggles(ui, &mut k.varieties[vi].params, v_made, &held, &format!("uiVarietyParam_{vid}_")) {
+                        hint(ui, "none left: every setting the kit can ask is the category's already");
+                    }
                 });
             }
             if let Some((vid, name)) = named {
