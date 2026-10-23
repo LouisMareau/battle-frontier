@@ -848,15 +848,19 @@ make it on that footprint.
 
 ## The kinds' instructions
 
-The window's kinds (its tabs) are `tools/blender/request_kinds.json` (a browser's own copy,
-`private/requests/kinds.json`, comes first when it's there: its runs are given it): character
-(a creature its variety), prop, environment (grass, a flower, a rock and a tree its varieties)
-and floor, and the kinds the user adds. Each is made as one of the eight kinds above
+The window's categories (its tabs; the files and the kit call them kinds) are
+`tools/blender/request_kinds.json` (a browser's own copy, `private/requests/kinds.json`,
+comes first when it's there: its runs are given it): character (itself and a creature its
+varieties), prop, environment (itself, grass, a flower, a rock and a tree its varieties) and
+floor, and the categories the user adds. Each is made as one of the eight kinds above
 (`made_as`: how the kit makes it, what it becomes), and has its instructions: a feature each,
-a keyword and how to handle it, the user's; a variety is made as its kind unless it says how
-(`made_as` on the variety: the environment's four, a pine made as a tree). The catalogue's own
-`features` go with every request, whatever its kind. A request's `kind_id` names its window
-kind when that isn't its making's own (`kind` is then how it's made: a rock of the
+a keyword and how to handle it, the user's. A request is always one of a variety (a category
+is never asked for as itself: each has a generic variety named after it, `variety` = the
+making's id; `normal` fills it in for a record naming none); a variety is made as its category
+unless it says how (`made_as` on the variety: the environment's four, a pine made as a tree),
+and inherits the category's instructions and settings, adding its own. The catalogue's own
+`features` go with every request, whatever its category. A request's `kind_id` names its
+window category when that isn't its making's own (`kind` is then how it's made: a rock of the
 environment's says `environment`), and `variety` its variety of it. The prompt lists them all
 under "The user's instructions": those for every kind, then the kind's, then the variety's,
 one with the same keyword replacing the earlier; follow every one, as the user wrote it, along

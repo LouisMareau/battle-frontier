@@ -271,7 +271,8 @@ def normal(record):
         out["variety"] = out.get("variety") or "creature"
     if out.get("kind") in ENVIRONMENT_VARIETIES and not out.get("kind_id"):
         out["kind_id"] = "environment"
-        out["variety"] = out.get("variety") or out["kind"]
+    # a request is one of a variety: the generic one, named after its making, when none
+    out["variety"] = out.get("variety") or out["kind"]
     for k, v in record.items():
         if k not in out:
             out[k] = v

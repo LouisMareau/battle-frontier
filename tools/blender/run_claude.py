@@ -662,8 +662,9 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     # asked as a kind of the window's own (a kind the user added), or a variety of one: named so
     k, v = mr.kind_of(record, mr.kinds(root))
     named = (k or {}).get("name", "").strip()
+    # (the generic variety, named after its category's making, says nothing more)
     variety = (v or {}).get("name", "").strip().lower()
-    if variety and variety != kind:
+    if variety and variety != kind and (v or {}).get("id") != kind:
         what = f"a {variety}: {what}"
     elif v is None and k is not None and k.get("id") != kind and named:
         what = f"a {named.lower()}: {what}"

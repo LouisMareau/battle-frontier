@@ -1,5 +1,5 @@
 {
-  "about": "The Model requests' kinds, as the window's tabs: each made as one of the kit's eight (made_as: how the kit makes it and what it becomes in the game), the settings its requests are asked (params, from the window's own: height, cells, style, pose, shapes, bones, variants, many, check_lines), its instructions (features: a keyword and how a run handles it, each a line of every run's prompt) and its varieties (each with its own params and instructions, added to the kind's: one with the same keyword replaces the kind's; made as its kind unless it says how, made_as). The catalogue's own features go with every request, whatever its kind (a kind's with the same keyword replaces one). A character's creature variety makes a creature of the fields (its prop's category creature, a creature record of its own in the editor); grass, a flower, a rock and a tree are the environment's varieties, each made its own way. The editor edits this file on the desktop; a browser keeps its own copy (private/requests/kinds.json), which its runs are given.",
+  "about": "The Model requests' categories (the window's word for its kinds), as its tabs: each made as one of the kit's eight (made_as: how the kit makes it and what it becomes in the game), the settings its requests are asked (params, from the window's own: height, cells, style, pose, shapes, bones, variants, many, check_lines), its instructions (features: a keyword and how a run handles it, each a line of every run's prompt) and its varieties, which a request is one of (the generic one named after the category; each with its own params and instructions, added to the category's: one with the same keyword replaces the category's; made as its category unless it says how, made_as). The catalogue's own features go with every request, whatever its category (a category's with the same keyword replaces one). A character's creature variety makes a creature of the fields (its prop's category creature, a creature record of its own in the editor); grass, a flower, a rock and a tree are the environment's varieties, each made its own way. The editor edits this file on the desktop; a browser keeps its own copy (private/requests/kinds.json), which its runs are given.",
   "features": [],
   "kinds": [
     {
@@ -17,17 +17,29 @@
       "features": [],
       "varieties": [
         {
+          "id": "character",
+          "name": "Character",
+          "params": [],
+          "features": []
+        },
+        {
           "id": "creature",
           "name": "Creature",
           "params": [
             "height",
+            "cells",
             "style",
             "pose",
             "shapes",
             "bones",
             "check_lines"
           ],
-          "features": []
+          "features": [
+            {
+              "keyword": "",
+              "text": ""
+            }
+          ]
         }
       ]
     },
@@ -43,7 +55,14 @@
         "check_lines"
       ],
       "features": [],
-      "varieties": []
+      "varieties": [
+        {
+          "id": "prop",
+          "name": "Prop",
+          "params": [],
+          "features": []
+        }
+      ]
     },
     {
       "id": "environment",
@@ -64,6 +83,12 @@
         }
       ],
       "varieties": [
+        {
+          "id": "environment",
+          "name": "Environment",
+          "params": [],
+          "features": []
+        },
         {
           "id": "grass",
           "name": "Grass",
@@ -200,7 +225,14 @@
         "shapes"
       ],
       "features": [],
-      "varieties": []
+      "varieties": [
+        {
+          "id": "floor",
+          "name": "Floor set",
+          "params": [],
+          "features": []
+        }
+      ]
     }
   ]
 }

@@ -934,38 +934,42 @@ tail, wing, and misc for a piece you name yourself): a click adds each joint, ch
 root out, and a right-click ends the line. Claude works out which part of the creature each
 line is on when it draws its own lines, and rigs the creature on them. It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
-committed. The kinds are **tabs** over the list (All, then each kind that has requests, with
-how many): a tab shows that kind's requests, and pictures dropped while it's shown start a
-request of it. **+** in the window's header opens the **new request page** in place of the list
-(the window opens on it while there's no request): the model Claude runs on (in a browser, the
-most a run may cost too), the kind and a variety of it, then the artwork dropped on the window
-begins the request, which takes what was picked (pictures hovering over the window show a
-strip saying where they'll go; the model for a request's next Start sits by its Start
-button). The kinds are **Character** (rigged, with an idle animation: a character of the
-story, or, with its **creature** variety, a creature of the fields: its prop gets the
-`creature` category and a creature record of its own is made for it, named as the prop, its
-model standing for it on the map, its stats to fill in: it's in the zones' pools at once),
-**Prop**, **Environment** (what dresses the outdoors; its **grass**, **flower**, **rock** and
-**tree** varieties are each made their own way by the kit, with the instructions written so
-far: grass's edges, pieces and density, a flower's stem, leaves, petals, heart and wind, a
-rock's detail, colour, moss and plants, a tree's trunk, foliage, colours and wind) and **Floor
-set**. A kind's **Instructions…** (by the tabs, or on the page) opens its window: what every
-request of it asks Claude, a feature each, a keyword (fur, colour, the trunk...) and how a run
-handles it, added, changed or taken out as you like; the settings its requests are asked, lit
-from the window's own (height, cells, style, pose, shapes, the bones, variants, drawn by the
-thousand, the lines checked first; those the kit needs stay lit); and its **varieties**, each
-with settings and instructions of its own added to the kind's, one with the same keyword
-replacing the kind's, made as the kind unless it says how (a pine made as a tree); what the
-kit does whatever the instructions say is under the info icons. On All, Instructions… holds
-the **instructions for every kind**, whatever a request's kind (a kind's with the same keyword
-replaces one). **+** by the tabs (or on the page) adds a kind of your own, made as one of the
+committed. The **categories** (the files and the kit call them kinds) are **tabs** over the
+list (All, then each category that has requests, with how many): a tab shows that category's
+requests, and pictures dropped while it's shown start a request of it; hovering a tab shows
+its **edit icon**, which opens the category's window (All's: the **instructions for every
+category**, whatever a request's; a category's with the same keyword replaces one). **+** in
+the window's header opens the **new request page** in place of the list (the window opens on
+it while there's no request): the model Claude runs on (in a browser, the most a run may cost
+too), the category and a variety of it (the tabs there have the edit icon too), then the
+artwork dropped on the window begins the request, which takes what was picked (pictures
+hovering over the window show a strip saying where they'll go; the model for a request's next
+Start sits by its Start button). A request is always one of a **variety**: a category is never
+asked for as itself, so each has a generic variety named after it. The categories are
+**Character** (its varieties: character, the story's people; **creature**, one of the fields:
+its prop gets the `creature` category and a creature record of its own is made for it, named
+as the prop, its model standing for it on the map, its stats to fill in: it's in the zones'
+pools at once), **Prop**, **Environment** (itself; and its **grass**, **flower**, **rock** and
+**tree** varieties, each made its own way by the kit, with the instructions written so far:
+grass's edges, pieces and density, a flower's stem, leaves, petals, heart and wind, a rock's
+detail, colour, moss and plants, a tree's trunk, foliage, colours and wind) and **Floor set**.
+A category's window holds what every request of it asks Claude, a feature each, a keyword
+(fur, colour, the trunk...) and how a run handles it, added, changed or taken out as you like,
+and the settings its requests are asked, lit from the window's own (height, cells, style,
+pose, shapes, the bones, variants, drawn by the thousand, the lines checked first; those the
+kit needs stay lit); then its varieties, each folded: its own instructions under the inherited
+ones (the category's, shown as they are), its own settings beside the inherited ones (held),
+and how it's made (as the category, unless it says: a pine made as a tree). The **+** on the
+Varieties header adds a variety, named by the edit icon on its row (the icons say more on
+hover). **+** by the tabs (or on the page) adds a category of your own, made as one of the
 kit's eight (how it makes it and what it becomes in the game), its settings and instructions
-that kind's to start. A request's Kind row lists the kinds (and the varieties of its own), the
-instructions it will get folded under it with Edit…. The kinds are
-`tools/blender/request_kinds.json`, which the desktop edits (commit it to share what you've
-taught them); a browser keeps its own copy, which its runs are given; requests from before
-(a creature, a rock) read as the kinds are now, their ratings and lessons going by how a
-request is made (a rock's are the rocks', whatever tab asked), or by a kind of your own. The
+that category's to start, with a generic variety. A request's Category row lists the
+categories and the varieties of its own, the instructions it will get folded under it with
+Edit…. The categories are `tools/blender/request_kinds.json`, which the desktop edits (commit
+it to share what you've taught them); a browser keeps its own copy, which its runs are given;
+requests from before (a creature, a rock, one naming no variety) read as the categories are
+now, their ratings and lessons going by how a request is made (a rock's are the rocks',
+whatever tab asked), or by a category of your own. The
 The list shows each request as a card as wide as it, folded at first: its status
 (waiting, in progress, failed, done) and its kind as tags, its name, an "i" with the rest of
 what it asks for when hovered (its height, its style, its cells, shapes, variants, where its

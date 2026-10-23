@@ -482,13 +482,15 @@ check("a tree: its trunk a mesh, its foliage clusters of leaf cards crossing, cu
 import json  # noqa: E402
 catalogue = mr.kinds()
 environment = next(k for k in catalogue if k["id"] == "environment")
-check("the standard kinds: character (a creature its variety), prop, environment (grass, a flower, a rock and a tree its varieties, each made its own way), floor",
+check("the standard categories: character (itself and a creature its varieties), prop, environment (itself, grass, a flower, a rock and a tree, each made its own way), floor",
       [k["id"] for k in catalogue] == ["character", "prop", "environment", "floor"] and all(k["made_as"] == k["id"] for k in catalogue)
-      and [v["id"] for v in next(k for k in catalogue if k["id"] == "character")["varieties"]] == ["creature"]
-      and [(v["id"], v["made_as"]) for v in environment["varieties"]] == [(v, v) for v in mr.ENVIRONMENT_VARIETIES]
+      and [v["id"] for v in next(k for k in catalogue if k["id"] == "character")["varieties"]] == ["character", "creature"]
+      and all(k["varieties"][0]["id"] == k["id"] and "made_as" not in k["varieties"][0] for k in catalogue)
+      and [(v["id"], v.get("made_as", "environment")) for v in environment["varieties"]] == [("environment", "environment")] + [(v, v) for v in mr.ENVIRONMENT_VARIETIES]
       and [f["keyword"] for f in next(v for v in environment["varieties"] if v["id"] == "tree")["features"]] == ["trunk", "foliage", "colour", "wind"], str([k["id"] for k in catalogue]))
 check("  a request of one of them from before: the environment's variety now, its lessons the making's still",
       (lambda r: (r["kind"], r["kind_id"], r["variety"], mr.kind_key(r), mr.lesson_key(r)))(mr.normal({"kind": "rock"})) == ("rock", "environment", "rock", "environment", "rock")
+      and mr.normal({"kind": "character"})["variety"] == "character" and mr.normal({"kind": "environment", "kind_id": "bush"})["variety"] == "environment"
       and mr.lesson_key(mr.normal({"kind": "environment", "kind_id": "bush"})) == "bush" and mr.lesson_key(mr.normal({"kind": "creature"})) == "character")
 # a request from before the character kind: a character, a creature of them (its prop a creature's)
 old = mr.normal({"kind": "creature", "name": "Newt"})

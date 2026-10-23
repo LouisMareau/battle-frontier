@@ -10,9 +10,10 @@
 // (its render into its folder, the prop and its model into the asset browser), the uploads and
 // the outputs taken off the key's files; the page opened again, the request is still there,
 // done; a second Start finds the agent and its environment again, makes neither. The header's
-// +: the new request page (the model, the kind and a variety, the artwork to drop); a kind's
-// window: an instruction added (a keyword and how), a variety and a kind of the user's own;
-// the instructions for every kind; the tabs only of the kinds with requests; all kept here.
+// +: the new request page (the model, the category and a variety, the artwork to drop); a
+// category's window (its tab's edit icon): an instruction added to a variety (a keyword and
+// how), a variety added and named, a category of the user's own; the instructions for every
+// category (All's edit icon); the tabs only of the categories with requests; all kept here.
 // Screenshots go to screenshots/requests-*.png.
 //     node tools/requestcheck.mjs
 import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -275,12 +276,14 @@ try {
   check('  given what the first made: its render, and its prop and model (kept in the browser) for the project',
     again.includes(`/request/preview_front.png`) && again.includes(`/project/temporary/data/props/${ID}.json`) && again.includes(`/project/temporary/assets/models/${ID}.glb`), again.join(' '));
 
-  // 7. a new request from the header's +: the page alone (the model, the kind and a variety of
-  // it, the artwork to drop). Environment picked, a tree of it: its window on the tree variety,
-  // an instruction added (a keyword and how); a variety of the user's own (Pine) with one of its
-  // own; a kind of the user's own (Bush, made as environment: environment's instructions to
-  // start); back, the tabs only of the kinds that have requests; from All, the instructions
-  // for every kind; all of it kept in this browser once the page is opened again
+  // 7. a new request from the header's +: the page alone (the model, the category and a
+  // variety of it, the artwork to drop). Environment picked, a tree of it: its window (the
+  // tab's edit icon) with the tree variety unfolded, an instruction added to it (a keyword and
+  // how); a variety of the user's own (Pine, added by the + and named) with one of its own; a
+  // category of the user's own (Bush, made as environment: environment's instructions to
+  // start, a generic variety); back, the tabs only of the categories that have requests; from
+  // All's edit icon, the instructions for every category; all kept in this browser once the
+  // page is opened again
   const typeInto = async (name, text) => {
     await press(name);
     await browser.key('a', { ctrl: true });
@@ -291,6 +294,23 @@ try {
     await browser.waitFor('(document.body.dataset.uiKindFeatureAdd ?? "") !== "" && (document.body.dataset.uiKindDone ?? "") !== ""', { what: "the kind window's buttons" });
     await sleep(300);
   };
+  // the category window scrolled (its wheel over it) until a marked widget is in sight, then pressed
+  const scrollTo = async (name) => {
+    for (let i = 0; i < 24; i++) {
+      const [, y] = await ui(name);
+      if (y > 120 && y < 860) return;
+      await browser.wheel(560, 450, y > 860 ? 160 : -160);
+      await sleep(150);
+    }
+  };
+  const pressIn = async (name) => {
+    await scrollTo(name);
+    await press(name);
+  };
+  const typeIn = async (name, text) => {
+    await scrollTo(name);
+    await typeInto(name, text);
+  };
   await press('uiRequestNew');
   await sleep(400);
   // (a mark stays once drawn: what's gone is told by the hooks, not by its mark)
@@ -298,30 +318,38 @@ try {
     `page "${await data('requestpage')}"`);
   await press('uiRequestKindEnvironment');
   await sleep(200);
+  check('  Environment picked: its generic variety, what dropped pictures start', (await data('requestnext')) === 'environment:environment', await data('requestnext'));
   await press('uiRequestVariety_tree');
   await sleep(200);
-  check('  Environment picked, a tree of it: what dropped pictures start', (await data('requestnext')) === 'environment:tree', await data('requestnext'));
+  check('  a tree of it picked', (await data('requestnext')) === 'environment:tree', await data('requestnext'));
   await shot('7-page');
-  await press('uiRequestKindEdit');
+  // (the edit icon shows while the category's tab is hovered: the tab pressed, the pointer is on it)
+  await press('uiRequestKindEnvironment');
+  await press('uiRequestKindEnvironmentEdit');
   await sleep(300);
-  check('  its window open, on the tree variety', (await data('requestkind')) === 'environment' && (await data('uiKindVarietyRename')) !== '', await data('requestkind'));
+  check('  its window open, the tree variety unfolded', (await data('requestkind')) === 'environment' && (await data('uiVarietyFeature_tree_Add')) !== '', await data('requestkind'));
   await kindWindow();
-  await press('uiKindFeatureAdd');
+  await pressIn('uiVarietyFeature_tree_Add');
   await sleep(300);
-  await typeInto('uiKindFeatureKey_4', 'bark');
-  await typeInto('uiKindFeatureText_4', 'rough vertical ridges in the mesh, darker in the grooves');
-  await typeInto('uiKindVarietyName', 'Pine');
-  await press('uiKindVarietyAdd');
+  await typeIn('uiVarietyFeature_tree_Key_4', 'bark');
+  await typeIn('uiVarietyFeature_tree_Text_4', 'rough vertical ridges in the mesh, darker in the grooves');
+  // a variety added by the + on the Varieties header, named by its field (its id follows)
+  await pressIn('uiKindVarietyAdd');
   await sleep(300);
-  await press('uiKindFeatureAdd');
+  check('  a variety added: its name asked', (await data('uiVarietyName_variety')) !== '', await data('uiVarietyName_variety'));
+  await browser.type('Pine');
+  await browser.key('Enter');
+  await sleep(400);
+  await pressIn('uiVarietyFeature_pine_Add');
   await sleep(300);
-  await typeInto('uiKindFeatureKey_0', 'foliage');
-  await typeInto('uiKindFeatureText_0', 'needles in drooping tiers of cards');
+  await typeIn('uiVarietyFeature_pine_Key_0', 'foliage');
+  await typeIn('uiVarietyFeature_pine_Text_0', 'needles in drooping tiers of cards');
   await sleep(1000);
   const kinds = await data('requestkinds');
-  check('  an instruction added to the tree, a variety of your own with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark;pine:foliage]'), kinds);
+  check('  an instruction added to the tree, a variety of your own (Pine) with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark;pine:foliage]'), kinds);
+  check("  the category's settings held for the variety, its own toggled", (await data('uiVarietyParam_pine_height')) !== '' && (await data('uiKindParam_height')) !== '', `${await data('uiVarietyParam_pine_height')}`);
   await shot('7-kind');
-  await press('uiKindDone');
+  await pressIn('uiKindDone');
   await sleep(300);
   await press('uiRequestKindAdd');
   await sleep(300);
@@ -329,10 +357,10 @@ try {
   await typeInto('uiKindNewName', 'Bush');
   await press('uiKindNewOk');
   await sleep(1000);
-  check("a kind of the user's own: Bush, made as environment (the kind picked), its instructions environment's to start, its window open", (await data('requestkind')) === 'bush' && (await data('requestkinds')).includes('bush<environment>:wind'),
+  check("a category of the user's own: Bush, made as environment (the category picked), its instructions environment's to start, a generic variety, its window open", (await data('requestkind')) === 'bush' && (await data('requestkinds')).includes('bush<environment>:wind[environment:]'),
     `${await data('requestkind')} · ${await data('requestkinds')}`);
   await shot('7-bush');
-  await press('uiKindDone');
+  await pressIn('uiKindDone');
   await sleep(300);
   await press('uiRequestBack');
   await sleep(400);
@@ -341,9 +369,10 @@ try {
   await press('uiRequestTab_all');
   await sleep(200);
   check('  All: every request listed', (await data('requestlisted')).split(',').includes(ID), await data('requestlisted'));
-  await press('uiRequestKindEdit');
+  // (All's edit icon, shown while its tab is hovered: the pointer is on it)
+  await press('uiRequestTab_allEdit');
   await sleep(300);
-  check('  from All: the instructions for every kind', (await data('requestkind')) === '*', await data('requestkind'));
+  check('  from All: the instructions for every category', (await data('requestkind')) === '*', await data('requestkind'));
   await kindWindow();
   await press('uiKindFeatureAdd');
   await sleep(300);
@@ -358,7 +387,7 @@ try {
   if ((await data('requests')) !== 'open') await press('uiRequests');
   await sleep(600);
   const kept = await data('requestkinds');
-  check('  all of it kept in this browser, the page opened again', kept.startsWith('*:silhouette | ') && kept.includes('bark;pine:foliage]') && kept.includes('bush<environment>:wind'), kept);
+  check('  all of it kept in this browser, the page opened again', kept.startsWith('*:silhouette | ') && kept.includes('bark;pine:foliage]') && kept.includes('bush<environment>:wind[environment:]'), kept);
   if (browser.errors.length) {
     failed++;
     console.log('PAGE ERRORS:\n' + browser.errors.join('\n'));

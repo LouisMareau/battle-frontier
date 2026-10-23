@@ -609,9 +609,10 @@ mod desk {
         }
         if matches!(r.kind, Kind::Grass | Kind::Flower | Kind::Rock | Kind::Tree) && r.kind_id.is_empty() {
             r.kind_id = "environment".into();
-            if r.variety.is_empty() {
-                r.variety = r.kind.id().into();
-            }
+        }
+        // a request is one of a variety: the generic one, named after its making, when none
+        if r.variety.is_empty() {
+            r.variety = r.kind.id().into();
         }
         Ok(r)
     }
@@ -665,7 +666,9 @@ mod desk {
     pub(in super::super) fn create(root: &Path, picture: &str) -> Result<ModelRequest, String> {
         let stem = picture.rsplit_once('.').map(|(s, _)| s).unwrap_or(picture);
         let name = title(stem);
-        let r = ModelRequest { id: free_id(root, &name), name, ..Default::default() };
+        // (one of a variety always: its making's generic one, until a category is picked)
+        let kind = Kind::default();
+        let r = ModelRequest { id: free_id(root, &name), name, variety: kind.id().into(), ..Default::default() };
         save(root, &r)?;
         Ok(r)
     }
@@ -1426,20 +1429,20 @@ mod desk {
             self.kinds_ui.tab.as_ref().is_none_or(|t| *t == r.kind_key())
         }
 
-        /// A request made of a kind of the window's, and a variety of it or none: made as the
-        /// variety's making (else the kind's), asked as the kind (named when that isn't its
-        /// making's own); what its settings no longer ask set back.
+        /// A request made of a category of the window's, and a variety of it (the one named,
+        /// else the category's generic one): made as the variety's making (else the
+        /// category's), asked as the category (named when that isn't its making's own); what
+        /// its settings no longer ask set back.
         pub(in super::super) fn set_kind(&self, r: &mut ModelRequest, k: &KindDef, variety: Option<&str>) {
-            let v = variety.filter(|v| !v.is_empty()).and_then(|v| k.variety(v));
+            let v = k.variety_of(variety.unwrap_or(""));
             r.kind = v.map_or(k.made_as, |v| v.making(k.made_as));
             r.kind_id = if k.id == r.kind.id() { String::new() } else { k.id.clone() };
-            r.variety = v.map(|v| v.id.clone()).unwrap_or_default();
+            r.variety = v.map(|v| v.id.clone()).unwrap_or_else(|| r.kind.id().into());
             let params = self.kinds.params_of(r);
             unasked(r, &params);
         }
 
-        /// A request made a variety of its kind (or none, ""): what its settings no longer ask
-        /// set back.
+        /// A request made a variety of its category: what its settings no longer ask set back.
         fn set_variety(&self, r: &mut ModelRequest, variety: &str) {
             let Some(k) = self.kinds.of(r).0.cloned() else { return };
             self.set_kind(r, &k, Some(variety));
@@ -1452,7 +1455,10 @@ mod desk {
             self.selected = None;
             self.deleting = false;
             let kind = self.kinds_ui.tab.clone().filter(|t| self.kinds.kind(t).is_some()).or_else(|| self.kinds.kinds.first().map(|k| k.id.clone()));
-            self.kinds_ui.next = kind.map(|k| (k, String::new()));
+            self.kinds_ui.next = kind.map(|k| {
+                let generic = self.kinds.kind(&k).and_then(|d| d.variety_of("")).map(|v| v.id.clone()).unwrap_or_default();
+                (k, generic)
+            });
         }
 
         /// The model {MAKER} runs on for the next Start (and, in a browser, the most a run may
@@ -1491,18 +1497,21 @@ mod desk {
                 });
                 ui.add_space(8.0);
                 ui.horizontal_wrapped(|ui| {
-                    inset(ui, 60.0 + 72.0 * kinds.kinds.len() as f32);
-                    hint(ui, "Kind");
+                    inset(ui, 80.0 + 92.0 * kinds.kinds.len() as f32);
+                    hint(ui, "Category");
                     for k in &kinds.kinds {
                         let on = k.id == kid;
-                        let about = if k.built_in() { k.made_as.about().to_string() } else { format!("A kind of your own, made as {}: {}", k.made_as.name(), super::kinds::making(k.made_as)) };
-                        let b = ui.selectable_label(on, k.name.to_lowercase()).on_hover_text(about);
-                        mark(&format!("uiRequestKind{}", capital(&k.id)), &b);
-                        if b.clicked() && !on {
-                            self.kinds_ui.next = Some((k.id.clone(), String::new()));
+                        let (clicked, edit) = super::kinds::tab(ui, on, &k.name.to_lowercase(), &super::kinds::about_kind(k), &format!("uiRequestKind{}", capital(&k.id)), &format!("uiRequestKind{}Edit", capital(&k.id)), &format!("{}'s instructions, settings and varieties", k.name));
+                        if clicked && !on {
+                            let generic = k.variety_of("").map(|v| v.id.clone()).unwrap_or_default();
+                            self.kinds_ui.next = Some((k.id.clone(), generic));
+                        }
+                        if edit {
+                            (self.kinds_ui.tab, self.kinds_ui.open) = (Some(k.id.clone()), true);
+                            self.kinds_ui.variety = (k.id == kid && !vid.is_empty()).then(|| vid.clone());
                         }
                     }
-                    let add = ui.small_button("+").on_hover_text("A kind of your own: its name, what the kit makes it as, then its settings and instructions");
+                    let add = ui.small_button("+").on_hover_text("A category of your own: its name, what the kit makes it as, then its settings, instructions and varieties");
                     mark("uiRequestKindAdd", &add);
                     if add.clicked() {
                         self.kinds_ui.adding = Some((String::new(), picked.as_ref().map_or(Kind::Prop, |k| k.made_as)));
@@ -1510,17 +1519,12 @@ mod desk {
                 });
                 if let Some(k) = picked.as_ref().filter(|k| !k.varieties.is_empty()) {
                     ui.horizontal_wrapped(|ui| {
-                        inset(ui, 80.0 + 72.0 * (k.varieties.len() + 1) as f32);
+                        inset(ui, 80.0 + 72.0 * k.varieties.len() as f32);
                         hint(ui, "variety");
-                        let none = ui.selectable_label(vid.is_empty(), "none").on_hover_text("The kind itself");
-                        mark("uiRequestVariety_", &none);
-                        if none.clicked() {
-                            self.kinds_ui.next = Some((kid.clone(), String::new()));
-                        }
                         for v in &k.varieties {
                             let b = ui.selectable_label(vid == v.id, v.name.to_lowercase()).on_hover_text(match v.made_as {
                                 Some(m) => format!("Made as {}: {}", m.name(), super::kinds::making(m)),
-                                None => format!("{} of its own instructions, added to the kind's", v.features.len()),
+                                None => format!("{} of its own instructions, added to the category's", v.features.len()),
                             });
                             mark(&format!("uiRequestVariety_{}", v.id), &b);
                             if b.clicked() {
@@ -1529,17 +1533,8 @@ mod desk {
                         }
                     });
                 }
-                ui.horizontal(|ui| {
-                    inset(ui, 110.0);
-                    let edit = ui.add_enabled(picked.is_some(), egui::Button::new("Instructions…").small()).on_hover_text("Its instructions, settings and varieties: what every request of it asks");
-                    mark("uiRequestKindEdit", &edit);
-                    if edit.clicked() {
-                        (self.kinds_ui.tab, self.kinds_ui.open) = (Some(kid.clone()), true);
-                        self.kinds_ui.variety = (!vid.is_empty()).then(|| vid.clone());
-                    }
-                });
                 ui.add_space(14.0);
-                let what = match (&picked, picked.as_ref().and_then(|k| k.variety(&vid))) {
+                let what = match (&picked, picked.as_ref().and_then(|k| k.variety_of(&vid))) {
                     (Some(_), Some(v)) => format!("one {}", v.name.to_lowercase()),
                     (Some(k), None) => format!("one {}", k.name.to_lowercase()),
                     (None, _) => "one character, creature or prop".to_string(),
@@ -2623,13 +2618,13 @@ mod desk {
                     }
                     ui.end_row();
                 }
-                ui.label("Kind");
+                ui.label("Category");
                 ui.vertical(|ui| {
-                    // the window's kinds (its tabs), and the varieties of its own
+                    // the window's categories (its tabs), and the varieties of its own
                     ui.horizontal_wrapped(|ui| {
                         for k in &kinds.kinds {
                             let on = r.kind_key() == k.id;
-                            let about = if k.built_in() { k.made_as.about().to_string() } else { format!("A kind of your own, made as {}: {}", k.made_as.name(), super::kinds::making(k.made_as)) };
+                            let about = super::kinds::about_kind(k);
                             let b = ui.selectable_label(on, k.name.to_lowercase()).on_hover_text(about);
                             mark(&format!("uiRequestKind{}", capital(&k.id)), &b);
                             if b.clicked() && !on {
@@ -2637,10 +2632,10 @@ mod desk {
                             }
                         }
                     });
-                    // what its kind (and its variety) will ask of the run, folded; its window to edit it
+                    // what its category (and its variety) will ask of the run, folded; its window to edit it
                     let says = kinds.features_of(&r);
                     ui.horizontal(|ui| {
-                        egui::CollapsingHeader::new(RichText::new(format!("its kind's instructions ({})", says.len())).size(11.5)).id_salt(("request-kind-says", &r.id)).show(ui, |ui| {
+                        egui::CollapsingHeader::new(RichText::new(format!("its category's instructions ({})", says.len())).size(11.5)).id_salt(("request-kind-says", &r.id)).show(ui, |ui| {
                             for f in &says {
                                 ui.label(RichText::new(format!("{}: {}", f.keyword.trim(), f.text.trim())).size(11.5).color(Color32::from_gray(185)));
                             }
@@ -2648,7 +2643,7 @@ mod desk {
                                 hint(ui, "none yet");
                             }
                         });
-                        let edit = ui.small_button("Edit…").on_hover_text("Its kind's instructions, settings and varieties: what every request of it asks");
+                        let edit = ui.small_button("Edit…").on_hover_text("Its category's instructions, settings and varieties: what every request of it asks");
                         mark("uiRequestKindInstructions", &edit);
                         if edit.clicked() {
                             if let Some(k) = kinds.of(&r).0 {
@@ -2660,13 +2655,8 @@ mod desk {
                     if let Some(k) = kinds.of(&r).0.filter(|k| !k.varieties.is_empty()).cloned() {
                         ui.horizontal_wrapped(|ui| {
                             hint(ui, "variety");
-                            let none = ui.selectable_label(r.variety.is_empty(), "none").on_hover_text("The kind itself");
-                            mark("uiRequestVariety_", &none);
-                            if none.clicked() && !r.variety.is_empty() {
-                                self.set_variety(&mut r, "");
-                            }
                             for v in &k.varieties {
-                                let b = ui.selectable_label(r.variety == v.id, v.name.to_lowercase()).on_hover_text(format!("{} of its own instructions, added to the kind's", v.features.len()));
+                                let b = ui.selectable_label(r.variety == v.id, v.name.to_lowercase()).on_hover_text(format!("{} of its own instructions, added to the category's", v.features.len()));
                                 mark(&format!("uiRequestVariety_{}", v.id), &b);
                                 if b.clicked() && r.variety != v.id {
                                     self.set_variety(&mut r, &v.id);
@@ -4128,7 +4118,7 @@ mod tests {
         };
         assert_eq!(read_as("newt"), (Kind::Character, "".into(), "creature".into(), "character".into(), "character".into()));
         assert_eq!(read_as("boulder"), (Kind::Rock, "environment".into(), "rock".into(), "environment".into(), "rock".into()));
-        assert_eq!(read_as("hedge"), (Kind::Environment, "bush".into(), "".into(), "bush".into(), "bush".into()), "a kind of the user's own: its lessons its own");
+        assert_eq!(read_as("hedge"), (Kind::Environment, "bush".into(), "environment".into(), "bush".into(), "bush".into()), "a kind of the user's own: its lessons its own; the generic variety when none");
         assert_eq!(read_as("lawn"), (Kind::Grass, "turf".into(), "short".into(), "turf".into(), "turf".into()), "asked as a window kind already: left as it was");
         std::fs::remove_dir_all(&root).ok();
         assert!(text.contains("  \"progress\": {\n    \"step\": \"building the model\",\n    \"done\": 0.2,\n    \"started\": 1760000000.0,\n    \"minutes\": 25.0\n  },\n"), "{text}");
@@ -4791,7 +4781,7 @@ mod tests {
         assert_eq!(read(&root, "meadow_tuft").unwrap().vary, "taller, yellower", "kept as it's typed");
         // an environment asset (the kind itself): its variants, no cells
         frame_with(&ctx, &mut req, vec![]);
-        click(&ctx, &mut req, "uiRequestVariety_");
+        click(&ctx, &mut req, "uiRequestVariety_environment");
         frame_with(&ctx, &mut req, vec![]);
         assert_eq!(read(&root, "meadow_tuft").unwrap().kind, Kind::Environment);
         assert!(marked("uiRequestVariants").is_some() && marked("uiRequestCellsX").is_none());
