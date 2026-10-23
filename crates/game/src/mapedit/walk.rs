@@ -1,6 +1,9 @@
 //! Walking the map in the editor: a stand-in character on the grid, moved cell by cell with
 //! the arrows (up is away from the camera) at a fixed pace, so 60 and 144 Hz screens play
-//! the same. What blocks on foot stops it: tree areas, water, cliffs, blocking props, the
+//! the same; or freely, off the grid, when its prop says so (`free_move`: the arrows combined,
+//! at the same pace, sliding along what blocks, the steps below taking over for what free
+//! movement can't do: stairs, jumps, ledges, the map next door).
+//! What blocks on foot stops it: tree areas, water, cliffs, blocking props, the
 //! walls of buildings; doors let it in, and the building it's in is cut away above it, the
 //! walls facing the camera on its floor cut down to a stub (fading, as the camera turns too).
 //! Stairs take it up: from in front of a flight's bottom step, walking the way it rises,
@@ -30,6 +33,11 @@ const LEDGE_HOP: f32 = 0.3;
 pub(super) const JUMP_MS: f64 = 430.0;
 pub(super) const JUMP_HIGH: f32 = 0.55;
 const CHARACTER: &str = "stand_in_character";
+/// Moving freely: cells a second, walking and running (the steps' pace), and how far from its
+/// middle a character keeps from what blocks (so it doesn't stand half in a wall).
+const FREE_SPEED: f32 = 1000.0 / STEP_MS as f32;
+const FREE_RUN: f32 = 1000.0 / RUN_MS as f32;
+const FREE_CLEARANCE: f32 = 0.28;
 /// A building's upper floors and roof fading, in milliseconds.
 const FADE_MS: f64 = 450.0;
 /// How dark the outside goes while inside, and how much closer the view comes.
@@ -80,6 +88,8 @@ pub(super) struct Walker {
     pub inside: Option<(usize, usize)>,
     /// cells a script sends it along
     pub route: VecDeque<(i32, i32)>,
+    /// moving freely this frame (off the grid: its prop's `free_move`)
+    pub free_moving: bool,
 }
 
 impl Walker {
@@ -119,7 +129,7 @@ impl MapEditor {
     fn stand(&mut self, cell: (i32, i32), facing: f32) {
         let pos = self.cell_pos(cell);
         let inside = self.walker.as_ref().and_then(|w| w.inside);
-        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, dur: STEP_MS, hop: 0.0, upstairs: None, facing, inside, route: VecDeque::new() });
+        self.walker = Some(Walker { cell, from: pos, to: pos, t0: 0.0, dur: STEP_MS, hop: 0.0, upstairs: None, facing, inside, route: VecDeque::new(), free_moving: false });
         self.blocked = Some(self.map.blocked(&self.content));
         self.story.started = false;
         // standing on cells counts as entering them
@@ -331,6 +341,19 @@ impl MapEditor {
         .into_iter()
         .find(|&(b, _)| pressed(b))
         .map(|(_, v)| snap(v));
+        // a character that moves freely: off the grid, the arrows combined, as far as the
+        // cells allow (sliding along what blocks); the steps below do what it can't
+        let moved_freely = self.content.props.get(CHARACTER).is_some_and(|p| p.free_move) && {
+            let dt = ctx.input(|i| i.stable_dt).clamp(0.0, 0.05);
+            let mut v = Vec3::ZERO;
+            for (b, d) in [(crate::input::Button::Up, forward), (crate::input::Button::Down, -forward), (crate::input::Button::Left, -right), (crate::input::Button::Right, right)] {
+                if held(b) {
+                    v += d;
+                }
+            }
+            v.y = 0.0;
+            self.move_freely(v, if running { FREE_RUN } else { FREE_SPEED }, dt, now)
+        };
         let w = self.walker.as_ref().unwrap();
         let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
         let pos = w.from.lerp(w.to, t);
@@ -338,7 +361,9 @@ impl MapEditor {
         let routed = w.route.front().map(|&n| (n.0 - w.cell.0, n.1 - w.cell.1));
         // a step's time: running, the player's own steps (a script's walk at its own pace)
         let pace = if running && routed.is_none() { RUN_MS } else { STEP_MS };
-        let dir = if let Some(d) = routed {
+        let dir = if moved_freely {
+            None
+        } else if let Some(d) = routed {
             if t >= 1.0 { Some(d) } else { None }
         } else if held(crate::input::Button::Up) {
             Some(snap(forward))
@@ -509,9 +534,70 @@ impl MapEditor {
         }
         self.extra_changed = true;
         crate::platform::set_hook("walker", &format!("{},{}", cell.0, cell.1));
+        crate::platform::set_hook("walkerpos", &format!("{:.2},{:.2}", pos.x, pos.z));
+        crate::platform::set_hook("freemove", if moved_freely { "moving" } else if self.content.props.get(CHARACTER).is_some_and(|p| p.free_move) { "free" } else { "" });
         // (as it's drawn: up in the air through a jump; the camera stays level)
         crate::platform::set_hook("walkery", &format!("{:.2}", self.walker.as_ref().map_or(pos.y, |w| w.pos(now).y)));
         crate::platform::set_hook("floor", &upstairs.and_then(|(b, f)| self.map.buildings.get(b).map(|x| format!("{}:{f}", x.id))).unwrap_or_default());
+    }
+
+    /// Moving freely `v`'s way (the arrows combined; nothing: still) at `speed` cells a second
+    /// for `dt` seconds: along x, then z, each as far as the cells allow, so it slides along
+    /// what blocks; its cell and facing follow. Whether it moved (then no step is taken this
+    /// frame). Not while a step is under way, routed by a script, or upstairs (the floors
+    /// keep the grid).
+    fn move_freely(&mut self, v: Vec3, speed: f32, dt: f32, now: f64) -> bool {
+        let Some(w) = self.walker.as_ref() else { return false };
+        if w.stepping(now) || !w.route.is_empty() || w.upstairs.is_some() || v.length_squared() < 1e-6 {
+            if let Some(w) = self.walker.as_mut() {
+                w.free_moving = false;
+            }
+            return false;
+        }
+        let dir = v.normalize();
+        let from = w.pos(now);
+        let mut p = from;
+        for axis in [Vec3::X, Vec3::Z] {
+            let d = dir.dot(axis);
+            if d.abs() < 1e-6 {
+                continue;
+            }
+            let q = p + axis * d * speed * dt;
+            // its edge that way, clear of what blocks
+            let edge = q + axis * d.signum() * FREE_CLEARANCE;
+            let here = (p.x.floor() as i32, p.z.floor() as i32);
+            let there = (edge.x.floor() as i32, edge.z.floor() as i32);
+            if there == here || self.free_cell(here, there) {
+                p = q;
+            }
+        }
+        let moved = (p - from).length_squared() > 1e-10;
+        let cell = (p.x.floor() as i32, p.z.floor() as i32);
+        let level = self.map.level_at(cell.0, cell.1).unwrap_or(0);
+        p.y = self.map.ground_y(p.x, p.z, level, self.level_height);
+        let w = self.walker.as_mut().unwrap();
+        // facing its way (degrees clockwise from south, as facing_of has it)
+        w.facing = (-dir.x).atan2(dir.z).to_degrees().rem_euclid(360.0);
+        if moved {
+            (w.from, w.to, w.t0, w.hop) = (p, p, now - w.dur, 0.0);
+            w.cell = cell;
+        }
+        w.free_moving = moved;
+        moved
+    }
+
+    /// Whether a character moving freely may go from one cell into the next: as a step may
+    /// (nothing blocking, no wall between, the ground joining), nobody standing there, no
+    /// stairs or blocking prop of a building's ground floor there.
+    fn free_cell(&self, here: (i32, i32), there: (i32, i32)) -> bool {
+        let Some(blocked) = self.blocked.as_ref() else { return false };
+        if !self.map.can_step(blocked, here, there) || self.actor_at(there).is_some() {
+            return false;
+        }
+        !self.map.buildings.iter().position(|b| b.covers(there)).is_some_and(|bi| {
+            let b = &self.map.buildings[bi];
+            self.stairs_or_blocking(bi, 0, (there.0 - b.at[0], there.1 - b.at[1]))
+        })
     }
 
     /// The cell a ledge drops to from `cell` the way `d`, when it can be jumped down: the cell
@@ -625,12 +711,84 @@ impl MapEditor {
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };
         let t = ((now - w.t0) / w.dur).clamp(0.0, 1.0) as f32;
-        // up in the air through a jump; a little bob while walking
+        // up in the air through a jump; a little bob while walking (by the time, moving freely)
         let mut pos = w.pos(now);
-        if t < 1.0 && w.hop == 0.0 {
+        if w.free_moving {
+            pos.y += (((now / STEP_MS) as f32) * std::f32::consts::PI).sin().abs() * 0.05;
+        } else if t < 1.0 && w.hop == 0.0 {
             pos.y += (t * std::f32::consts::PI).sin() * 0.06;
         }
         out.append(&prop_scene(prop, &self.models), placement(pos, w.facing, 1.0));
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::super::jumps::tests::editor;
+    use super::*;
+
+    /// A frame of walking at `now` (milliseconds; the frames' times tell the pace) with the
+    /// arrows in `keys` held (pressed on the first frame they're in).
+    fn frame(ed: &mut MapEditor, ctx: &egui::Context, keys: &[egui::Key], down: &mut Vec<egui::Key>, now: f64) {
+        let event = |key, pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
+        let mut events = vec![];
+        for k in down.iter().filter(|k| !keys.contains(k)) {
+            events.push(event(*k, false));
+        }
+        for k in keys.iter().filter(|k| !down.contains(k)) {
+            events.push(event(*k, true));
+        }
+        *down = keys.to_vec();
+        let mut out = ctx.run_ui(egui::RawInput { events, time: Some(now / 1000.0), ..Default::default() }, |ui| ed.walk(ui.ctx(), now));
+        out.textures_delta.clear();
+    }
+
+    /// A stand-in character that moves freely: with the arrow held it goes on, off the grid,
+    /// facing its way; a cliff (the ditch a level down) stops it short of the edge, and held
+    /// toward it and along it, it slides along; the grid's steps are no longer taken.
+    #[test]
+    fn a_character_moving_freely_walks_off_the_grid_and_slides_along_what_blocks() {
+        let mut ed = editor();
+        let mut c = (*ed.content).clone();
+        c.props.put(content::Prop { id: CHARACTER.into(), name: "Stand-in".into(), category: "character".into(), free_move: true, ..Default::default() }, content::Space::Content);
+        ed.content = Arc::new(c);
+        let ctx = egui::Context::default();
+        let mut down = vec![];
+        ed.walk_to(2, 3);
+        let at = |ed: &MapEditor, now: f64| ed.walker.as_ref().unwrap().pos(now);
+        frame(&mut ed, &ctx, &[], &mut down, 1000.0);
+        // the arrow held a few frames: on its way, between the cells' middles
+        let mut now = 1000.0;
+        for _ in 0..6 {
+            now += 1000.0 / 60.0;
+            frame(&mut ed, &ctx, &[egui::Key::ArrowRight], &mut down, now);
+        }
+        let p = at(&ed, now);
+        let w = ed.walker.as_ref().unwrap();
+        assert!(p.x > 2.6 && p.x < 3.4 && (p.z - 3.5).abs() < 1e-3, "{p}: on its way east, {} a second", FREE_SPEED);
+        assert!((p.x - p.x.floor() - 0.5).abs() > 0.02, "{p}: off the grid");
+        assert_eq!((w.cell, w.facing, w.free_moving), ((p.x.floor() as i32, 3), 270.0, true));
+        assert_eq!(crate::platform::hook("freemove").as_deref(), Some("moving"));
+        // on to the ditch (x 5, a level down): stopped short of its edge, never over it
+        for _ in 0..90 {
+            now += 1000.0 / 60.0;
+            frame(&mut ed, &ctx, &[egui::Key::ArrowRight], &mut down, now);
+        }
+        let p = at(&ed, now);
+        assert!(p.x > 4.6 && p.x < 4.75 && ed.walker.as_ref().unwrap().cell == (4, 3), "{p}: short of the ditch by its clearance");
+        // held toward it and along it: sliding along the edge
+        for _ in 0..30 {
+            now += 1000.0 / 60.0;
+            frame(&mut ed, &ctx, &[egui::Key::ArrowRight, egui::Key::ArrowDown], &mut down, now);
+        }
+        let q = at(&ed, now);
+        assert!(q.x >= p.x - 1e-3 && q.x < 4.75 && q.z > p.z + 1.0, "{p} -> {q}: along the ditch, no nearer its edge than its clearance");
+        // let go: still, standing where it was
+        frame(&mut ed, &ctx, &[], &mut down, now + 100.0);
+        assert!(!ed.walker.as_ref().unwrap().free_moving && (at(&ed, now + 200.0) - q).length() < 1e-4);
+        assert_eq!(crate::platform::hook("freemove").as_deref(), Some("free"));
     }
 }

@@ -233,12 +233,14 @@ export class Browser {
     await sleep(120);
   }
 
-  async key(key, { ctrl = false, shift = false } = {}) {
+  // a key tapped (or held `hold` ms before it's let go: an arrow walking on)
+  async key(key, { ctrl = false, shift = false, hold = 0 } = {}) {
     const modifiers = (ctrl ? 2 : 0) | (shift ? 8 : 0);
     const signs = { '=': ['Equal', 187], '-': ['Minus', 189] };
     const [code, virtualKey] = signs[key] ?? (key.length === 1 ? [`Key${key.toUpperCase()}`, key.toUpperCase().charCodeAt(0)] : [key, 0]);
     const params = { key, code, modifiers, windowsVirtualKeyCode: virtualKey };
     await this.send('Input.dispatchKeyEvent', { type: 'keyDown', ...params });
+    if (hold > 0) await sleep(hold);
     await this.send('Input.dispatchKeyEvent', { type: 'keyUp', ...params });
     await sleep(120);
   }

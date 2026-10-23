@@ -1450,6 +1450,10 @@ pub struct Prop {
     /// shelves, beds...)
     #[serde(skip_serializing_if = "is_default")]
     pub unstackable: bool,
+    /// a character (category "character" or "creature") that moves freely, not cell by cell:
+    /// the walker, when it's the player's stand-in
+    #[serde(skip_serializing_if = "is_default")]
+    pub free_move: bool,
     /// its stand-in model
     pub parts: Vec<Part>,
     /// a real model (glTF), when it has one

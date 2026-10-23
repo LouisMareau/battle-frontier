@@ -21,15 +21,82 @@ use super::build::Clicks;
 use super::{badge, hint, mark, requests, review, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
-/// What a prop can be (the category picker).
-const CATEGORIES: [&str; 23] = [
-    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "flower", "tree", "rock", "fence", "character", "creature", "door", "window", "wall", "pillar",
-    "floor", "roof", "railing", "ramp", "sign", "light", "other",
+/// What a prop can be, as the category picker lists them: a type, its sub-types (as the Model
+/// requests' kinds and varieties go: a character or a creature; the environment's flora,
+/// grass, flower, tree and rock; a building's pieces; props).
+const CATEGORY_GROUPS: [(&str, &[&str]); 4] = [
+    ("Characters", &["character", "creature"]),
+    ("Environment", &["flora", "grass", "flower", "tree", "rock"]),
+    ("Buildings", &["door", "window", "wall", "pillar", "floor", "roof", "railing", "stairs", "wall_decoration"]),
+    ("Props", &["decoration", "furniture", "fence", "ramp", "sign", "light", "other"]),
 ];
+
+/// Whether a category is a character's (or a creature's): what can move freely.
+fn is_character(category: &str) -> bool {
+    matches!(category, "character" | "creature")
+}
+
+/// The category picked: a dropdown of the types and their sub-types, a search field pinned at
+/// its top (focused as it opens; typing narrows the list to what matches, in the type's name
+/// or the category's). `search` and `open` are the picker's state (the search typed, which
+/// picker is open). Whether `category` changed.
+fn category_picker(ui: &mut egui::Ui, salt: (&str, &str), category: &mut String, search: &mut String, open: &mut Option<egui::Id>, name: &str) -> bool {
+    let id = egui::Id::new(("category-picker", salt));
+    let before = category.clone();
+    let r = egui::ComboBox::from_id_salt(salt)
+        .selected_text(category.as_str())
+        .width(130.0)
+        .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+        .show_ui(ui, |ui| {
+            let fresh = *open != Some(id);
+            if fresh {
+                *open = Some(id);
+                search.clear();
+            }
+            ui.set_min_width(190.0);
+            let field = ui.add(egui::TextEdit::singleline(search).hint_text("Search").desired_width(f32::INFINITY));
+            mark("uiCategorySearch", &field);
+            if fresh {
+                field.request_focus();
+            }
+            let wanted = search.trim().to_lowercase();
+            let mut any = false;
+            for (group, members) in CATEGORY_GROUPS {
+                let whole = wanted.is_empty() || group.to_lowercase().contains(&wanted);
+                let shown: Vec<&str> = members.iter().copied().filter(|m| whole || m.replace('_', " ").contains(&wanted) || m.contains(&wanted)).collect();
+                if shown.is_empty() {
+                    continue;
+                }
+                any = true;
+                ui.add_space(3.0);
+                ui.label(RichText::new(group).size(10.5).color(Color32::from_gray(140)));
+                for m in shown {
+                    let r = ui.selectable_label(category == m, format!("    {}", m.replace('_', " ")));
+                    mark(&format!("uiCategory_{m}"), &r);
+                    if r.clicked() {
+                        *category = m.to_string();
+                        ui.close();
+                    }
+                }
+            }
+            if !any {
+                hint(ui, "Nothing of that name.");
+            }
+        });
+    mark(name, &r.response);
+    if r.inner.is_none() && *open == Some(id) {
+        *open = None;
+    }
+    *category != before
+}
 
 /// A prop given a category: made to lie along ramps when it's "ramp" (as it was, or the
 /// usual way), and no longer when it's another.
 fn recategorized(q: &mut Prop, category: String) {
+    // (free movement is a character's)
+    if !is_character(&category) {
+        q.free_move = false;
+    }
     if category == "ramp" {
         q.ramp.get_or_insert_with(content::RampFit::default);
     } else if q.category == "ramp" {
@@ -79,6 +146,9 @@ pub(super) struct Assets {
     pub to_temporary: bool,
     /// the assets shown: the game's own, the temporary ones, or both (None)
     pub space: Option<Space>,
+    /// the category picker's search, and which picker is open
+    pub category_search: String,
+    pub category_open: Option<egui::Id>,
     /// files dropped, read (in the browser, when the page has read them)
     dropped: Dropped,
     /// the folder they were dropped on
@@ -757,7 +827,8 @@ impl MapEditor {
         let count = |f: &str| content.props.iter().filter(|p| in_folder(p, f)).count();
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.assets.filter).hint_text("Filter: name, id, category").desired_width(180.0));
+            let filter = ui.add(egui::TextEdit::singleline(&mut self.assets.filter).hint_text("Filter: name, id, category").desired_width(180.0));
+            mark("uiAssetFilter", &filter);
             // the game's own, the temporary placeholders, or both
             for (space, label, about) in [(None, "all", "Every asset"), (Some(Space::Content), "game", "The game's own: content/, committed"), (Some(Space::Temporary), "temporary", "Placeholders: temporary/, never committed")] {
                 let r = ui.selectable_label(self.assets.space == space, label).on_hover_text(about);
@@ -802,6 +873,7 @@ impl MapEditor {
                 ui.set_width(220.0);
                 egui::ScrollArea::vertical().id_salt("asset-folders").max_height(height).show(ui, |ui| {
                     let all = ui.selectable_label(self.assets.folder.is_none(), format!("All assets ({})", content.props.len()));
+                    mark("uiFolder_All", &all);
                     if all.clicked() {
                         self.assets.folder = None;
                     }
@@ -941,8 +1013,9 @@ impl MapEditor {
         let mut delete: Option<Deleting> = None;
         let mut changes: Vec<(String, Change)> = vec![];
         let mut out_of: Option<(String, String)> = None;
+        let (mut search, mut open) = (std::mem::take(&mut self.assets.category_search), self.assets.category_open);
         egui::Grid::new("asset-grid").striped(true).num_columns(8).spacing([14.0, 5.0]).show(ui, |ui| {
-            for h in ["Name", "Id", "", "Category", "Size", "Model", "Does", "Folders"] {
+            for h in ["Name", "Id", "", "Does", "Category", "Size", "Model", "Folders"] {
                 ui.label(RichText::new(h).strong().size(11.5));
             }
             ui.end_row();
@@ -972,31 +1045,6 @@ impl MapEditor {
                         mark(&format!("uiChanged_props_{}", p.id), &b);
                     }
                 });
-                let mut category = p.category.clone();
-                egui::ComboBox::from_id_salt(("asset-category", &p.id)).selected_text(&category).width(104.0).show_ui(ui, |ui| {
-                    for c in CATEGORIES {
-                        ui.selectable_value(&mut category, c.to_string(), c);
-                    }
-                });
-                if category != p.category {
-                    changes.push((p.id.clone(), Box::new(move |q: &mut Prop| recategorized(q, category))));
-                }
-                ui.label(format!("{}×{} · {:.2}", p.footprint[0], p.footprint[1], p.height)).on_hover_text("Footprint in cells, height");
-                match &p.model {
-                    Some(m) => {
-                        let state = if self.models.contains_key(&p.id) {
-                            ""
-                        } else if self.model_failed.contains(&p.id) {
-                            " (won't load)"
-                        } else {
-                            " (loading)"
-                        };
-                        ui.label(format!("{}{state}", m.rsplit('/').next().unwrap_or(m)));
-                    }
-                    None => {
-                        ui.label(RichText::new(format!("stand-in, {} part{}", p.parts.len(), if p.parts.len() == 1 { "" } else { "s" })).color(Color32::GRAY));
-                    }
-                }
                 ui.horizontal(|ui| {
                     // toggles: lit when on
                     let blocks = !p.blocks;
@@ -1023,7 +1071,35 @@ impl MapEditor {
                     if r.clicked() {
                         changes.push((p.id.clone(), Box::new(move |q: &mut Prop| q.toon = toon)));
                     }
+                    if is_character(&p.category) {
+                        let free = !p.free_move;
+                        let r = ui.selectable_label(p.free_move, "free movement").on_hover_text("Moves freely, not cell by cell: the arrows combined, sliding along what blocks (the player's stand-in, when it's this)");
+                        mark(&format!("uiFree_{}", p.id), &r);
+                        if r.clicked() {
+                            changes.push((p.id.clone(), Box::new(move |q: &mut Prop| q.free_move = free)));
+                        }
+                    }
                 });
+                let mut category = p.category.clone();
+                if category_picker(ui, ("asset-category", p.id.as_str()), &mut category, &mut search, &mut open, &format!("uiCategoryPick_{}", p.id)) {
+                    changes.push((p.id.clone(), Box::new(move |q: &mut Prop| recategorized(q, category))));
+                }
+                ui.label(format!("{}×{} · {:.2}", p.footprint[0], p.footprint[1], p.height)).on_hover_text("Footprint in cells, height");
+                match &p.model {
+                    Some(m) => {
+                        let state = if self.models.contains_key(&p.id) {
+                            ""
+                        } else if self.model_failed.contains(&p.id) {
+                            " (won't load)"
+                        } else {
+                            " (loading)"
+                        };
+                        ui.label(format!("{}{state}", m.rsplit('/').next().unwrap_or(m)));
+                    }
+                    None => {
+                        ui.label(RichText::new(format!("stand-in, {} part{}", p.parts.len(), if p.parts.len() == 1 { "" } else { "s" })).color(Color32::GRAY));
+                    }
+                }
                 ui.horizontal(|ui| {
                     let own = !p.folders.is_empty();
                     let folders = p.folders();
@@ -1038,6 +1114,7 @@ impl MapEditor {
                 ui.end_row();
             }
         });
+        (self.assets.category_search, self.assets.category_open) = (search, open);
         for (id, change) in changes {
             self.change_prop(&id, change);
         }
@@ -1151,14 +1228,11 @@ impl MapEditor {
             ui.label("Category");
             self.change_mark(ui, "props", id, "category");
             let mut category = after.category.clone();
-            egui::ComboBox::from_id_salt(("prop-category", id)).selected_text(&category).width(130.0).show_ui(ui, |ui| {
-                for c in CATEGORIES {
-                    ui.selectable_value(&mut category, c.to_string(), c);
-                }
-            });
-            if category != after.category {
+            let (mut search, mut open) = (std::mem::take(&mut self.assets.category_search), self.assets.category_open);
+            if category_picker(ui, ("prop-category", id), &mut category, &mut search, &mut open, "uiPropCategory") {
                 recategorized(&mut after, category);
             }
+            (self.assets.category_search, self.assets.category_open) = (search, open);
         });
         ui.horizontal(|ui| {
             ui.label("Cells");
@@ -1189,6 +1263,13 @@ impl MapEditor {
             mark("uiPropToon", &toon);
             if toon.clicked() {
                 after.toon = !after.toon;
+            }
+            if is_character(&after.category) {
+                let free = ui.selectable_label(after.free_move, "free movement").on_hover_text("Moves freely, not cell by cell: the arrows combined, sliding along what blocks (the player's stand-in, when it's this)");
+                mark("uiPropFree", &free);
+                if free.clicked() {
+                    after.free_move = !after.free_move;
+                }
             }
         });
         // in the wind: a model by its paint, a stand-in by its record

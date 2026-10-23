@@ -858,7 +858,8 @@ mod tests {
     #[test]
     fn the_kinds_are_kept_where_they_were_read() {
         let c = Catalogue::standard();
-        assert_eq!(serde_json::to_string_pretty(&c).unwrap() + "\n", STANDARD, "the standard file in the editor's own layout");
+        // (a checkout on Windows may give the file CRLF line ends)
+        assert_eq!(serde_json::to_string_pretty(&c).unwrap() + "\n", STANDARD.replace("\r\n", "\n"), "the standard file in the editor's own layout");
         let root = std::env::temp_dir().join(format!("bf-kinds-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(root.join("private/requests")).unwrap();

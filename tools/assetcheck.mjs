@@ -5,7 +5,8 @@
 // loads, the Place tool puts it down), refuses an unstackable prop on another, and saves
 // (downloads) what changed.
 // The game's and the temporary assets apart; a model dropped on Creatures makes a creature
-// record (its model standing for it). Screenshots go to screenshots/assets-*.png.
+// record (its model standing for it); a character's free movement, walked off the grid; the
+// category picked through the dropdown's search. Screenshots go to screenshots/assets-*.png.
 //     node tools/assetcheck.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -259,6 +260,45 @@ try {
   await press('uiFolder_Creatures_Models');
   check('  its prop under Creatures/Models', (await shown()).includes('shrub_beast'), (await shown()).join(' '));
   await shot('10-creature');
+
+  // 11. the stand-in character's "free movement" (a character's toggle, under Does): walking,
+  // the arrow held carries it off the grid, between the cells' middles; the category picked
+  // from the dropdown's hierarchy through its search (the barrel a creature: one made for it)
+  await press('uiFolder_Characters');
+  check("a character's toggle: free movement, lit for none yet", (await data('uiFree_stand_in_character')) !== '' && (await data('uiFree_barrel')) === '', await data('uiFree_stand_in_character'));
+  await press('uiFree_stand_in_character');
+  await sleep(200);
+  await press('uiWalk');
+  await sleep(400);
+  const stood = (await data('walkerpos')).split(',').map(Number);
+  check('  walking, free to move', (await data('freemove')) === 'free' && stood.length === 2, `${await data('freemove')} at ${stood}`);
+  await browser.key('ArrowRight', { hold: 450 });
+  await sleep(300);
+  const went = (await data('walkerpos')).split(',').map(Number);
+  const off = Math.abs(went[0] - Math.floor(went[0]) - 0.5);
+  check('  the arrow held: carried east, off the grid', went[0] > stood[0] + 0.5 && went[0] < stood[0] + 6 && Math.abs(went[1] - stood[1]) < 0.3 && off > 0.03, `${stood} -> ${went} (${off.toFixed(2)} from a middle)`);
+  await shot('11-free');
+  await browser.key('Escape');
+  await sleep(300);
+  await press('uiFree_stand_in_character');
+  // (the barrel found by the filter: Town's row may sit below the folder list's fold by now)
+  await press('uiFolder_All');
+  await press('uiAssetFilter');
+  await browser.key('a', { ctrl: true });
+  await browser.type('barrel');
+  await sleep(300);
+  await press('uiCategoryPick_barrel');
+  await sleep(300);
+  check('the category dropdown: its search focused, the types listed', (await data('uiCategorySearch')) !== '' && (await data('uiCategory_creature')) !== '' && (await data('uiCategory_decoration')) !== '', `search "${await data('uiCategorySearch')}"`);
+  await browser.type('crea');
+  await sleep(300);
+  await press('uiCategory_creature');
+  await sleep(500);
+  await press('uiAssetFilter');
+  await browser.key('a', { ctrl: true });
+  await browser.key('Backspace');
+  await press('uiFolder_Creatures');
+  check('  typed and picked: the barrel a creature, a creature record made for it', (await shown()).includes('barrel') && Number(await data('creaturesdirty')) >= 2, `${(await shown()).join(' ')} · ${await data('creaturesdirty')} to save`);
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

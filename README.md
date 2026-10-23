@@ -685,7 +685,9 @@ front of it. Click a placed thing to select it: Q/E turn it, Delete (or its "rem
 removes it; unstackable props never overlap anything. Then "Confirm the building". A
 building on the map is selected with Select: Edit (the same modes), turn (Q/E), move (drag
 it onto free cells), delete. **Walk** puts a stand-in character on the map: the
-arrows move it cell by cell, and A speaks to what's in front (an actor, a sign: its events)
+arrows move it cell by cell (or freely, off the grid, the arrows combined and sliding along
+what blocks, when the stand-in's record has "free movement" set in the asset browser; stairs,
+jumps, ledges and the map next door are still taken by the step), and A speaks to what's in front (an actor, a sign: its events)
 while cells stepped on set off theirs. Shift held (B on a controller) runs, a cell in just over
 half the time. Facing a ledge a level high (the cell next to it exactly a level lower: never
 two, never up; nothing in the way there), its arrow pressed again with Shift held (B) jumps
@@ -777,8 +779,13 @@ checks; the `kept:<path>` page command puts a kept file's text in `data-keptfile
 
 **Assets** (in the top bar, or drop a file on the window) is the asset browser: every prop
 of both spaces as a detailed list (all of them, or the game's own or the temporary ones
-alone: all · game · temporary by the filter), with its GAME or TEMPORARY tag, category, size,
-model or stand-in, what it does (blocks, unstackable, on walls) and folders, shown by folder
+alone: all · game · temporary by the filter), with its GAME or TEMPORARY tag, what it does
+(blocks, unstackable, on walls, light, toon; a character's or a creature's **free movement**:
+the player's stand-in moves freely, not cell by cell, when it's set on it), its category
+(picked from a dropdown of the types and their sub-types, as the Model requests' kinds and
+varieties go: Characters, a character or a creature; Environment, flora, grass, a flower, a
+tree, a rock; Buildings, their pieces; Props; with a search field pinned at its top, focused
+as it opens: type to narrow the list), size, model or stand-in and folders, shown by folder
 (`Buildings/Inside`, `Buildings/Outside`, `Nature`, `Town`...: a prop's `folders`, or its
 category's). **Creatures** lists the creature records (each with its model, when a prop of the
 `creature` category stands for it on the map, else its pictures; whether it's drawn toon),

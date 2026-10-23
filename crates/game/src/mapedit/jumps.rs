@@ -255,7 +255,7 @@ impl MapEditor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::sync::Arc;
 
     use super::super::walk::{JUMP_HIGH, JUMP_MS, LEDGE_MS, RUN_MS};
@@ -264,7 +264,7 @@ mod tests {
     /// An editor on a field 12 x 10 on level 1, seen from the south: a ditch a level down along
     /// x 5 (what jumps go over), a pond at 8, 2, a rise a level up at 6, 6, a hut at 2, 8, a
     /// ramp down to the ditch at 4, 9.
-    fn editor() -> MapEditor {
+    pub(crate) fn editor() -> MapEditor {
         let mut c = content::Content::default();
         for (id, walk) in [("grass", "walk"), ("dirt", "walk"), ("pond", "water")] {
             c.terrains.put(content::Terrain { id: id.into(), name: id.into(), walk: walk.into(), ..Default::default() }, content::Space::Content);
