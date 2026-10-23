@@ -166,6 +166,10 @@ pub struct Creature {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub evolutions: Vec<Evolution>,
     pub sprites: Sprites,
+    /// the prop (a model, made by the Model requests or dropped on the asset browser's
+    /// Creatures) standing for it on the map, when it has one: drawn in place of its pictures
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prop: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cry: Option<String>,
     /// a light it carries (a tail light, a lantern): see `Light`; `at` and `aim` are from
@@ -1423,8 +1427,9 @@ pub struct Prop {
     pub name: String,
     /// "tree", "flora", "grass" (grown through tall ground too: `Growth`), "rock",
     /// "decoration", "fence", "furniture", "stairs", "ramp" (what
-    /// lies along ramps), and building pieces: "door", "window", "wall", "pillar", "floor",
-    /// "roof", "wall_decoration"
+    /// lies along ramps), "character" (one of the story's), "creature" (the model of one of
+    /// the fields' creatures: its creature record's `prop`), and building pieces: "door",
+    /// "window", "wall", "pillar", "floor", "roof", "wall_decoration"
     pub category: String,
     /// the cells it covers: [along x, along z]; a door's or window's width is the first
     pub footprint: [u8; 2],
@@ -1746,6 +1751,7 @@ impl Prop {
             "railing" => "Buildings/Railings",
             "ramp" => "Ramps",
             "character" => "Characters",
+            "creature" => "Creatures/Models",
             _ => "Town",
         };
         vec![f.to_string()]

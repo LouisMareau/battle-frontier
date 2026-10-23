@@ -708,7 +708,7 @@ mod run {
             }
         }
         let (all, _) = load_all(root);
-        let (best, worst) = best_and_worst(&all, &r.kind_key(), &r.id);
+        let (best, worst) = best_and_worst(&all, &r.lesson_key(), &r.id);
         for q in best.into_iter().chain(worst) {
             let names = std::iter::once("request.json".to_string()).chain(q.previews.iter().cloned()).chain(std::iter::once("model.py".to_string()));
             for name in names {
@@ -717,7 +717,7 @@ mod run {
                 }
             }
         }
-        let word = r.kind_key();
+        let word = r.lesson_key();
         if let Ok(bytes) = disk::read(folder(root).join(".lessons").join(format!("{word}.md"))) {
             out.push((format!("project/private/requests/.lessons/{word}.md"), bytes));
         }

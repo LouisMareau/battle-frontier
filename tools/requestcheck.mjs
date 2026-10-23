@@ -9,9 +9,10 @@
 // console, the scripts' [request] lines moving the bar, the request done), its outputs back
 // (its render into its folder, the prop and its model into the asset browser), the uploads and
 // the outputs taken off the key's files; the page opened again, the request is still there,
-// done; a second Start finds the agent and its environment again, makes neither. The kinds as
-// tabs: a kind's window, an instruction added to it (a keyword and how), a variety with one of
-// its own, a kind of the user's own made as one of the kit's, all of it kept in this browser.
+// done; a second Start finds the agent and its environment again, makes neither. The header's
+// +: the new request page (the model, the kind and a variety, the artwork to drop); a kind's
+// window: an instruction added (a keyword and how), a variety and a kind of the user's own;
+// the instructions for every kind; the tabs only of the kinds with requests; all kept here.
 // Screenshots go to screenshots/requests-*.png.
 //     node tools/requestcheck.mjs
 import { copyFileSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
@@ -274,23 +275,37 @@ try {
   check('  given what the first made: its render, and its prop and model (kept in the browser) for the project',
     again.includes(`/request/preview_front.png`) && again.includes(`/project/temporary/data/props/${ID}.json`) && again.includes(`/project/temporary/assets/models/${ID}.glb`), again.join(' '));
 
-  // 7. the kinds as tabs: the Tree tab (none of its requests listed); its window: an instruction
-  // added (a keyword and how), a variety (Pine) with one of its own; a kind of the user's own
-  // (Bush, made as environment from its tab: environment's instructions to start); all of it
-  // kept in this browser once the page is opened again
+  // 7. a new request from the header's +: the page alone (the model, the kind and a variety of
+  // it, the artwork to drop). Environment picked, a tree of it: its window on the tree variety,
+  // an instruction added (a keyword and how); a variety of the user's own (Pine) with one of its
+  // own; a kind of the user's own (Bush, made as environment: environment's instructions to
+  // start); back, the tabs only of the kinds that have requests; from All, the instructions
+  // for every kind; all of it kept in this browser once the page is opened again
   const typeInto = async (name, text) => {
     await press(name);
     await browser.key('a', { ctrl: true });
     await browser.type(text);
     await sleep(150);
   };
-  await press('uiRequestTab_tree');
-  check('the kinds as tabs: Tree shown, none of its requests listed', (await data('requesttab')) === 'tree' && (await data('requestlisted')) === '', `${await data('requesttab')} · listed "${await data('requestlisted')}"`);
+  const kindWindow = async () => {
+    await browser.waitFor('(document.body.dataset.uiKindFeatureAdd ?? "") !== "" && (document.body.dataset.uiKindDone ?? "") !== ""', { what: "the kind window's buttons" });
+    await sleep(300);
+  };
+  await press('uiRequestNew');
+  await sleep(400);
+  // (a mark stays once drawn: what's gone is told by the hooks, not by its mark)
+  check("the header's +: the new request page alone, the kinds to pick from", (await data('requestpage')) === 'new' && (await data('uiRequestKindEnvironment')) !== '' && (await data('uiRequestBack')) !== '',
+    `page "${await data('requestpage')}"`);
+  await press('uiRequestKindEnvironment');
+  await sleep(200);
+  await press('uiRequestVariety_tree');
+  await sleep(200);
+  check('  Environment picked, a tree of it: what dropped pictures start', (await data('requestnext')) === 'environment:tree', await data('requestnext'));
+  await shot('7-page');
   await press('uiRequestKindEdit');
   await sleep(300);
-  check('  its window open', (await data('requestkind')) === 'tree', await data('requestkind'));
-  await browser.waitFor('(document.body.dataset.uiKindFeatureAdd ?? "") !== "" && (document.body.dataset.uiKindDone ?? "") !== ""', { what: "the kind window's buttons" });
-  await sleep(300);
+  check('  its window open, on the tree variety', (await data('requestkind')) === 'environment' && (await data('uiKindVarietyRename')) !== '', await data('requestkind'));
+  await kindWindow();
   await press('uiKindFeatureAdd');
   await sleep(300);
   await typeInto('uiKindFeatureKey_4', 'bark');
@@ -304,27 +319,46 @@ try {
   await typeInto('uiKindFeatureText_0', 'needles in drooping tiers of cards');
   await sleep(1000);
   const kinds = await data('requestkinds');
-  check('  an instruction added to the tree, a variety with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark[pine:foliage]'), kinds);
+  check('  an instruction added to the tree, a variety of your own with one of its own', kinds.includes('tree:trunk,foliage,colour,wind,bark;pine:foliage]'), kinds);
   await shot('7-kind');
   await press('uiKindDone');
-  await press('uiRequestTab_environment');
+  await sleep(300);
   await press('uiRequestKindAdd');
   await sleep(300);
   await browser.waitFor('(document.body.dataset.uiKindNewName ?? "") !== ""', { what: 'the new kind dialog' });
   await typeInto('uiKindNewName', 'Bush');
   await press('uiKindNewOk');
   await sleep(1000);
-  check("a kind of the user's own: Bush, made as environment, its instructions environment's to start, shown", (await data('requesttab')) === 'bush' && (await data('requestkinds')).includes('bush<environment>:wind'), `${await data('requesttab')} · ${await data('requestkinds')}`);
+  check("a kind of the user's own: Bush, made as environment (the kind picked), its instructions environment's to start, its window open", (await data('requestkind')) === 'bush' && (await data('requestkinds')).includes('bush<environment>:wind'),
+    `${await data('requestkind')} · ${await data('requestkinds')}`);
   await shot('7-bush');
   await press('uiKindDone');
+  await sleep(300);
+  await press('uiRequestBack');
+  await sleep(400);
+  check('back to the requests: the tabs only of the kinds that have requests (and the one shown)', (await data('requestpage')) === '' && (await data('uiRequestTab_character')) !== '' && (await data('uiRequestTab_environment')) === '' && (await data('uiRequestTab_prop')) === '',
+    `character "${await data('uiRequestTab_character')}" environment "${await data('uiRequestTab_environment')}"`);
   await press('uiRequestTab_all');
-  check('  All: every request listed again', (await data('requestlisted')).split(',').includes(ID), await data('requestlisted'));
+  await sleep(200);
+  check('  All: every request listed', (await data('requestlisted')).split(',').includes(ID), await data('requestlisted'));
+  await press('uiRequestKindEdit');
+  await sleep(300);
+  check('  from All: the instructions for every kind', (await data('requestkind')) === '*', await data('requestkind'));
+  await kindWindow();
+  await press('uiKindFeatureAdd');
+  await sleep(300);
+  await typeInto('uiKindFeatureKey_0', 'silhouette');
+  await typeInto('uiKindFeatureText_0', 'read the side picture first');
+  await sleep(1000);
+  check('  one added, first of all', (await data('requestkinds')).startsWith('*:silhouette | '), await data('requestkinds'));
+  await shot('7-general');
+  await press('uiKindDone');
   await editor();
   await sleep(500);
   if ((await data('requests')) !== 'open') await press('uiRequests');
   await sleep(600);
   const kept = await data('requestkinds');
-  check('  all of it kept in this browser, the page opened again', kept.includes('bark[pine:foliage]') && kept.includes('bush<environment>:wind'), kept);
+  check('  all of it kept in this browser, the page opened again', kept.startsWith('*:silhouette | ') && kept.includes('bark;pine:foliage]') && kept.includes('bush<environment>:wind'), kept);
   if (browser.errors.length) {
     failed++;
     console.log('PAGE ERRORS:\n' + browser.errors.join('\n'));

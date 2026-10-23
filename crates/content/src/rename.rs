@@ -1,6 +1,7 @@
 //! A prop's id changed everywhere the content names it: its record (and its model's file,
 //! when that's named after it), the props placed on every map and in every template, the
-//! tree areas picking it, the actors that look like it ("prop:<id>"), the terrains growing it
+//! tree areas picking it, the actors that look like it ("prop:<id>"), the creatures it stands
+//! for on the map, the terrains growing it
 //! (tall ground's grass props, a meadow's plants). What changed comes back by id, for the
 //! editor to write.
 
@@ -17,6 +18,8 @@ pub struct Renamed {
     pub maps: Vec<String>,
     pub templates: Vec<String>,
     pub terrains: Vec<String>,
+    /// the creatures it stands for on the map (their `prop`)
+    pub creatures: Vec<String>,
 }
 
 /// Whether `id` can name a record: lowercase letters, digits, _ or -.
@@ -84,7 +87,7 @@ impl Content {
             prop.model = Some(to.clone());
         }
         self.props.put(prop, space);
-        let mut out = Renamed { space, model, maps: vec![], templates: vec![], terrains: vec![] };
+        let mut out = Renamed { space, model, maps: vec![], templates: vec![], terrains: vec![], creatures: vec![] };
         let maps: Vec<_> = self.maps.entries().iter().filter_map(|e| {
             let mut m = e.value.clone();
             let did = placed(&mut m.props, old, new) | areas(&mut m.tree_areas, old, new) | actors(&mut m.actors, old, new);
@@ -120,6 +123,12 @@ impl Content {
             out.terrains.push(t.id.clone());
             self.terrains.put(t, space);
         }
+        let creatures: Vec<_> = self.creatures.entries().iter().filter(|e| e.value.prop.as_deref() == Some(old)).map(|e| (e.value.clone(), e.space)).collect();
+        for (mut c, space) in creatures {
+            c.prop = Some(new.to_string());
+            out.creatures.push(c.id.clone());
+            self.creatures.put(c, space);
+        }
         Ok(out)
     }
 }
@@ -143,7 +152,9 @@ mod tests {
         c.templates.put(Template { id: "cairn".into(), props: vec![put("rock")], ..Default::default() }, Space::Temporary);
         c.terrains.put(Terrain { id: "scree".into(), growth: crate::model::Growth { props: vec![Grower { prop: "rock".into(), weight: 1.0 }], meadow: Meadow { plants: vec![Plant { shape: "model".into(), prop: "rock".into(), ..Default::default() }], ..Default::default() }, ..Default::default() }, ..Default::default() }, Space::Content);
         c.terrains.put(Terrain { id: "lawn".into(), ..Default::default() }, Space::Content);
+        c.creatures.put(crate::model::Creature { id: "golem".into(), name: "Golem".into(), prop: Some("rock".into()), ..Default::default() }, Space::Temporary);
         let r = c.rename_prop("rock", "boulder").unwrap();
+        assert_eq!((r.creatures.as_slice(), c.creatures.get("golem").unwrap().prop.as_deref()), (["golem".to_string()].as_slice(), Some("boulder")), "the creature it stands for follows");
         assert_eq!(r.space, Space::Content);
         assert_eq!(r.model, Some(("models/rock.glb".to_string(), "models/boulder.glb".to_string())));
         assert_eq!((r.maps.as_slice(), r.templates.as_slice(), r.terrains.as_slice()), (["field".to_string()].as_slice(), ["cairn".to_string()].as_slice(), ["scree".to_string()].as_slice()));

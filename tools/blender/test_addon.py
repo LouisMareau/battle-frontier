@@ -508,7 +508,7 @@ critter_glb = scratch / "temporary" / "assets" / "models" / "test_critter.glb"
 critter_record = scratch / "temporary" / "data" / "props" / "test_critter.json"
 check("added to temporary/ (not the user's design), never content/", critter_glb.is_file() and critter_record.is_file() and not (scratch / "content" / "data" / "props" / "test_critter.json").exists())
 record = json.loads(critter_record.read_text(encoding="utf-8")) if critter_record.is_file() else {}
-check("  a character, measured", record.get("category") == "character" and record.get("model") == "models/test_critter.glb" and abs(record.get("height", 0) - 0.8) < 0.01, json.dumps(record))
+check("  a creature (a character's creature variety: its category), measured", record.get("category") == "creature" and record.get("model") == "models/test_critter.glb" and abs(record.get("height", 0) - 0.8) < 0.01, json.dumps(record))
 check("the request done: its renders, its prop, its bar full", done["status"] == "done" and done["prop"] == "test_critter" and done["previews"] == files and done["progress"]["done"] == 1.0 and done["reply"] == "test", json.dumps(done))
 critter_doc = glb_doc(critter_glb) if critter_glb.is_file() else {}
 check("its rig and its idle in the model", len(critter_doc.get("skins", [])) == 1 and [a.get("name") for a in critter_doc.get("animations", [])] == ["idle"], f"{len(critter_doc.get('skins', []))} skins")

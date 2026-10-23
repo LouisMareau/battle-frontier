@@ -776,10 +776,15 @@ downloads ask (`data-keeping`, `data-kept`, `data-keptwindow` and `data-autosave
 checks; the `kept:<path>` page command puts a kept file's text in `data-keptfile`).
 
 **Assets** (in the top bar, or drop a file on the window) is the asset browser: every prop
-of both spaces as a detailed list, with its GAME or TEMPORARY tag, category, size, model or
-stand-in, what it does (blocks, unstackable, on walls) and folders, shown by folder
+of both spaces as a detailed list (all of them, or the game's own or the temporary ones
+alone: all · game · temporary by the filter), with its GAME or TEMPORARY tag, category, size,
+model or stand-in, what it does (blocks, unstackable, on walls) and folders, shown by folder
 (`Buildings/Inside`, `Buildings/Outside`, `Nature`, `Town`...: a prop's `folders`, or its
-category's). Drag a row onto a folder to put the prop there too (a chip's × takes it out);
+category's). **Creatures** lists the creature records (each with its model, when a prop of the
+`creature` category stands for it on the map, else its pictures; whether it's drawn toon),
+its **Models** the creature props: drop a `.glb` on Creatures, or make a prop's category
+creature, and a creature record is made for it (named as the prop, its stats to fill in), to
+save with the rest. Drag a row onto a folder to put the prop there too (a chip's × takes it out);
 click a row to use it (the Place tool, or a building's Inside or Outside list when it's in
 that folder); "light" on a row opens the prop's light (colour, intensity, range, cone, where
 it sits and points) or gives it one; drop `.glb` files on a folder and each becomes a prop there, its footprint and
@@ -922,22 +927,39 @@ tail, wing, and misc for a piece you name yourself): a click adds each joint, ch
 root out, and a right-click ends the line. Claude works out which part of the creature each
 line is on when it draws its own lines, and rigs the creature on them. It's kept
 in `private/requests/<id>/` (`request.json` and the pictures, a WebP as PNG for Blender), never
-committed. The kinds are **tabs** over the list (All, then each kind with how many requests it
-has): a tab shows that kind's requests, and pictures dropped while it's shown start a request of
-it. A kind's **Instructions…** opens its window: what every request of it asks Claude, a
-feature each, a keyword (fur, colour, the trunk...) and how a run handles it, added, changed or
-taken out as you like (the kinds' own, written so far, are there to start from: a flower's stem,
-leaves, petals, heart and wind, a rock's detail, colour, moss and plants, a tree's trunk,
-foliage, colours and wind...); the settings its requests are asked, ticked from the window's
-own (height, cells, style, pose, shapes, the bones, variants, drawn by the thousand, the lines
-checked first; those the kit needs stay ticked); and its **varieties** (a pine of the trees),
-each with settings of its own and instructions added to the kind's, one with the same keyword
-replacing the kind's. **+** adds a kind of your own, made as one of the eight (how the kit
-makes it and what it becomes in the game), its settings and instructions that kind's to start.
-A request's Kind row lists the kinds (and the varieties of its own), its kind's instructions
-folded under it with Edit…. The kinds are `tools/blender/request_kinds.json`, which the desktop
-edits (commit it to share what you've taught them); a browser keeps its own copy, which its
-runs are given. The list shows each request as a card as wide as it, folded at first: its status
+committed. The kinds are **tabs** over the list (All, then each kind that has requests, with
+how many): a tab shows that kind's requests, and pictures dropped while it's shown start a
+request of it. **+** in the window's header opens the **new request page** in place of the list
+(the window opens on it while there's no request): the model Claude runs on (in a browser, the
+most a run may cost too), the kind and a variety of it, then the artwork dropped on the window
+begins the request, which takes what was picked (pictures hovering over the window show a
+strip saying where they'll go; the model for a request's next Start sits by its Start
+button). The kinds are **Character** (rigged, with an idle animation: a character of the
+story, or, with its **creature** variety, a creature of the fields: its prop gets the
+`creature` category and a creature record of its own is made for it, named as the prop, its
+model standing for it on the map, its stats to fill in: it's in the zones' pools at once),
+**Prop**, **Environment** (what dresses the outdoors; its **grass**, **flower**, **rock** and
+**tree** varieties are each made their own way by the kit, with the instructions written so
+far: grass's edges, pieces and density, a flower's stem, leaves, petals, heart and wind, a
+rock's detail, colour, moss and plants, a tree's trunk, foliage, colours and wind) and **Floor
+set**. A kind's **Instructions…** (by the tabs, or on the page) opens its window: what every
+request of it asks Claude, a feature each, a keyword (fur, colour, the trunk...) and how a run
+handles it, added, changed or taken out as you like; the settings its requests are asked, lit
+from the window's own (height, cells, style, pose, shapes, the bones, variants, drawn by the
+thousand, the lines checked first; those the kit needs stay lit); and its **varieties**, each
+with settings and instructions of its own added to the kind's, one with the same keyword
+replacing the kind's, made as the kind unless it says how (a pine made as a tree); what the
+kit does whatever the instructions say is under the info icons. On All, Instructions… holds
+the **instructions for every kind**, whatever a request's kind (a kind's with the same keyword
+replaces one). **+** by the tabs (or on the page) adds a kind of your own, made as one of the
+kit's eight (how it makes it and what it becomes in the game), its settings and instructions
+that kind's to start. A request's Kind row lists the kinds (and the varieties of its own), the
+instructions it will get folded under it with Edit…. The kinds are
+`tools/blender/request_kinds.json`, which the desktop edits (commit it to share what you've
+taught them); a browser keeps its own copy, which its runs are given; requests from before
+(a creature, a rock) read as the kinds are now, their ratings and lessons going by how a
+request is made (a rock's are the rocks', whatever tab asked), or by a kind of your own. The
+The list shows each request as a card as wide as it, folded at first: its status
 (waiting, in progress, failed, done) and its kind as tags, its name, an "i" with the rest of
 what it asks for when hovered (its height, its style, its cells, shapes, variants, where its
 model goes, its notes, its folder), and its button at the end, with a bar at its foot for how

@@ -1,6 +1,6 @@
 //! A prop deleted everywhere the content names it: its record goes, and so do the props
 //! placed on every map and in every template, the tree areas drop it, the actors that looked
-//! like it look like nothing, the terrains growing it (tall ground's grass props, a meadow's
+//! like it look like nothing, the creatures it stood for keep their pictures, the terrains growing it (tall ground's grass props, a meadow's
 //! model plants) stop. What's named where comes first (`uses_of_prop`: for a dialog to say
 //! what deleting it means), what changed comes back by id, for the editor to write.
 
@@ -15,11 +15,13 @@ pub struct Uses {
     pub maps: Vec<(String, usize, usize, usize)>,
     pub templates: Vec<(String, usize, usize)>,
     pub terrains: Vec<String>,
+    /// the creatures it stands for on the map (their `prop`)
+    pub creatures: Vec<String>,
 }
 
 impl Uses {
     pub fn is_empty(&self) -> bool {
-        self.maps.is_empty() && self.templates.is_empty() && self.terrains.is_empty()
+        self.maps.is_empty() && self.templates.is_empty() && self.terrains.is_empty() && self.creatures.is_empty()
     }
 
     /// In words: "placed 3 times on 2 maps, in 1 template, grown by 1 terrain, 2 actors look
@@ -51,6 +53,9 @@ impl Uses {
         if actors > 0 {
             out.push(format!("{actors} {} like it", plural(actors, "actor looks", "actors look")));
         }
+        if !self.creatures.is_empty() {
+            out.push(format!("the model of {} {}", self.creatures.len(), plural(self.creatures.len(), "creature", "creatures")));
+        }
         out.join(", ")
     }
 }
@@ -64,6 +69,8 @@ pub struct Deleted {
     pub maps: Vec<String>,
     pub templates: Vec<String>,
     pub terrains: Vec<String>,
+    /// the creatures it stood for: their pictures now
+    pub creatures: Vec<String>,
 }
 
 impl Content {
@@ -91,6 +98,7 @@ impl Content {
                 out.terrains.push(t.id.clone());
             }
         }
+        out.creatures = self.creatures.iter().filter(|c| c.prop.as_deref() == Some(id)).map(|c| c.id.clone()).collect();
         out
     }
 
@@ -99,7 +107,7 @@ impl Content {
     pub fn delete_prop(&mut self, id: &str) -> Result<Deleted, String> {
         let Some(e) = self.props.remove(id) else { return Err(format!("no prop {id}")) };
         let look = format!("prop:{id}");
-        let mut out = Deleted { prop: e.value, space: e.space, maps: vec![], templates: vec![], terrains: vec![] };
+        let mut out = Deleted { prop: e.value, space: e.space, maps: vec![], templates: vec![], terrains: vec![], creatures: vec![] };
         let maps: Vec<_> = self
             .maps
             .entries()
@@ -156,6 +164,12 @@ impl Content {
             out.terrains.push(t.id.clone());
             self.terrains.put(t, space);
         }
+        let creatures: Vec<_> = self.creatures.entries().iter().filter(|e| e.value.prop.as_deref() == Some(id)).map(|e| (e.value.clone(), e.space)).collect();
+        for (mut c, space) in creatures {
+            c.prop = None;
+            out.creatures.push(c.id.clone());
+            self.creatures.put(c, space);
+        }
         Ok(out)
     }
 }
@@ -177,13 +191,15 @@ mod tests {
         c.maps.put(Map { id: "shore".into(), props: vec![put("tree")], ..Default::default() }, Space::Content);
         c.templates.put(Template { id: "cairn".into(), props: vec![put("rock")], ..Default::default() }, Space::Temporary);
         c.terrains.put(Terrain { id: "scree".into(), growth: crate::model::Growth { props: vec![Grower { prop: "rock".into(), weight: 1.0 }, Grower { prop: "tree".into(), weight: 1.0 }], meadow: Meadow { plants: vec![Plant { shape: "model".into(), prop: "rock".into(), ..Default::default() }], ..Default::default() }, ..Default::default() }, ..Default::default() }, Space::Content);
+        c.creatures.put(crate::model::Creature { id: "golem".into(), name: "Golem".into(), prop: Some("rock".into()), ..Default::default() }, Space::Temporary);
         let uses = c.uses_of_prop("rock");
-        assert_eq!(uses, Uses { maps: vec![("field".into(), 2, 1, 1)], templates: vec![("cairn".into(), 1, 0)], terrains: vec!["scree".into()] });
-        assert_eq!(uses.text(), "placed 3 times on 1 map and 1 template, picked by 1 tree area, grown by 1 terrain, 1 actor looks like it");
+        assert_eq!(uses, Uses { maps: vec![("field".into(), 2, 1, 1)], templates: vec![("cairn".into(), 1, 0)], terrains: vec!["scree".into()], creatures: vec!["golem".into()] });
+        assert_eq!(uses.text(), "placed 3 times on 1 map and 1 template, picked by 1 tree area, grown by 1 terrain, 1 actor looks like it, the model of 1 creature");
         assert!(c.uses_of_prop("tree").text().starts_with("placed 2 times on 2 maps"));
         assert!(c.uses_of_prop("stone").is_empty() && c.uses_of_prop("stone").text().is_empty());
         let d = c.delete_prop("rock").unwrap();
         assert_eq!((d.prop.id.as_str(), d.space, d.maps.as_slice(), d.templates.as_slice(), d.terrains.as_slice()), ("rock", Space::Content, ["field".to_string()].as_slice(), ["cairn".to_string()].as_slice(), ["scree".to_string()].as_slice()));
+        assert_eq!((d.creatures.as_slice(), c.creatures.get("golem").unwrap().prop.as_deref()), (["golem".to_string()].as_slice(), None), "the creature keeps its pictures");
         assert!(!c.props.contains("rock") && c.props.contains("tree"));
         let field = c.maps.get("field").unwrap();
         assert_eq!((field.props.len(), field.props[0].prop.as_str(), field.tree_areas[0].trees.as_slice(), field.actors[0].look.as_str()), (1, "tree", ["tree".to_string()].as_slice(), ""));

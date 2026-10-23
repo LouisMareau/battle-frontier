@@ -481,27 +481,55 @@ check("a tree: its trunk a mesh, its foliage clusters of leaf cards crossing, cu
 # the kit's and named so, and a project's own copy read before the standard one
 import json  # noqa: E402
 catalogue = mr.kinds()
-check("the standard kinds: the kit's eight, each made as itself, the flower's and the tree's instructions",
-      [k["id"] for k in catalogue] == list(mr.KINDS) and all(k["made_as"] == k["id"] for k in catalogue)
-      and [f["keyword"] for f in next(k for k in catalogue if k["id"] == "tree")["features"]] == ["trunk", "foliage", "colour", "wind"], str([k["id"] for k in catalogue]))
-own = [dict(k) for k in catalogue]
-tree = next(k for k in own if k["id"] == "tree")
-tree["varieties"] = [{"id": "pine", "name": "Pine", "params": tree["params"], "features": [
-    {"keyword": "Foliage", "text": "needles in tiers of drooping cards, darker green"}, {"keyword": "cones", "text": "a few brown cones hanging under the tiers"}]}]
+environment = next(k for k in catalogue if k["id"] == "environment")
+check("the standard kinds: character (a creature its variety), prop, environment (grass, a flower, a rock and a tree its varieties, each made its own way), floor",
+      [k["id"] for k in catalogue] == ["character", "prop", "environment", "floor"] and all(k["made_as"] == k["id"] for k in catalogue)
+      and [v["id"] for v in next(k for k in catalogue if k["id"] == "character")["varieties"]] == ["creature"]
+      and [(v["id"], v["made_as"]) for v in environment["varieties"]] == [(v, v) for v in mr.ENVIRONMENT_VARIETIES]
+      and [f["keyword"] for f in next(v for v in environment["varieties"] if v["id"] == "tree")["features"]] == ["trunk", "foliage", "colour", "wind"], str([k["id"] for k in catalogue]))
+check("  a request of one of them from before: the environment's variety now, its lessons the making's still",
+      (lambda r: (r["kind"], r["kind_id"], r["variety"], mr.kind_key(r), mr.lesson_key(r)))(mr.normal({"kind": "rock"})) == ("rock", "environment", "rock", "environment", "rock")
+      and mr.lesson_key(mr.normal({"kind": "environment", "kind_id": "bush"})) == "bush" and mr.lesson_key(mr.normal({"kind": "creature"})) == "character")
+# a request from before the character kind: a character, a creature of them (its prop a creature's)
+old = mr.normal({"kind": "creature", "name": "Newt"})
+check("a creature request from before: made as a character, its variety creature, its prop's category creature",
+      (old["kind"], old["variety"], mr.category_of(old), mr.kind_key(old)) == ("character", "creature", "creature", "character")
+      and mr.category_of(mr.normal({"kind": "character"})) == "character" and mr.category_of(mr.normal({"kind": "tree"})) == "decoration", str(old))
+fresh("test_old", kind="creature", height=0.8)
+asked = rc.prompt(mr.load(SCRATCH, "test_old"))
+check("  its prompt: a creature, a character rigged", "a creature: a character 0.8 cells tall, rigged, with an idle animation" in asked
+      and "a character (a creature too): rig it" in asked, asked[:1500])
+own = [json.loads(json.dumps(k)) for k in catalogue]
+env = next(k for k in own if k["id"] == "environment")
+tree = next(v for v in env["varieties"] if v["id"] == "tree")
+env["varieties"].append({"id": "pine", "name": "Pine", "made_as": "tree", "params": tree["params"], "features": [
+    {"keyword": "Foliage", "text": "needles in tiers of drooping cards, darker green"}, {"keyword": "cones", "text": "a few brown cones hanging under the tiers"}]})
 own.append({"id": "bush", "name": "Bush", "made_as": "environment", "params": ["height", "style"], "features": [{"keyword": "fur", "text": "no fur: leaves as small cards"}], "varieties": []})
 (SCRATCH / "private" / "requests").mkdir(parents=True, exist_ok=True)
-(SCRATCH / mr.OWN_KINDS).write_text(json.dumps({"kinds": own}), encoding="utf-8")
-fresh("test_pine", kind="tree", kind_id="tree", variety="pine", height=6.0)
+general = [{"keyword": "silhouette", "text": "read it from the side picture first"}, {"keyword": "wind", "text": "nothing moves in the wind"}]
+(SCRATCH / mr.OWN_KINDS).write_text(json.dumps({"features": general, "kinds": own}), encoding="utf-8")
+fresh("test_pine", kind="tree", kind_id="environment", variety="pine", height=6.0)
 asked = rc.prompt(mr.load(SCRATCH, "test_pine"), root=SCRATCH)
-check("a variety: named so, its kind's instructions with its own, one named the same replacing the kind's",
-      "a pine (a variety of tree): a tree 6.0 cells tall" in asked and "- trunk: its trunk and its main branches are meshes" in asked
+check("a variety made its own way: named so, made as a tree, its kind's instructions with its own (the tree variety's are the tree's)",
+      "a pine: a tree 6.0 cells tall, its trunk a mesh" in asked and "- trunk: its trunk and its main branches are meshes" not in asked and "- wind: " in asked
       and "- Foliage: needles in tiers of drooping cards" in asked and "each cluster a few curved planes" not in asked and "- cones: a few brown cones" in asked, asked[:3000])
+lines = [line.strip() for line in asked.splitlines() if line.strip().startswith("- ")]
+at = lambda start: next(i for i, line in enumerate(lines) if line.startswith(start))
+check("  the instructions for every kind first, the environment's wind replacing theirs where they stood",
+      "The user's instructions (for every kind, then its kind's and its variety's; a feature each: follow every one):" in asked
+      and lines[at("- silhouette: read it from the side") + 1].startswith("- wind: ") and "nothing moves in the wind" not in asked
+      and at("- silhouette: read it from the side") < at("- Foliage: needles"), str(lines[:8]))
+fresh("test_lawn", kind="grass", cells=[2, 1], height=0.4)
+asked = rc.prompt(mr.load(SCRATCH, "test_lawn"), root=SCRATCH)
+lines = [line.strip() for line in asked.splitlines() if line.strip().startswith("- ")]
+check("  grass, the environment's variety: named as itself, its own instructions after the environment's", "grass filling 2 x 1 cells to the edges, 0.4 cells tall" in asked
+      and "a grass:" not in asked and "- edges: " in asked and "- silhouette" in asked and at("- silhouette") < at("- wind: ") < at("- edges: "), asked[:2500])
 fresh("test_bush", kind="environment", kind_id="bush", height=1.2)
 asked = rc.prompt(mr.load(SCRATCH, "test_bush"), root=SCRATCH)
 check("a kind of the user's own: made as its kit kind, named so, its own instructions", "a bush: an environment asset 1.2 cells tall" in asked
       and "Environment: an asset that dresses the outdoors" in asked and "- fur: no fur: leaves as small cards" in asked and "- wind: what the wind moves" not in asked, asked[:2500])
 check("  the project's own kinds read first, the standard without a project", any(k["id"] == "bush" for k in mr.kinds(SCRATCH)) and not any(k["id"] == "bush" for k in mr.kinds())
-      and mr.kind_key(mr.load(SCRATCH, "test_bush")) == "bush" and mr.kind_key(mr.load(SCRATCH, "test_pine")) == "tree")
+      and mr.kind_key(mr.load(SCRATCH, "test_bush")) == "bush" and mr.kind_key(mr.load(SCRATCH, "test_pine")) == "environment" and mr.lesson_key(mr.load(SCRATCH, "test_pine")) == "tree")
 (SCRATCH / mr.OWN_KINDS).unlink()
 fresh("test_boulder", kind="rock", cells=[2, 1], many=True)
 asked = rc.prompt(mr.load(SCRATCH, "test_boulder"))
@@ -668,7 +696,7 @@ going_on = " ".join(rc.prompt(dict(rec, check_lines=True), go_on=True).split())
 check("  the lines' run reads them too; the run after the check rigs on them, the lines kept", "python tools/blender/model_requests.py bones test_bones" in checked_first
       and "model_requests.py bones" not in going_on and "kit.rig(kit.parts(), chains) with chains = job.chains()" in going_on)
 plain = rc.prompt(mr.normal(dict(rec, bones={})))
-check("  none drawn: no word of them", "Bones window" not in plain and "job.chains()" not in plain and "- a creature: rig it: every part on the bones that move it" in plain)
+check("  none drawn: no word of them", "Bones window" not in plain and "job.chains()" not in plain and "- a character (a creature too): rig it: every part on the bones that move it" in plain)
 check("built in parts: the jaw closed on its bone, the tongue on its own, the roar an action", all(w in " ".join(plain.split()) for w in (
     "Build it in parts", "never one lump fused and sculpted", "block each part in from a few shapes with kit.part", "The mouth is built closed",
     "the tongue on a chain of its own", "becomes the \"roar\" action", "preview_roar.png")), plain[:300])

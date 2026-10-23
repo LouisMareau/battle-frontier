@@ -118,8 +118,12 @@ pub(super) fn hovered_picture(h: &egui::HoveredFile) -> bool {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Kind {
+    /// rigged, with an idle animation: a character of the story, or a creature of the fields
+    /// (the window's creature variety: its prop's category creature, a creature record of its
+    /// own); "creature" is what requests from before called it
     #[default]
-    Creature,
+    #[serde(alias = "creature")]
+    Character,
     Prop,
     /// a patch of grass filling its cells to their edges (`cells`), so copies side by side join
     /// without a gap: a grass prop (one tall ground can grow too)
@@ -143,7 +147,7 @@ impl Kind {
     /// Its name in the window.
     pub(super) fn name(self) -> &'static str {
         match self {
-            Kind::Creature => "creature",
+            Kind::Character => "character",
             Kind::Prop => "prop",
             Kind::Grass => "grass",
             Kind::Flower => "flower",
@@ -157,16 +161,17 @@ impl Kind {
     /// It can be drawn by the thousand (strewn over fields with the grass and the flowers): not
     /// a creature, not a set of floor tiles.
     pub(super) fn strewn(self) -> bool {
-        !matches!(self, Kind::Creature | Kind::Floor)
+        !matches!(self, Kind::Character | Kind::Floor)
     }
 
-    /// The kit's eight, in the window's order.
-    pub(super) const ALL: [Kind; 8] = [Kind::Creature, Kind::Prop, Kind::Grass, Kind::Flower, Kind::Rock, Kind::Tree, Kind::Environment, Kind::Floor];
+    /// The kit's eight: how a request is made (the window's kinds and varieties are each made
+    /// as one of them).
+    pub(super) const ALL: [Kind; 8] = [Kind::Character, Kind::Prop, Kind::Grass, Kind::Flower, Kind::Rock, Kind::Tree, Kind::Environment, Kind::Floor];
 
     /// Its id, as the files have it ("floor" for a floor set).
     pub(super) fn id(self) -> &'static str {
         match self {
-            Kind::Creature => "creature",
+            Kind::Character => "character",
             Kind::Prop => "prop",
             Kind::Grass => "grass",
             Kind::Flower => "flower",
@@ -180,13 +185,13 @@ impl Kind {
     /// What it is, in a few words (its tab's and its button's tip).
     pub(super) fn about(self) -> &'static str {
         match self {
-            Kind::Creature => "Rigged: a spine, a head, limbs and a tail, and an idle animation",
+            Kind::Character => "Rigged: a spine, a head, limbs and a tail, and an idle animation. A character of the story, or a creature of the fields (its creature variety: a creature record of its own, its model standing for it on the map)",
             Kind::Prop => "Anything put on a map: a barrel, a lamp, a sign",
             Kind::Grass => "A patch of grass filling its cells to their edges, so copies side by side join without a gap: a grass prop (tall ground can grow it too)",
             Kind::Flower => "A flower made finely: its stem, its leaves, its petals (curved, cupped, in rings) and its heart (a disc, a dome or a cone; stamens, long thin filaments tipped with pollen, where it has them). A meadow can grow it",
             Kind::Rock => "A rock made finely: its facets, cracks and strata, its colours, moss, grass and flowers on it. Asked for by its footprint: Claude works out its height from the pictures' proportions",
             Kind::Tree => "A tree: its trunk and branches as meshes, its foliage as clusters of leaves, each a few curved planes (cards) crossing, their edges cut to the leaves' silhouette, painted for the wind (the trunk rooted, the clusters swaying and fluttering). Tree areas grow it",
-            Kind::Environment => "What dresses the outdoors: rocks, bushes, flowers, logs, trees",
+            Kind::Environment => "What dresses the outdoors: rocks, bushes, flowers, logs, trees. Grass, a flower, a rock and a tree are its varieties, each made its own way",
             Kind::Floor => "A set of floor tiles, each a cell, laid to fit (by wave function collapse): a pavement, old ruins, marble, a wood tiling. Laid in buildings (the Build tool's Flooring) and out of doors (the Ground tool's Floors tab)",
         }
     }
@@ -391,7 +396,7 @@ impl Default for ModelRequest {
         ModelRequest {
             id: String::new(),
             name: String::new(),
-            kind: Kind::Creature,
+            kind: Kind::Character,
             kind_id: String::new(),
             variety: String::new(),
             height: 1.0,
@@ -461,6 +466,18 @@ impl ModelRequest {
         }
     }
 
+    /// What its ratings and lessons go by: a kind of the user's own (its kind id when that's
+    /// not one of the kit's), else how the kit makes it (a rock's lessons are the rocks',
+    /// whatever tab asked for it).
+    #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+    pub(super) fn lesson_key(&self) -> String {
+        if !self.kind_id.is_empty() && !Kind::ALL.iter().any(|k| k.id() == self.kind_id) {
+            self.kind_id.clone()
+        } else {
+            self.kind.id().to_string()
+        }
+    }
+
     /// Its lines drawn, waiting for the user's check: the window shows them with "The lines
     /// look right: go on".
     pub(super) fn lines_ready(&self) -> bool {
@@ -499,7 +516,7 @@ impl Requests {
     /// while one is being modelled, its bar along the bottom (drawn on the button).
     pub fn decorate(&mut self, ui: &mut egui::Ui, r: &egui::Response) {
         let waiting = self.waiting();
-        let mut about = "Pictures of creatures and props for Claude to model in Blender: drop PNG, JPG or WebP files on the window while it's open".to_string();
+        let mut about = "Pictures of characters, creatures and props for Claude to model in Blender: drop PNG, JPG or WebP files on the window while it's open".to_string();
         if waiting > 0 {
             about += &format!("\n{waiting} waiting");
         }
@@ -575,7 +592,7 @@ mod desk {
         root.join("private").join("requests")
     }
 
-    fn record_path(root: &Path, id: &str) -> PathBuf {
+    pub(super) fn record_path(root: &Path, id: &str) -> PathBuf {
         folder(root).join(id).join("request.json")
     }
 
@@ -585,6 +602,17 @@ mod desk {
         let mut r: ModelRequest = serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
         // the folder is the request's id, whatever the file says
         r.id = id.to_string();
+        // from before the window's character kind: a creature of the characters; one of the
+        // kit's grass, flower, rock or tree from before they were the environment's varieties
+        if r.kind == Kind::Character && r.variety.is_empty() && text.contains("\"kind\": \"creature\"") {
+            r.variety = "creature".into();
+        }
+        if matches!(r.kind, Kind::Grass | Kind::Flower | Kind::Rock | Kind::Tree) && r.kind_id.is_empty() {
+            r.kind_id = "environment".into();
+            if r.variety.is_empty() {
+                r.variety = r.kind.id().into();
+            }
+        }
         Ok(r)
     }
 
@@ -1398,21 +1426,153 @@ mod desk {
             self.kinds_ui.tab.as_ref().is_none_or(|t| *t == r.kind_key())
         }
 
-        /// A request made of a kind of the window's: made as its making, asked as it, no variety;
-        /// what its settings no longer ask set back.
-        pub(in super::super) fn set_kind(&self, r: &mut ModelRequest, k: &KindDef) {
-            r.kind_id = if k.built_in() { String::new() } else { k.id.clone() };
-            r.kind = k.made_as;
-            r.variety.clear();
+        /// A request made of a kind of the window's, and a variety of it or none: made as the
+        /// variety's making (else the kind's), asked as the kind (named when that isn't its
+        /// making's own); what its settings no longer ask set back.
+        pub(in super::super) fn set_kind(&self, r: &mut ModelRequest, k: &KindDef, variety: Option<&str>) {
+            let v = variety.filter(|v| !v.is_empty()).and_then(|v| k.variety(v));
+            r.kind = v.map_or(k.made_as, |v| v.making(k.made_as));
+            r.kind_id = if k.id == r.kind.id() { String::new() } else { k.id.clone() };
+            r.variety = v.map(|v| v.id.clone()).unwrap_or_default();
             let params = self.kinds.params_of(r);
             unasked(r, &params);
         }
 
-        /// A request made a variety of its kind (or none): what its settings no longer ask set back.
+        /// A request made a variety of its kind (or none, ""): what its settings no longer ask
+        /// set back.
         fn set_variety(&self, r: &mut ModelRequest, variety: &str) {
-            r.variety = variety.to_string();
-            let params = self.kinds.params_of(r);
-            unasked(r, &params);
+            let Some(k) = self.kinds.of(r).0.cloned() else { return };
+            self.set_kind(r, &k, Some(variety));
+        }
+
+        /// The new request page shown (the header's +): what pictures dropped there start,
+        /// the tab's kind (else the first) with no variety, to pick from.
+        fn open_page(&mut self) {
+            self.kinds_ui.page = true;
+            self.selected = None;
+            self.deleting = false;
+            let kind = self.kinds_ui.tab.clone().filter(|t| self.kinds.kind(t).is_some()).or_else(|| self.kinds.kinds.first().map(|k| k.id.clone()));
+            self.kinds_ui.next = kind.map(|k| (k, String::new()));
+        }
+
+        /// The model {MAKER} runs on for the next Start (and, in a browser, the most a run may
+        /// cost): where a run is started from.
+        fn model_pick(&mut self, ui: &mut egui::Ui) {
+            hint(ui, "Claude:");
+            let shown = MODELS.iter().find(|(m, _)| *m == self.model).map(|(_, label)| *label).unwrap_or(self.model.as_str()).to_string();
+            let pick = egui::ComboBox::from_id_salt("request-model").selected_text(shown).width(110.0).show_ui(ui, |ui| {
+                for (m, label) in MODELS {
+                    ui.selectable_value(&mut self.model, m.to_string(), label);
+                }
+            });
+            pick.response.on_hover_text(format!("The model {MAKER} runs on for the next Start (the console says which it got)"));
+            #[cfg(target_arch = "wasm32")]
+            self.cap(ui);
+        }
+
+        /// The new request page, in place of the list and the request (the header's +, or no
+        /// request yet): the model, the kind and a variety of it, and the artwork to drop.
+        fn new_page(&mut self, ui: &mut egui::Ui, hovering: bool) {
+            platform::set_hook("requestpage", "new");
+            let (kid, vid) = self.kinds_ui.next.clone().unwrap_or_default();
+            platform::set_hook("requestnext", &if vid.is_empty() { kid.clone() } else { format!("{kid}:{vid}") });
+            let kinds = self.kinds.clone();
+            let picked = kinds.kind(&kid).cloned();
+            ui.add_space((ui.available_height() * 0.16).clamp(8.0, 90.0));
+            ui.vertical_centered(|ui| {
+                let title = if hovering { "Let go: the pictures begin the request" } else { "A new request" };
+                ui.label(RichText::new(title).size(20.0).color(if hovering { WAITING } else { Color32::from_gray(210) }));
+                ui.add_space(10.0);
+                // (a row's widgets sit left: set in from the side by what's left over)
+                let inset = |ui: &mut egui::Ui, width: f32| ui.add_space(((ui.available_width() - width) / 2.0).max(0.0));
+                ui.horizontal(|ui| {
+                    inset(ui, if cfg!(target_arch = "wasm32") { 330.0 } else { 190.0 });
+                    self.model_pick(ui);
+                });
+                ui.add_space(8.0);
+                ui.horizontal_wrapped(|ui| {
+                    inset(ui, 60.0 + 72.0 * kinds.kinds.len() as f32);
+                    hint(ui, "Kind");
+                    for k in &kinds.kinds {
+                        let on = k.id == kid;
+                        let about = if k.built_in() { k.made_as.about().to_string() } else { format!("A kind of your own, made as {}: {}", k.made_as.name(), super::kinds::making(k.made_as)) };
+                        let b = ui.selectable_label(on, k.name.to_lowercase()).on_hover_text(about);
+                        mark(&format!("uiRequestKind{}", capital(&k.id)), &b);
+                        if b.clicked() && !on {
+                            self.kinds_ui.next = Some((k.id.clone(), String::new()));
+                        }
+                    }
+                    let add = ui.small_button("+").on_hover_text("A kind of your own: its name, what the kit makes it as, then its settings and instructions");
+                    mark("uiRequestKindAdd", &add);
+                    if add.clicked() {
+                        self.kinds_ui.adding = Some((String::new(), picked.as_ref().map_or(Kind::Prop, |k| k.made_as)));
+                    }
+                });
+                if let Some(k) = picked.as_ref().filter(|k| !k.varieties.is_empty()) {
+                    ui.horizontal_wrapped(|ui| {
+                        inset(ui, 80.0 + 72.0 * (k.varieties.len() + 1) as f32);
+                        hint(ui, "variety");
+                        let none = ui.selectable_label(vid.is_empty(), "none").on_hover_text("The kind itself");
+                        mark("uiRequestVariety_", &none);
+                        if none.clicked() {
+                            self.kinds_ui.next = Some((kid.clone(), String::new()));
+                        }
+                        for v in &k.varieties {
+                            let b = ui.selectable_label(vid == v.id, v.name.to_lowercase()).on_hover_text(match v.made_as {
+                                Some(m) => format!("Made as {}: {}", m.name(), super::kinds::making(m)),
+                                None => format!("{} of its own instructions, added to the kind's", v.features.len()),
+                            });
+                            mark(&format!("uiRequestVariety_{}", v.id), &b);
+                            if b.clicked() {
+                                self.kinds_ui.next = Some((kid.clone(), v.id.clone()));
+                            }
+                        }
+                    });
+                }
+                ui.horizontal(|ui| {
+                    inset(ui, 110.0);
+                    let edit = ui.add_enabled(picked.is_some(), egui::Button::new("Instructions…").small()).on_hover_text("Its instructions, settings and varieties: what every request of it asks");
+                    mark("uiRequestKindEdit", &edit);
+                    if edit.clicked() {
+                        (self.kinds_ui.tab, self.kinds_ui.open) = (Some(kid.clone()), true);
+                        self.kinds_ui.variety = (!vid.is_empty()).then(|| vid.clone());
+                    }
+                });
+                ui.add_space(14.0);
+                let what = match (&picked, picked.as_ref().and_then(|k| k.variety(&vid))) {
+                    (Some(_), Some(v)) => format!("one {}", v.name.to_lowercase()),
+                    (Some(k), None) => format!("one {}", k.name.to_lowercase()),
+                    (None, _) => "one character, creature or prop".to_string(),
+                };
+                ui.label(RichText::new(format!("Drop the artwork of {what} on the window (PNG, JPG, WebP): it begins the request")).size(14.5).color(Color32::from_gray(200)));
+                hint(ui, "Front, side, back, close-ups: one request. Then Start it: Claude models it in Blender by itself.");
+                if !self.list.is_empty() {
+                    ui.add_space(14.0);
+                    let back = ui.button("Back to the requests");
+                    mark("uiRequestBack", &back);
+                    if back.clicked() {
+                        self.kinds_ui.page = false;
+                        self.kinds_ui.next = None;
+                    }
+                }
+            });
+        }
+
+        /// While pictures hover over the window: where they'll go, in a strip over the list.
+        fn drop_strip(&self, ui: &mut egui::Ui, hovering: bool) {
+            if !hovering {
+                return;
+            }
+            let target = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id)).map(|r| r.name.clone());
+            let text = match target {
+                Some(name) => format!("Let go: the pictures go to {name}"),
+                None => "Let go: the pictures start a new request".to_string(),
+            };
+            egui::Frame::new().stroke(egui::Stroke::new(1.5, WAITING)).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(text).color(WAITING));
+            });
+            ui.add_space(2.0);
         }
 
         /// The tab row over the list (All, each kind, +, Instructions…).
@@ -1431,6 +1591,7 @@ mod desk {
             let now = ctx.input(|i| i.time);
             let mut changed = super::kinds::add_window(ctx, &mut self.kinds, &mut self.kinds_ui);
             changed |= super::kinds::kind_window(ctx, &mut self.kinds, &mut self.kinds_ui);
+            changed |= super::kinds::general_window(ctx, &mut self.kinds, &mut self.kinds_ui);
             if changed {
                 self.kinds_ui.changed = Some(now);
             }
@@ -1440,7 +1601,7 @@ mod desk {
             let root = self.root();
             let kept = self.kinds_ui.keep(&mut self.kinds, &root, now);
             platform::set_hook("requestkinds", &self.kinds.summary());
-            platform::set_hook("requestkind", if self.kinds_ui.open { self.kinds_ui.tab.as_deref().unwrap_or("") } else { "" });
+            platform::set_hook("requestkind", if self.kinds_ui.open { self.kinds_ui.tab.as_deref().unwrap_or("*") } else { "" });
             match kept {
                 Some(Err(e)) => Some(format!("The kinds weren't kept: {e}")),
                 _ => None,
@@ -1492,10 +1653,12 @@ mod desk {
                 },
                 None => match create(&root, first) {
                     Ok(mut r) => {
-                        // the tab shown: a request of its kind
-                        if let Some(k) = self.kinds_ui.tab.as_deref().and_then(|t| self.kinds.kind(t)).cloned() {
-                            self.set_kind(&mut r, &k);
+                        // what the page picked (a kind and a variety of it), else the tab's kind
+                        let pick = self.kinds_ui.next.take().or_else(|| self.kinds_ui.tab.clone().map(|t| (t, String::new())));
+                        if let Some(k) = pick.as_ref().and_then(|(kid, _)| self.kinds.kind(kid)).cloned() {
+                            self.set_kind(&mut r, &k, pick.as_ref().map(|(_, v)| v.as_str()));
                         }
+                        self.kinds_ui.page = false;
                         r
                     }
                     Err(e) => return Some(e),
@@ -2068,43 +2231,6 @@ mod desk {
         }
 
         /// Where the next pictures go, lit while files hover.
-        fn banner(&mut self, ui: &mut egui::Ui, hovering: bool) {
-            let target = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id)).map(|r| r.name.clone());
-            let text = match (&target, hovering) {
-                (Some(name), true) => format!("Let go: the pictures go to {name}"),
-                (None, true) => "Let go: the pictures start a new request".to_string(),
-                (Some(name), false) => format!("Pictures dropped on the window (PNG, JPG, WebP) go to {name}"),
-                (None, false) => "Drop pictures of one creature or prop on the window (PNG, JPG, WebP): they start a new request".to_string(),
-            };
-            let stroke = if hovering { egui::Stroke::new(1.5, WAITING) } else { egui::Stroke::new(1.0, Color32::from_gray(70)) };
-            egui::Frame::new().stroke(stroke).corner_radius(4.0).inner_margin(6.0).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new(text).color(if hovering { WAITING } else { Color32::from_gray(200) }));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if target.is_some() {
-                            let new = ui.button("New request").on_hover_text("The next pictures dropped start a new request");
-                            mark("uiRequestNew", &new);
-                            if new.clicked() {
-                                self.selected = None;
-                                self.deleting = false;
-                            }
-                        }
-                        let shown = MODELS.iter().find(|(m, _)| *m == self.model).map(|(_, label)| *label).unwrap_or(self.model.as_str()).to_string();
-                        let pick = egui::ComboBox::from_id_salt("request-model").selected_text(shown).width(110.0).show_ui(ui, |ui| {
-                            for (m, label) in MODELS {
-                                ui.selectable_value(&mut self.model, m.to_string(), label);
-                            }
-                        });
-                        pick.response.on_hover_text(format!("The model {MAKER} runs on for the next Start (the console says which it got)"));
-                        hint(ui, "Claude:");
-                        #[cfg(target_arch = "wasm32")]
-                        self.cap(ui);
-                    });
-                });
-            });
-        }
-
         /// The browser's runs: what one may cost at most (on the user's key; kept in this
         /// browser), as the window's banner shows it.
         #[cfg(target_arch = "wasm32")]
@@ -2416,9 +2542,8 @@ mod desk {
             let Some(i) = self.selected.as_ref().and_then(|id| self.list.iter().position(|r| &r.id == id)) else {
                 ui.add_space(30.0);
                 ui.vertical_centered(|ui| {
-                    ui.label(RichText::new("Drop pictures here").size(18.0).color(Color32::from_gray(170)));
-                    hint(ui, "Front, side, back, close-ups of one creature or prop: one request.");
-                    hint(ui, &format!("Then Start it: {MAKER} models it in Blender by itself."));
+                    ui.label(RichText::new("No request shown").size(18.0).color(Color32::from_gray(170)));
+                    hint(ui, "Pick one on the left, or + in the header for a new one: pictures dropped on the window start it.");
                 });
                 return (None, None, None);
             };
@@ -2508,7 +2633,7 @@ mod desk {
                             let b = ui.selectable_label(on, k.name.to_lowercase()).on_hover_text(about);
                             mark(&format!("uiRequestKind{}", capital(&k.id)), &b);
                             if b.clicked() && !on {
-                                self.set_kind(&mut r, k);
+                                self.set_kind(&mut r, k, None);
                             }
                         }
                     });
@@ -2714,6 +2839,8 @@ mod desk {
                     if let Some(a) = self.run_button(ui, &r, false) {
                         asked = Some(a);
                     }
+                    ui.add_space(6.0);
+                    self.model_pick(ui);
                 });
                 ui.end_row();
             });
@@ -2765,6 +2892,7 @@ mod desk {
                 hint(ui, &format!("Modelled in {} min", r.progress.minutes.round()));
             }
             section(ui, &format!("Pictures ({})", r.images.len()));
+            hint(ui, "Pictures dropped on the window go here (PNG, JPG, WebP): front, side, back, close-ups.");
             ui.horizontal_wrapped(|ui| {
                 for (i, f) in r.images.clone().into_iter().enumerate() {
                     ui.vertical(|ui| {
@@ -3227,7 +3355,7 @@ mod desk {
                 return None;
             }
             // a creature's (a prop has no bones)
-            let Some(before) = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id && r.kind == Kind::Creature)).cloned() else {
+            let Some(before) = self.selected.as_ref().and_then(|id| self.list.iter().find(|r| &r.id == id && r.kind == Kind::Character)).cloned() else {
                 self.bones.open = false;
                 return None;
             };
@@ -3557,7 +3685,7 @@ mod desk {
     /// Its kind, as a tag, a colour each.
     fn kind_tag(ui: &mut egui::Ui, label: &str, kind: Kind) {
         let color = match kind {
-            Kind::Creature => Color32::from_rgb(196, 160, 238),
+            Kind::Character => Color32::from_rgb(196, 160, 238),
             Kind::Prop => Color32::from_rgb(158, 186, 220),
             Kind::Grass => Color32::from_rgb(150, 210, 128),
             Kind::Flower => Color32::from_rgb(236, 164, 204),
@@ -3614,7 +3742,7 @@ mod desk {
             out.push(format!("Cells: {} × {}", r.cells[0], r.cells[1]));
         }
         out.push(if r.shapes.unlimited { format!("Shapes: as many as it needs, up to about {SHAPES_CAP}") } else { format!("Shapes: {} to {}", r.shapes.min, r.shapes.max) });
-        if r.kind == Kind::Creature {
+        if r.kind == Kind::Character {
             out.push(format!("Pose: {}", if r.pose == Pose::TPose { "T-pose" } else { "as the pictures show" }));
         }
         if r.variants > 0 {
@@ -3810,9 +3938,22 @@ mod desk {
                 let (mut said, mut asked) = (None, None);
                 // resizable every way (its corner too); the console in a panel at its foot (open,
                 // its top edge drags), the list and the request in what's left
-                super::super::dock::show(ui, st, super::super::dock::Pane::Requests, &title, |ui| {
-                        d.banner(ui, hovering);
-                        ui.add_space(2.0);
+                let plus = std::cell::Cell::new(false);
+                let header = |ui: &mut egui::Ui| {
+                    let r = ui.small_button("+").on_hover_text("A new request: the model, its kind, then its pictures dropped on the window");
+                    mark("uiRequestNew", &r);
+                    if r.clicked() {
+                        plus.set(true);
+                    }
+                };
+                super::super::dock::show_with(ui, st, super::super::dock::Pane::Requests, &title, header, |ui| {
+                        // nothing yet, or + pressed: the new request page alone
+                        if d.kinds_ui.page || d.list.is_empty() {
+                            d.new_page(ui, hovering);
+                            return;
+                        }
+                        platform::set_hook("requestpage", "");
+                        d.drop_strip(ui, hovering);
                         d.kind_tabs(ui);
                         ui.add_space(2.0);
                         let shown = d.selected.clone().or_else(|| d.busy());
@@ -3848,6 +3989,9 @@ mod desk {
                             });
                         });
                     });
+                if plus.get() {
+                    d.open_page();
+                }
                 if let Some(s) = d.kind_windows(ui.ctx()) {
                     said = Some(s);
                 }
@@ -3951,7 +4095,7 @@ mod tests {
         let r = ModelRequest {
             id: "moss_toad".into(),
             name: "Moss toad".into(),
-            kind: Kind::Creature,
+            kind: Kind::Character,
             height: 0.8,
             style: Style::LowPoly,
             notes: "Green back, cream belly".into(),
@@ -3970,7 +4114,23 @@ mod tests {
         // the bones as model_requests.py writes them too (test_run_claude.py has the same text):
         // a name only on a line that has one
         assert!(text.contains(BONES_TEXT), "{text}");
-        assert!(text.contains("  \"kind\": \"creature\",\n") && text.contains("  \"style\": \"low_poly\",\n") && text.contains("  \"status\": \"in_progress\",\n"), "{text}");
+        assert!(text.contains("  \"kind\": \"character\",\n") && text.contains("  \"style\": \"low_poly\",\n") && text.contains("  \"status\": \"in_progress\",\n"), "{text}");
+        // requests from before: a creature is a character's creature variety; the kit's grass,
+        // flower, rock and tree are the environment's varieties (a window kind's stays its own)
+        let root = scratch("before");
+        for (id, kind, extra) in [("newt", "creature", ""), ("boulder", "rock", ""), ("hedge", "environment", "\"kind_id\": \"bush\", "), ("lawn", "grass", "\"kind_id\": \"turf\", \"variety\": \"short\", ")] {
+            std::fs::create_dir_all(root.join("private/requests").join(id)).unwrap();
+            std::fs::write(record_path(&root, id), format!("{{\"id\": \"{id}\", \"name\": \"{id}\", {extra}\"kind\": \"{kind}\"}}")).unwrap();
+        }
+        let read_as = |id: &str| {
+            let r = read(&root, id).unwrap();
+            (r.kind, r.kind_id.clone(), r.variety.clone(), r.kind_key(), r.lesson_key())
+        };
+        assert_eq!(read_as("newt"), (Kind::Character, "".into(), "creature".into(), "character".into(), "character".into()));
+        assert_eq!(read_as("boulder"), (Kind::Rock, "environment".into(), "rock".into(), "environment".into(), "rock".into()));
+        assert_eq!(read_as("hedge"), (Kind::Environment, "bush".into(), "".into(), "bush".into(), "bush".into()), "a kind of the user's own: its lessons its own");
+        assert_eq!(read_as("lawn"), (Kind::Grass, "turf".into(), "short".into(), "turf".into(), "turf".into()), "asked as a window kind already: left as it was");
+        std::fs::remove_dir_all(&root).ok();
         assert!(text.contains("  \"progress\": {\n    \"step\": \"building the model\",\n    \"done\": 0.2,\n    \"started\": 1760000000.0,\n    \"minutes\": 25.0\n  },\n"), "{text}");
         assert!(text.contains("  \"images\": [\"front.png\", \"side.jpg\"],\n"), "short lists on one line: {text}");
         let at = |k: &str| text.find(&format!("\"{k}\":")).unwrap();
@@ -4015,7 +4175,7 @@ mod tests {
         let daisy: ModelRequest = serde_json::from_str(r#"{ "kind": "flower", "height": 0.3 }"#).unwrap();
         assert_eq!((daisy.kind, daisy.toon, daisy.many, daisy.rating, about(&daisy)), (Kind::Flower, true, false, None, "flower · 0.3 cells · smooth".to_string()));
         let varies = |k: Kind| kinds::default_params(k).contains(&kinds::Param::Variants);
-        assert!(varies(Kind::Flower) && varies(Kind::Rock) && varies(Kind::Tree) && !varies(Kind::Creature) && Kind::Rock.strewn() && !Kind::Creature.strewn() && !Kind::Floor.strewn());
+        assert!(varies(Kind::Flower) && varies(Kind::Rock) && varies(Kind::Tree) && !varies(Kind::Character) && Kind::Rock.strewn() && !Kind::Character.strewn() && !Kind::Floor.strewn());
         assert!(content::to_text(&grass).contains("  \"kind\": \"grass\",\n") && content::to_text(&rock).contains("  \"kind\": \"environment\",\n"));
         assert!(!short.check_lines && !short.lines_ready(), "no check unless asked");
         let ready: ModelRequest = serde_json::from_str(r#"{ "check_lines": true, "status": "waiting", "progress": { "step": "lines ready: check them" } }"#).unwrap();
@@ -4612,9 +4772,12 @@ mod tests {
         }
         // a creature not made yet: no variants
         assert!(marked("uiRequestVariants").is_none() && marked("uiRequestCellsX").is_none());
-        // grass: the cells it fills to the edges, and its variants
-        click(&ctx, &mut req, "uiRequestKindGrass");
-        assert_eq!(read(&root, "meadow_tuft").unwrap().kind, Kind::Grass);
+        // grass (the environment's variety): the cells it fills to the edges, and its variants
+        click(&ctx, &mut req, "uiRequestKindEnvironment");
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestVariety_grass");
+        let tuft = read(&root, "meadow_tuft").unwrap();
+        assert_eq!((tuft.kind, tuft.kind_id.as_str(), tuft.variety.as_str()), (Kind::Grass, "environment", "grass"), "made as grass, asked as the environment's grass");
         frame_with(&ctx, &mut req, vec![]);
         assert!(marked("uiRequestCellsX").is_some() && marked("uiRequestCellsZ").is_some() && marked("uiRequestVariants").is_some());
         assert!(marked("uiRequestVary").is_none(), "how they differ, once there are some");
@@ -4626,10 +4789,11 @@ mod tests {
         click(&ctx, &mut req, "uiRequestVary");
         frame_with(&ctx, &mut req, vec![egui::Event::Text("taller, yellower".into())]);
         assert_eq!(read(&root, "meadow_tuft").unwrap().vary, "taller, yellower", "kept as it's typed");
-        // an environment asset: its variants, no cells
+        // an environment asset (the kind itself): its variants, no cells
         frame_with(&ctx, &mut req, vec![]);
-        click(&ctx, &mut req, "uiRequestKindEnvironment");
+        click(&ctx, &mut req, "uiRequestVariety_");
         frame_with(&ctx, &mut req, vec![]);
+        assert_eq!(read(&root, "meadow_tuft").unwrap().kind, Kind::Environment);
         assert!(marked("uiRequestVariants").is_some() && marked("uiRequestCellsX").is_none());
         assert!(marked("uiRequestMakeVariants").is_none(), "not made: nothing to make variants of");
         // made, a prop asking for none: its variants to say, Make variants waiting for a count
@@ -5321,7 +5485,7 @@ mod tests {
         }
         let mut fox = create(&root, "Ember fox.png").unwrap();
         add_picture(&root, &mut fox, "fox.png", &png(70, 60, 4)).unwrap();
-        (fox.kind, fox.status) = (Kind::Creature, Status::InProgress);
+        (fox.kind, fox.status) = (Kind::Character, Status::InProgress);
         fox.progress = Progress { step: "building the model".into(), done: 0.45, started: 0.0, minutes: 12.0 };
         save(&root, &fox).unwrap();
         let mut pot = create(&root, "Clay pot.png").unwrap();

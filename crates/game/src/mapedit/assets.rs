@@ -22,9 +22,9 @@ use super::{badge, hint, mark, requests, review, section, swatch, MapEditor};
 use crate::platform::{self, Dropped};
 
 /// What a prop can be (the category picker).
-const CATEGORIES: [&str; 22] = [
-    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "flower", "tree", "rock", "fence", "character", "door", "window", "wall", "pillar", "floor",
-    "roof", "railing", "ramp", "sign", "light", "other",
+const CATEGORIES: [&str; 23] = [
+    "decoration", "furniture", "wall_decoration", "stairs", "flora", "grass", "flower", "tree", "rock", "fence", "character", "creature", "door", "window", "wall", "pillar",
+    "floor", "roof", "railing", "ramp", "sign", "light", "other",
 ];
 
 /// A prop given a category: made to lie along ramps when it's "ramp" (as it was, or the
@@ -51,7 +51,9 @@ type Change = Box<dyn FnOnce(&mut Prop)>;
 const IMPORTED: &str = "Imported";
 
 /// The folder row that shows the creatures instead of props.
-const CREATURES: &str = "#creatures";
+const CREATURES: &str = "Creatures";
+/// Where the creatures' models go (props of the creature category: each a creature's `prop`).
+const CREATURE_MODELS: &str = "Creatures/Models";
 
 /// The folder of what the pull request under review changes (a review's only).
 const REVIEWED: &str = "#review";
@@ -75,6 +77,8 @@ pub(super) struct Assets {
     pub deleting: Option<Deleting>,
     /// where dropped files go: temporary/ (placeholders, never committed), else content/
     pub to_temporary: bool,
+    /// the assets shown: the game's own, the temporary ones, or both (None)
+    pub space: Option<Space>,
     /// files dropped, read (in the browser, when the page has read them)
     dropped: Dropped,
     /// the folder they were dropped on
@@ -176,6 +180,8 @@ fn category_for(folder: &str) -> &'static str {
         "flora"
     } else if folder.starts_with("Characters") {
         "character"
+    } else if folder.starts_with(CREATURES) {
+        "creature"
     } else {
         "decoration"
     }
@@ -188,6 +194,7 @@ impl MapEditor {
         let mut leaves: BTreeSet<String> = self.assets.made.clone();
         leaves.insert(INSIDE.into());
         leaves.insert(OUTSIDE.into());
+        leaves.insert(CREATURES.into());
         for p in self.content.props.iter() {
             leaves.extend(p.folders());
         }
@@ -240,6 +247,32 @@ impl MapEditor {
         c.creatures.put(cr, space);
         self.content = Arc::new(c);
         self.assets.creatures_dirty.insert(id.to_string());
+    }
+
+    /// A creature record for every prop of the creature category that has none (a model made
+    /// by a request of the creature variety, or dropped on Creatures): named as the prop, its
+    /// model standing for it on the map, as tall as it, drawn toon (its stats to fill in), in
+    /// the prop's space, to save with the rest. The ids made.
+    pub(super) fn ensure_creatures(&mut self) -> Vec<String> {
+        let content = self.content.clone();
+        let mut made = vec![];
+        for e in content.props.entries() {
+            let p = &e.value;
+            if p.category != "creature" || content.creatures.contains(&p.id) {
+                continue;
+            }
+            let c = Creature { id: p.id.clone(), name: p.name.clone(), prop: Some(p.id.clone()), body: content::Body { height_m: p.height, ..Default::default() }, toon: true, ..Default::default() };
+            let mut all = (*self.content).clone();
+            all.creatures.put(c, e.space);
+            self.content = Arc::new(all);
+            self.assets.creatures_dirty.insert(p.id.clone());
+            made.push(p.id.clone());
+        }
+        if !made.is_empty() {
+            let plural = if made.len() == 1 { "" } else { "s" };
+            self.status = format!("A creature record made for {} (its stats to fill in): under Creatures, and in the zones' pools", made.join(", ")).replace("record made", &format!("record{plural} made"));
+        }
+        made
     }
 
     pub(super) fn add_to_folder(&mut self, id: &str, folder: &str) {
@@ -725,6 +758,19 @@ impl MapEditor {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.add(egui::TextEdit::singleline(&mut self.assets.filter).hint_text("Filter: name, id, category").desired_width(180.0));
+            // the game's own, the temporary placeholders, or both
+            for (space, label, about) in [(None, "all", "Every asset"), (Some(Space::Content), "game", "The game's own: content/, committed"), (Some(Space::Temporary), "temporary", "Placeholders: temporary/, never committed")] {
+                let r = ui.selectable_label(self.assets.space == space, label).on_hover_text(about);
+                mark(&format!("uiAssetSpace_{label}"), &r);
+                if r.clicked() {
+                    self.assets.space = space;
+                }
+            }
+            platform::set_hook("assetspace", match self.assets.space {
+                None => "all",
+                Some(Space::Content) => "game",
+                Some(Space::Temporary) => "temporary",
+            });
             // what files hovering would do: in this line, so nothing moves under them
             if self.assets.hovering {
                 let to = self.assets.folder.clone().unwrap_or_else(|| IMPORTED.into());
@@ -762,10 +808,16 @@ impl MapEditor {
                     for f in &folders {
                         let depth = f.matches('/').count();
                         let name = f.rsplit('/').next().unwrap_or(f);
+                        let n = if f == CREATURES { content.creatures.len() } else { count(f) };
                         let r = ui
                             .horizontal(|ui| {
                                 ui.add_space(14.0 * depth as f32);
-                                ui.selectable_label(self.assets.folder.as_deref() == Some(f.as_str()), format!("{name} ({})", count(f)))
+                                let r = ui.selectable_label(self.assets.folder.as_deref() == Some(f.as_str()), format!("{name} ({n})"));
+                                if f == CREATURES {
+                                    r.on_hover_text("Every creature: its model (under Models: a prop of the creature category, one made by a request of the creature variety or dropped here), whether it's drawn toon")
+                                } else {
+                                    r
+                                }
                             })
                             .inner;
                         mark(&format!("uiFolder_{}", f.replace(['/', ' '], "_")), &r);
@@ -797,11 +849,6 @@ impl MapEditor {
                         }
                     } else if self.assets.folder.as_deref() == Some(REVIEWED) {
                         self.assets.folder = None;
-                    }
-                    let creatures = ui.selectable_label(self.assets.folder.as_deref() == Some(CREATURES), format!("Creatures ({})", content.creatures.len())).on_hover_text("Every creature: whether it's drawn toon");
-                    mark("uiFolder_Creatures", &creatures);
-                    if creatures.clicked() {
-                        self.assets.folder = Some(CREATURES.into());
                     }
                     ui.add_space(6.0);
                     ui.horizontal(|ui| {
@@ -850,6 +897,7 @@ impl MapEditor {
             .entries()
             .iter()
             .filter(|e| if reviewed { self.review_kind("props", &e.value.id).is_some() } else { folder.as_deref().map(|f| in_folder(&e.value, f)).unwrap_or(true) })
+            .filter(|e| self.assets.space.is_none_or(|s| e.space == s))
             .filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter) || e.value.category.contains(&filter))
             .collect();
         crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
@@ -857,7 +905,13 @@ impl MapEditor {
         let removed: Vec<(String, String)> = self.changes().map(|c| c.review().records_of("props").into_iter().filter(|(_, k)| *k == content::diff::Kind::Removed).map(|(id, _)| (c.review().name_of("props", &id), id)).collect()).unwrap_or_default();
         let assets: Vec<(String, String, content::diff::Kind)> = if reviewed { self.reviewing().map(|r| r.assets()).unwrap_or_default() } else { vec![] };
         if rows.is_empty() && !reviewed {
-            hint(ui, "Nothing here yet: drag rows from another folder, or drop .glb files on this one.");
+            hint(ui, if folder.as_deref() == Some(CREATURE_MODELS) {
+                "No creature models yet: a request of the creature variety adds one, or drop a .glb here (a creature record is made for it)."
+            } else if self.assets.space.is_some() {
+                "Nothing of this space here."
+            } else {
+                "Nothing here yet: drag rows from another folder, or drop .glb files on this one."
+            });
             return;
         }
         if reviewed {
@@ -987,6 +1041,7 @@ impl MapEditor {
         for (id, change) in changes {
             self.change_prop(&id, change);
         }
+        self.ensure_creatures();
         if let Some(r) = rename {
             self.assets.renaming = Some(r);
         }
@@ -1008,15 +1063,22 @@ impl MapEditor {
     fn creature_table(&mut self, ui: &mut egui::Ui) {
         let content = self.content.clone();
         let filter = self.assets.filter.to_lowercase();
-        let rows: Vec<_> = content.creatures.entries().iter().filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter)).collect();
+        let rows: Vec<_> = content
+            .creatures
+            .entries()
+            .iter()
+            .filter(|e| self.assets.space.is_none_or(|s| e.space == s))
+            .filter(|e| filter.is_empty() || e.value.id.contains(&filter) || e.value.name.to_lowercase().contains(&filter))
+            .collect();
         crate::platform::set_hook("shown", &rows.iter().map(|e| e.value.id.as_str()).collect::<Vec<_>>().join(","));
         if rows.is_empty() {
-            hint(ui, "No creatures here.");
+            hint(ui, if self.assets.space.is_some() { "No creatures of this space." } else { "No creatures yet: a request of the creature variety makes one (its model under Models), or drop a .glb here." });
             return;
         }
+        hint(ui, "Their models are under Models: a prop of the creature category stands for its creature on the map (a creature without one is drawn as its pictures).");
         let mut changes: Vec<(String, bool)> = vec![];
-        egui::Grid::new("creature-grid").striped(true).num_columns(5).spacing([14.0, 5.0]).show(ui, |ui| {
-            for h in ["Name", "Id", "", "Types", "Does"] {
+        egui::Grid::new("creature-grid").striped(true).num_columns(6).spacing([14.0, 5.0]).show(ui, |ui| {
+            for h in ["Name", "Id", "", "Model", "Types", "Does"] {
                 ui.label(RichText::new(h).strong().size(11.5));
             }
             ui.end_row();
@@ -1026,6 +1088,10 @@ impl MapEditor {
                 ui.label(format!("{}{dirty}", c.name));
                 ui.label(RichText::new(&c.id).monospace().size(11.0).color(Color32::GRAY));
                 badge(ui, e.space);
+                match c.prop.as_ref().and_then(|p| content.props.get(p)) {
+                    Some(p) => ui.label(p.name.clone()).on_hover_text(format!("The prop standing for it on the map: {} (under Creatures/Models)", p.id)),
+                    None => ui.label(RichText::new(if c.prop.is_some() { "a missing prop" } else { "its pictures" }).color(Color32::GRAY)),
+                };
                 ui.label(c.types.join(", "));
                 ui.horizontal(|ui| {
                     let r = ui.selectable_label(c.toon, "toon").on_hover_text("Drawn with the toon look: ink lines round its picture (Post-processing sets how)");
@@ -1551,7 +1617,8 @@ impl MapEditor {
             model: Some(file.clone()),
             // its first light (a lamp made in Blender lights up here too)
             light: model.lights.first().cloned(),
-            folders: vec![folder.clone()],
+            // (dropped on Creatures: a creature's model, under its Models)
+            folders: vec![if folder == CREATURES { CREATURE_MODELS.to_string() } else { folder.clone() }],
             ..Default::default()
         };
         let note = world::gltf_in::extras_note(&model);
@@ -1597,6 +1664,7 @@ impl MapEditor {
         self.assets.made.remove(&folder);
         self.assets.folder = Some(folder);
         self.prop = Some(id);
+        self.ensure_creatures();
         crate::platform::set_hook("dropped", name);
     }
 
@@ -1621,6 +1689,7 @@ impl MapEditor {
                         self.assets.dirty.insert(id.clone());
                         self.models.remove(&id);
                         self.model_failed.remove(&id);
+                        self.ensure_creatures();
                     }
                     Err(e) => self.status = format!("{path}: {e}"),
                 }
@@ -1662,6 +1731,17 @@ impl MapEditor {
             }
             c.sort();
             self.content = Arc::new(c);
+            // a creature's model come in (a request's run done): its record, written at once
+            for id in self.ensure_creatures() {
+                let Some(e) = self.content.creatures.entry(&id) else { continue };
+                match content::disk::save(&root, e.space, &e.value) {
+                    Ok(_) => {
+                        self.assets.creatures_dirty.remove(&id);
+                    }
+                    Err(err) => self.status = format!("{}: {err}", self.status),
+                }
+            }
+            self.assets.seen = snapshot(&root);
         }
         // the models whose files changed load again
         let content = self.content.clone();

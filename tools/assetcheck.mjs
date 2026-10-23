@@ -4,7 +4,8 @@
 // Anthropic), drops a .glb from "Blender" on a folder (it becomes a prop there, its model
 // loads, the Place tool puts it down), refuses an unstackable prop on another, and saves
 // (downloads) what changed.
-// Screenshots go to screenshots/assets-*.png.
+// The game's and the temporary assets apart; a model dropped on Creatures makes a creature
+// record (its model standing for it). Screenshots go to screenshots/assets-*.png.
 //     node tools/assetcheck.mjs
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -231,6 +232,33 @@ try {
   const latest = readdirSync(downloads).filter((f) => f.startsWith('test_meadow') && f.endsWith('.json')).map((f) => join(downloads, f)).sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)[0];
   check('  the map written again without it', !!latest && !readFileSync(latest, 'utf8').includes('garden_lantern'), latest ?? 'no map downloaded');
   await shot('9-deleted');
+
+  // 10. the game's own assets and the temporary ones apart (all = game + temporary); a model
+  // dropped on Creatures: a creature's, its prop of the creature category under
+  // Creatures/Models, and a creature record made for it (its model standing for it), listed
+  // under Creatures, to save with the rest
+  await press('uiFolder_Town');
+  await press('uiAssetSpace_game');
+  const game = await shown();
+  await press('uiAssetSpace_temporary');
+  const temp = await shown();
+  await press('uiAssetSpace_all');
+  const every = await shown();
+  check("the game's assets and the temporary ones apart", (await data('assetspace')) === 'all' && game.length + temp.length === every.length && game.every((id) => every.includes(id)) && !game.some((id) => temp.includes(id)),
+    `${game.length} game + ${temp.length} temporary = ${every.length}`);
+  const beast = join(work, 'Shrub Beast.glb');
+  copyFileSync(model, beast);
+  await press('uiFolder_Creatures');
+  const creatures0 = (await shown()).length;
+  const [bx, by] = await ui('uiFolder_Creatures');
+  await browser.drop([beast], bx, by);
+  await browser.waitFor('document.body.dataset.dropped === "Shrub Beast.glb"', { what: 'the dropped file read' });
+  await sleep(500);
+  check('a model dropped on Creatures: a creature record made for it, listed there', (await shown()).includes('shrub_beast') && (await shown()).length === creatures0 + 1 && (await data('creaturesdirty')) === '1',
+    `${(await shown()).join(' ')} · ${await data('creaturesdirty')} to save · ${await data('status')}`);
+  await press('uiFolder_Creatures_Models');
+  check('  its prop under Creatures/Models', (await shown()).includes('shrub_beast'), (await shown()).join(' '));
+  await shot('10-creature');
   console.log('fps', await data('fps'), 'worst frame', await data('maxgap'), 'ms');
   if (browser.errors.length) {
     failed++;

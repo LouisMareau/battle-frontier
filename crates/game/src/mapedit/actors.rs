@@ -247,7 +247,7 @@ impl MapEditor {
     }
 
     /// The actors drawn as pictures (creatures and pictures), with their shadows; the ones
-    /// drawn as props are in `actor_scene`.
+    /// drawn as props are in `actor_scene` (so are the creatures that have a model).
     pub(super) fn actor_billboards(&mut self, tint: [f32; 4], now: f64, billboards: &mut Vec<Billboard>, shapes: &mut Vec<Shape>) {
         let (_, forward) = self.cam.ground_axes();
         let away = Vec2::new(forward.x, forward.z);
@@ -264,6 +264,10 @@ impl MapEditor {
                 Some(("creature", id)) => {
                     let Some(e) = content.creatures.entry(id) else { continue };
                     let c = &e.value;
+                    // one with a model: drawn as it (actor_scene)
+                    if c.prop.is_some() {
+                        continue;
+                    }
                     let back = heading.dot(away) > 0.35;
                     let (p, b) = if back { (&c.sprites.back, c.sprites.back_box) } else { (&c.sprites.front, c.sprites.front_box) };
                     let Some(p) = p.as_ref().map(|p| e.space.asset(p)) else { continue };
@@ -311,8 +315,17 @@ impl MapEditor {
             if l.hidden {
                 continue;
             }
-            let Some(id) = self.map.actors.get(i).and_then(|a| a.look.strip_prefix("prop:")) else { continue };
-            let Some(prop) = self.content.props.get(id) else { continue };
+            // a prop, or a creature that has a model (its record's `prop`)
+            let Some(a) = self.map.actors.get(i) else { continue };
+            let id = match a.look.split_once(':') {
+                Some(("prop", id)) => id.to_string(),
+                Some(("creature", id)) => match self.content.creatures.get(id).and_then(|c| c.prop.clone()) {
+                    Some(p) => p,
+                    None => continue,
+                },
+                _ => continue,
+            };
+            let Some(prop) = self.content.props.get(&id) else { continue };
             let mut pos = self.actor_pos(i, now);
             let speed = self.map.actors[i].speed.max(0.1);
             let t = ((now - l.t0) * speed / 1000.0).clamp(0.0, 1.0) as f32;

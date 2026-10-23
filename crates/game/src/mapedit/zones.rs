@@ -455,6 +455,10 @@ impl MapEditor {
         for r in &self.spawner.roamers {
             let Some(e) = content.creatures.entry(&r.creature) else { continue };
             let c = &e.value;
+            // one with a model: drawn as it (creature_scene)
+            if c.prop.is_some() {
+                continue;
+            }
             let back = r.moving && r.heading.dot(away) > 0.35;
             let (path, b) = if back { (&c.sprites.back, c.sprites.back_box) } else { (&c.sprites.front, c.sprites.front_box) };
             let y = self.ground_at(r.pos.x, r.pos.y);
@@ -486,6 +490,23 @@ impl MapEditor {
                     }
                 }
             }
+        }
+    }
+
+    /// The roaming creatures that have a model (their record's `prop`), added to `out`: each
+    /// standing where it is, facing the way it goes, as big as there is of it (it grows in
+    /// and shrinks away).
+    pub(super) fn creature_scene(&self, out: &mut world::mesh::Scene) {
+        if !self.creatures_on {
+            return;
+        }
+        for r in &self.spawner.roamers {
+            let Some(prop) = self.content.creatures.get(&r.creature).and_then(|c| c.prop.as_ref()).and_then(|p| self.content.props.get(p)) else { continue };
+            let pos = Vec3::new(r.pos.x, self.ground_at(r.pos.x, r.pos.y), r.pos.y);
+            let grow = 0.25 + 0.75 * r.presence.clamp(0.0, 1.0);
+            // facing 0 looks along +z, 90 along -x (actors::step_of)
+            let facing = (-r.heading.x).atan2(r.heading.y).to_degrees();
+            out.append(&world::mesh::prop_scene(prop, &self.models), world::mesh::placement(pos, facing, grow));
         }
     }
 

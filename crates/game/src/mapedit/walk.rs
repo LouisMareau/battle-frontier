@@ -616,9 +616,11 @@ impl MapEditor {
         (moving, out)
     }
 
-    /// The things that move: the walker and the actors drawn as props.
+    /// The things that move: the walker, the actors drawn as props, and the roaming creatures
+    /// that have a model.
     pub(super) fn extra_mesh(&self, now: f64) -> Scene {
         let mut out = self.actor_scene(now);
+        self.creature_scene(&mut out);
         out.append(&self.timeline_scene(now), glam::Mat4::IDENTITY);
         let Some(w) = &self.walker else { return out };
         let Some(prop) = self.content.props.get(CHARACTER) else { return out };

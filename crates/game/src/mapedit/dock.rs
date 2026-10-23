@@ -561,12 +561,13 @@ fn grip_dots(ui: &mut egui::Ui) {
 
 /// A docked panel's inside: its header (its grip and name, which drag it; float it; close it)
 /// over what `add` puts in it.
-fn docked_inside(ui: &mut egui::Ui, pane: Pane, title: &str, add: impl FnOnce(&mut egui::Ui)) -> Header {
+fn docked_inside(ui: &mut egui::Ui, pane: Pane, title: &str, header: impl FnOnce(&mut egui::Ui), add: impl FnOnce(&mut egui::Ui)) -> Header {
     let mut asked = (false, false);
     let mut buttons = f32::MAX;
     let row = ui.horizontal(|ui| {
         grip_dots(ui);
         ui.label(RichText::new(title).strong());
+        header(ui);
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let close = icon_button(ui, egui::include_image!("../../icons/close.svg"), "Close it (its toggle in the top bar opens it again)", &format!("uiPaneClose_{}", pane.key()));
             let float = icon_button(ui, egui::include_image!("../../icons/float.svg"), "Float it in a window of its own", &format!("uiPaneFloat_{}", pane.key()));
@@ -591,6 +592,12 @@ fn docked_inside(ui: &mut egui::Ui, pane: Pane, title: &str, add: impl FnOnce(&m
 /// (a drag lands at the frame's end: `Dock::settle`). Pinged, it shakes a moment, rings round
 /// it (coming in from a docked one's edges, going out round a window).
 pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    show_with(ui, st, pane, title, |_| {}, add);
+}
+
+/// As `show`, with widgets of the pane's own in its header, by its name (`header`: a button
+/// or two; floating, in the row with the dock button).
+pub(super) fn show_with(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &str, header: impl FnOnce(&mut egui::Ui), add: impl FnOnce(&mut egui::Ui)) {
     if !st.open {
         return;
     }
@@ -614,9 +621,9 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
             // pinged: what's in it shaken side to side a moment (the panel itself stays)
             if shake != 0.0 {
                 let moved = ui.max_rect().translate(Vec2::new(shake, 0.0));
-                return ui.scope_builder(egui::UiBuilder::new().max_rect(moved), |ui| docked_inside(ui, pane, title, add)).inner;
+                return ui.scope_builder(egui::UiBuilder::new().max_rect(moved), |ui| docked_inside(ui, pane, title, header, add)).inner;
             }
-            docked_inside(ui, pane, title, add)
+            docked_inside(ui, pane, title, header, add)
         });
         let rect = r.response.rect;
         st.size = if st.side == Side::Bottom { rect.height() } else { rect.width() };
@@ -664,6 +671,7 @@ pub(super) fn show(ui: &mut egui::Ui, st: &mut PaneState, pane: Pane, title: &st
                 // height there is)
                 ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), 18.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     dock = icon_button(ui, egui::include_image!("../../icons/dock.svg"), "Dock it again (on the side of the window it's nearest; or drag it by its title bar onto a side)", &format!("uiPaneDock_{}", pane.key())).clicked();
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), header);
                 });
                 add(ui);
                 (size, dock)

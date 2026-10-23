@@ -328,7 +328,7 @@ def user_bones(record):
     joints in the picture's pixels, the root first; a line of fewer than two joints left out.
     None for a prop (a request made a prop after its bones were drawn)."""
     out = {}
-    if record.get("kind", "creature") != "creature":
+    if record.get("kind", "character") != "character":
         return out
     for pic, lines_ in (record.get("bones") or {}).items():
         if pic not in record.get("images", []) or not isinstance(lines_, list):
@@ -749,7 +749,7 @@ def lines(root, rid):
         if view == "side" and facing_wrong(data[view]):
             other = "right" if data[view].get("faces", "left") == "left" else "left"
             missing.append(f"the side's head is on its {other}: say \"faces\": \"{other}\" (or draw it facing the other way)")
-    if user_bones(record) and record["kind"] == "creature" and all(data.get(v, {}).get("lines") for v in VIEWS):
+    if user_bones(record) and record["kind"] == "character" and all(data.get(v, {}).get("lines") for v in VIEWS):
         found, wrong = chains(profiles(root, rid, data, float(record["height"])))
         if found:
             said.append(f"the rig's chains, from the front's and the side's bone lines: {', '.join(f'{c} ({len(p)} joints)' for c, p in found.items())}")

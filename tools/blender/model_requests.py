@@ -73,7 +73,7 @@ from pathlib import Path
 FIELDS = {
     "id": "",
     "name": "",
-    "kind": "creature",
+    "kind": "character",
     # the window's kind it was asked as (a kind the user added names its own, made as `kind`;
     # empty: `kind` itself), and its variety of that kind (empty: none): request_kinds.json
     "kind_id": "",
@@ -131,7 +131,9 @@ FIELDS = {
 # its stem, leaves, petals and heart), a rock (made finely, on about its cells: its `cells` its
 # footprint, its height its pictures' proportions'), an environment asset (rocks, bushes,
 # flowers, logs, trees), or a set of floor tiles (laid by wave function collapse)
-KINDS = ("creature", "prop", "grass", "flower", "rock", "tree", "environment", "floor")
+KINDS = ("character", "prop", "grass", "flower", "rock", "tree", "environment", "floor")
+# the window's varieties of its environment kind, each made its own way by the kit
+ENVIRONMENT_VARIETIES = ("grass", "flower", "rock", "tree")
 # the kinds whose settings ask for variants from the first run on (any made one can have some)
 VARYING = ("grass", "flower", "rock", "tree", "environment")
 # the most variants a request asks for (the editor's VARIANTS_CAP)
@@ -261,10 +263,30 @@ def normal(record):
         elif isinstance(default, float):
             v = float(v)
         out[k] = v
+    # a request from before the window's character kind: made as a character, a creature of
+    # them (its variety: its prop a creature's, with a creature record of its own); one of the
+    # kit's grass, flower, rock or tree from before they were the environment's varieties
+    if out.get("kind") == "creature":
+        out["kind"] = "character"
+        out["variety"] = out.get("variety") or "creature"
+    if out.get("kind") in ENVIRONMENT_VARIETIES and not out.get("kind_id"):
+        out["kind_id"] = "environment"
+        out["variety"] = out.get("variety") or out["kind"]
     for k, v in record.items():
         if k not in out:
             out[k] = v
     return out
+
+
+def category_of(record):
+    """A model's prop category, by its request's kind: a character, or a creature when that's
+    its variety (one of the fields', with a creature record of its own in the editor); grass,
+    a flower, a rock; else a decoration (the recipe picks a tree's and an environment asset's
+    itself)."""
+    kind = record["kind"]
+    if kind == "character":
+        return "creature" if record.get("variety") == "creature" else "character"
+    return {"grass": "grass", "flower": "flower", "rock": "rock"}.get(kind, "decoration")
 
 
 def load(root, rid):
@@ -324,23 +346,38 @@ def kind_key(record):
     return record.get("kind_id") or record["kind"]
 
 
-def kinds(root=None):
-    """The window's kinds (request_kinds.json's): a project's own copy first
-    (private/requests/kinds.json, a browser's, its runs given it), then the project's
-    tools/blender/request_kinds.json, then the one beside this file; none readable, none."""
+def lesson_key(record):
+    """What a request's ratings and lessons go by: a kind of the user's own (its `kind_id` when
+    that's not one of the kit's), else how the kit makes it (`kind`: a rock's lessons are the
+    rocks', whatever tab asked for it)."""
+    kid = record.get("kind_id") or ""
+    return kid if kid and kid not in KINDS else record["kind"]
+
+
+def catalogue(root=None):
+    """The window's kinds, whole (request_kinds.json: its `kinds`, and its `features`, the
+    instructions for every kind): a project's own copy first (private/requests/kinds.json, a
+    browser's, its runs given it), then the project's tools/blender/request_kinds.json, then
+    the one beside this file; none readable, empty."""
     places = [Path(root) / OWN_KINDS, Path(root) / "tools" / "blender" / "request_kinds.json"] if root is not None else []
     for path in places + [KINDS_FILE]:
         if path.is_file():
             try:
-                return json.loads(path.read_text(encoding="utf-8")).get("kinds", [])
+                return json.loads(path.read_text(encoding="utf-8"))
             except (ValueError, OSError):
                 continue
-    return []
+    return {}
+
+
+def kinds(root=None):
+    """The window's kinds (`catalogue`'s), a list."""
+    return catalogue(root).get("kinds", [])
 
 
 def kind_of(record, catalogue):
     """A request's kind in the catalogue (its window kind's; else the one its `kind` is) and its
-    variety there, each None when there's none."""
+    variety there, each None when there's none. A variety is made its own way when it says so
+    (`made_as`: the environment's grass, flower, rock and tree), else as its kind."""
     key = kind_key(record)
     k = next((k for k in catalogue if k.get("id") == key), None) or next((k for k in catalogue if k.get("id") == record["kind"]), None)
     v = next((v for v in (k or {}).get("varieties", []) if v.get("id") == record.get("variety")), None) if record.get("variety") else None
@@ -348,13 +385,15 @@ def kind_of(record, catalogue):
 
 
 def instructions(record, catalogue):
-    """What a request's kind asks of every run, a feature each (keyword, how): its kind's, then its
-    variety's, one with the same keyword replacing the kind's where it was."""
-    k, v = kind_of(record, catalogue)
-    out = [(f.get("keyword", "").strip(), f.get("text", "").strip()) for f in (k or {}).get("features", [])]
-    for f in (v or {}).get("features", []):
+    """What the user asks of a request's run, a feature each (keyword, how): the instructions for
+    every kind (the catalogue's own `features`, when `catalogue` is the whole of it), then its
+    kind's, then its variety's, one with the same keyword replacing the earlier where it was."""
+    general = catalogue.get("features", []) if isinstance(catalogue, dict) else []
+    k, v = kind_of(record, catalogue.get("kinds", []) if isinstance(catalogue, dict) else catalogue)
+    out = []
+    for f in general + (k or {}).get("features", []) + (v or {}).get("features", []):
         key, text = f.get("keyword", "").strip(), f.get("text", "").strip()
-        at = next((i for i, (o, _) in enumerate(out) if o.lower() == key.lower()), None)
+        at = next((i for i, (o, _) in enumerate(out) if o.lower() == key.lower()), None) if key else None
         if at is None:
             out.append((key, text))
         else:
@@ -364,8 +403,8 @@ def instructions(record, catalogue):
 
 def rated(root, kind, but=None):
     """The models of a kind the user has rated (made, with a rating), best first (by rating,
-    then by name), `but` (the request being made) left out. By the window's kind (`kind_key`)."""
-    out = [r for r in every(root) if kind_key(r) == kind and r["status"] == "done" and r.get("rating") is not None and r["id"] != but]
+    then by name), `but` (the request being made) left out. By `lesson_key`."""
+    out = [r for r in every(root) if lesson_key(r) == kind and r["status"] == "done" and r.get("rating") is not None and r["id"] != but]
     return sorted(out, key=lambda r: (-int(r["rating"]), r["name"].lower(), r["id"]))
 
 
@@ -379,7 +418,11 @@ def best_and_worst(records):
 
 
 def lessons_path(root, kind):
-    return Path(root) / LESSONS / f"{kind}.md"
+    path = Path(root) / LESSONS / f"{kind}.md"
+    # the characters' lessons from before the kind was named so
+    if kind == "character" and not path.is_file() and path.with_name("creature.md").is_file():
+        return path.with_name("creature.md")
+    return path
 
 
 def lessons(root, rid):
@@ -387,7 +430,7 @@ def lessons(root, rid):
     learnt, then its models rated best and worst, each with its notes, what the user said of it,
     what its run said, its renders and its model.py. Empty when there's nothing to learn yet."""
     record = load(root, rid)
-    kind = kind_key(record)
+    kind = lesson_key(record)
     best, worst = best_and_worst(rated(root, kind, but=rid))
     path = lessons_path(root, kind)
     learnt = path.read_text(encoding="utf-8").strip() if path.is_file() else ""
@@ -431,7 +474,7 @@ def learnt(root, rid, works="", fails=""):
     """What a run takes from the ratings, for the next runs of its request's kind: the kind's
     lessons written again whole (what works, what fails; short, the style and the way of
     building, not one model's details), and a line in the request's log. Its path."""
-    kind = kind_key(load(root, rid))
+    kind = lesson_key(load(root, rid))
     path = lessons_path(root, kind)
     path.parent.mkdir(parents=True, exist_ok=True)
     text = f"Works:\n{works.strip() or '(nothing yet)'}\n\nFails:\n{fails.strip() or '(nothing yet)'}\n"
@@ -507,7 +550,7 @@ def estimate(record, part="all"):
     if part == "split":
         return 3.0
     # what the first runs took: a creature about 10 minutes, a small one 2
-    minutes = 12.0 if record["kind"] == "creature" else 8.0
+    minutes = 12.0 if record["kind"] == "character" else 8.0
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
@@ -1094,14 +1137,14 @@ def main(argv):
         print(f"{r['id']}: " + ("not rated" if r["rating"] is None else f"rated {r['rating']}"))
     elif verb == "lessons":
         said = lessons(root, argv[0])
-        print("\n".join(said) if said else f"Nothing to learn yet: no {kind_key(load(root, argv[0]))} model is rated, and no run has learnt anything.")
+        print("\n".join(said) if said else f"Nothing to learn yet: no {lesson_key(load(root, argv[0]))} model is rated, and no run has learnt anything.")
     elif verb == "learnt":
         works, fails = option("--works", ""), option("--fails", "")
         path = learnt(root, argv[0], works, fails)
         print(f"{path.relative_to(root).as_posix()}: written again")
     elif verb == "new":
         cells = option("--cells", "1x1").lower().split("x")
-        fields = {"kind": option("--kind", "creature"), "height": float(option("--height", "1.0")), "cells": [int(cells[0]), int(cells[-1])], "style": option("--style", "smooth"),
+        fields = {"kind": option("--kind", "character"), "height": float(option("--height", "1.0")), "cells": [int(cells[0]), int(cells[-1])], "style": option("--style", "smooth"),
                   "notes": option("--notes", ""), "details": option("--details", ""), "pose": option("--pose", "t_pose"),
                   "variants": max(0, min(VARIANTS_CAP, int(option("--variants", "0")))), "vary": option("--vary", "")}
         shapes = option("--shapes", "8-30")
@@ -1120,6 +1163,12 @@ def main(argv):
             if k is not None and k.get("made_as") in KINDS:
                 fields["kind_id"], fields["kind"] = fields["kind"], k["made_as"]
         fields["variety"] = option("--variety", "")
+        # a variety made its own way (the environment's rock): made so
+        if fields["variety"]:
+            k = next((k for k in kinds(root) if k.get("id") == (fields.get("kind_id") or fields["kind"])), None)
+            v = next((v for v in (k or {}).get("varieties", []) if v.get("id") == fields["variety"]), None)
+            if v is not None and v.get("made_as") in KINDS:
+                fields["kind_id"], fields["kind"] = k["id"], v["made_as"]
         if fields["kind"] not in KINDS or fields["style"] not in STYLES or fields["pose"] not in POSES:
             known = list(KINDS) + [k.get("id") for k in kinds(root) if k.get("id") not in KINDS]
             raise SystemExit(f"kind: {' or '.join(known)}; style: {' or '.join(STYLES)}; pose: {' or '.join(POSES)}")

@@ -72,7 +72,7 @@ class Job:
 
     @property
     def creature(self):
-        return self.record["kind"] == "creature"
+        return self.record["kind"] == "character"
 
     @property
     def floor(self):
@@ -1723,10 +1723,11 @@ def engine_check(root, glb):
 
 
 def _facts(job, category, blocks):
-    """A prop's category and whether it blocks the way, unless said: by the request's kind (a
-    character; grass and a flower, never in the way; a rock; else a decoration, in the way)."""
+    """A prop's category and whether it blocks the way, unless said: by the request's kind
+    (model_requests.py's category_of: a character, or a creature when that's its variety;
+    grass and a flower, never in the way; a rock; else a decoration, in the way)."""
     kind = job.record["kind"]
-    return category or {"creature": "character", "grass": "grass", "flower": "flower", "rock": "rock"}.get(kind, "decoration"), (kind not in ("grass", "flower")) if blocks is None else blocks
+    return category or mr.category_of(job.record), (kind not in ("grass", "flower")) if blocks is None else blocks
 
 
 def _fills(job, objects):

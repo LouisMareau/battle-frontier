@@ -174,7 +174,7 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   faces, edges and vertices; kit.extrude pulls faces out), kit.modifier (any of Blender's
   modifiers: subdivision, bevel, solidify, simple deform...), kit.sculpt (grab, inflate,
   smooth, flatten, pinch, crease), kit.tube for curved parts, or any of Blender's Python.
-  A creature: the body, the head with the upper jaw, the
+  A character or a creature: the body, the head with the upper jaw, the
   lower jaw, the tongue, the teeth, the eyes, each ear, horn, limb, wing, fin and the tail a
   part each. The mouth is built closed, the lips meeting: the lower jaw on a jaw bone, the
   tongue on a chain of its own hanging from it, so the mouth opens and closes and the tongue
@@ -190,7 +190,7 @@ MODEL = """- write private/requests/{id}/model.py with tools/blender/request_kit
   about 85% or more), and where one goes past the other (a model posed otherwise than a
   picture can't match it where the poses differ: judge those parts by the front and the
   side). Change model.py and render again until it matches (usually three to six tries);
-- a creature: rig it{rig}: every part on the bones that move it, the jaw's and the tongue's
+- a character (a creature too): rig it{rig}: every part on the bones that move it, the jaw's and the tongue's
   chains added (and the eyes' and the lids' when they move); give it its idle and its roar
   (kit.idle, kit.action), render again and look at preview_idle.png and preview_roar.png:
   nothing torn, the jaw turning the right way, the lips meeting at rest (requests.md, step 9);
@@ -496,7 +496,7 @@ TREE = ("Tree (requests.md, \"A tree\", \"The wind\"): its trunk, its foliage an
         "say. Its leaves are geometry: no transparency, the engine draws no cut-out textures and no camera-facing billboards for a "
         "model's parts. kit.finish's category \"tree\", blocking the way, its footprint the trunk's cells (the canopy may reach past them).")
 # the window's kind's instructions (request_kinds.json): a line each, the user's
-INSTRUCTIONS = "Its kind's instructions (the user's, a feature each: follow every one):"
+INSTRUCTIONS = "The user's instructions (for every kind, then its kind's and its variety's; a feature each: follow every one):"
 POSES = {
     "t_pose": ("Pose: T-pose, whatever pose the pictures show (the rest pose a rigger wants): two legs: standing straight, arms straight out "
                "to the sides at shoulder height; four legs: standing straight on straight legs, head forward, tail straight back; more legs: each "
@@ -518,7 +518,7 @@ def settings_lines(record, root=None):
         out.append("Model details from the user: " + record["details"].strip())
     if not floor:
         out.append(LINES.get(record["style"], LINES["smooth"]))
-    if record["kind"] == "creature":
+    if record["kind"] == "character":
         out.append(POSES.get(record["pose"], POSES["t_pose"]))
     if record["kind"] == "grass":
         w, d = record["cells"]
@@ -545,7 +545,7 @@ def settings_lines(record, root=None):
     if record["kind"] == "tree":
         out.append(TREE)
     # what its kind (and its variety) asks of every run, the user's: a feature each
-    said = mr.instructions(record, mr.kinds(root))
+    said = mr.instructions(record, mr.catalogue(root))
     if said:
         out.append(INSTRUCTIONS + "".join(f"\n  - {key}: {text}" if key else f"\n  - {text}" for key, text in said))
     if record["kind"] != "floor" and record.get("many"):
@@ -655,14 +655,17 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     elif kind == "rock":
         w, d = record["cells"]
         what = f"a rock on about {w} x {d} cells, as tall as its pictures' proportions make it"
+    elif kind == "character":
+        what = f"a character {height} cells tall, rigged, with an idle animation"
     else:
         what = f"a {kind} {height} cells tall"
     # asked as a kind of the window's own (a kind the user added), or a variety of one: named so
     k, v = mr.kind_of(record, mr.kinds(root))
     named = (k or {}).get("name", "").strip()
-    if v is not None:
-        what = f"a {v.get('name', '').strip().lower()} (a variety of {named.lower() or kind}): {what}"
-    elif k is not None and k.get("id") != kind and named:
+    variety = (v or {}).get("name", "").strip().lower()
+    if variety and variety != kind:
+        what = f"a {variety}: {what}"
+    elif v is None and k is not None and k.get("id") != kind and named:
         what = f"a {named.lower()}: {what}"
     count = record["variants"]
     vary = vary_text(record)

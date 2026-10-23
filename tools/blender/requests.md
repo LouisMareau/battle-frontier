@@ -64,15 +64,20 @@ Rules that hold all the way:
 (`shapes` and `progress` are laid out over several lines in the file, as the project's records
 are.)
 
-- `kind`: `creature` (rigged, with an idle animation), `prop`, `grass` (a patch of grass
-  filling its `cells` to the edges, so copies side by side join without a gap: below,
-  "Grass"), `flower` (a flower made finely, its stem, leaves, petals and heart: below, "A
+- `kind`: how the kit makes it, one of its eight: `character` (rigged, with an idle animation:
+  a character of the story, or, with `variety` `creature`, a creature of the fields, its prop's
+  category `creature` and a creature record of its own made for it in the editor; requests
+  from before say `creature` here, read as a character's creature variety), `prop`, `grass` (a
+  patch of grass filling its `cells` to the edges, so copies side by side join without a gap:
+  below, "Grass"), `flower` (a flower made finely, its stem, leaves, petals and heart: below, "A
   flower"), `rock` (a rock made finely, asked for by its footprint, `cells`, its height its
   pictures' proportions': below, "A rock"), `tree` (a trunk and branches of mesh, the foliage as
   clusters of leaf cards: below, "A tree"), `environment` (what dresses the outdoors: rocks,
-  bushes, flowers, logs, trees; below, "Environment"), or `floor` (the window's **floor set**:
-  a set of floor tiles, each a cell, laid to fit; below, "A set of floor tiles"; its `height`
-  and `check_lines` go unused); `height` in cells (a cell is a metre; the player is about 1.5;
+  bushes, flowers, logs, trees; below, "Environment"; in the window, grass, a flower, a rock
+  and a tree are the environment's **varieties**, each made its own way: such a request says
+  `kind_id` `environment` and its `variety`, and `kind` how it's made), or `floor` (the
+  window's **floor set**: a set of floor tiles, each a cell, laid to fit; below, "A set of floor
+  tiles"; its `height` and `check_lines` go unused); `height` in cells (a cell is a metre; the player is about 1.5;
   a rock's is worked out by `lines`); `cells` (grass): the cells it fills, across x and deep z
   (a rock: the cells it stands on, about); `style`: `smooth`, `low_poly` or `accurate` (as
   close to the pictures as it can be, whatever it takes: see "Accurate" below), and with it
@@ -844,16 +849,23 @@ make it on that footprint.
 ## The kinds' instructions
 
 The window's kinds (its tabs) are `tools/blender/request_kinds.json` (a browser's own copy,
-`private/requests/kinds.json`, comes first when it's there: its runs are given it). Each is
-made as one of the eight kinds above (`made_as`: how the kit makes it, what it becomes), and
-has its instructions: a feature each, a keyword and how to handle it, the user's. A request's
-`kind_id` names its window kind when it isn't one of the eight (`kind` is then how it's made),
-and `variety` its variety of it: a variety's instructions are added to its kind's, one with
-the same keyword replacing the kind's. The prompt lists them all under "Its kind's
-instructions": follow every one, as the user wrote it, along with the recipe (where they
-disagree with a section here, the instruction is the user's word on this kind and wins; the
-kit's own rules, what `kit.finish` checks, still hold). `python tools/blender/model_requests.py
-new ... --kind bush --variety pine` asks for a kind of the window's and a variety of it.
+`private/requests/kinds.json`, comes first when it's there: its runs are given it): character
+(a creature its variety), prop, environment (grass, a flower, a rock and a tree its varieties)
+and floor, and the kinds the user adds. Each is made as one of the eight kinds above
+(`made_as`: how the kit makes it, what it becomes), and has its instructions: a feature each,
+a keyword and how to handle it, the user's; a variety is made as its kind unless it says how
+(`made_as` on the variety: the environment's four, a pine made as a tree). The catalogue's own
+`features` go with every request, whatever its kind. A request's `kind_id` names its window
+kind when that isn't its making's own (`kind` is then how it's made: a rock of the
+environment's says `environment`), and `variety` its variety of it. The prompt lists them all
+under "The user's instructions": those for every kind, then the kind's, then the variety's,
+one with the same keyword replacing the earlier; follow every one, as the user wrote it, along
+with the recipe (where they disagree with a section here, the instruction is the user's word
+on this kind and wins; the kit's own rules, what `kit.finish` checks, still hold). The ratings
+and the lessons go by how a request is made (`lesson_key`: a rock's are the rocks', whatever
+tab asked for it), or by a kind of the user's own. `python tools/blender/model_requests.py
+new ... --kind grass` asks for the environment's grass; `--kind bush --variety pine` a kind of
+the window's and a variety of it (made as the variety says).
 
 ## A tree
 
