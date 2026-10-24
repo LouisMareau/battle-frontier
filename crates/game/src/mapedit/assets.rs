@@ -28,7 +28,7 @@ const CATEGORY_GROUPS: [(&str, &[&str]); 4] = [
     ("Characters", &["character", "creature"]),
     ("Environment", &["flora", "grass", "flower", "tree", "rock"]),
     ("Buildings", &["door", "window", "wall", "pillar", "floor", "roof", "railing", "stairs", "wall_decoration"]),
-    ("Props", &["decoration", "furniture", "fence", "ramp", "sign", "light", "other"]),
+    ("Props", &["decoration", "furniture", "container", "fence", "ramp", "sign", "light", "other"]),
 ];
 
 /// Whether a category is a character's (or a creature's): what can move freely.

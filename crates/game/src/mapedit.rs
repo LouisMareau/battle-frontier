@@ -2577,6 +2577,27 @@ impl MapEditor {
                 let scalable = prop.as_ref().map(|q| q.scalable()).unwrap_or(false);
                 ui.add_enabled(scalable, egui::Slider::new(&mut p.scale, 0.25..=1.0).text("scale")).on_disabled_hover_text("Trees and flora keep their size, and what lies along ramps fits them");
             }
+            // a container: the one item in it (picked up on foot)
+            if prop.as_ref().is_some_and(|q| q.category == "container") {
+                ui.horizontal(|ui| {
+                    ui.label("Holds");
+                    let items: Vec<(String, String)> = self.content.items.iter().map(|it| (it.id.clone(), it.name.clone())).collect();
+                    let shown = p.item.as_ref().and_then(|id| items.iter().find(|(i, _)| i == id)).map(|(_, n)| n.clone()).unwrap_or_else(|| "(nothing yet)".into());
+                    let r = egui::ComboBox::from_id_salt(("placed-item", i)).selected_text(shown).width(160.0).show_ui(ui, |ui| {
+                        for (id, name) in &items {
+                            if ui.selectable_label(p.item.as_deref() == Some(id.as_str()), name).on_hover_text(id).clicked() {
+                                p.item = Some(id.clone());
+                            }
+                        }
+                    });
+                    mark("uiPlacedItem", &r.response);
+                });
+                if p.item.is_none() {
+                    warn(ui, "A container holds one item, always: pick it");
+                } else {
+                    hint(ui, "Picked up on foot (A in front of it), once: the save remembers it emptied.");
+                }
+            }
             let r = ui
                 .add_enabled(room.is_some(), egui::Button::new(if tweak { "Tweak: on" } else { "Tweak" }).selected(tweak))
                 .on_hover_text("Move it within its cells: drag it on the map, or x and z here")
@@ -2987,7 +3008,7 @@ impl MapEditor {
                             }
                             _ => [0.0, 0.0],
                         };
-                        let placed = Placed { prop: prop.clone(), at, level: self.level, turn: self.turn as f64, scale: 1.0, offset };
+                        let placed = Placed { prop: prop.clone(), at, level: self.level, turn: self.turn as f64, scale: 1.0, offset, item: None };
                         let cells = rooms::cells_of(self, &placed);
                         let clash = rooms::clash(self, &prop, &cells, &rooms::ground_items(self, self.level, None));
                         if let Some(other) = clash {

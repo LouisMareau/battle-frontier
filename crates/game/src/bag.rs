@@ -1,8 +1,10 @@
-//! The player's Bag: pockets of so many cells each (`Settings::bag`), the items in them
-//! taking cells (an item's `size`; turned a quarter, across and down swap), moved and turned
-//! to make room, as in packing; one kind stacks in a slot up to its `stack`. Kept in the
+//! The player's Bag: pockets of so many cells each (`Settings::bag`; grown by the bigger
+//! bags found or given, `rooms`), the items in them taking cells (an item's `size`; turned a
+//! quarter, across and down swap), each its own, none stacking in a grid (a dispenser's tubes
+//! hold what the pocket says), moved and turned to make room, as in packing. Kept in the
 //! story's save (`SaveGame::bag`); what of it a battle can use goes in with the party
-//! (`battle_bag`) and what the battle used comes out of it (`after_battle`).
+//! (`battle_bag`) and what the battle used comes out of it (`after_battle`); what's found
+//! in the world or given goes in through `receive`.
 
 use std::collections::BTreeMap;
 
@@ -10,11 +12,27 @@ use content::Content;
 use rules::battle::Item as BattleItem;
 use serde::{Deserialize, Serialize};
 
-/// The Bag: each pocket's slots.
+/// The Bag: each pocket's slots, and the pockets grown past the settings' cells (a bigger
+/// bag found or given: pocket id -> its cells across and down).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Bag {
     pub pockets: Vec<PocketItems>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub rooms: BTreeMap<String, [u8; 2]>,
+}
+
+/// What came of an item received (`Bag::receive`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Received {
+    /// put in its pocket
+    Kept,
+    /// a bigger bag: the pockets grown (which, to what)
+    Grew(Vec<(String, [u8; 2])>),
+    /// no room for it in its pocket (named)
+    NoRoom(String),
+    /// no such item
+    Unknown,
 }
 
 /// A pocket's slots: each an item, where it lies and how many of it.
@@ -37,12 +55,14 @@ pub struct Slot {
     pub count: u16,
 }
 
-/// What the Bag knows of an item, from its record: its pocket, its cells and its stack.
+/// What the Bag knows of an item, from its record: its pocket, its cells and its stack (one
+/// in a grid; a dispenser's tube's worth), and the pockets it grows when it's a bigger bag.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ItemFacts {
     pub pocket: String,
     pub cells: [u8; 2],
     pub stack: u16,
+    pub grows: Vec<(String, [u8; 2])>,
 }
 
 /// What the Bag knows of a pocket: its kind ("grid", "dispenser" or "rack") and its room as
@@ -72,13 +92,24 @@ impl Catalogue {
             .iter()
             .map(|i| {
                 let p = settings.pocket(&i.pocket);
-                (i.id.clone(), ItemFacts { pocket: i.pocket.clone(), cells: p.map_or(i.cells(), |p| p.cells_of(i)), stack: p.map_or(i.stack_size(), |p| p.stack_of(i)) })
+                (i.id.clone(), ItemFacts { pocket: i.pocket.clone(), cells: p.map_or(i.cells(), |p| p.cells_of(i)), stack: p.map_or(1, |p| p.stack_of(i)), grows: i.grows.iter().map(|g| (g.pocket.clone(), g.cells)).collect() })
             })
             .collect();
         Catalogue { items, pockets }
     }
 
     /// The pockets in order.
+    /// With the pockets a Bag has grown (`Bag::rooms`): each grid's cells the bigger of the
+    /// settings' and the Bag's.
+    pub fn grown(mut self, bag: &Bag) -> Catalogue {
+        for p in &mut self.pockets {
+            if let Some(cells) = bag.rooms.get(&p.id).filter(|_| p.kind == "grid") {
+                p.room = [p.room[0].max(cells[0]), p.room[1].max(cells[1])];
+            }
+        }
+        self
+    }
+
     pub fn pockets(&self) -> &[PocketFacts] {
         &self.pockets
     }
@@ -233,6 +264,30 @@ impl Bag {
         true
     }
 
+    /// An item found in the world or given: put in its pocket, or, a bigger bag, the pockets
+    /// it names grown to its cells (never smaller than they are; the item isn't kept). What
+    /// came of it; `cat` is the catalogue as the Bag has grown it so far.
+    pub fn receive(&mut self, cat: &Catalogue, item: &str) -> Received {
+        let Some(f) = cat.item(item).cloned() else { return Received::Unknown };
+        if !f.grows.is_empty() {
+            let mut grown = vec![];
+            for (pocket, cells) in &f.grows {
+                let now = cat.pocket_cells(pocket).unwrap_or([0, 0]);
+                let to = [now[0].max(cells[0]), now[1].max(cells[1])];
+                if to != now {
+                    self.rooms.insert(pocket.clone(), to);
+                    grown.push((pocket.clone(), to));
+                }
+            }
+            return Received::Grew(grown);
+        }
+        if self.add(cat, item, 1) == 0 {
+            Received::Kept
+        } else {
+            Received::NoRoom(cat.pocket(&f.pocket).map(|p| p.name.clone()).filter(|n| !n.is_empty()).unwrap_or(f.pocket.clone()))
+        }
+    }
+
     /// The cells a pocket has free.
     pub fn free(&self, cat: &Catalogue, pocket: &str) -> usize {
         let room = cat.pocket_cells(pocket).map_or(0, |c| c[0] as usize * c[1] as usize);
@@ -306,6 +361,7 @@ mod tests {
         c.items.put(item("scooter", "tools", [1, 1], 1, None), Space::Content);
         c.items.put(item("rod", "tools", [1, 1], 1, None), Space::Content);
         c.items.put(item("net", "tools", [1, 1], 1, None), Space::Content);
+        c.items.put(Item { id: "big_bag".into(), name: "Big bag".into(), pocket: "key".into(), grows: vec![content::Grow { pocket: "consumables".into(), cells: [4, 3] }, content::Grow { pocket: "key".into(), cells: [2, 2] }], ..Default::default() }, Space::Content);
         let pockets = vec![
             Pocket { id: "consumables".into(), cells: [3, 2], ..Default::default() },
             Pocket { id: "idps".into(), kind: "dispenser".into(), tubes: 2, holds: 20, ..Default::default() },
@@ -316,37 +372,32 @@ mod tests {
         c
     }
 
-    /// Items go in by their pocket, stacking first, then into the first free cells, turned a
-    /// quarter when that's how they fit, and what won't fit stays out; taken out from the
-    /// smallest stacks, an emptied slot going; moved and turned where there's room, left
-    /// where they were otherwise. The IDPs' dispenser: a tube a kind, as many as it holds;
-    /// the tools' rack: one a hook. A battle gets the items it knows with their counts, and
-    /// what it used comes out.
+    /// Items go in by their pocket, each its own cells (none stacking in a grid), into the
+    /// first free cells, turned a quarter when that's how they fit, and what won't fit stays
+    /// out; taken out a slot each, the emptied slot going; moved and turned where there's
+    /// room, left where they were otherwise. The IDPs' dispenser: a tube a kind, as many as
+    /// it holds; the tools' rack: one a hook. A battle gets the items it knows with their
+    /// counts, and what it used comes out. A bigger bag received grows the pockets it names.
     #[test]
     fn the_bag_packs_its_pockets() {
         let c = content();
         let cat = Catalogue::of(&c);
         let mut bag = Bag::default();
-        // 12 potions: a stack of 10 at the first cell, 2 at the next
-        assert_eq!(bag.add(&cat, "potion", 12), 0);
+        // each potion its own cell: six fill the 3 by 2 pocket, the other two stay out
+        assert_eq!(bag.add(&cat, "potion", 8), 2);
         let m = bag.pocket("consumables").unwrap();
-        assert_eq!(m.slots.len(), 2);
-        assert_eq!((m.slots[0].at, m.slots[0].count, m.slots[1].at, m.slots[1].count), ([0, 0], 10, [1, 0], 2));
-        assert_eq!(bag.count("potion"), 12);
-        // 3 more top the second stack up
-        assert_eq!(bag.add(&cat, "potion", 3), 0);
-        assert_eq!((bag.pocket("consumables").unwrap().slots[1].count, bag.count("potion")), (5, 15));
-        // a hyper potion (1 across, 2 down) fits at the third cell; the pocket's 3 by 2 has
-        // the bottom row's first two cells left: a revive (2 by 1) goes there as it is, and
-        // nothing else fits
-        assert_eq!(bag.add(&cat, "hyper_potion", 1), 0);
+        assert_eq!(m.slots.len(), 6);
+        assert!(m.slots.iter().all(|s| s.count == 1) && m.slots[0].at == [0, 0] && m.slots[5].at == [2, 1], "{:?}", m.slots);
+        assert_eq!((bag.count("potion"), bag.free(&cat, "consumables")), (6, 0));
+        // four taken out (a slot each, the first ones): room for a hyper potion (1 across, 2
+        // down) down the first column and a revive (2 by 1) along the top beside it; then full
+        assert_eq!(bag.take("potion", 4), 4);
+        assert_eq!((bag.add(&cat, "hyper_potion", 1), bag.add(&cat, "revive", 1)), (0, 0));
         let m = bag.pocket("consumables").unwrap();
-        assert_eq!((m.slots[2].at, m.slots[2].turned), ([2, 0], false));
-        assert_eq!(bag.add(&cat, "revive", 1), 0);
-        let m = bag.pocket("consumables").unwrap();
-        assert_eq!((m.slots[3].at, m.slots[3].turned, m.taken(&cat)), ([0, 1], false, 6));
+        let at = |item: &str| m.slots.iter().find(|s| s.item == item).map(|s| (s.at, s.turned)).unwrap();
+        assert_eq!((at("hyper_potion"), at("revive"), m.taken(&cat)), (([0, 0], false), ([1, 0], false), 6));
         assert_eq!(bag.free(&cat, "consumables"), 0);
-        assert_eq!(bag.add(&cat, "potion", 20), 20 - 5, "the stacks topped up, no room for a third");
+        assert_eq!(bag.add(&cat, "potion", 1), 1, "full");
         // the key pocket is 2 by 2: a map fills it; an unknown item goes nowhere
         assert_eq!((bag.add(&cat, "map", 1), bag.add(&cat, "stone", 1)), (0, 1));
         assert_eq!(bag.pocket("key").unwrap().slots[0].at, [0, 0]);
@@ -360,21 +411,19 @@ mod tests {
         assert_eq!(one.add(&narrow, "revive", 1), 0);
         let s = &one.pocket("consumables").unwrap().slots[0];
         assert_eq!((s.at, s.turned), ([0, 0], true), "turned a quarter");
-        // taken out: from the smallest stack first, the emptied slot gone
-        assert_eq!(bag.take("potion", 7), 7);
-        let m = bag.pocket("consumables").unwrap();
-        assert_eq!((bag.count("potion"), m.slots.iter().filter(|s| s.item == "potion").count()), (13, 2));
-        assert_eq!(bag.take("potion", 13), 13);
-        assert_eq!((bag.count("potion"), bag.pocket("consumables").unwrap().slots.len()), (0, 2));
-        assert_eq!(bag.take("potion", 1), 0, "none left");
-        // moved: the hyper potion to the first column (free now), turned across the top; not
-        // onto the revive, nor out of the pocket
+        // taken out: a slot each, the emptied slot gone; none left
+        assert_eq!(bag.take("potion", 1), 1);
+        assert_eq!((bag.count("potion"), bag.pocket("consumables").unwrap().slots.len()), (1, 3));
+        assert_eq!(bag.take("potion", 5), 1);
+        assert_eq!((bag.take("potion", 1), bag.pocket("consumables").unwrap().slots.len()), (0, 2), "none left");
+        // moved: the hyper potion to the bottom row's free cells, turned along it; not onto
+        // the revive, nor out of the pocket
         let i = bag.pocket("consumables").unwrap().slots.iter().position(|s| s.item == "hyper_potion").unwrap();
-        assert!(bag.move_slot(&cat, "consumables", i, [0, 0], true));
+        assert!(bag.move_slot(&cat, "consumables", i, [1, 1], true));
         assert_eq!(bag.pocket("consumables").unwrap().span_of(&cat, i), [2, 1]);
-        assert!(!bag.move_slot(&cat, "consumables", i, [0, 1], true), "the revive is there");
-        assert!(!bag.move_slot(&cat, "consumables", i, [2, 0], true), "out of the pocket");
-        assert_eq!(bag.pocket("consumables").unwrap().slots[i].at, [0, 0], "left where it was");
+        assert!(!bag.move_slot(&cat, "consumables", i, [1, 0], true), "the revive is there");
+        assert!(!bag.move_slot(&cat, "consumables", i, [2, 1], true), "out of the pocket");
+        assert_eq!(bag.pocket("consumables").unwrap().slots[i].at, [1, 1], "left where it was");
         // the dispenser: 25 IDPs fill a tube (20) and start the next; a second kind has no
         // tube left until that one is emptied; a tube's IDPs moved to the other tube
         assert_eq!(bag.add(&cat, "idp", 25), 0);
@@ -402,8 +451,21 @@ mod tests {
         let came_out = BTreeMap::from([(BattleItem::HyperPotion, 0), (BattleItem::Revive, 1), (BattleItem::Idp, 4), (BattleItem::ReinforcedIdp, 3)]);
         bag.after_battle(&c, &went_in, &came_out);
         assert_eq!((bag.count("hyper_potion"), bag.count("revive"), bag.count("idp"), bag.count("idp_reinforced")), (0, 1, 4, 3));
-        // a new story's Bag: the usual few of what the content has (here potions and IDPs)
+        // a new story's Bag: the usual few of what the content has (here potions and IDPs,
+        // the potions a cell each)
         let first = Bag::starting(&c);
         assert_eq!((first.count("potion"), first.count("idp"), first.count("stone")), (5, 10, 0));
+        // received: an item into its pocket, none when it's full, nothing unknown; a bigger
+        // bag grows the pockets it names (never smaller), isn't kept, and the catalogue grown
+        // by the Bag has the room
+        let mut found = Bag::default();
+        assert_eq!(found.receive(&cat, "map"), Received::Kept);
+        assert_eq!(found.receive(&cat, "map"), Received::NoRoom("key".into()), "the key pocket is full");
+        assert_eq!(found.receive(&cat, "stone"), Received::Unknown);
+        assert_eq!(found.receive(&cat, "big_bag"), Received::Grew(vec![("consumables".into(), [4, 3])]), "the key pocket is 2 by 2 already: only Consumables grows");
+        assert_eq!((found.rooms.get("consumables"), found.count("big_bag")), (Some(&[4, 3]), 0));
+        let bigger = Catalogue::of(&c).grown(&found);
+        assert_eq!((bigger.pocket_cells("consumables"), found.free(&bigger, "consumables"), cat.pocket_cells("consumables")), (Some([4, 3]), 12, Some([3, 2])));
+        assert_eq!(found.add(&bigger, "potion", 12), 0, "twelve potions in the bigger pocket");
     }
 }

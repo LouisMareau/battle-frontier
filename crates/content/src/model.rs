@@ -462,12 +462,26 @@ pub struct Item {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub icon: Option<String>,
     /// the room it takes in the Bag: cells across and down (none given: one cell); turned a
-    /// quarter, across and down swap
+    /// quarter, across and down swap. Each one of it takes its own: nothing stacks in a
+    /// pocket's grid
     #[serde(skip_serializing_if = "is_default")]
     pub size: [u8; 2],
-    /// how many of it fit in one of the Bag's slots (none given: one)
+    /// (from before: how many of it stacked in one slot; a grid's items no longer stack, a
+    /// dispenser's tubes hold what the pocket says)
     #[serde(skip_serializing_if = "is_default")]
     pub stack: u16,
+    /// a bigger bag: picked up or given, the Bag's pockets grow to these cells (the item
+    /// itself isn't kept)
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub grows: Vec<Grow>,
+}
+
+/// One of a bigger bag's pockets: which, and its cells across and down then.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Grow {
+    pub pocket: String,
+    pub cells: [u8; 2],
 }
 
 impl Item {
@@ -476,9 +490,14 @@ impl Item {
         [self.size[0].max(1), self.size[1].max(1)]
     }
 
-    /// How many of it fit in one slot (at least one).
+    /// How many of it fit in one slot (at least one; a grid's items don't stack: one).
     pub fn stack_size(&self) -> u16 {
         self.stack.max(1)
+    }
+
+    /// A bigger bag: it grows the Bag's pockets rather than going in one.
+    pub fn is_bag(&self) -> bool {
+        !self.grows.is_empty()
     }
 }
 
@@ -544,8 +563,11 @@ impl Pocket {
     pub fn stack_of(&self, item: &Item) -> u16 {
         match self.kind.as_str() {
             "dispenser" => self.holds.max(1),
-            "rack" => 1,
-            _ => item.stack_size(),
+            // (a grid's items never stack: each takes its own cells; a rack's hooks hold one)
+            _ => {
+                let _ = item;
+                1
+            }
         }
     }
 }
@@ -1433,7 +1455,8 @@ pub struct Prop {
     /// "tree", "flora", "grass" (grown through tall ground too: `Growth`), "rock",
     /// "decoration", "fence", "furniture", "stairs", "ramp" (what
     /// lies along ramps), "character" (one of the story's), "creature" (the model of one of
-    /// the fields' creatures: its creature record's `prop`), and building pieces: "door",
+    /// the fields' creatures: its creature record's `prop`), "container" (a chest, a basket, a
+    /// mound: placed with one item in it, `Placed::item`), and building pieces: "door",
     /// "window", "wall", "pillar", "floor", "roof", "wall_decoration"
     pub category: String,
     /// the cells it covers: [along x, along z]; a door's or window's width is the first
@@ -1795,11 +1818,15 @@ pub struct Placed {
     /// where it stands within its cells, from their centre (x, z)
     #[serde(skip_serializing_if = "is_default")]
     pub offset: [f64; 2],
+    /// a container's (a prop of the "container" category: a chest, a basket, a mound): the
+    /// one item in it, picked up on foot (the save's flag "took:MAP:X:Z" once it was)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
 }
 
 impl Default for Placed {
     fn default() -> Placed {
-        Placed { prop: String::new(), at: [0.0, 0.0], level: 0, turn: 0.0, scale: 1.0, offset: [0.0, 0.0] }
+        Placed { prop: String::new(), at: [0.0, 0.0], level: 0, turn: 0.0, scale: 1.0, offset: [0.0, 0.0], item: None }
     }
 }
 

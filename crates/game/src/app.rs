@@ -1574,7 +1574,7 @@ impl eframe::App for GameApp {
                 let map_name = ed.map_name().to_string();
                 let busy = ed.story_busy();
                 let content = self.content.clone().unwrap_or_default();
-                let cat = crate::bag::Catalogue::of(&content);
+                let cat = crate::bag::Catalogue::of(&content).grown(&ed.bag);
                 let out = self.hud.ui(&ctx, &map_name, busy, &team, &mut ed.team, &mut ed.bag, (&cat, &content), &mut self.options, &self.input, &mut options_changed);
                 let save = ed.save_game();
                 if out == crate::play_hud::Out::Exit {

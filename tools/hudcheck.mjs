@@ -169,8 +169,8 @@ try {
   check('  Esc again: the ring off', (await data('hudring')) === '' && (await data('state')) === 'explore');
 
   // 2b. the Bag: its window from the Bag button (bottom left, by the Team): the pockets'
-  // tabs, the usual few items in Consumables, the IDPs in their dispenser on the side; a
-  // stack dragged to free cells moves there; the Items tab; Close
+  // tabs, the usual few items in Consumables (a cell each: nothing stacks), the IDPs in
+  // their dispenser on the side; an item dragged to free cells moves there; the Items tab; Close
   const [bx, by] = await at('uiHudBag');
   check('the Bag bottom left, by the Team', bx > tx && by === ty, `${bx},${by} (the Team ${tx},${ty})`);
   await press('uiHudBag', 500);
@@ -179,10 +179,11 @@ try {
   check('  the usual few in it: potions and the like in Consumables, IDPs in the dispenser', /consumables [1-9]\d*\/30/.test(bag0) && /idps [1-9]\/4/.test(bag0), bag0);
   await shot('2b-bag');
   const [s0x, s0y] = await at('uiBagSlot_consumables_0');
-  await browser.drag([[s0x, s0y], [s0x + 4, s0y + 30], [s0x, s0y + 49 * 2], [s0x, s0y + 49 * 3]]);
+  // (down to the last row: with nothing stacking, the usual few fill the rows above)
+  await browser.drag([[s0x, s0y], [s0x + 4, s0y + 30], [s0x, s0y + 49 * 2], [s0x, s0y + 49 * 4]]);
   await sleep(400);
   const [s1x, s1y] = await at('uiBagSlot_consumables_0');
-  check('  a stack dragged down to free cells moves there', Math.abs(s1x - s0x) < 10 && s1y > s0y + 100, `${s0x},${s0y} -> ${s1x},${s1y} · ${await data('bag')}`);
+  check('  an item dragged down to free cells moves there', Math.abs(s1x - s0x) < 10 && s1y > s0y + 150, `${s0x},${s0y} -> ${s1x},${s1y} · ${await data('bag')}`);
   await press('uiBagTab_items', 300);
   check('  the Items tab', (await data('bagtab')) === 'items', await data('bagtab'));
   await press('uiBagClose', 400);

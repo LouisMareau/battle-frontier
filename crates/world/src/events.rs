@@ -43,6 +43,8 @@ pub trait Host {
     fn camera(&mut self, to: &Target);
     fn warp(&mut self, map: &str, at: [i32; 2]);
     fn battle(&mut self, encounter: &str);
+    /// An item given to the player: into the Bag (a bigger bag grows it); the host says what.
+    fn give(&mut self, item: &str);
 }
 
 pub type Flags = BTreeMap<String, i64>;
@@ -150,6 +152,7 @@ impl Machine {
                     host.battle(&e);
                     self.wait = Wait::Battle;
                 }
+                Action::Give(item) => host.give(&item),
                 Action::End => self.pc = self.actions.len(),
             }
         }
@@ -197,6 +200,9 @@ mod tests {
         fn battle(&mut self, encounter: &str) {
             self.0.push(format!("battle {encounter}"));
         }
+        fn give(&mut self, item: &str) {
+            self.0.push(format!("give {item}"));
+        }
     }
 
     fn script(s: &str) -> Vec<Action> {
@@ -237,6 +243,15 @@ mod tests {
         m.run(&mut host, &mut flags, 0.0);
         assert_eq!(m.wait, Wait::Line);
         assert_eq!(host.0.last().unwrap(), "say Bo: Fine.");
+    }
+
+    #[test]
+    fn a_give_goes_to_the_host_and_the_script_goes_on() {
+        let mut m = Machine::new(script("give potion\nsay Bob: Here.\nend"), None);
+        let (mut log, mut flags) = (Log(vec![]), Flags::new());
+        m.run(&mut log, &mut flags, 0.0);
+        assert_eq!(log.0, ["give potion", "say Bob: Here."]);
+        assert_eq!(m.wait, Wait::Line);
     }
 
     #[test]

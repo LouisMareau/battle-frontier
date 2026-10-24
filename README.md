@@ -526,14 +526,21 @@ maps).
   **Bag** (by the Team) opens what you carry (`bag.rs`, `bag_ui.rs`; kept in the story): the
   pockets inside the bag as tabs, Consumables, Items and Key items, each a grid of cells
   (`settings/world.json`'s `bag`: how many across and down) its items lie in, each taking
-  its own (an item record's `size`, cells across and down; its `stack`, how many of it fit
-  one slot), and on the bag's side, to hand whatever the tab, the **IDPs' dispenser** (a
+  its own (an item record's `size`, cells across and down; nothing stacks in a grid: two
+  potions take two cells), and on the bag's side, to hand whatever the tab, the **IDPs' dispenser** (a
   tube a kind of IDP, as many as a tube holds) and the **tool rack** (a tool a hook: a
   scooter, say). Drag an item to move it within its pocket: the cells it would take show
   as it goes, lit where it fits, red where it doesn't, and a right click (or R) turns it a
   quarter; the game's buttons do it too (the arrows move a cursor over the cells, tubes and
   hooks, A takes up and puts down, L or R turns, B puts back or closes; L and R change the
-  tab). The usual few of each come with a new story. In a battle the Items menu offers what
+  tab). The usual few of each come with a new story. Items are found in the world in
+  **containers**: a prop of the `container` category (a chest, a basket, a mound of rubble,
+  snow or sand) placed with one item in it (Select it: **Holds**; a container always holds
+  one), picked up on foot with A in front of it, once (the save's flag `took:MAP:X:Z`; the
+  line says what was found, or that there's no room, and then the item waits for another
+  visit), and given by the story (a script's `give item`). A **bigger bag** is an item too
+  (its record's `grows`: which pockets, to how many cells): found or given, it grows those
+  pockets instead of going in one (`bag.rooms`, kept in the save). In a battle the Items menu offers what
   the Bag holds that a battle knows (`battle_use`), the IDPs only from there, and what's used
   comes out of the Bag after. An **IDP** (an inter-dimensional pocket) thrown at a wild
   creature unfolds into a net that takes the creature into it; the pocket's seams then light

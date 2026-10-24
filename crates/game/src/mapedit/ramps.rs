@@ -212,7 +212,7 @@ impl MapEditor {
         let r = &self.map.ramps[i];
         let level = self.map.level_at(r.at[0], r.at[1]).unwrap_or(0);
         let at = [r.at[0] as f64 + r.size[0] as f64 / 2.0, r.at[1] as f64 + r.size[1] as f64 / 2.0];
-        Placed { prop: id.into(), at, level, turn: world::ramps::turn_of(&r.up) as f64, scale: 1.0, offset: [0.0, 0.0] }
+        Placed { prop: id.into(), at, level, turn: world::ramps::turn_of(&r.up) as f64, scale: 1.0, offset: [0.0, 0.0], item: None }
     }
 
     /// Why `prop` (made to lie along ramps) can't go along ramp `i` (`except`: a placed prop

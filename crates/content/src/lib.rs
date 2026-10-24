@@ -977,6 +977,14 @@ impl Content {
             if !self.props.contains(&p.prop) {
                 out.push(format!("{at}: \"{}\" at {:?}, no such prop", p.prop, p.at));
             }
+            // a container holds one item, always; only a container holds one
+            let container = self.props.get(&p.prop).is_some_and(|q| q.category == "container");
+            match (&p.item, container) {
+                (Some(item), _) if !self.items.contains(item) => out.push(format!("{at}: \"{}\" at {:?} holds \"{item}\", no such item", p.prop, p.at)),
+                (Some(_), false) => out.push(format!("{at}: \"{}\" at {:?} holds an item but isn't a container", p.prop, p.at)),
+                (None, true) => out.push(format!("{at}: the container \"{}\" at {:?} holds nothing: pick its item (Select it: Holds)", p.prop, p.at)),
+                _ => {}
+            }
         }
         if !m.zone_cells.is_empty() {
             rows("zone_cells", &m.zone_cells, &mut out);

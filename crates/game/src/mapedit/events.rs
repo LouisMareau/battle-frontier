@@ -217,6 +217,10 @@ impl Host for MapEditor {
         self.open(map);
     }
 
+    fn give(&mut self, item: &str) {
+        self.receive_item(item, "Got");
+    }
+
     fn battle(&mut self, encounter: &str) {
         self.story.battle_over = false;
         self.story.request = Some(Request::Battle(encounter.to_string()));
@@ -265,6 +269,9 @@ impl MapEditor {
         let d = step_of(w.facing);
         let ahead = (w.cell.0 + d.0, w.cell.1 + d.1);
         let own = w.cell;
+        if self.open_container(ahead) {
+            return;
+        }
         if let Some(a) = self.actor_at(ahead) {
             let events: Vec<EventRef> = (0..self.map.actors[a].events.len()).map(|i| EventRef::Actor(a, i)).collect();
             for r in events {
@@ -286,6 +293,65 @@ impl MapEditor {
                 }
             }
         }
+    }
+
+    /// The container on `cell` (a placed prop of the container category covering it) with
+    /// its item: its place among the map's props.
+    fn container_at(&self, cell: (i32, i32)) -> Option<usize> {
+        self.map.props.iter().position(|p| {
+            p.item.is_some() && self.content.props.get(&p.prop).is_some_and(|q| q.category == "container" && content::footprint_cells(p.at, p.turn, q.footprint, p.scale).contains(&cell))
+        })
+    }
+
+    /// The save's word for a container emptied: "took:MAP:X:Z" (the container's cells'
+    /// middle, floored).
+    fn took_flag(&self, i: usize) -> String {
+        let p = &self.map.props[i];
+        format!("took:{}:{}:{}", self.map.id, p.at[0].floor() as i64, p.at[1].floor() as i64)
+    }
+
+    /// A container on `cell` opened: what it holds into the Bag (a bigger bag grows it), the
+    /// container remembered as emptied in the save's flags, a line saying what was found;
+    /// emptied already, it says so; no room in the Bag, it says so and keeps its item for a
+    /// later visit. Whether there was a container.
+    fn open_container(&mut self, cell: (i32, i32)) -> bool {
+        let Some(i) = self.container_at(cell) else { return false };
+        let flag = self.took_flag(i);
+        if self.story.flags.contains_key(&flag) {
+            self.say("", "Nothing more in it.");
+            return true;
+        }
+        let item = self.map.props[i].item.clone().unwrap_or_default();
+        if !matches!(self.receive_item(&item, "Found"), crate::bag::Received::NoRoom(_)) {
+            self.story.flags.insert(flag, 1);
+        }
+        true
+    }
+
+    /// An item received (found in a container, given by a script): into the Bag, and a line
+    /// about it (`how`: "Found", "Got").
+    fn receive_item(&mut self, item: &str, how: &str) -> crate::bag::Received {
+        let cat = crate::bag::Catalogue::of(&self.content).grown(&self.bag);
+        let name = self.content.items.get(item).map(|i| i.name.clone()).unwrap_or_else(|| item.to_string());
+        let got = self.bag.receive(&cat, item);
+        let line = match &got {
+            crate::bag::Received::Kept => format!("{how} {name}!"),
+            crate::bag::Received::Grew(rooms) if rooms.is_empty() => format!("{how} {name}, but the Bag is as big already."),
+            crate::bag::Received::Grew(rooms) => {
+                let names: Vec<String> = rooms.iter().map(|(p, c)| format!("{} {}\u{d7}{}", cat.pocket(p).map(|q| q.name.clone()).filter(|n| !n.is_empty()).unwrap_or_else(|| p.clone()), c[0], c[1])).collect();
+                format!("{how} {name}! The Bag is bigger: {}.", names.join(", "))
+            }
+            crate::bag::Received::NoRoom(pocket) => format!("{how} {name}, but there's no room left in {pocket}."),
+            crate::bag::Received::Unknown => format!("{how} nothing: no item \"{item}\"."),
+        };
+        self.say("", &line);
+        crate::platform::set_hook("received", &format!("{item}:{}", match &got {
+            crate::bag::Received::Kept => "kept".to_string(),
+            crate::bag::Received::Grew(_) => "grew".to_string(),
+            crate::bag::Received::NoRoom(_) => "noroom".to_string(),
+            crate::bag::Received::Unknown => "unknown".to_string(),
+        }));
+        got
     }
 
     /// A frame of the story: what the walker sets off, the script going on, the dialog.
@@ -870,7 +936,7 @@ impl MapEditor {
             warn(ui, p);
         }
         crate::platform::set_hook("scriptproblems", &problems.len().to_string());
-        hint(ui, "say Who: text · ask text -> label | text -> label · label/goto · if/unless flag goto · set/add/clear flag · move who x,z … · face who n|s|e|w|player · wait s · show/hide who · sound file · camera x,z|who · warp map x,z · battle id · end");
+        hint(ui, "say Who: text · ask text -> label | text -> label · label/goto · if/unless flag goto · set/add/clear flag · move who x,z … · face who n|s|e|w|player · wait s · show/hide who · sound file · camera x,z|who · warp map x,z · battle id · give item · end");
         ui.horizontal(|ui| {
             let r = ui.add_enabled(self.walker.is_some() && problems.is_empty(), egui::Button::new("Run it now")).on_disabled_hover_text("Walk the map first, with no mistakes in the script");
             mark("uiRunEvent", &r);
@@ -922,4 +988,74 @@ impl MapEditor {
 #[allow(dead_code)]
 pub(super) fn default_facing() -> f32 {
     facing_of((0, 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use content::{BagSettings, Item, Placed, Prop, Settings, Space};
+
+    use super::super::jumps::tests::editor;
+    use super::*;
+
+    /// The jump tests' map with a chest (a container) at 4, 4 holding a potion, another at
+    /// 6, 4 holding a map (a 2 by 2 key item), and a bag's worth of pockets.
+    fn with_chests() -> MapEditor {
+        let mut ed = editor();
+        let mut c = (*ed.content).clone();
+        c.settings.put(Settings { id: "world".into(), bag: BagSettings::default(), ..Default::default() }, Space::Content);
+        c.items.put(Item { id: "potion".into(), name: "Potion".into(), pocket: "consumables".into(), ..Default::default() }, Space::Content);
+        c.items.put(Item { id: "map".into(), name: "Map".into(), pocket: "key".into(), size: [4, 4], ..Default::default() }, Space::Content);
+        c.items.put(Item { id: "satchel".into(), name: "Satchel".into(), pocket: "key".into(), grows: vec![content::Grow { pocket: "key".into(), cells: [8, 4] }], ..Default::default() }, Space::Content);
+        c.props.put(Prop { id: "chest".into(), name: "Chest".into(), category: "container".into(), footprint: [1, 1], blocks: true, ..Default::default() }, Space::Content);
+        ed.content = Arc::new(c);
+        ed.map.props.push(Placed { prop: "chest".into(), at: [4.5, 4.5], level: 1, item: Some("potion".into()), ..Default::default() });
+        ed.map.props.push(Placed { prop: "chest".into(), at: [6.5, 4.5], level: 1, item: Some("map".into()), ..Default::default() });
+        ed.map.props.push(Placed { prop: "chest".into(), at: [8.5, 4.5], level: 1, item: Some("map".into()), ..Default::default() });
+        ed
+    }
+
+    fn said(ed: &MapEditor) -> String {
+        ed.story.dialog.as_ref().map(|d| d.text.clone()).unwrap_or_default()
+    }
+
+    /// A chest in front of the walker, opened with A: its item in the Bag, the save's flag
+    /// set, a line said; opened again, nothing more in it. One holding what the Bag has no
+    /// room for keeps it (no flag) and says so. A script's give puts an item in too; a bigger
+    /// bag grows a pocket instead, and then there's room.
+    #[test]
+    fn a_container_in_front_gives_its_item_once_and_keeps_it_while_the_bag_is_full() {
+        let mut ed = with_chests();
+        ed.walk_to(4, 3);
+        assert_eq!(ed.bag.count("potion"), 0);
+        ed.try_interact();
+        assert_eq!((ed.bag.count("potion"), ed.story.flags.get("took:field:4:4"), said(&ed).as_str()), (1, Some(&1), "Found Potion!"));
+        ed.story.dialog = None;
+        ed.try_interact();
+        assert_eq!((ed.bag.count("potion"), said(&ed).as_str()), (1, "Nothing more in it."));
+        // the key pocket (4 by 4) takes one map; the second chest's map has no room: kept
+        // there, no flag
+        ed.story.dialog = None;
+        ed.walk_to(6, 3);
+        ed.try_interact();
+        assert_eq!((ed.bag.count("map"), said(&ed).as_str()), (1, "Found Map!"));
+        ed.story.dialog = None;
+        ed.walk_to(8, 3);
+        ed.try_interact();
+        assert_eq!((ed.bag.count("map"), ed.story.flags.get("took:field:8:4"), said(&ed).as_str()), (1, None, "Found Map, but there's no room left in Key items."));
+        // given by a script: a satchel grows the key pocket (8 by 4), and isn't kept; then the
+        // second map fits
+        ed.story.dialog = None;
+        Host::give(&mut ed, "satchel");
+        assert_eq!((ed.bag.rooms.get("key"), ed.bag.count("satchel"), said(&ed).as_str()), (Some(&[8, 4]), 0, "Got Satchel! The Bag is bigger: Key items 8\u{d7}4."));
+        ed.story.dialog = None;
+        ed.try_interact();
+        assert_eq!((ed.bag.count("map"), ed.story.flags.get("took:field:8:4")), (2, Some(&1)));
+        // nothing in front: no container, nothing said
+        ed.story.dialog = None;
+        ed.walk_to(2, 2);
+        ed.try_interact();
+        assert_eq!(said(&ed), "");
+    }
 }

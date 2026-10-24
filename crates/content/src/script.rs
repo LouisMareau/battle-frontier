@@ -44,6 +44,8 @@ pub enum Action {
     Camera(Target),
     Warp { map: String, at: [i32; 2] },
     Battle(String),
+    /// an item given to the player (into the Bag; a bigger bag grows it)
+    Give(String),
     End,
 }
 
@@ -180,8 +182,15 @@ pub fn parse_line(line: &str) -> Result<Option<Action>, String> {
             need(1, "needs an encounter")?;
             Action::Battle(words[0].into())
         }
+        "give" => {
+            need(1, "needs an item")?;
+            if !name_ok(words[0]) {
+                return Err(format!("give: \"{}\" isn't an item's id", words[0]));
+            }
+            Action::Give(words[0].into())
+        }
         "end" => Action::End,
-        _ => return Err(format!("\"{verb}\": not an action (say, ask, label, goto, if, unless, set, add, clear, move, face, wait, show, hide, sound, camera, warp, battle, end)")),
+        _ => return Err(format!("\"{verb}\": not an action (say, ask, label, goto, if, unless, set, add, clear, move, face, wait, show, hide, sound, camera, warp, battle, give, end)")),
     };
     Ok(Some(action))
 }
@@ -327,6 +336,9 @@ mod tests {
         assert_eq!(errors.len(), 5, "{errors:?}");
         assert!(errors[0].starts_with("line 1: say"));
         assert!(errors[1].contains("not an action"));
+        // give: an item's id, nothing else
+        assert_eq!(parse_line("give potion").unwrap(), Some(Action::Give("potion".into())));
+        assert!(parse_line("give").is_err() && parse_line("give Pot ion").is_err());
         assert!(errors[2].contains("isn't a cell"));
         assert!(errors[3].contains("text -> label"));
         assert!(errors[4].contains("0 to 120"));
