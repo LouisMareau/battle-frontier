@@ -33,6 +33,7 @@ and the side drawn from them), `job.profiles()` gives the front and the side in 
 on (and `job.chains()` the rig's chains, from the bones the user has drawn, carried into them), and `previews` also renders the model from each picture's camera (seen_<picture>.png) and
 writes views.json, which run_request.py uses to lay the lines on the renders.
 """
+import importlib.util
 import json
 import math
 import shutil
@@ -166,10 +167,16 @@ class Job:
             self.record = mr.step(self.root, self.id, text, done)
 
 
+# the request started last (kit.load's)
+_started = None
+
+
 def start(script, minutes=None):
     """The request of the model.py at `script`: the scene emptied, the request in progress (a
     done one stays done unless this run finishes it again)."""
+    global _started
     job = Job(script)
+    _started = job
     clear()
     scene = bpy.context.scene
     scene.unit_settings.system = "METRIC"
@@ -180,6 +187,22 @@ def start(script, minutes=None):
     r = job.record
     print(f"{job.id}: {r['name']}, a {r['kind']} {r['height']} cells tall, {r['style']}; pictures: {', '.join(r['images'])}", flush=True)
     return job
+
+
+def load(name, job=None):
+    """A module of the request's own, by name, from its folder (the stages' files, requests.md,
+    "Made in stages": materials.py, body.py, detail.py), imported afresh each time; `job`: the
+    request's, else the one started last."""
+    job = job or _started
+    if job is None:
+        raise RuntimeError("kit.load: no request started yet (kit.start first)")
+    path = job.dir / f"{name}.py"
+    if not path.is_file():
+        raise FileNotFoundError(f"kit.load: no {path.name} in {job.dir} (the stage that writes it hasn't run)")
+    spec = importlib.util.spec_from_file_location(f"request_{job.id}_{name}", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def clear():

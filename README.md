@@ -102,7 +102,7 @@ node tools/terraincheck.mjs            # terrains of their own: Tall grass dupli
 node tools/reviewcheck.mjs             # a pull request reviewed in the editor against a stand-in GitHub (the collaborator signed in beforehand): the open pull requests listed, one fetched whole (its files at its head, its records at its base) and opened read-only in an editor of its own, the panels' buttons dotted, the terrain changed marked and the one added listed, the Assets panel's "Changed in the PR" folder, every change listed with the code's diffs, Review by Claude (Anthropic at a stand-in behind the relay's path) in its window, the review left and the editor back as it was
 node tools/relaycheck.mjs              # the site's relay to Anthropic (functions/claude/), as Cloudflare runs it: only the requests' calls go on, only from the site's pages, only the API's headers (the user's key, no cookie), the answer streamed back as it is (CI runs it)
 node tools/requestcheck.mjs            # a model request in the browser against a stand-in for Anthropic: the Claude sign-in's key (a wrong one turned away, the right one kept), a picture dropped, Start in the cloud (the agent and its sandbox made once, the files mounted, the commands sent, the events followed into the bar and the console), its outputs back as a prop, kept after a reload
-python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; the user's bones; the user's own sign-in (a subscription before an API key in the environment)
+python tools/blender/test_run_claude.py # the Requests window's runs against a stand-in for Claude Code: done, failed (each way), cancelled; the lines checked first; made again with the user's comments; split into a request per drawing; made in stages; the user's bones; the user's own sign-in (a subscription before an API key in the environment)
 python tools/blender/test_cloud_run.py  # a run in the cloud's own steps: setup (the files, Blender's wrapper, the cloud's note), run_claude.py --prompt and --settle, the outputs and their manifest
 cargo test -p engine-game -- --ignored shot   # the desktop-only windows drawn on the GPU, no window opened (build/shots/requests-bones.png; SHOT_PICTURE: the picture)
 cargo test -p engine-game -- --ignored real_build   # the Builds panel's build for real: a debug desktop build into build/local/test, then one cancelled as it compiles (the folder as it was)
@@ -1006,7 +1006,15 @@ what it said) and changes what you say, keeping the rest; the comments are kept 
 request, and the runs after it are told them too. Any done one (but a floor set) has
 Variants and What changes too, and **Make variants**: a run from the model made that keeps it as
 it is and adds that many variants, the style, the notes and the rest as they were (queued
-while another is being made); its panel lists the variants made. A tree's cells are its trunk's foot (what
+while another is being made); its panel lists the variants made. **Make it in stages** has
+it made by seven runs of Claude with one charge each (the study: the lines and the shape
+planned; the look: the colours and the materials; the detail: the detached parts, the fur, the
+cloth; the merge: the plans checked against each other, into one; the body, built on the plan;
+the dress: the detail on the body; the assembly: rigged, finished), the next starting as the
+last ends, each planning in a file of its own under the request's `plan/` and noting its
+guesses in a shared log; the panel shows the stages as chips, a done one clicked run again
+with those after it, a failed one run again by Start (`tools/blender/requests.md`, "Made in
+stages"). A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Process multiple" and Start
 has each drawing made a request of its own (its crop, its name and height, the request's

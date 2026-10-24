@@ -42,6 +42,9 @@ Rules that hold all the way:
   "toon": true,
   "many": false,
   "check_lines": false,
+  "staged": false,
+  "stage": "",
+  "stages": [],
   "status": "waiting",
   "progress": { "step": "", "done": 0.0, "started": 0.0, "minutes": 0.0 },
   "images": ["round_stone_lantern.png"],
@@ -108,6 +111,9 @@ are.)
   lines before the model is built. The modelling stops once the lines and the front and the
   side are drawn (step 5) and the request waits again, its `progress.step` saying
   `lines ready: check them`, until the user says go on (below, "Checking the lines first").
+- `staged` (the window's **"Make it in stages"**): made by a run per stage, each with one
+  charge, the editor starting the next once the last has ended (below, "Made in stages");
+  `stage` is the one running (or the last to end), `stages` those done, in their order.
 - `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
   stopped with an error or went silent: `progress.step` says why, `log.txt` has the rest).
   `progress` is what the editor's bar shows (in
@@ -321,7 +327,54 @@ lines for the user's check, one that goes on from them with the user's note, one
 with the user's comments, one split into a request per drawing, grass with its variants, and
 the variants of a model made; and a set of floor tiles,
 laid by the engine's rules (`floor_wfc.py`: every two cells side by side agreeing, rims all
-round, the same seed the same floor), its run the floor recipe.
+round, the same seed the same floor), its run the floor recipe; and a request made in
+stages, each stage's run (below).
+
+### Made in stages
+
+Tick **"Make it in stages"** in the request's panel (`staged`) to have it made by seven runs
+of Claude, one charge each, the editor starting the next once the last has ended (`stages`
+lists the ones done, `stage` the one running or the last to end):
+
+```bash
+python tools/blender/run_claude.py ID --stage study
+```
+
+1. **study**: the lead reads the pictures and draws the lines and the front and the side
+   (steps 3 to 5), then writes `plan/shape.md`: the design and the drawing sorted, the parts,
+   the proportions measured, the pose, the block-out, the rig's chains, what stays detached.
+   With `check_lines` it stops at the lines as any run does, and the run after the user's
+   check (`--stage study --go-on`, their note with it) plans the shape on them.
+2. **look**: the colours measured off the pictures and the materials, in `plan/look.md` and
+   `materials.py` (`COLOURS`, a dict of each region's hex; `PAINT(kit)`, each part's paint
+   volumes: a module, no mesh).
+3. **detail**: the detached parts and the detail the skin can't carry (fur, feathers,
+   scales, hair, cloth, as cards or strands), where each roots and what the wind moves, in
+   `plan/detail.md`.
+4. **merge**: the lead checks the three plans against each other and against the notes,
+   decides each disagreement by the pictures, and writes `plan.md`, the one plan the build
+   stages follow.
+5. **body**: `body.py` (`build(job, kit, materials)`: the body alone, on the plan, accurate in
+   one skin) and a `model.py` that loads it, fits it and renders it; rendered and compared
+   until it matches.
+6. **dress**: `detail.py` (`build(job, kit, materials, body)`: the detached parts and the
+   detail on the body), `model.py` calling it after the body.
+7. **assemble**: `model.py` rigged (a character) with its idle and its roar, the small fixes
+   that finish it made in whichever file owns them, `finish`, the check.
+
+The stages share the request's `plan/` folder: each writes its own file there and no other,
+and `plan/notes.log` is append-only, a line each starting with `[stage]` (guesses, doubts,
+what another stage should know or change: the merge decides). `kit.load("body")` imports a
+file of the request's own by name. A stage ends with its files written (`model_requests.py`'s
+`STAGE_FILES`): the request stays in progress, its `progress.step` saying `study done`, and
+the editor starts the next; without them it fails, saying which. A stage run without the
+files of the stages before it fails at once. The window's panel shows the stages as chips
+(done, running, failed, to come): a done one clicked runs it again, and the stages after it
+with it; Start on a failed one runs that stage again, Go on after a cancel the next not done;
+Make it again on a done one starts from the study. In the cloud, each stage is a session of
+its own, given the request's files and its plan folder. Each stage's run is estimated at its
+share of the whole (`STAGE_SHARE`); together they take longer than one run, each reading the
+pictures and the plan again, and cost more.
 
 ## The recipe
 
@@ -1112,6 +1165,7 @@ degrees about X, Y and Z. Each shape takes a colour `region` (a name).
 | `action(arm, name, {bone or chain: [(when, (x, y, z)), ...]}, seconds=, loop=)` | another action by its name ("roar", "bite", "lick"): turns in degrees at fractions of its length, eased between; in the file for the game to play, `preview_NAME.png` shows it |
 | `job.profiles()` | the front and the side from `lines.json`, in cells as the model stands (above, "Lines and profiles") |
 | `job.chains()` | the user's bones carried into the front and the side (`bone CHAIN` lines) as the rig's chains, in cells, the body's first (above, "The user's bones") |
+| `load(name, job=)` | a module of the request's own, by name, from its folder (`materials.py`, `body.py`, `detail.py`: above, "Made in stages"), imported afresh each time |
 | `previews(job, objects)`, `compare(job, files)` | the renders and the sheet (above); the model seen from each picture's `camera` too, and `views.json` for laying the lines on them |
 | `finish(job, objects, files, reply=, category=, blocks=)` | with `-- --finish`: into the project, the request done (its category and blocking by its kind unless said: a character; grass, never in the way; else a decoration); the variants this run added listed |
 | `variant_preview(job, objects, k)` | variant `k`'s render, seen as the model's three-quarter one: `variant_k.png`, for `finish`'s files ("Variants") |
@@ -1225,4 +1279,5 @@ the tongue on its own chain, the legs and the tail on theirs, the jaw opening wi
 moving, the idle and a roar in the file, every part on one skin, and the engine reading them.
 And a set of floor tiles: a flag and a long slab's half, laid out and rendered from above and
 slanting with every edge fitting, added as floor props of the set where they were modelled
-(the half on its half), and made again without the half, which goes.
+(the half on its half), and made again without the half, which goes; and `load`, a module of
+the request's own imported from its folder.

@@ -21,6 +21,7 @@
 use serde_json::{json, Value};
 
 use super::desk::How;
+use super::Stage as RequestStage;
 
 /// The agent's and its environment's names in the user's workspace.
 pub(super) const AGENT: &str = "Battle Frontier model requests";
@@ -90,15 +91,23 @@ pub(super) fn recipe() -> String {
     format!("{:08x}", crc32fast::hash(format!("{}{}", agent_body(""), environment_body("")).as_bytes()))
 }
 
-/// run_claude.py's flags for how a run goes (`noted`: with the user's note, uploaded).
-pub(super) fn flags(how: How, noted: bool) -> String {
+/// run_claude.py's flags for how a run goes (`noted`: with the user's note, uploaded;
+/// `stage`: a request made in stages, the stage this run is).
+pub(super) fn flags(how: How, noted: bool, stage: Option<RequestStage>) -> String {
     let mut out = match how {
-        How::Whole => "",
+        How::Whole | How::Stage(_) => "",
         How::GoOn => " --go-on",
         How::Again => " --again",
         How::Variants => " --variants",
     }
     .to_string();
+    let stage = match how {
+        How::Stage(s) => Some(s),
+        _ => stage,
+    };
+    if let Some(s) = stage {
+        out += &format!(" --stage {}", s.name());
+    }
     if noted {
         out += " --note-file /mnt/session/uploads/note.txt";
     }
@@ -106,14 +115,19 @@ pub(super) fn flags(how: How, noted: bool) -> String {
 }
 
 /// The session's first message: the request, and the commands that make it, in order.
-pub(super) fn first_message(id: &str, name: &str, how: How, noted: bool) -> String {
+pub(super) fn first_message(id: &str, name: &str, how: How, noted: bool, stage: Option<RequestStage>) -> String {
     let what = match how {
-        How::Whole => "its whole recipe",
-        How::GoOn => "on from its lines, which the user has checked",
-        How::Again => "made again from the model the last run made, with the user's comments",
-        How::Variants => "variants of the model it made",
+        How::Whole => "its whole recipe".to_string(),
+        How::GoOn => "on from its lines, which the user has checked".into(),
+        How::Again => "made again from the model the last run made, with the user's comments".into(),
+        How::Variants => "variants of the model it made".into(),
+        How::Stage(s) => format!("its {} stage, run again (it's made in stages, a session each: {})", s.name(), s.about()),
     };
-    let (flags, at, repository) = (flags(how, noted), "cd /workspace/bf &&", format!("https://github.com/{}/{}.git", super::super::publish::OWNER, super::super::publish::REPO));
+    let what = match (how, stage) {
+        (How::Whole | How::GoOn, Some(s)) => format!("{what}: its {} stage (it's made in stages, a session each: {})", s.name(), s.about()),
+        _ => what,
+    };
+    let (flags, at, repository) = (flags(how, noted, stage), "cd /workspace/bf &&", format!("https://github.com/{}/{}.git", super::super::publish::OWNER, super::super::publish::REPO));
     format!(
         "Make the model request \"{name}\" ({id}): {what}. Its files are in /mnt/session/uploads/request/ (and its props' own, \
          when it has made any, in /mnt/session/uploads/project/: setup puts them in the project).\n\n\
@@ -686,7 +700,18 @@ mod run {
     fn given(root: &Path, r: &ModelRequest) -> Vec<(String, Vec<u8>)> {
         let mut out = vec![];
         for e in disk::read_dir(&folder(root).join(&r.id)).unwrap_or_default() {
-            if e.dir || ["log.txt", "run.jsonl", "claude-settings.json", "stop", "cloud.json"].contains(&e.name.as_str()) {
+            if e.dir {
+                // (its plan folder, when it's made in stages: the stages' files)
+                if e.name == "plan" {
+                    for f in disk::read_dir(&e.path).unwrap_or_default().into_iter().filter(|f| !f.dir) {
+                        if let Ok(bytes) = disk::read(&f.path) {
+                            out.push((format!("request/plan/{}", f.name), bytes));
+                        }
+                    }
+                }
+                continue;
+            }
+            if ["log.txt", "run.jsonl", "claude-settings.json", "stop", "cloud.json"].contains(&e.name.as_str()) {
                 continue;
             }
             if let Ok(bytes) = disk::read(&e.path) {
@@ -742,23 +767,27 @@ mod run {
             }
             let key = key().ok_or("no Claude API key in this browser: the Claude sign-in takes one")?;
             let id = args.get(1).cloned().ok_or("no request")?;
+            let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).cloned().unwrap_or_default();
+            // (made in stages: the stage this run is, a session of its own)
+            let stage = RequestStage::of(&after("--stage"));
             let how = if args.iter().any(|a| a == "--go-on") {
                 How::GoOn
             } else if args.iter().any(|a| a == "--again") {
                 How::Again
             } else if args.iter().any(|a| a == "--variants") {
                 How::Variants
+            } else if let Some(s) = stage {
+                How::Stage(s)
             } else {
                 How::Whole
             };
-            let after = |flag: &str| args.iter().position(|a| a == flag).and_then(|k| args.get(k + 1)).cloned().unwrap_or_default();
             let (note, model) = (after("--note"), model_of(&after("--model")).to_string());
             let mut r = read(root, &id)?;
             let mut files = given(root, &r);
             if !note.trim().is_empty() {
                 files.push(("note.txt".into(), note.clone().into_bytes()));
             }
-            let text = first_message(&r.id, &r.name, how, !note.trim().is_empty());
+            let text = first_message(&r.id, &r.name, how, !note.trim().is_empty(), stage);
             let cap = if self.cap > 0 { self.cap } else { CAP_CENTS };
             r.status = Status::InProgress;
             r.progress = Progress { step: "the sandbox is starting".into(), done: 0.02, started: now_secs().round(), minutes: r.progress.minutes.max(10.0) };
@@ -907,8 +936,9 @@ mod run {
                                 back += 1;
                             }
                             log(root, &id, &format!("{back} files back from the cloud"));
-                            // a run that ended without settling: failed, as a run here does
-                            if read(root, &id).is_ok_and(|r| r.status == Status::InProgress) {
+                            // a run that ended without settling: failed, as a run here does (a
+                            // stage done leaves it in progress: the desk starts the next)
+                            if read(root, &id).is_ok_and(|r| r.status == Status::InProgress && !r.stage_done()) {
                                 return Some(self.fail(root, &id, "the run ended without saying how (the log says what it did)"));
                             }
                             let r = read(root, &id).ok();
@@ -1032,7 +1062,7 @@ mod tests {
     /// the model asked for, each file mounted under uploads, its cap.
     #[test]
     fn a_run_starts_with_its_commands() {
-        let text = first_message("moss_toad", "Moss toad", How::GoOn, true);
+        let text = first_message("moss_toad", "Moss toad", How::GoOn, true, None);
         assert!(text.starts_with("Make the model request \"Moss toad\" (moss_toad): on from its lines"));
         for want in [
             "git clone --quiet --filter=blob:none --no-checkout https://github.com/LouisMareau/battle-frontier.git /workspace/bf",
@@ -1043,8 +1073,17 @@ mod tests {
         ] {
             assert!(text.contains(want), "{want}\n{text}");
         }
-        assert_eq!(flags(How::Whole, false), "");
-        assert_eq!(flags(How::Variants, false), " --variants");
+        assert_eq!(flags(How::Whole, false, None), "");
+        assert_eq!(flags(How::Variants, false, None), " --variants");
+        // made in stages: the stage this session is
+        assert_eq!(flags(How::Whole, false, Some(RequestStage::Study)), " --stage study");
+        assert_eq!(flags(How::GoOn, true, Some(RequestStage::Study)), " --go-on --stage study --note-file /mnt/session/uploads/note.txt");
+        assert_eq!(flags(How::Stage(RequestStage::Body), false, None), " --stage body");
+        let staged = first_message("moss_toad", "Moss toad", How::Stage(RequestStage::Dress), false, None);
+        assert!(staged.starts_with("Make the model request \"Moss toad\" (moss_toad): its dress stage, run again (it's made in stages, a session each: the detached parts and the detail on the body)"), "{staged}");
+        assert!(staged.contains("run_claude.py moss_toad --prompt --stage dress\n") && staged.contains("run_claude.py moss_toad --settle --stage dress --reply"), "{staged}");
+        let whole = first_message("moss_toad", "Moss toad", How::Whole, false, Some(RequestStage::Study));
+        assert!(whole.contains("its whole recipe: its study stage (it's made in stages, a session each") && whole.contains("--prompt --stage study\n"), "{whole}");
         let ask = Ask { model: "claude-sonnet-5-5".into(), text: text.clone(), request: "moss_toad".into(), title: "Moss toad".into(), cap: 1500 };
         let body = session_body("agent_1", "env_1", &[("file_a".into(), "request/front.png".into())], &ask);
         assert_eq!(body["agent"]["type"], "agent_with_overrides");

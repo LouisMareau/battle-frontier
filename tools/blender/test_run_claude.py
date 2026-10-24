@@ -79,6 +79,23 @@ if mode == "finish":
         say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
     mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png"], "made a test prop")
 last = "Made it."
+if mode == "stage":
+    # a stage's run: its files written (a stand-in each), a line in the notes log
+    here = mr.folder(os.getcwd(), rid)
+    stage = prompt.split("This run is its\\n")[1].split(" stage,")[0].lower()
+    for name in mr.STAGE_FILES[stage]:
+        path = here / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if name == "lines.json":
+            path.write_text(json.dumps({{"pictures": {{}}, "front": {{"lines": []}}, "side": {{"lines": []}}}}), encoding="utf-8")
+        elif name.endswith(".png"):
+            path.write_bytes(b"stand-in")
+        else:
+            path.write_text("# the " + stage + " stage's\\n", encoding="utf-8")
+    (here / "plan").mkdir(exist_ok=True)
+    with open(here / "plan" / "notes.log", "a", encoding="utf-8") as notes:
+        notes.write("[" + stage + "] a guess\\n")
+    last = "Planned the " + stage + "."
 if mode == "lines":
     # the lines (no pictures here: only the front and the side), drawn as the run would
     here = mr.folder(os.getcwd(), rid)
@@ -297,6 +314,61 @@ waited = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "wait"
 check("a session by hand: wait ID --check leaves it for the user's check", mr.lines_ready(mr.load(SCRATCH, "test_by_hand")) and "lines ready" in waited.stdout, waited.stdout + waited.stderr)
 made = subprocess.run([sys.executable, str(HERE / "model_requests.py"), "new", "Checked one", "--check-lines"], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")
 check("  and new --check-lines asks for it", mr.load(SCRATCH, "checked_one")["check_lines"] is True, made.stdout + made.stderr)
+
+# 9j. made in stages (requests.md, "Made in stages"): a run per stage, each with one charge and
+# its own files; a stage ended with its files written is done, the request in progress still
+# (the editor starts the next); one without them failed, saying which; a stage without the
+# stages' files before it refused at once; the study with the lines checked first stops at the
+# lines, its run after the check planning the shape; the assembly's finish makes it done, every
+# stage done; a stage run again takes the stages after it with it
+fresh("test_stages", kind="creature", staged=True)
+code, out, rec, log = run("test_stages", "stage", "--stage", "study")
+check("the study stage: done with its files, the request in progress still (the editor's turn)", code == 0 and rec["status"] == "in_progress" and rec["stage"] == "study"
+      and rec["stages"] == ["study"] and rec["progress"]["step"] == "study done" and "test_stages: in_progress" in out, f"{code} {rec['status']} {rec['stage']} {rec['stages']} {out[-200:]}")
+check("  its log: the stage starting, which it is, done, the next the editor's", "the study stage starts" in log and "This run: the study stage, 1 of 7: the lines, the front and the side, and the shape planned" in log
+      and "The study stage is done: the editor starts the look stage next" in log, log[-600:])
+asked = rc.prompt(rec, stage="study")
+check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 7: the lines, the front and the side, and the shape planned" in asked
+      and "write private/requests/test_stages/plan/shape.md" in asked and "plan/notes.log is append-only" in asked and 'starting with "[study] "' in asked
+      and "from its step 3 to its step 5" in asked and "at the top of plan/shape.md (below)" in asked and "write private/requests/test_stages/model.py" not in asked, asked[-2500:])
+check("  the notes log appended, in the plan folder the stages share", (mr.folder(SCRATCH, "test_stages") / "plan" / "notes.log").read_text(encoding="utf-8") == "[study] a guess\n")
+check("  each stage estimated at its share of the whole; the stages together longer", mr.estimate(rec, "study") < mr.estimate(rec, "all") < sum(mr.estimate(rec, s) for s in mr.STAGES),
+      f"{[mr.estimate(rec, s) for s in mr.STAGES]} of {mr.estimate(rec, 'all')}")
+code, out, rec, log = run("test_stages", "quit", "--stage", "look")
+check("a stage that ends without its files: failed, saying which, the stages before it kept", rec["status"] == "failed"
+      and rec["progress"]["step"] == "failed: Claude ended without writing plan/look.md, materials.py (the look stage's)" and rec["stages"] == ["study"] and rec["stage"] == "look",
+      f"{rec['status']} {rec['progress']['step']} {rec['stages']}")
+code, out, rec, log = run("test_stages", "stage", "--stage", "body")
+check("a stage without the stages' files before it: refused at once, saying which stage to run", rec["status"] == "failed"
+      and rec["progress"]["step"] == "failed: nothing to build on: no plan/look.md yet (the look stage writes it: run it first)", rec["progress"]["step"])
+for name in ("look", "detail", "merge", "body", "dress"):
+    code, out, rec, log = run("test_stages", "stage", "--stage", name)
+asked = rc.prompt(rec, stage="body")
+check("the stages one after another, each done with its files; the body's prompt building on the plan and the materials, no detail, no rig",
+      rec["status"] == "in_progress" and rec["stages"] == ["study", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
+      and 'kit.load("body")' in asked and "materials.py (its COLOURS and\n  PAINT: use them, change nothing in it)" in asked and "No\n  detached part, no card, no fur, no rig" in asked
+      and "write private/requests/test_stages/model.py (requests.md, \"The kit\": the usual start)" in asked and "No finish yet: the assemble stage adds it" in asked, f"{rec['status']} {rec['stages']}")
+asked = rc.prompt(rec, stage="dress")
+check("  the dress's: the detached parts and the detail on the body, the body's file unchanged", 'kit.load("detail")' in asked and "def build(job, kit, materials, body)" in asked
+      and "body.py (read them, change nothing in them)" in asked, asked[-1500:])
+code, out, rec, log = run("test_stages", "finish", "--stage", "assemble")
+asked = rc.prompt(rec, stage="assemble")
+check("the assembly: a character rigged, finished; done, every stage done", code == 0 and rec["status"] == "done" and rec["prop"] == "test_prop" and rec["stages"] == list(mr.STAGES)
+      and rec["stage"] == "assemble" and "rig it: every part on the\n  bones that move it, as plan.md's chains say" in asked and "run_request.py test_stages --finish" in asked
+      and "Done: the prop test_prop" in log, f"{rec['status']} {rec['stages']} {log[-300:]}")
+code, out, rec, log = run("test_stages", "stage", "--stage", "look")
+check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "look"] and rec["stage"] == "look", f"{rec['stages']}")
+check("  made again with comments: told it was made in stages, which file holds what", "it was made in stages" in rc.prompt(dict(rec, comments="bigger ears"), again=True))
+check("  a stage the runner doesn't know: refused", run("test_stages", "stage", "--stage", "paint")[1].startswith("no such stage: paint"))
+# the study with the lines checked first: stops at them; after the check, the shape planned on them
+fresh("test_stages_check", kind="creature", staged=True, check_lines=True)
+code, out, rec, log = run("test_stages_check", "lines", "--stage", "study")
+check("the study stage with the lines checked first: stops at them, waiting for the user, the stage not done", rec["status"] == "waiting" and mr.lines_ready(rec) and rec["stages"] == []
+      and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 7: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
+      f"{rec['status']} {rec['stages']} {log[-500:]}")
+code, out, rec, log = run("test_stages_check", "stage", "--stage", "study", "--go-on", "--note", "the tail is longer")
+check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done", rec["status"] == "in_progress" and rec["stages"] == ["study"]
+      and "plan its shape on them" in log and "the tail is longer" in log and "Fix that in lines.json first" in log and "(the shape planned on the lines the user checked)" in log, f"{rec['status']} {rec['stages']} {log[-800:]}")
 
 # 9b. made once, made again with the user's comments on it (the window's "Make it again with these
 # comments"): from what the last run made, the comments it was given kept for the runs after it

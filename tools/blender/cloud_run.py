@@ -129,9 +129,12 @@ def setup(root, rid):
     here.mkdir(parents=True, exist_ok=True)
     given = UPLOADS / "request"
     copied = 0
-    for f in sorted(given.iterdir()) if given.is_dir() else []:
+    # (its plan folder with it, when it's made in stages)
+    for f in sorted(given.rglob("*")) if given.is_dir() else []:
         if f.is_file():
-            shutil.copyfile(f, here / f.name)
+            to = here / f.relative_to(given)
+            to.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(f, to)
             copied += 1
     if not (here / "request.json").is_file():
         print(f"no request.json among the uploads ({given}): nothing to make")

@@ -218,7 +218,7 @@ VARIED = """- the last run made it: private/requests/{id}/model.py built it (its
   game as the prop {prop}{made}. What it said back:
 {reply}
   Read model.py, and look at the renders and the drawings, before changing anything;
-- make its variants now, {count} besides it, each a prop of its own (requests.md, "Variants of a
+{staged}- make its variants now, {count} besides it, each a prop of its own (requests.md, "Variants of a
   model made"): {vary}
   Keep the model itself as the last run made it, the same shapes and the same seed: if
   model.py builds it in one go, make that a function of its settings first, the model itself
@@ -238,10 +238,11 @@ STOP = """- once profiles.png is drawn and every line sits on the design, stop t
   model on them. This run ends with the request waiting for that check: leave its status be.
 """
 # where a run after the user's check starts: their note (or that they look right) in {checked}
-CHECKED = """- the lines are drawn and the user has checked them: private/requests/{id}/lines.json,
+CHECKED_LINES = """- the lines are drawn and the user has checked them: private/requests/{id}/lines.json,
   drawn over the pictures in lines_PICTURE.png and as the front and the side in profiles.png
   (look at them). Keep lines.json. {checked}
-- model.py may already start with the design and the drawing sorted, as comments, from the run
+"""
+CHECKED = CHECKED_LINES + """- model.py may already start with the design and the drawing sorted, as comments, from the run
   that made the lines (requests.md, "The design, not the drawing"): build on them. If it
   doesn't, sort them first, at its top, and say in the reply what you took for the drawing;
 """
@@ -271,7 +272,7 @@ AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its 
   game as the prop {prop}. What it said back:
 {reply}
   Read model.py, and look at the renders and the drawings, before changing anything;
-{earlier}- the user has looked at that model, and says for this run:
+{staged}{earlier}- the user has looked at that model, and says for this run:
 {said}
   Make those changes, and what follows from them, keeping the rest as the last run made it:
   start from its model.py, never over from nothing. A change to the shapes or the proportions
@@ -367,6 +368,171 @@ VARIANTS_RUN = (HEAD + "Follow tools/blender/requests.md for this one request: v
                 "\"Variants of a model made\"; it's started already):\n" + READ + VARIED
                 + RULES.replace("{end}", "End with a few lines for the user: the variants you made, and how each differs from the\n"
                                          "model."))
+# a request made in stages (requests.md, "Made in stages"): each stage a run of its own, with
+# one charge, the plan folder shared between them ({stage}: this run's)
+STAGED = """This request is made in stages, a run of Claude each with one charge, the editor starting the
+next once the last has ended (requests.md, "Made in stages"): {stages}. This run is its
+{STAGE} stage, {k} of {n}: {about}. The stages share private/requests/{id}/plan/: each
+writes its own file there and no other, and plan/notes.log is append-only, a line each
+starting with "[{stage}] " (what you guessed, what you're unsure of, what another stage should
+know or change): add lines to it, never change or remove any.
+
+"""
+# a model made in stages, made again or varied: its files
+WAS_STAGED = """- it was made in stages (requests.md, "Made in stages"): model.py builds it from body.py (the
+  body), materials.py (the colours and the paint) and detail.py (the detached parts and the
+  detail), each loaded with kit.load, on plan.md; change whichever holds what the user asks
+  for (and plan.md with it);
+"""
+SHAPE_PLAN = """- write private/requests/{id}/plan/shape.md, the shape plan the other stages build on: the
+  design and the drawing sorted (above); the parts the design is made of (what each is, its
+  mass, where it attaches, its size and place in cells from the profiles); the proportions
+  measured off the pictures (heights in heads, widths against heights); the pose it's built
+  in; the block-out (a primitive for each mass: ellipsoid, capsule, tube, blob, with its
+  centre, radii and rotation in cells); the rig's chains (named as requests.md step 9 names
+  them, each joint in cells, the body's first; with the user's bones, theirs); and what stays
+  detached from the body (the lower jaw, the eyes, horns, claws, a prop's lid), named, for
+  the detail stage to plan;
+- append to plan/notes.log what you took for the drawing, what you guessed and what you're
+  unsure of ("[study] " lines);
+"""
+STUDY_RUN = (HEAD + STAGED + "Follow tools/blender/requests.md for this one request from its step 3 to its step 5 (it's\n"
+             "started already), then plan its shape:\n" + READ + "{lessons}{bones}{noted}"
+             + LINES.replace("Write both lists as comments\n  at the top of model.py before any shape", "Write both lists\n  at the top of plan/shape.md (below) before any shape")
+             + SHAPE_PLAN + RULES.replace("{end}", "End with one line saying what you planned."))
+# the study stage of a request that checks its lines first: it stops at the lines, as
+# LINES_RUN does, and another run of it plans the shape on the lines the user checked
+STUDY_LINES_RUN = (HEAD + STAGED + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
+                   "started already), then stop: the user checks the lines before the stages go on (the request\n"
+                   "says \"Let me check the lines first\"):\n"
+                   + READ + "{bones}{noted}"
+                   + LINES.replace("Write both lists as comments\n  at the top of model.py before any shape", "Keep both lists for\n  the reply")
+                   + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
+                                                   "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
+                                                   "lines you're unsure of."))
+STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its shape on them (it's started already):\n"
+                   + READ + "{lessons}" + CHECKED_LINES
+                   + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
+                   + RULES.replace("{end}", "End with one line saying what you planned."))
+LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + """- read plan/shape.md (the parts, as the study stage planned them, by name) and plan/notes.log,
+  and look at the lines the study stage drew (lines_PICTURE.png, profiles.png);
+- tell the design's colours from the drawing's light (requests.md, "The design, not the
+  drawing"): a part's colour is its lit tone, neither its shine nor its shade; shine and
+  reflections make a glossy material, a glow a glowing one. Measure each region off the
+  pictures: python tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1 lists a
+  box's main colours (zoom shows a part closer);
+- write private/requests/{id}/plan/look.md: each colour region with its hex and the part it's
+  on (shape.md's names), where its border runs (in cells, from the profiles); the markings and
+  the patterns (a belly, a mask, spots, stripes, the eyes, the teeth, the claws), each as a
+  paint volume (its shape, size and place in cells, on which part); what's glossy, matte or
+  glowing; what's too fine to model and would be a texture painted from the pictures;
+- write private/requests/{id}/materials.py, a module the build stages import with
+  kit.load("materials"): COLOURS, a dict of each region's name to its hex (or a material dict,
+  as kit.part and kit.wrap take colours); PAINT(kit), a function returning a dict of each
+  part's name to the list of paint volumes for its markings, each a kit shape with its region
+  (as paint= takes them); and nothing else: it builds no part (the body and dress stages do);
+- append to plan/notes.log what you guessed and what you'd change in shape.md (don't change
+  it: the merge stage decides), "[look] " lines;
+""" + RULES.replace("{end}", "End with one line saying what you planned."))
+DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's started already):\n" + READ + """- read plan/shape.md and plan/look.md (the parts and the colours, by name) and plan/notes.log,
+  and look at the lines (lines_PICTURE.png, profiles.png);
+- write private/requests/{id}/plan/detail.md: the detached parts, each named, with its shape,
+  its size and place in cells, its colour regions (look.md's) and the bone or chain it follows
+  (shape.md's chains: the lower jaw with its teeth and the tongue on the jaw's and the
+  tongue's, the eyes and the lids, claws, horns, plates, wings' spars, a prop's lid or door
+  on a bone of its own; requests.md, "Parts"); then the detail the body's skin can't carry,
+  grown on it where the pictures show it (requests.md, "Accurate", 4): tufts of fur,
+  feathers, scales, leaves, spines, a mane, hair, cloth as kit.cards (the region they root
+  on, their count, size, bend, lean, along, colour), a coat of strands as kit.fur (region,
+  count, length, droop), each where it roots and how dense; what the wind moves (kit.wind,
+  the strands, kit.plant_wind for a plant) and what stays still; and what it all costs
+  against the budget (the style's triangles);
+- append to plan/notes.log what you guessed and what you'd change in shape.md or look.md
+  (don't change them: the merge stage decides), "[detail] " lines;
+""" + RULES.replace("{end}", "End with one line saying what you planned."))
+MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started already):\n" + READ + """- read plan/shape.md, plan/look.md and plan/detail.md, and every line of plan/notes.log (the
+  stages' guesses, doubts and what each would change in the others'), and look at the lines
+  (lines_PICTURE.png, profiles.png) and at materials.py;
+- check they agree: every part named in one plan is in the others under the same name, each
+  colour region sits on a part, each detached part has its bone or chain, nothing is planned
+  twice (a horn as a part and as cards), nothing the pictures show is left out, the budget
+  holds. Decide each disagreement by the pictures and the user's notes;
+- write private/requests/{id}/plan.md, the one plan the build stages follow, whole: the design
+  and the drawing sorted (from shape.md); the parts in the order they're built, each with its
+  shape, size and place in cells, its colours and paint, its bone; the body's block-out and
+  how it's sculpted to the profiles (accurate), or its parts (smooth, low-poly); the
+  materials; the detail, where it roots and how dense; the rig's chains with their joints in
+  cells, and the actions (idle, roar...); the budget. A build stage reads plan.md and the
+  pictures, and no other plan: everything it needs is in it;
+- append to plan/notes.log each disagreement and how you decided it, "[merge] " lines; leave
+  lines.json, materials.py and the plan/ files as they are;
+""" + RULES.replace("{end}", "End with one line saying what you decided."))
+BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\n" + READ + """- read plan.md (whole: follow it) and plan/notes.log, and materials.py (its COLOURS and
+  PAINT: use them, change nothing in it), and look at the lines (lines_PICTURE.png,
+  profiles.png; job.profiles() has them in cells, as the model will stand);
+{lessons}- write private/requests/{id}/body.py, a module model.py imports with kit.load("body"):
+  def build(job, kit, materials) builds the body as plan.md says and returns its objects:
+  the skin (accurate: the block-out laid for every mass, kit.wrap over them all, sculpted to
+  the profiles; requests.md, "Accurate", 1 to 3), or its parts (smooth, low-poly: the torso,
+  the neck, the head with the upper jaw, the limbs, the tail, fleshy ears, a kit.part each
+  with its bone), coloured with materials.COLOURS and painted with materials.PAINT(kit). No
+  detached part, no card, no fur, no rig: the dress and assemble stages add those;
+- write private/requests/{id}/model.py (requests.md, "The kit": the usual start), then
+  materials = kit.load("materials"); body = kit.load("body").build(job, kit, materials);
+  kit.fit(body, job.height) (or as the settings above fit it); files = kit.previews(job,
+  body); kit.compare(job, files). No finish yet: the assemble stage adds it;
+- render it: python tools/blender/run_request.py {id}
+- compare private/requests/{id}/compare.png and the previews with the pictures (the shapes,
+  proportions, masses and colour regions, not the light: the previews are lit evenly, on
+  purpose); its last row has the lines on the model and how far each outline and the model
+  overlap (aim for about 85% or more where the poses match). Change body.py and render again
+  until the body matches (usually three to six tries): a primitive left showing through
+  unchanged isn't accurate;
+- append to plan/notes.log what you changed from the plan and why, and what the dress stage
+  should know (the body's objects' names, their regions), "[body] " lines;
+""" + RULES.replace("{end}", "End with one line saying what you built."))
+DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its detail (it's started already):\n" + READ + """- read plan.md and plan/detail.md (whole: follow them) and plan/notes.log (the body stage's
+  lines say what it changed), materials.py and body.py (read them, change nothing in them)
+  and model.py, and look at the renders (preview_*.png, compare.png) and the lines;
+- write private/requests/{id}/detail.py, a module model.py imports with kit.load("detail"):
+  def build(job, kit, materials, body) adds to the body built and returns what it adds: the
+  detached parts as kit.part parts overlapping the body (the lower jaw with its teeth and the
+  tongue, the eyes with kit.eyes, the lids, claws, horns, plates, a prop's lid or door), each
+  with bone= or bones= as plan.md says; then the detail grown on the body where the pictures
+  show it (requests.md, "Accurate", 4): kit.cards for tufts of fur, feathers, scales, leaves,
+  spines, a mane, cloth; kit.fur for a coat of strands; paint for the markings the body stage
+  left; and what the wind moves painted for it (kit.wind; a plant's parts in ONE
+  kit.plant_wind call), as plan.md and detail.md say, within the budget;
+- in model.py, after the body is built and fitted: detail = kit.load("detail").build(job,
+  kit, materials, body), then fit again when the detail changed its height (kit.fit(body +
+  detail, job.height)), then the previews and the compare on body + detail; change nothing
+  else in it;
+- render it: python tools/blender/run_request.py {id}
+- compare compare.png and the previews with the pictures: the details carry the character
+  (the eyes' size and place, the ears, the horns, the fur's density and length); change
+  detail.py and render again until they match;
+- append to plan/notes.log what you changed from the plan and why, "[dress] " lines;
+""" + RULES.replace("{end}", "End with one line saying what you added."))
+# the last stage: a character rigged ({assemble}: RIGGED), the model finished
+RIGGED = """rig it{rig}: every part on the
+  bones that move it, as plan.md's chains say, the jaw's and the tongue's chains added (and
+  the eyes' and the lids' when they move); give it its idle and its roar (kit.idle,
+  kit.action), render and look at preview_idle.png and preview_roar.png: nothing torn, the
+  jaw turning the right way, the lips meeting at rest (requests.md, step 9); then """
+ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's started already):\n" + READ + """- read plan.md and every line of plan/notes.log (each stage's guesses and changes), body.py,
+  materials.py, detail.py and model.py, and look at the renders (preview_*.png, compare.png)
+  and the lines;
+- in model.py: the body and the detail built and fitted as they are; {assemble}the previews,
+  and kit.finish(job, kit.parts(), files, reply=...) (with the category and the settings its
+  kind asks, above); its reply for the user: what was guessed (the notes say), what to look at;
+- render it: python tools/blender/run_request.py {id}, and compare: when something's off that
+  another stage owns (a part's shape in body.py, a colour in materials.py, the fur in
+  detail.py), fix it there, the small fixes that finish it, never a remake, and say so in
+  plan/notes.log ("[assemble] " lines);
+{variants}- add it to the project: python tools/blender/run_request.py {id} --finish
+- check: cargo run -q -p engine-content --bin content -- check
+""" + RULES.replace("{end}", MADE))
+STAGE_RUNS = {"look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
@@ -576,12 +742,15 @@ def settings_lines(record, root=None):
     return "\n".join(out)
 
 
-def part_of(record, go_on=False, again=False, variants=False):
+def part_of(record, go_on=False, again=False, variants=False, stage=None):
     """Which part of the recipe a run does: "all" of it; "lines", up to the front and the side,
     for a request that checks its lines first; "model", from the model on, once they're checked;
     "again", the model the last run made, made again with the user's comments on it;
     "variants", the model made kept and its variants made; "split", a request whose pictures
-    hold several of the same kind of asset, each made a request."""
+    hold several of the same kind of asset, each made a request; a `stage` of a request made
+    in stages, that stage (model_requests.py's STAGES)."""
+    if stage:
+        return stage
     if variants:
         return "variants"
     if again:
@@ -611,13 +780,15 @@ def vary_text(record):
             "  its shape, how its parts sit, its colours a shade apart; never another kind of thing.")
 
 
-def prompt(record, go_on=False, note="", again=False, variants=False, root=None):
+def prompt(record, go_on=False, note="", again=False, variants=False, root=None, stage=None):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
     user says is off in the lines (`note`, from the window's check) fixed first; made again
     (`again`), what the user says of the last run's model (`note`, else the record's comments);
-    `variants`, its variants made from its model. A request that asks for variants has them
-    made with its model. With the project (`root`), a run that builds the model reads first what
-    the ratings teach of its kind, when they teach anything yet."""
+    `variants`, its variants made from its model; a `stage` of a request made in stages, that
+    stage's charge (the study's, `go_on`: the shape planned on the lines the user checked). A
+    request that asks for variants has them made with its model. With the project (`root`), a
+    run that builds the model reads first what the ratings teach of its kind, when they teach
+    anything yet."""
     rid = record["id"]
     lessons = LESSONS.format(kind=mr.kind_key(record), id=rid) if root is not None and mr.lessons(root, rid) else ""
     note = (note.strip() or record["comments"].strip()) if again else note.strip()
@@ -642,10 +813,15 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     told = [c.strip() for c in record["earlier"] if str(c).strip()]
     earlier = ("- the runs that made it again before this one were told, in turn (those changes are made:\n  keep them):\n"
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
-    part = part_of(record, go_on, again, variants)
+    part = part_of(record, go_on, again, variants, stage)
     shapes = mr.outlined(record)
-    template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_FLOOR_RUN if record["kind"] == "floor" else AGAIN_RUN,
-                "variants": VARIANTS_RUN, "split": OUTLINED_RUN if shapes else SPLIT_RUN, "floor": FLOOR_RUN}[part]
+    if stage == "study":
+        template = STUDY_GO_ON_RUN if go_on else STUDY_LINES_RUN if record["check_lines"] else STUDY_RUN
+    elif stage:
+        template = STAGE_RUNS[stage]
+    else:
+        template = {"all": PROMPT, "lines": LINES_RUN, "model": GO_ON_RUN, "again": AGAIN_FLOOR_RUN if record["kind"] == "floor" else AGAIN_RUN,
+                    "variants": VARIANTS_RUN, "split": OUTLINED_RUN if shapes else SPLIT_RUN, "floor": FLOOR_RUN}[part]
     kind, height = record["kind"], record["height"]
     if kind == "floor":
         what = "a set of floor tiles, each a cell, laid to fit by wave function collapse"
@@ -679,11 +855,15 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None)
     # the variants made with the model (a run that makes it), as the settings ask
     step = VARIANT_STEP.format(count=count, vary=vary, last=count + 1) if count > 0 and kind != "floor" else ""
     made = f" (with its variants {', '.join(record['variant_props'])})" if record["variant_props"] else ""
+    # a stage's words: which it is, what it's charged with; a character's assembly rigs it
+    k = mr.STAGES.index(stage) + 1 if stage else 0
+    staged = dict(stages=", ".join(mr.STAGES), STAGE=(stage or "").upper(), stage=stage or "", k=k, n=len(mr.STAGES), about=mr.STAGE_ABOUT.get(stage, ""),
+                  assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "")
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
                            variants=step, count=len(shapes) if part == "split" and shapes else count, vary=vary, made=made,
-                           outlined=outlines_said(record, shapes), lessons=lessons)
+                           outlined=outlines_said(record, shapes), lessons=lessons, **staged)
 
 
 def outlines_said(record, shapes):
@@ -804,10 +984,16 @@ def stop_tree(proc):
 
 def unrunnable(root, rid, record, part, go_on, note, again, variants, say):
     """What keeps a run from starting (the request's status then), or None: nothing to go on
-    from, to make again from, to change or to vary yet, or split already."""
+    from, to make again from, to change or to vary yet, or split already; a stage without the
+    files of the stages before it."""
     here = mr.folder(root, rid)
     if go_on and not (here / "lines.json").is_file():
         return mr.fail(root, rid, "nothing to go on from: no lines.json yet (Start draws the lines first)")["status"]
+    if part in mr.STAGES:
+        for before in mr.STAGES[:mr.STAGES.index(part)]:
+            for name in mr.STAGE_FILES[before]:
+                if not (here / name).is_file():
+                    return mr.fail(root, rid, f"nothing to build on: no {name} yet (the {before} stage writes it: run it first)")["status"]
     if again and not (here / "model.py").is_file():
         return mr.fail(root, rid, "nothing to make again from: no model.py yet (Start makes it first)")["status"]
     if again and not note:
@@ -825,9 +1011,15 @@ def unrunnable(root, rid, record, part, go_on, note, again, variants, say):
     return None
 
 
-def announce(record, part, note, say):
-    """What the run is, in its log: its part of the recipe, what the user said, their bones."""
-    if part == "lines":
+def announce(record, part, note, say, go_on=False):
+    """What the run is, in its log: its part of the recipe (or its stage), what the user said,
+    their bones."""
+    if part in mr.STAGES:
+        k = mr.STAGES.index(part) + 1
+        how = (" (the lines first, for the user to check)" if part == "study" and record["check_lines"] and not go_on
+               else " (the shape planned on the lines the user checked)" if part == "study" and go_on else "")
+        say(f"This run: the {part} stage, {k} of {len(mr.STAGES)}: {mr.STAGE_ABOUT[part]}{how}")
+    elif part == "lines":
         say("This run: the lines, the front and the side, then it stops for the user to check them (\"Let me check the lines first\")")
     elif part == "model":
         say("This run goes on from the model, on the lines the user checked: " + (f"what's off: {note.strip()}" if note.strip() else "they look right"))
@@ -848,13 +1040,15 @@ def announce(record, part, note, say):
         say(f"The user has drawn the creature's bones over {bones_drawn(drawn)}: Claude reads the pictures by them")
 
 
-def conclude(root, rid, part, began, again, note, result, returncode, error, claude, say):
+def conclude(root, rid, part, began, again, note, result, returncode, error, claude, say, go_on=False):
     """A run's end, by what's on disk and what Claude said last (`result`: its result event, or
     {}; `error`: an error its messages had): done (split: its requests to make), waiting for the
-    user's check of its lines, or failed and why. The request's status."""
+    user's check of its lines, a stage done (its files written: the editor starts the next), or
+    failed and why. The request's status."""
     here = mr.folder(root, rid)
     record = mr.load(root, rid)
     last = str(result.get("result") or "").strip()
+    stage = part if part in mr.STAGES else None
     if part == "split" and record["children"] and returncode == 0 and not result.get("is_error"):
         # split: done, its requests to make
         p = dict(record["progress"])
@@ -865,6 +1059,8 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
         return "done"
     if record["status"] == "done":
         say(f"Done: the prop {record['prop']}" + (f", and its variants {', '.join(record['variant_props'])}" if record["variant_props"] else ""))
+        if stage:
+            mr.update(root, rid, stage=stage, stages=mr.stages_with(record, stage))
         if again:
             # the comments made: told to the runs made again after this one; the field emptied
             # unless the user has written others meanwhile
@@ -881,6 +1077,18 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
         reason = f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again'
     elif returncode != 0 or result.get("is_error"):
         reason = f"Claude stopped with an error ({result.get('subtype') or 'no result'}, exit code {returncode})"
+    elif stage == "study" and record["check_lines"] and not go_on:
+        # where it was asked to stop: the user's turn (the stage isn't done: its plan comes
+        # after their check)
+        if drawn_since(here / "profiles.png", began):
+            return mr.wait_for_check(root, rid)["status"]
+        reason = "Claude ended without drawing the front and the side (profiles.png)"
+    elif stage and stage != "assemble":
+        # its files written (the lines there, the rest by this run)
+        missing = [f for f in mr.STAGE_FILES[stage] if not ((here / f).is_file() if f in ("lines.json", "profiles.png") else drawn_since(here / f, began))]
+        if not missing:
+            return mr.stage_done(root, rid, stage)["status"]
+        reason = f"Claude ended without writing {', '.join(missing)} (the {stage} stage's)"
     elif part == "lines" and drawn_since(here / "profiles.png", began):
         # where it was asked to stop: the user's turn
         return mr.wait_for_check(root, rid)["status"]
@@ -893,25 +1101,26 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
     return mr.fail(root, rid, reason)["status"]
 
 
-def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False):
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False, stage=None):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
     the lines the user checked, `note` saying what's off in them. `again`: the model the last
     run made, made again as the user's comments say (`note`, else the record's). `variants`:
-    variants of the model made, as many as the request says, the model itself kept."""
+    variants of the model made, as many as the request says, the model itself kept. `stage`: a
+    request made in stages, this stage of it (the editor runs them one after another)."""
     record = mr.load(root, rid)
     here = mr.folder(root, rid)
     stop = here / "stop"
     if stop.exists():
         stop.unlink()
     began = time.time()
-    part = part_of(record, go_on, again, variants)
+    part = part_of(record, go_on, again, variants, stage)
     if again:
         note = note.strip() or record["comments"].strip()
 
     def say(text):
         mr.log(root, rid, text)
 
-    say("———————— a run starts ————————")
+    say(f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
     ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say)
     if ended is not None:
         return ended
@@ -931,12 +1140,15 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    text = prompt(record, go_on, note, again, variants, root=root)
-    mr.start(root, rid, mr.estimate(record, part))
+    text = prompt(record, go_on, note, again, variants, root=root, stage=stage)
+    if stage:
+        mr.stage_start(root, rid, stage)
+    else:
+        mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
     say(f"On: {on}")
-    announce(record, part, note, say)
+    announce(record, part, note, say, go_on)
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid)))
     say("Prompt:\n" + text)
@@ -1004,7 +1216,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         return mr.update(root, rid, status="waiting", progress=dict(mr.FIELDS["progress"]))["status"]
     if ended == "quiet":
         return mr.fail(root, rid, f"no word from Claude for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
-    return conclude(root, rid, part, began, again, note, state["result"] or {}, proc.returncode, state["error"], claude, say)
+    return conclude(root, rid, part, began, again, note, state["result"] or {}, proc.returncode, state["error"], claude, say, go_on)
 
 
 # ---------------------------------------------------------------- in the cloud: the web editor's runs
@@ -1025,28 +1237,31 @@ def prompt_file(rid):
     return Path(tempfile.gettempdir()) / f"bf-prompt-{rid}.txt"
 
 
-def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False):
+def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False, stage=None):
     """--prompt: the run's start in the cloud, as Start's here (its checks, in progress from
     now, its log), and its prompt written for the sandbox's Claude to follow. The request's
     status."""
     record = mr.load(root, rid)
-    part = part_of(record, go_on, again, variants)
+    part = part_of(record, go_on, again, variants, stage)
     if again:
         note = note.strip() or record["comments"].strip()
 
     def say(text):
         mr.log(root, rid, text)
 
-    say("———————— a run starts ————————")
+    say(f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
     ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say)
     if ended is not None:
         print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
         return ended
-    text = CLOUD + prompt(record, go_on, note, again, variants, root=root).replace(CHECK, CLOUD_CHECK)
-    mr.start(root, rid, mr.estimate(record, part))
+    text = CLOUD + prompt(record, go_on, note, again, variants, root=root, stage=stage).replace(CHECK, CLOUD_CHECK)
+    if stage:
+        mr.stage_start(root, rid, stage)
+    else:
+        mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say("In the cloud: Claude in a sandbox of Anthropic's, on the user's own API key (the web editor's run)")
-    announce(record, part, note, say)
+    announce(record, part, note, say, go_on)
     say("Prompt:\n" + text)
     path = prompt_file(rid)
     path.write_text(text, encoding="utf-8")
@@ -1054,11 +1269,11 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False)
     return "in_progress"
 
 
-def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False):
+def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False, stage=None):
     """--settle: the run's end in the cloud, as a run's here ends, by what's on disk (`reply`:
     the sandbox's Claude's line on what it made). The request's status."""
     record = mr.load(root, rid)
-    part = part_of(record, go_on, again, variants)
+    part = part_of(record, go_on, again, variants, stage)
     if again:
         note = note.strip() or record["comments"].strip()
 
@@ -1066,7 +1281,7 @@ def settle(root, rid, reply="", go_on=False, note="", again=False, variants=Fals
         mr.log(root, rid, text)
 
     began = record["progress"]["started"] or time.time()
-    return conclude(root, rid, part, began, again, note, {"result": reply} if reply.strip() else {}, 0, None, "claude", say)
+    return conclude(root, rid, part, began, again, note, {"result": reply} if reply.strip() else {}, 0, None, "claude", say, go_on)
 
 
 def main(argv):
@@ -1084,7 +1299,11 @@ def main(argv):
         note = argv[argv.index("--note") + 1]
     if "--note-file" in argv:
         note = Path(argv[argv.index("--note-file") + 1]).read_text(encoding="utf-8")
-    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv)
+    stage = argv[argv.index("--stage") + 1] if "--stage" in argv else None
+    if stage is not None and stage not in mr.STAGES:
+        print(f"no such stage: {stage} (one of {', '.join(mr.STAGES)})")
+        return 2
+    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv, stage)
     root = mr.find_root(Path.cwd())
     if "--prompt" in argv:
         status = start_in_cloud(root, rid, *how)

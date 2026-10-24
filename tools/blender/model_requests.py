@@ -97,6 +97,12 @@ FIELDS = {
     # it can be
     "many": False,
     "check_lines": False,
+    # made in stages (requests.md, "Made in stages"): a run of Claude per stage, each with one
+    # charge, the editor starting the next once the last has ended; the stage running (or the
+    # last to end), and the stages done, in their order
+    "staged": False,
+    "stage": "",
+    "stages": [],
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
@@ -160,6 +166,30 @@ LINES_READY = "lines ready: check them"
 # about how much of a run the lines take (reading the pictures, the lines over them, the front
 # and the side); the model takes the rest
 LINES_PART = 0.4
+# the stages a request is made in when it asks (requests.md, "Made in stages"), in order: a run
+# of its own each, with one charge; the files each owns (written by it alone, all there once
+# it's done); what each takes of the whole's estimate (more in all: each reads the pictures and
+# the plan again); and what each is charged with, in a few words
+STAGES = ("study", "look", "detail", "merge", "body", "dress", "assemble")
+STAGE_FILES = {
+    "study": ("lines.json", "profiles.png", "plan/shape.md"),
+    "look": ("plan/look.md", "materials.py"),
+    "detail": ("plan/detail.md",),
+    "merge": ("plan.md",),
+    "body": ("body.py", "model.py"),
+    "dress": ("detail.py",),
+    "assemble": (),
+}
+STAGE_SHARE = {"study": 0.45, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
+STAGE_ABOUT = {
+    "study": "the lines, the front and the side, and the shape planned",
+    "look": "the colours and the materials planned",
+    "detail": "the detached parts and the detail planned",
+    "merge": "the plans checked against each other, into one",
+    "body": "the body built on the plan",
+    "dress": "the detached parts and the detail on the body",
+    "assemble": "put together, rigged and finished",
+}
 PICTURES = (".png", ".jpg", ".jpeg", ".webp")
 
 
@@ -550,6 +580,8 @@ def estimate(record, part="all"):
     that makes the model makes its variants too: a part more for each."""
     if part == "split":
         return 3.0
+    if part in STAGES:
+        return float(max(1, round(estimate(record, "all") * STAGE_SHARE[part])))
     # what the first runs took: a creature about 10 minutes, a small one 2
     minutes = 12.0 if record["kind"] == "character" else 8.0
     minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
@@ -569,6 +601,42 @@ def start(root, rid, minutes=None):
     record = load(root, rid)
     minutes = float(minutes) if minutes else estimate(record)
     return update(root, rid, status="in_progress", progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+
+
+def next_stage(record):
+    """The first stage not done yet of a request made in stages; None once they all are."""
+    done = set(record.get("stages") or [])
+    return next((s for s in STAGES if s not in done), None)
+
+
+def stages_with(record, stage):
+    """The request's stages done with this one, in their order."""
+    return [s for s in STAGES if s in set(record.get("stages") or []) | {stage}]
+
+
+def stage_start(root, rid, stage, minutes=None):
+    """A stage's run in progress from now, its estimate the stage's share of the whole's: the
+    stages after it to do again (a stage run again takes those after it with it)."""
+    record = load(root, rid)
+    k = STAGES.index(stage)
+    done = [s for s in record.get("stages") or [] if STAGES.index(s) < k]
+    minutes = float(minutes) if minutes else estimate(record, stage)
+    log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}): {STAGE_ABOUT[stage]}")
+    return update(root, rid, status="in_progress", stage=stage, stages=done,
+                  progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+
+
+def stage_done(root, rid, stage):
+    """A stage's run ended with its files written: done, the request in progress still (the
+    editor starts the next stage; the last one's finish makes the request done)."""
+    record = load(root, rid)
+    p = dict(record["progress"])
+    took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
+    p.update(step=f"{stage} done", done=1.0, minutes=float(round(took, 1)))
+    stages = stages_with(record, stage)
+    after = next_stage(dict(record, stages=stages))
+    log(root, rid, f"The {stage} stage is done" + (f": the editor starts the {after} stage next" if after else ""))
+    return update(root, rid, status="in_progress", stage=stage, stages=stages, progress=p)
 
 
 def step(root, rid, text, done=None):

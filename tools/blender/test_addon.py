@@ -397,6 +397,24 @@ except ValueError:
 check("  smooth too; a brush it doesn't know is refused", smoothed > 0 and refused)
 clear()
 
+# kit.load: a module of the request's own (a stage's file: requests.md, "Made in stages"),
+# imported from its folder by name, afresh each time; none there, said
+import tempfile  # noqa: E402
+import types  # noqa: E402
+staged = Path(tempfile.mkdtemp(prefix="bf-staged-"))
+(staged / "materials.py").write_text('COLOURS = {"skin": "#aabbcc"}\n', encoding="utf-8")
+stand_in = types.SimpleNamespace(dir=staged, id="staged_one")
+loaded = kit.load("materials", stand_in).COLOURS
+(staged / "materials.py").write_text('COLOURS = {"skin": "#112233"}\n', encoding="utf-8")
+try:
+    kit.load("body", stand_in)
+    unfound = ""
+except FileNotFoundError as e:
+    unfound = str(e)
+check("kit.load: a module of the request's own from its folder, afresh each time; one not there said", loaded == {"skin": "#aabbcc"} and kit.load("materials", stand_in).COLOURS == {"skin": "#112233"}
+      and "no body.py" in unfound and "the stage that writes it hasn't run" in unfound, f"{loaded} {unfound}")
+shutil.rmtree(staged, ignore_errors=True)
+
 # the accurate body in one skin: a block-out (a torso, a head, two legs, a tail) wrapped in one
 # fresh surface, melted and subdivided, coloured by the nearest primitive, the block-out gone;
 # detail grown on it as curved cards, painted for the wind
