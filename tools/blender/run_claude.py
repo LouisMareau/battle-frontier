@@ -33,7 +33,7 @@ outline, as tall and on as many cells as the user said; the rest are left out.
 Claude Code (`claude`: CLAUDE names the program, else the PATH, else ~/.local/bin) gets the
 recipe (requests.md) for that one request and only the tools it needs, set in the request's
 claude-settings.json: reading the project, writing in the request's folder (and running its
-own helper scripts there), Blender through
+own helper scripts there, and python -c one-liners), Blender through
 run_request.py, model_requests.py and the content check. Anything else is refused, never
 asked (nobody is there to answer). Everything it does goes into the request's log.txt, a line
 each, timed by the computer's clock: Claude reached and the model it runs, what was sent,
@@ -265,12 +265,15 @@ CHECKED = CHECKED_LINES + """- model.py may already start with the design and th
   doesn't, sort them first, at its top, and say in the reply what you took for the drawing;
 """
 RULES = """
-Run commands with the Bash tool, exactly as written above, from the project folder (no cd). A
-helper script of your own (one that writes lines.json from numbers, say) goes in
-private/requests/{id}/ and runs as python private/requests/{id}/NAME.py; nothing runs from
-anywhere else, and anything not allowed is refused, never asked. Write only inside
-private/requests/{id}/. Don't use git, don't change anything else in the project (finishing
-writes the prop itself), don't touch other requests. {end}"""
+Run commands with the Bash tool, exactly as written above, from the project folder (no cd), one
+command a call: a call is refused whole when any part of it isn't allowed (nothing joined with
+; or &&, no cd, nothing from /tmp), and a refusal is of that one call, never of the session:
+run the allowed command on its own and go on. Allowed besides the commands above: python -c
+"...", a helper script of your own in private/requests/{id}/ run as python
+private/requests/{id}/NAME.py (one that writes lines.json from numbers, say), mkdir there, ls,
+and reading files. Write only inside private/requests/{id}/. Don't use git, don't change
+anything else in the project (finishing writes the prop itself), don't touch other requests.
+{end}"""
 MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
@@ -794,8 +797,8 @@ def allowed(rid, stage=None):
         f"Bash(python tools/blender/run_request.py {rid})", f"Bash(python tools/blender/run_request.py {rid} *)",
         "Bash(python tools/blender/model_requests.py *)",
         # a helper script of its own, in its folder (one that writes lines.json from numbers, say),
-        # and a folder made there
-        f"Bash(python {here}/*)", f"Bash(mkdir {here}/*)", f"Bash(mkdir -p {here}/*)",
+        # a one-liner, and a folder made there
+        f"Bash(python {here}/*)", "Bash(python -c *)", f"Bash(mkdir {here}/*)", f"Bash(mkdir -p {here}/*)",
         "Bash(cargo run -q -p engine-content --bin content -- check)",
         "Bash(ls)", "Bash(ls *)",
     ]

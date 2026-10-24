@@ -201,8 +201,10 @@ on its own (it goes on if the editor closes), which:
   project, writing and editing in the request's folder, `python tools/blender/run_request.py
   ID` (Blender), `python tools/blender/model_requests.py ...`, its own helper scripts in its
   folder (`python private/requests/ID/NAME.py`: one that writes `lines.json` from numbers,
-  say), the content check and `ls`. Anything else is refused, never asked: nobody is there to
-  answer (a run that needs more stops and says so in its reply);
+  say), `python -c` one-liners, `mkdir` there, the content check and `ls`. Anything else is
+  refused, never asked: nobody is there to answer. A call is refused whole when any part of
+  it isn't allowed (a chain with `;` or `&&`, a `cd`, a script in `/tmp`), so the prompt asks
+  for one command a call and says a refusal is of that call alone, not of the session;
 - writes everything to the request's `log.txt`, a line each, timed: the run starting, the
   program and its version, what was sent (the command, what's allowed, the prompt), "Claude
   reached" with the model it runs, each message, thought, tool call (→) and answer (←, × for

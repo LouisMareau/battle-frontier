@@ -187,10 +187,10 @@ for wanted in ("a run starts", "Claude Code: ", "(9.9.9 (stand-in))", "--model o
 settings = json.loads((mr.folder(SCRATCH, "test_one") / "claude-settings.json").read_text(encoding="utf-8"))
 allow = settings["permissions"]["allow"]
 check("  its tools: reading, writing in its folder, Blender through run_request.py, its own scripts there, nothing else", "Write(private/requests/test_one/**)" in allow
-      and "Bash(python tools/blender/run_request.py test_one *)" in allow and "Bash(python private/requests/test_one/*)" in allow
+      and "Bash(python tools/blender/run_request.py test_one *)" in allow and "Bash(python private/requests/test_one/*)" in allow and "Bash(python -c *)" in allow
       and not any(a in ("Write", "Edit", "Bash") or a.startswith("Bash(git") for a in allow), str(allow))
-check("  told so: a helper script of its own runs from its folder, nothing from elsewhere", "runs as python private/requests/test_one/NAME.py; nothing runs from" in log
-      and "from the project folder (no cd)" in log)
+check("  told so: one command a call, a refusal of that call only, a helper script of its own from its folder", "private/requests/test_one/NAME.py (one that writes lines.json from numbers, say)" in log
+      and "from the project folder (no cd), one" in log and "a refusal is of that one call, never of the session" in log and "nothing joined with" in log)
 raw = (mr.folder(SCRATCH, "test_one") / "run.jsonl").read_text(encoding="utf-8").splitlines()
 check("  the raw stream kept, without the pieces of what was being written", len(raw) == 4 and json.loads(raw[0])["model"] == "claude-test-1"
       and "stream_event" not in log and "partial_json" not in log, f"{len(raw)} lines")
