@@ -4,16 +4,19 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
     python tools/blender/run_claude.py ID --again [--note "what to change"]
     python tools/blender/run_claude.py ID --variants
-    python tools/blender/run_claude.py ID --stage study|research|look|detail|merge|body|dress|assemble [--go-on]
+    python tools/blender/run_claude.py ID --stage study|research|review|look|detail|merge|body|dress|assemble [--go-on] [--role subject|references|methods]
     python3 tools/blender/run_claude.py ID --prompt [--go-on] [--again] [--variants] [--stage NAME] [--note-file PATH]
     python3 tools/blender/run_claude.py ID --settle [the same] [--reply "what was made"]
 
 A request made in stages ("staged", the editor's "Make it in stages"; requests.md, "Made in
 stages") is made by a run per stage, --stage NAME, each charged with one thing (the study, the
-research online, the look, the detail, the merge, the body, the dress, the assembly): its
-prompt is that charge, and it ends with the stage's files written, the editor starting the
-next. The research stage alone may read the web (Claude Code's WebSearch and WebFetch, and
-model_requests.py fetch for its reference pictures).
+research online, its review, the look, the detail, the merge, the body, the dress, the
+assembly): its prompt is that charge, and it ends with the stage's files written, the editor
+starting the next. The research stage runs three researchers at once, a Claude each (the
+subject, the reference pictures, the methods; --role runs one alone), the only runs that may
+read the web (Claude Code's WebSearch and WebFetch, and model_requests.py fetch for the
+pictures, within the request's room for them); the review, the lead's, asks for a second
+pass of them when something's missing, else compiles what they found.
 
 A request whose pictures hold several drawings of the same kind of asset ("several", the
 editor's "Process multiple": trees, bushes, rocks...) is split by its first run: Claude finds
@@ -422,41 +425,103 @@ STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its sh
                    + READ + "{lessons}" + CHECKED_LINES
                    + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
                    + RULES.replace("{end}", "End with one line saying what you planned."))
-# the research stage's reference pictures, fetched here; in the cloud (its sandbox's network
-# shut), their addresses noted instead
-FETCH_REFS = """- reference pictures: for each view or detail the pictures lack, find a picture that shows
-  it and fetch it: python tools/blender/model_requests.py fetch {id} URL --name NAME (into
-  plan/refs/: png, jpeg, webp or gif, at most 8 MB), then look at it (Read) and keep it only
-  when it shows what was wanted (one that doesn't is left out of research.md); three to
-  eight in all.
-  They're for the modeller to look at, never copied: no texture or shape taken from them;
+# the research stage: three researchers at once (a run of Claude each, its own file; in the
+# cloud, one session does the three in turn), and a second pass when the lead's review asks
+# more ({more}: MORE then)
+RESEARCHER = """You are its {ROLE} researcher, one of three working at once ({roles}), each writing
+private/requests/{id}/plan/research/{role}.md and nothing else of the plan, with
+"[research:{role}] " lines in plan/notes.log. Pass {pass_} of at most 2.{more}
+
 """
-CLOUD_REFS = """- reference pictures: none can be brought into this sandbox (its network is shut): for each
-  view or detail the pictures lack, find a picture that shows it, look at it through the web
-  fetch tool when it can be read, and note its address and what it shows in research.md, for
-  the user to open; nothing copied from them;
-"""
-RESEARCH_RUN = (HEAD + STAGED + "Look the design up online, for the stages after you (it's started already):\n" + READ + """- read plan/shape.md (what the study stage made of the pictures: the parts, the proportions,
+MORE = """ The lead reviewed the first pass and asks for more:
+read plan/research/more.md (your section first) and answer it in your file under a "## Second
+pass" heading, keeping the first pass's text."""
+RESEARCH_READ = """- read plan/shape.md (what the study stage made of the pictures: the parts, the proportions,
   what it guessed) and every line of plan/notes.log (its guesses and doubts), and look at the
   lines it made (lines_PICTURE.png, profiles.png);
-- research online with the web search and fetch tools, for what the stages after you need
-  and the pictures don't give: what the design is drawn from (a named creature, character or
-  object the notes or the pictures name: how it looks; a made-up one: the animals, plants or
-  things it's built from, their anatomy and proportions, how their parts attach and move, how
-  their fur, scales, feathers or bark lie); the views the pictures lack (the back, the
-  underside, the feet, the inside of the mouth); the colours such a thing has in life where
-  the pictures are unsure; and how to do the steps the plan calls for that are unusual, in
-  Blender or the kit (how scales are laid as cards, how a mane is carded, how a jaw or a
-  wing is rigged, how a fin bends): find a source that says, read it, and keep the gist;
-{refs}- write private/requests/{id}/plan/research.md: what the design is, in a line; the facts
-  found (proportions, how parts attach, colours in life, how the detail lies), each with
-  where it came from (the page's address); the references kept, each with its file in
-  plan/refs/ (or its address), what it shows and where it came from; the how-tos, each a few
-  lines with its source; the lead's doubts answered, and what stays unknown. What the user's
-  notes say wins over anything found;
-- append to plan/notes.log what the web changed in the lead's guesses and what you couldn't
-  find, "[research] " lines;
-""" + RULES.replace("{end}", "End with one line saying what you found."))
+"""
+# how the references researcher brings a picture in: fetched here; in the cloud (its sandbox's
+# network shut), its address noted instead
+FETCH_HOW = """find a picture that shows it and fetch it:
+  python tools/blender/model_requests.py fetch {id} URL --name NAME (into plan/refs/: png,
+  jpeg, webp or gif, 8 MB at most each, 16 in all for the request: the command says how many
+  are taken), then look at it (Read) and keep it only when it shows what was wanted (one that
+  doesn't is left out of your file); up to eight this pass. They're for the modeller to look
+  at, never copied: no texture or shape taken from them"""
+CLOUD_FETCH_HOW = """find a picture that shows it, look at it through the web fetch tool when it can be read, and
+  note its address and what it shows: none can be brought into this sandbox (its network is
+  shut), the user opens them by their addresses; nothing copied from them"""
+SUBJECT = """- research online with the web search and fetch tools what the design is drawn from: a named
+  creature, character or object the notes or the pictures name (how it looks, from every
+  side); a made-up one: the animals, plants or things it's built from, their anatomy and
+  proportions (heights in heads, where the limbs attach, how the joints bend), how their
+  parts attach and move, how their fur, scales, feathers or bark lie, the colours such a
+  thing has in life where the pictures are unsure; and the lead's doubts (the notes), each
+  answered where the web can. A diagram or a photo that says it best is kept as the
+  references researcher keeps pictures, at most three;
+- write private/requests/{id}/plan/research/subject.md: what the design is, in a line; then
+  the facts, each with where it came from (the page's address); the lead's doubts answered;
+  what stays unknown. What the user's notes say wins over anything found;
+"""
+REFERENCES = """- gather reference pictures of what the user's pictures don't show: the views the model needs
+  (the back, the underside, the feet, the face straight on, the inside of the mouth) and the
+  details (how the fur lies, a scale's shape, a claw, a horn's ridges), of the thing the
+  design is drawn from (a named one: itself; a made-up one: what it's built from). For each,
+  {fetching};
+- write private/requests/{id}/plan/research/references.md: each picture kept, with its file in
+  plan/refs/ (or its address), what it shows (which view, which detail), where it came from;
+  and the views and details you couldn't find;
+"""
+METHODS = """- research online how to do the steps the plan calls for that are unusual, in Blender or the
+  kit (tools/blender/request_kit.py: read what it offers first; requests.md's "Accurate",
+  "Parts", "The wind"): how scales are laid as cards, how a mane or feathers are carded, how
+  a jaw, a wing or a tail is rigged, how a fin or a cloth bends, how a marking is painted,
+  how a surface is sculpted to a reference: for each, find a source that says, read it, and
+  keep the gist, worked into the kit's own calls where it maps onto them. A picture that
+  shows a technique is kept as the references researcher keeps pictures, at most three;
+- write private/requests/{id}/plan/research/methods.md: each how-to a few lines, in the order
+  the stages will need them, with its source; what you couldn't find;
+"""
+ROLE_CHARGE = {"subject": SUBJECT, "references": REFERENCES, "methods": METHODS}
+RESEARCH_END = RULES.replace("{end}", "End with one line saying what you found.")
+# one researcher's run (here: the three at once)
+RESEARCHER_RUN = (HEAD + STAGED + RESEARCHER + "Look the design up online, for the stages after you (it's started already):\n"
+                  + READ + RESEARCH_READ + "{charge}" + RESEARCH_END)
+# in the cloud, one session does the three in turn
+RESEARCH_CLOUD_RUN = (HEAD + STAGED + """In the cloud this stage's three researchers run one after another, in this one session, you
+being each in turn ({roles}): each writes its own file, private/requests/{id}/plan/research/ROLE.md,
+and "[research:ROLE] " lines in plan/notes.log. Pass {pass_} of at most 2.{more}
+
+Look the design up online, for the stages after you (it's started already):
+""" + READ + RESEARCH_READ + "- as the subject researcher:\n" + SUBJECT + "- as the references researcher:\n" + REFERENCES
+                      + "- as the methods researcher:\n" + METHODS + RESEARCH_END)
+# the lead's review of the research: on the first pass, more asked when something's missing
+# (the researchers run again on plan/research/more.md), else compiled; the second compiles
+REVIEW_FIRST = """- then, this being the first pass: when something the model needs is still missing (a view
+  no reference shows, a fact unsure, a how-to unknown) and the web would likely have it, write
+  private/requests/{id}/plan/research/more.md, a section per researcher ("## subject",
+  "## references", "## methods") with what each should find, and stop there: the three run
+  again on it, and you review again. Otherwise write plan/research.md as below;
+"""
+REVIEW_LAST = """- then, this being the second pass (the last: no more research after it), write
+  plan/research.md as below;
+"""
+REVIEW_RUN = (HEAD + STAGED + "Review the research (pass {pass_} of at most 2; it's started already):\n" + READ + """- read plan/shape.md and every line of plan/notes.log, then the researchers' files:
+  plan/research/subject.md, plan/research/references.md and plan/research/methods.md, and
+  look at every picture in plan/refs/ beside the user's pictures;
+- check them: each reference against the design (does it show the view or the detail it was
+  kept for, of the right kind of thing? one that misleads is left out), each fact against the
+  pictures and the user's notes (the notes win), each how-to against the kit (does the kit do
+  it, and how); and what's still missing for a model as detailed as the pictures and the
+  style allow;
+{review_end}- private/requests/{id}/plan/research.md, the one research the stages after you read: what
+  the design is, in a line; the facts kept, each with its source; the references kept, each
+  with its file in plan/refs/ (or its address), what it shows and when a builder should look
+  at it; the how-tos kept, in the order the stages need them; what stays unknown, decided by
+  you;
+- append to plan/notes.log what you dropped and why, and what stays unknown, "[review] "
+  lines;
+""" + RULES.replace("{end}", "End with one line saying what you decided."))
 LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + """- read plan/shape.md (the parts, as the study stage planned them, by name), plan/research.md
   (what the research stage found online: the colours such a thing has in life, its
   references in plan/refs/: look at them) and plan/notes.log, and look at the lines the study
@@ -583,7 +648,7 @@ ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's sta
 {variants}- add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """ + RULES.replace("{end}", MADE))
-STAGE_RUNS = {"research": RESEARCH_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
+STAGE_RUNS = {"review": REVIEW_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
@@ -835,12 +900,13 @@ def vary_text(record):
             "  its shape, how its parts sit, its colours a shade apart; never another kind of thing.")
 
 
-def prompt(record, go_on=False, note="", again=False, variants=False, root=None, stage=None):
+def prompt(record, go_on=False, note="", again=False, variants=False, root=None, stage=None, role=None, cloud=False):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
     user says is off in the lines (`note`, from the window's check) fixed first; made again
     (`again`), what the user says of the last run's model (`note`, else the record's comments);
     `variants`, its variants made from its model; a `stage` of a request made in stages, that
-    stage's charge (the study's, `go_on`: the shape planned on the lines the user checked). A
+    stage's charge (the study's, `go_on`: the shape planned on the lines the user checked; the
+    research's, `role`: one of its researchers, else the three in turn, as the `cloud` does). A
     request that asks for variants has them made with its model. With the project (`root`), a
     run that builds the model reads first what the ratings teach of its kind, when they teach
     anything yet."""
@@ -872,6 +938,8 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
     shapes = mr.outlined(record)
     if stage == "study":
         template = STUDY_GO_ON_RUN if go_on else STUDY_LINES_RUN if record["check_lines"] else STUDY_RUN
+    elif stage == "research":
+        template = RESEARCHER_RUN if role and not cloud else RESEARCH_CLOUD_RUN
     elif stage:
         template = STAGE_RUNS[stage]
     else:
@@ -912,8 +980,14 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
     made = f" (with its variants {', '.join(record['variant_props'])})" if record["variant_props"] else ""
     # a stage's words: which it is, what it's charged with; a character's assembly rigs it
     k = mr.STAGES.index(stage) + 1 if stage else 0
+    # the research's researchers and its pass, the review's
+    second = int(record.get("research_pass") or 1) >= 2
+    fetching = (CLOUD_FETCH_HOW if cloud else FETCH_HOW).format(id=rid)
+    charge = ROLE_CHARGE.get(role, "").format(id=rid, fetching=fetching)
     staged = dict(stages=", ".join(mr.STAGES), STAGE=(stage or "").upper(), stage=stage or "", k=k, n=len(mr.STAGES), about=mr.STAGE_ABOUT.get(stage, ""),
-                  assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "", refs=FETCH_REFS.format(id=rid))
+                  assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "",
+                  ROLE=(role or "").upper(), role=role or "", roles="the subject, the references, the methods", pass_=2 if second else 1, more=MORE if second else "",
+                  fetching=fetching, charge=charge, review_end=REVIEW_LAST if second else REVIEW_FIRST.format(id=rid))
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
@@ -1138,6 +1212,9 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
         if drawn_since(here / "profiles.png", began):
             return mr.wait_for_check(root, rid)["status"]
         reason = "Claude ended without drawing the front and the side (profiles.png)"
+    elif stage == "review" and int(record.get("research_pass") or 1) < 2 and drawn_since(here / "plan" / "research" / "more.md", began) and not drawn_since(here / "plan" / "research.md", began):
+        # the lead asks for a second research pass: the researchers again, then this review
+        return mr.review_more(root, rid)["status"]
     elif stage and stage != "assemble":
         # its files written (the lines there, the rest by this run)
         missing = [f for f in mr.STAGE_FILES[stage] if not ((here / f).is_file() if f in ("lines.json", "profiles.png") else drawn_since(here / f, began))]
@@ -1156,12 +1233,77 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
     return mr.fail(root, rid, reason)["status"]
 
 
-def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False, stage=None):
+def claude_once(root, rid, claude, env, args, text, say, stop, quiet, raw_name="run.jsonl"):
+    """One Claude Code on a prompt, followed to its end: what it did in the log (`say`), its
+    whole events raw in `raw_name`. Its result event (or {}), its exit code, an error its
+    messages had, what it cost, and how it was stopped: "cancelled" (the stop file), "quiet"
+    (no word for `quiet` seconds), or None."""
+    here = mr.folder(root, rid)
+    extra = {} if os.name == "nt" else {"start_new_session": True}
+    proc = subprocess.Popen(program(claude) + args, cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, **extra)
+    state = {"last": time.time(), "model": None, "result": None, "error": None}
+    lock = threading.Lock()
+    raw = open(here / raw_name, "a", encoding="utf-8", newline="\n")
+
+    def out():
+        for line in proc.stdout:
+            with lock:
+                state["last"] = time.time()
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    if line.strip():
+                        say(line.rstrip())
+                    continue
+                # the whole events kept raw, not the pieces of one being written
+                if event.get("type") != "stream_event":
+                    raw.write(line)
+                    raw.flush()
+                for said in describe(event, state):
+                    say(said)
+
+    def err():
+        for line in proc.stderr:
+            with lock:
+                state["last"] = time.time()
+                if line.strip():
+                    say("(Claude Code says) " + line.rstrip())
+
+    readers = [threading.Thread(target=out, daemon=True), threading.Thread(target=err, daemon=True)]
+    for t in readers:
+        t.start()
+    try:
+        proc.stdin.write(text)
+        proc.stdin.close()
+    except OSError:
+        pass
+    ended = None
+    while proc.poll() is None:
+        time.sleep(0.5)
+        if stop.exists():
+            stop_tree(proc)
+            ended = "cancelled"
+        elif time.time() - state["last"] > quiet:
+            stop_tree(proc)
+            ended = "quiet"
+        if ended:
+            break
+    proc.wait()
+    for t in readers:
+        t.join(timeout=10)
+    raw.close()
+    cost = (state.get("result") or {}).get("total_cost_usd")
+    return {"result": state["result"] or {}, "returncode": proc.returncode, "error": state["error"], "cost": float(cost or 0.0), "ended": ended}
+
+
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False, stage=None, role=None):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
     the lines the user checked, `note` saying what's off in them. `again`: the model the last
     run made, made again as the user's comments say (`note`, else the record's). `variants`:
     variants of the model made, as many as the request says, the model itself kept. `stage`: a
-    request made in stages, this stage of it (the editor runs them one after another)."""
+    request made in stages, this stage of it (the editor runs them one after another); the
+    research stage runs its three researchers at once, a Claude each (`role`: one alone)."""
     record = mr.load(root, rid)
     here = mr.folder(root, rid)
     stop = here / "stop"
@@ -1195,7 +1337,11 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
             "--settings", str(settings.relative_to(root))]
     if model:
         args += ["--model", model]
-    text = prompt(record, go_on, note, again, variants, root=root, stage=stage)
+    # the research's researchers at once, a prompt each; any other run, one prompt
+    if stage == "research" and not role:
+        texts = {r: prompt(record, root=root, stage=stage, role=r) for r in mr.ROLES}
+    else:
+        texts = {role: prompt(record, go_on, note, again, variants, root=root, stage=stage, role=role)}
     if stage:
         mr.stage_start(root, rid, stage)
     else:
@@ -1206,72 +1352,44 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     announce(record, part, note, say, go_on)
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid, stage)))
-    say("Prompt:\n" + text)
-    extra = {} if os.name == "nt" else {"start_new_session": True}
-    proc = subprocess.Popen(program(claude) + args, cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace", bufsize=1, env=env, **extra)
-    state = {"last": time.time(), "model": None, "result": None, "error": None}
-    lock = threading.Lock()
-    raw = open(here / "run.jsonl", "a", encoding="utf-8", newline="\n")
+    for r, t in texts.items():
+        say((f"Prompt for the {r} researcher:\n" if r else "Prompt:\n") + t)
+    if len(texts) > 1:
+        say("The three researchers at once, each its own Claude: their lines tagged [subject], [references], [methods]")
+    outs = {}
 
-    def out():
-        for line in proc.stdout:
-            with lock:
-                state["last"] = time.time()
-                try:
-                    event = json.loads(line)
-                except ValueError:
-                    if line.strip():
-                        say(line.rstrip())
-                    continue
-                # the whole events kept raw, not the pieces of one being written
-                if event.get("type") != "stream_event":
-                    raw.write(line)
-                    raw.flush()
-                for text in describe(event, state):
-                    say(text)
+    def go(r, t):
+        tagged = (lambda s, r=r: say(f"[{r}] {s}")) if r else say
+        outs[r] = claude_once(root, rid, claude, env, args, t, tagged, stop, quiet, f"run_{r}.jsonl" if r else "run.jsonl")
 
-    def err():
-        for line in proc.stderr:
-            with lock:
-                state["last"] = time.time()
-                if line.strip():
-                    say("(Claude Code says) " + line.rstrip())
-
-    readers = [threading.Thread(target=out, daemon=True), threading.Thread(target=err, daemon=True)]
-    for t in readers:
-        t.start()
-    try:
-        proc.stdin.write(text)
-        proc.stdin.close()
-    except OSError:
-        pass
-    ended = None
-    while proc.poll() is None:
-        time.sleep(0.5)
-        if stop.exists():
-            stop_tree(proc)
-            ended = "cancelled"
-        elif time.time() - state["last"] > quiet:
-            stop_tree(proc)
-            ended = "quiet"
-        if ended:
-            break
-    proc.wait()
-    for t in readers:
-        t.join(timeout=10)
-    raw.close()
-    # what the run cost, kept with the request (its runs' costs add up)
-    cost = (state.get("result") or {}).get("total_cost_usd")
+    workers = [threading.Thread(target=go, args=(r, t), daemon=True) for r, t in texts.items()]
+    for w in workers:
+        w.start()
+    for w in workers:
+        w.join()
+    # what the run cost, kept with the request (its runs' costs add up; the researchers' together)
+    cost = sum(o["cost"] for o in outs.values())
     if cost:
-        mr.update(root, rid, costs=list(mr.load(root, rid).get("costs", [])) + [round(float(cost), 2)])
-    if ended == "cancelled":
+        mr.update(root, rid, costs=list(mr.load(root, rid).get("costs", [])) + [round(cost, 2)])
+    endings = [o["ended"] for o in outs.values()]
+    if "cancelled" in endings:
         stop.unlink(missing_ok=True)
         say("Cancelled from the editor: Claude stopped, the request waits again")
         return mr.update(root, rid, status="waiting", progress=dict(mr.FIELDS["progress"]))["status"]
-    if ended == "quiet":
-        return mr.fail(root, rid, f"no word from Claude for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
-    return conclude(root, rid, part, began, again, note, state["result"] or {}, proc.returncode, state["error"], claude, say, go_on)
+    if "quiet" in endings:
+        who = [r for r, o in outs.items() if o["ended"] == "quiet"]
+        whom = "Claude" if who == [None] else "the " + " and the ".join(f"{w} researcher" for w in who)
+        return mr.fail(root, rid, f"no word from {whom} for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
+    if None in outs:
+        o = outs[None]
+        return conclude(root, rid, part, began, again, note, o["result"], o["returncode"], o["error"], claude, say, go_on)
+    # the researchers' ends together: their last words, the first error among them
+    replies = [f"{r}: {(o['result'].get('result') or '').strip()}" for r, o in outs.items() if (o["result"].get("result") or "").strip()]
+    broke = next((o for o in outs.values() if o["result"].get("is_error") or o["returncode"]), None)
+    result = dict(broke["result"] if broke else {}, result="\n".join(replies))
+    returncode = broke["returncode"] if broke else 0
+    error = next((o["error"] for o in outs.values() if o["error"]), None)
+    return conclude(root, rid, part, began, again, note, result, returncode, error, claude, say, go_on)
 
 
 # ---------------------------------------------------------------- in the cloud: the web editor's runs
@@ -1287,9 +1405,10 @@ reads the model once it's back).
 """
 
 
-def cloud_text(text, rid):
-    """A prompt as the cloud gets it: no cargo there, and no picture fetched into the sandbox."""
-    return CLOUD + text.replace(CHECK, CLOUD_CHECK).replace(FETCH_REFS.format(id=rid), CLOUD_REFS)
+def cloud_text(text, rid=None):
+    """A prompt as the cloud gets it: no cargo there (the research's, asked with `cloud`, brings no
+    picture into the sandbox)."""
+    return CLOUD + text.replace(CHECK, CLOUD_CHECK)
 
 
 def prompt_file(rid):
@@ -1297,7 +1416,7 @@ def prompt_file(rid):
     return Path(tempfile.gettempdir()) / f"bf-prompt-{rid}.txt"
 
 
-def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False, stage=None):
+def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False, stage=None, role=None):
     """--prompt: the run's start in the cloud, as Start's here (its checks, in progress from
     now, its log), and its prompt written for the sandbox's Claude to follow. The request's
     status."""
@@ -1314,7 +1433,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
     if ended is not None:
         print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
         return ended
-    text = cloud_text(prompt(record, go_on, note, again, variants, root=root, stage=stage), rid)
+    text = cloud_text(prompt(record, go_on, note, again, variants, root=root, stage=stage, cloud=True), rid)
     if stage:
         mr.stage_start(root, rid, stage)
     else:
@@ -1329,7 +1448,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
     return "in_progress"
 
 
-def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False, stage=None):
+def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False, stage=None, role=None):
     """--settle: the run's end in the cloud, as a run's here ends, by what's on disk (`reply`:
     the sandbox's Claude's line on what it made). The request's status."""
     record = mr.load(root, rid)
@@ -1363,7 +1482,11 @@ def main(argv):
     if stage is not None and stage not in mr.STAGES:
         print(f"no such stage: {stage} (one of {', '.join(mr.STAGES)})")
         return 2
-    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv, stage)
+    role = argv[argv.index("--role") + 1] if "--role" in argv else None
+    if role is not None and (role not in mr.ROLES or stage != "research"):
+        print(f"no such researcher: {role} (one of {', '.join(mr.ROLES)}, of the research stage)")
+        return 2
+    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv, stage, role)
     root = mr.find_root(Path.cwd())
     if "--prompt" in argv:
         status = start_in_cloud(root, rid, *how)

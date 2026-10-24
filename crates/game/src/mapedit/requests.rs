@@ -349,6 +349,10 @@ pub(super) struct ModelRequest {
     pub staged: bool,
     pub stage: String,
     pub stages: Vec<String>,
+    /// the research stage's pass: its researchers run a second (and last) time when the
+    /// lead's review asks more (`research_more`, until that run starts)
+    pub research_pass: u32,
+    pub research_more: bool,
     pub status: Status,
     /// while it's modelled, how it goes (and once done, how long it took)
     pub progress: Progress,
@@ -421,6 +425,8 @@ impl Default for ModelRequest {
             staged: false,
             stage: String::new(),
             stages: vec![],
+            research_pass: 1,
+            research_more: false,
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
@@ -473,6 +479,7 @@ pub(super) const LINES_READY: &str = "lines ready: check them";
 pub(super) enum Stage {
     Study,
     Research,
+    Review,
     Look,
     Detail,
     Merge,
@@ -482,13 +489,14 @@ pub(super) enum Stage {
 }
 
 impl Stage {
-    pub(super) const ALL: [Stage; 8] = [Stage::Study, Stage::Research, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
+    pub(super) const ALL: [Stage; 9] = [Stage::Study, Stage::Research, Stage::Review, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
 
     /// Its name, as the record and run_claude.py --stage have it.
     pub(super) fn name(self) -> &'static str {
         match self {
             Stage::Study => "study",
             Stage::Research => "research",
+            Stage::Review => "review",
             Stage::Look => "look",
             Stage::Detail => "detail",
             Stage::Merge => "merge",
@@ -506,7 +514,8 @@ impl Stage {
     pub(super) fn about(self) -> &'static str {
         match self {
             Stage::Study => "the lines, the front and the side, and the shape planned",
-            Stage::Research => "the design looked up online: references, pictures, how-tos",
+            Stage::Research => "the design looked up online by three researchers at once: the subject, the references, the methods",
+            Stage::Review => "the research reviewed by the lead: more asked, or compiled into one",
             Stage::Look => "the colours and the materials planned",
             Stage::Detail => "the detached parts and the detail planned",
             Stage::Merge => "the plans checked against each other, into one",
@@ -2471,7 +2480,8 @@ mod desk {
                     };
                     states.push(format!("{}:{state}", s.name()));
                     let drawn = tag(ui, s.name(), color);
-                    let about = format!("The {} stage, {state}: {}", s.name(), s.about());
+                    let pass = if r.research_pass > 1 && matches!(s, Stage::Research | Stage::Review) { ", pass 2" } else { "" };
+                    let about = format!("The {} stage, {state}{pass}: {}", s.name(), s.about());
                     let again = done && free;
                     let click = ui.interact(drawn.rect, ui.id().with(("request-stage", &r.id, s.name())), if again { Sense::click() } else { Sense::hover() });
                     let click = if again { click.on_hover_text(format!("{about}. Click to run it again, and the stages after it")).on_hover_cursor(egui::CursorIcon::PointingHand) } else { click.on_hover_text(about) };
@@ -2979,7 +2989,7 @@ mod desk {
                     if !(r.several && r.parent.is_empty()) {
                         ui.label("");
                         let staged = ui.checkbox(&mut r.staged, "Make it in stages").on_hover_text(
-                            "Eight runs of Claude, one charge each, the next starting as the last ends: the study (the lines, the front and the side, the shape planned), the research (the design looked up online: references fetched, how-tos), the look (the colours and the materials), the detail (the detached parts, the fur, the cloth), the merge (the plans checked against each other, into one), the body (built on the plan), the dress (the detail on the body) and the assembly (rigged, finished). Each plans in a file of its own under plan/; a done stage's chip below runs it again",
+                            "Nine stages, a run of Claude with one charge each, the next starting as the last ends: the study (the lines, the front and the side, the shape planned), the research (three researchers at once: the subject, reference pictures fetched, how-tos), the review (the lead checks what they found and asks for a second pass, or compiles it), the look (the colours and the materials), the detail (the detached parts, the fur, the cloth), the merge (the plans checked against each other, into one), the body (built on the plan), the dress (the detail on the body) and the assembly (rigged, finished). Each plans in a file of its own under plan/; a done stage's chip below runs it again",
                         );
                         mark("uiRequestStaged", &staged);
                         ui.end_row();
@@ -4000,7 +4010,10 @@ mod desk {
         let (at, words) = r.progress.at(now_secs());
         let (fraction, color, text) = match r.status {
             _ if starting => (0.02, WORKING, format!("starting {MAKER}")),
-            Status::InProgress if r.staged && !r.stage.is_empty() => (at, WORKING, format!("{} stage · {words}", r.stage)),
+            Status::InProgress if r.staged && !r.stage.is_empty() => {
+                let pass = if r.research_pass > 1 && (r.stage == "research" || r.stage == "review") { ", pass 2" } else { "" };
+                (at, WORKING, format!("{} stage{pass} · {words}", r.stage))
+            }
             Status::InProgress => (at, WORKING, words),
             Status::Done => (1.0, DONE, "made".to_string()),
             Status::Failed => (r.progress.done.clamp(0.02, 1.0) as f32, FAILED, r.progress.step.clone()),
@@ -4330,7 +4343,7 @@ mod tests {
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"outlines\": {},\n  \"lines\""), "the outlines after the bones, as model_requests.py has them: {text}");
         assert!(
-            text.contains("  \"mine\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"staged\": false,\n  \"stage\": \"\",\n  \"stages\": [],\n  \"status\""),
+            text.contains("  \"mine\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"staged\": false,\n  \"stage\": \"\",\n  \"stages\": [],\n  \"research_pass\": 1,\n  \"research_more\": false,\n  \"status\""),
             "drawn by the thousand after mine (toon no longer written: every model is), then the lines' check and the stages, as model_requests.py has them: {text}"
         );
         assert!(
@@ -4889,7 +4902,7 @@ mod tests {
         click(&ctx, &mut req, "uiRequestStaged");
         assert!(read(&root, "moss_toad").unwrap().staged, "the box ticked");
         frame_with(&ctx, &mut req, vec![]);
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,research:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
         // Start: the study stage
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]]);
@@ -4917,25 +4930,50 @@ mod tests {
         assert_eq!(req.desk().launched.len(), 2);
         req.watch(2.5e9);
         assert_eq!(req.desk().launched.len(), 2, "once");
-        // each stage done starts the next, up to the body, which fails: it stops there
+        // the researchers done: the lead's review, which asks for a second pass (the research
+        // out of the stages done, the review in): the researchers again, the review again,
+        // then on to the look
         let names = Stage::ALL.map(Stage::name);
-        for (k, ran) in ["research", "look", "detail", "merge"].into_iter().enumerate() {
-            stage(&root, ran, &names[..k + 1]);
-            req.watch(3.0e9 + k as f64 * 1.0e9);
-            stage(&root, ran, &names[..k + 2]);
-            req.watch(3.5e9 + k as f64 * 1.0e9);
-        }
-        assert_eq!(req.desk().launched.len(), 6);
-        assert_eq!(req.desk().launched.last().unwrap()[3], "body");
-        stage(&root, "body", &names[..5]);
+        stage(&root, "research", &names[..1]);
+        req.watch(3.0e9);
+        stage(&root, "research", &names[..2]);
+        req.watch(3.5e9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "review");
+        stage(&root, "review", &names[..2]);
+        req.watch(4.0e9);
+        stage(&root, "review", &["study", "review"]);
+        req.watch(4.5e9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "research", "a second pass");
+        assert_eq!(req.desk().launched.len(), 4);
+        stage(&root, "research", &names[..1]);
+        req.watch(5.0e9);
+        stage(&root, "research", &names[..2]);
+        req.watch(5.5e9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "review");
+        stage(&root, "review", &names[..2]);
         req.watch(6.0e9);
+        stage(&root, "review", &names[..3]);
+        req.watch(6.5e9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "look");
+        assert_eq!(req.desk().launched.len(), 6);
+        // each stage done starts the next, up to the body, which fails: it stops there
+        for (k, ran) in ["look", "detail", "merge"].into_iter().enumerate() {
+            stage(&root, ran, &names[..k + 3]);
+            req.watch(7.0e9 + k as f64 * 1.0e9);
+            stage(&root, ran, &names[..k + 4]);
+            req.watch(7.5e9 + k as f64 * 1.0e9);
+        }
+        assert_eq!(req.desk().launched.len(), 9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "body");
+        stage(&root, "body", &names[..6]);
+        req.watch(10.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Failed;
         r.progress.step = "failed: Claude ended without writing body.py, model.py (the body stage's)".into();
         save(&root, &r).unwrap();
-        req.watch(7.0e9);
-        req.watch(7.5e9);
-        assert_eq!(req.desk().launched.len(), 6, "nothing more after a failure");
+        req.watch(11.0e9);
+        req.watch(11.5e9);
+        assert_eq!(req.desk().launched.len(), 9, "nothing more after a failure");
         assert!(req.desk().busy().is_none());
         frame_with(&ctx, &mut req, vec![]);
         assert!(crate::platform::hook("requeststages").unwrap().contains("merge:done,body:failed,dress:pending"), "{:?}", crate::platform::hook("requeststages"));
@@ -4944,23 +4982,23 @@ mod tests {
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"]);
         // cancelled while it runs: it waits, its stages kept; a done stage's chip runs that
         // one again (with the ones after it), Go on the next not done
-        stage(&root, "body", &names[..5]);
-        req.watch(8.0e9);
+        stage(&root, "body", &names[..6]);
+        req.watch(12.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Waiting;
         r.progress = Progress::default();
         save(&root, &r).unwrap();
-        req.watch(9.0e9);
-        req.watch(9.5e9);
+        req.watch(13.0e9);
+        req.watch(13.5e9);
         assert!(req.desk().busy().is_none());
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_look");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "look"], "a done stage's chip");
-        assert_eq!(req.desk().launched.len(), 8);
+        assert_eq!(req.desk().launched.len(), 11);
         req.desk().begun();
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_dress");
-        assert_eq!(req.desk().launched.len(), 8, "a stage not done yet isn't a button");
+        assert_eq!(req.desk().launched.len(), 11, "a stage not done yet isn't a button");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"], "Go on: the next not done");
         // done: made again from the first stage
@@ -4971,10 +5009,10 @@ mod tests {
         r.prop = "moss_toad".into();
         save(&root, &r).unwrap();
         req.desk().begun();
-        req.watch(10.0e9);
-        req.watch(10.5e9);
+        req.watch(14.0e9);
+        req.watch(14.5e9);
         frame_with(&ctx, &mut req, vec![]);
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,review:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]);
         // a stage queued while another is being made: its turn in the queue

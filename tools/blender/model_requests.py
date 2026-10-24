@@ -107,6 +107,10 @@ FIELDS = {
     "staged": False,
     "stage": "",
     "stages": [],
+    # the research stage's pass: its researchers run a second (and last) time when the lead's
+    # review asks more (`research_more`, until that run starts)
+    "research_pass": 1,
+    "research_more": False,
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
@@ -174,10 +178,19 @@ LINES_PART = 0.4
 # of its own each, with one charge; the files each owns (written by it alone, all there once
 # it's done); what each takes of the whole's estimate (more in all: each reads the pictures and
 # the plan again); and what each is charged with, in a few words
-STAGES = ("study", "research", "look", "detail", "merge", "body", "dress", "assemble")
+STAGES = ("study", "research", "review", "look", "detail", "merge", "body", "dress", "assemble")
+# the research stage's researchers, at once (a run of Claude each, its own file under
+# plan/research/), and what each is charged with
+ROLES = ("subject", "references", "methods")
+ROLE_ABOUT = {
+    "subject": "what the design is drawn from: its anatomy, proportions, colours in life",
+    "references": "reference pictures of the views and details the pictures lack",
+    "methods": "how to do the plan's unusual steps in Blender or the kit",
+}
 STAGE_FILES = {
     "study": ("lines.json", "profiles.png", "plan/shape.md"),
-    "research": ("plan/research.md",),
+    "research": tuple(f"plan/research/{r}.md" for r in ROLES),
+    "review": ("plan/research.md",),
     "look": ("plan/look.md", "materials.py"),
     "detail": ("plan/detail.md",),
     "merge": ("plan.md",),
@@ -185,10 +198,11 @@ STAGE_FILES = {
     "dress": ("detail.py",),
     "assemble": (),
 }
-STAGE_SHARE = {"study": 0.45, "research": 0.2, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
+STAGE_SHARE = {"study": 0.45, "research": 0.25, "review": 0.15, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
 STAGE_ABOUT = {
     "study": "the lines, the front and the side, and the shape planned",
-    "research": "the design looked up online: references, pictures, how-tos",
+    "research": "the design looked up online by three researchers at once: the subject, the references, the methods",
+    "review": "the research reviewed by the lead: more asked, or compiled into one",
     "look": "the colours and the materials planned",
     "detail": "the detached parts and the detail planned",
     "merge": "the plans checked against each other, into one",
@@ -609,15 +623,19 @@ def start(root, rid, minutes=None):
     return update(root, rid, status="in_progress", progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
 
 
-# a reference picture the research stage fetches from the web: what it may be, how heavy at most
+# a reference picture the research stage fetches from the web: what it may be, how heavy at most;
+# and the room for them all: how many a request's plan/refs/ holds, how much they weigh together
 REF_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
 REF_MOST = 8 * 1024 * 1024
+REFS_MOST = 16
+REFS_BYTES = 48 * 1024 * 1024
 
 
 def fetch(root, rid, url, name=None):
     """A reference picture from the web (the research stage's) into the request's plan/refs/,
     by a name of its own (`name`, else the address's last part; numbered when one has it):
-    http(s), a picture (REF_TYPES), at most REF_MOST. The path written and its size; what
+    http(s), a picture (REF_TYPES), at most REF_MOST, while the room holds (REFS_MOST pictures,
+    REFS_BYTES together). The path written, its size and how many the room holds now; what
     refused it raised as ValueError."""
     import urllib.parse
     import urllib.request
@@ -643,12 +661,17 @@ def fetch(root, rid, url, name=None):
         raise ValueError(f"too big: {url} weighs more than the {REF_MOST // 1024} KB allowed")
     refs = folder(root, rid) / "plan" / "refs"
     refs.mkdir(parents=True, exist_ok=True)
+    taken = [p for p in refs.iterdir() if p.is_file()]
+    if len(taken) >= REFS_MOST:
+        raise ValueError(f"the references' room is full: {REFS_MOST} pictures in plan/refs/ already: pick among them")
+    if sum(p.stat().st_size for p in taken) + len(data) > REFS_BYTES:
+        raise ValueError(f"the references' room is full: plan/refs/ would weigh more than the {REFS_BYTES // (1024 * 1024)} MB allowed")
     path, k = refs / f"{base}{ext}", 2
     while path.exists():
         path, k = refs / f"{base}_{k}{ext}", k + 1
     path.write_bytes(data)
     log(root, rid, f"Reference fetched: {path.relative_to(folder(root, rid)).as_posix()} ({len(data) // 1024} KB) from {url}")
-    return path, len(data)
+    return path, len(data), len(taken) + 1
 
 
 def next_stage(record):
@@ -669,9 +692,28 @@ def stage_start(root, rid, stage, minutes=None):
     k = STAGES.index(stage)
     done = [s for s in record.get("stages") or [] if STAGES.index(s) < k]
     minutes = float(minutes) if minutes else estimate(record, stage)
-    log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}): {STAGE_ABOUT[stage]}")
+    # the research's pass: a second when the lead's review asked more; the study starts over
+    passes = {}
+    if stage == "study":
+        passes = {"research_pass": 1, "research_more": False}
+    elif stage == "research":
+        passes = {"research_pass": 2 if record.get("research_more") else 1, "research_more": False}
+    second = ", pass 2" if passes.get("research_pass") == 2 else ""
+    log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}){second}: {STAGE_ABOUT[stage]}")
     return update(root, rid, status="in_progress", stage=stage, stages=done,
-                  progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+                  progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes}, **passes)
+
+
+def review_more(root, rid):
+    """The lead's review asked for a second research pass (plan/research/more.md): the review
+    done for now, the research out of the stages done, to run again (the editor starts it)."""
+    record = load(root, rid)
+    p = dict(record["progress"])
+    took = (time.time() - p["started"]) / 60.0 if p["started"] > 0 else 0.0
+    p.update(step="review done: a second research pass", done=1.0, minutes=float(round(took, 1)))
+    stages = [s for s in stages_with(record, "review") if s != "research"]
+    log(root, rid, "The review asks for a second research pass (plan/research/more.md): the editor starts the researchers again")
+    return update(root, rid, status="in_progress", stage="review", stages=stages, research_more=True, progress=p)
 
 
 def stage_done(root, rid, stage):
@@ -1217,11 +1259,11 @@ def main(argv):
     elif verb == "fetch":
         name = option("--name")
         try:
-            path, size = fetch(root, argv[0], argv[1], name)
+            path, size, held = fetch(root, argv[0], argv[1], name)
         except ValueError as e:
             print(e)
             return 1
-        print(f"{path.relative_to(folder(root, argv[0])).as_posix()}: {size // 1024} KB, in plan/refs/ (look at it with Read)")
+        print(f"{path.relative_to(folder(root, argv[0])).as_posix()}: {size // 1024} KB, in plan/refs/ ({held} of {REFS_MOST} pictures taken; look at it with Read)")
     elif verb == "split":
         height = option("--height")
         name = option("--name")

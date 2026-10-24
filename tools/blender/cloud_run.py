@@ -169,7 +169,7 @@ def outputs(root, rid):
     sent = []
     for path, now in files(root).items():
         name = Path(path).name
-        if before.get(path) == now or name in LEFT or name.startswith(".held_"):
+        if before.get(path) == now or name in LEFT or name.startswith(".held_") or (name.startswith("run") and name.endswith(".jsonl")):
             continue
         out = f"{len(sent):03d}_{name}"
         shutil.copyfile(Path(root) / path, OUTPUTS / out)

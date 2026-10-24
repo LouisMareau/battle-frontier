@@ -730,7 +730,8 @@ mod run {
                 }
                 continue;
             }
-            if ["log.txt", "run.jsonl", "claude-settings.json", "stop", "cloud.json"].contains(&e.name.as_str()) {
+            // (the raw streams, the researchers' too, stay)
+            if ["log.txt", "claude-settings.json", "stop", "cloud.json"].contains(&e.name.as_str()) || (e.name.starts_with("run") && e.name.ends_with(".jsonl")) {
                 continue;
             }
             if let Ok(bytes) = disk::read(&e.path) {
