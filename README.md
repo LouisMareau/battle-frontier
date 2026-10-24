@@ -536,7 +536,8 @@ maps).
   tab). The usual few of each come with a new story. Items are found in the world in
   **containers**: a prop of the `container` category (a chest, a basket, a mound of rubble,
   snow or sand) placed with one item in it (Select it: **Holds**; a container always holds
-  one), picked up on foot with A in front of it, once (the save's flag `took:MAP:X:Z`; the
+  one; the prop's record may name an **emptied** look, another prop drawn in its place once
+  its item was taken: an open chest, the rubble scattered), picked up on foot with A in front of it, once (the save's flag `took:MAP:X:Z`; the
   line says what was found, or that there's no room, and then the item waits for another
   visit), and given by the story (a script's `give item`). A **bigger bag** is an item too
   (its record's `grows`: which pockets, to how many cells): found or given, it grows those

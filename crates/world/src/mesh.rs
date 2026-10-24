@@ -1601,10 +1601,16 @@ pub fn props(map: &WorldMap, content: &Content, level_height: f32, models: &Mode
 
 /// The props whose foot stands in a region.
 pub fn props_region(map: &WorldMap, content: &Content, level_height: f32, models: &Models, region: [i32; 4]) -> Scene {
+    props_region_as(map, content, level_height, models, region, &|_| None)
+}
+
+/// The props whose foot stands in a region, each drawn as `look` says (the id of the prop to
+/// draw in its place: a container's emptied look once its item was taken; None: as it is).
+pub fn props_region_as<'c>(map: &WorldMap, content: &'c Content, level_height: f32, models: &Models, region: [i32; 4], look: &dyn Fn(&content::Placed) -> Option<&'c str>) -> Scene {
     let mut cache: HashMap<&str, Scene> = HashMap::new();
     let mut out = Scene::default();
     for p in map.props.iter().filter(|p| in_region(region, p.at[0].floor() as i32, p.at[1].floor() as i32)) {
-        let Some(prop) = content.props.get(&p.prop) else { continue };
+        let Some(prop) = look(p).and_then(|id| content.props.get(id)).or_else(|| content.props.get(&p.prop)) else { continue };
         let scene = cache.entry(prop.id.as_str()).or_insert_with(|| prop_scene(prop, models));
         for put in map.puts(p, prop, level_height) {
             out.append_put(scene, &put);

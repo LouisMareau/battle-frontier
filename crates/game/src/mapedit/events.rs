@@ -310,6 +310,13 @@ impl MapEditor {
         format!("took:{}:{}:{}", self.map.id, p.at[0].floor() as i64, p.at[1].floor() as i64)
     }
 
+    /// The prop a placed one is drawn as: its own, or, a container whose item was taken, its
+    /// emptied look (the prop its record names) when the content has it.
+    pub(super) fn look_of(&self, p: &content::Placed) -> Option<&content::Prop> {
+        let shown = super::stream::emptied_look(&self.map, &self.content, &self.story.flags, p).unwrap_or(p.prop.as_str());
+        self.content.props.get(shown)
+    }
+
     /// A container on `cell` opened: what it holds into the Bag (a bigger bag grows it), the
     /// container remembered as emptied in the save's flags, a line saying what was found;
     /// emptied already, it says so; no room in the Bag, it says so and keeps its item for a
@@ -324,6 +331,8 @@ impl MapEditor {
         let item = self.map.props[i].item.clone().unwrap_or_default();
         if !matches!(self.receive_item(&item, "Found"), crate::bag::Received::NoRoom(_)) {
             self.story.flags.insert(flag, 1);
+            // emptied: drawn as its emptied look, when it has one
+            self.need_props = true;
         }
         true
     }
@@ -1008,7 +1017,8 @@ mod tests {
         c.items.put(Item { id: "potion".into(), name: "Potion".into(), pocket: "consumables".into(), ..Default::default() }, Space::Content);
         c.items.put(Item { id: "map".into(), name: "Map".into(), pocket: "key".into(), size: [4, 4], ..Default::default() }, Space::Content);
         c.items.put(Item { id: "satchel".into(), name: "Satchel".into(), pocket: "key".into(), grows: vec![content::Grow { pocket: "key".into(), cells: [8, 4] }], ..Default::default() }, Space::Content);
-        c.props.put(Prop { id: "chest".into(), name: "Chest".into(), category: "container".into(), footprint: [1, 1], blocks: true, ..Default::default() }, Space::Content);
+        c.props.put(Prop { id: "chest".into(), name: "Chest".into(), category: "container".into(), footprint: [1, 1], blocks: true, emptied: Some("chest_open".into()), ..Default::default() }, Space::Content);
+        c.props.put(Prop { id: "chest_open".into(), name: "Open chest".into(), category: "container".into(), footprint: [1, 1], ..Default::default() }, Space::Content);
         ed.content = Arc::new(c);
         ed.map.props.push(Placed { prop: "chest".into(), at: [4.5, 4.5], level: 1, item: Some("potion".into()), ..Default::default() });
         ed.map.props.push(Placed { prop: "chest".into(), at: [6.5, 4.5], level: 1, item: Some("map".into()), ..Default::default() });
@@ -1028,9 +1038,10 @@ mod tests {
     fn a_container_in_front_gives_its_item_once_and_keeps_it_while_the_bag_is_full() {
         let mut ed = with_chests();
         ed.walk_to(4, 3);
-        assert_eq!(ed.bag.count("potion"), 0);
+        assert_eq!((ed.bag.count("potion"), ed.look_of(&ed.map.props[0]).map(|q| q.id.as_str())), (0, Some("chest")));
         ed.try_interact();
         assert_eq!((ed.bag.count("potion"), ed.story.flags.get("took:field:4:4"), said(&ed).as_str()), (1, Some(&1), "Found Potion!"));
+        assert_eq!((ed.look_of(&ed.map.props[0]).map(|q| q.id.as_str()), ed.look_of(&ed.map.props[1]).map(|q| q.id.as_str()), ed.need_props), (Some("chest_open"), Some("chest"), true), "drawn as its emptied look now; the others as they are");
         ed.story.dialog = None;
         ed.try_interact();
         assert_eq!((ed.bag.count("potion"), said(&ed).as_str()), (1, "Nothing more in it."));

@@ -260,6 +260,7 @@ impl MapEditor {
                     model_versions: &self.model_versions,
                     grass: &self.grass_levels,
                     level_height: self.level_height,
+                    flags: &self.story.flags,
                     beyond: &next,
                     target: t - offset,
                     distance: self.cam.distance,

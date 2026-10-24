@@ -180,6 +180,14 @@ impl Needs {
     }
 }
 
+/// A placed container taken (the story's flag "took:MAP:X:Z", the container's cells' middle
+/// floored), and its prop naming an emptied look the content has: that look's id.
+pub(super) fn emptied_look<'a>(map: &WorldMap, content: &'a Content, flags: &BTreeMap<String, i64>, p: &content::Placed) -> Option<&'a str> {
+    let prop = content.props.get(&p.prop)?;
+    let look = prop.emptied.as_deref().filter(|e| content.props.contains(e))?;
+    flags.contains_key(&format!("took:{}:{}:{}", map.id, p.at[0].floor() as i64, p.at[1].floor() as i64)).then_some(look)
+}
+
 /// One map to stream: the open one, or one around it.
 pub(super) struct Feed<'a> {
     pub id: &'a str,
@@ -192,6 +200,8 @@ pub(super) struct Feed<'a> {
     /// the grass props' models in levels (`MapEditor::grass_levels`)
     pub grass: &'a RefCell<world::grass::Cache>,
     pub level_height: f32,
+    /// the story's flags: a container taken ("took:MAP:X:Z") draws as its emptied look
+    pub flags: &'a BTreeMap<String, i64>,
     /// the maps next to it
     pub beyond: &'a dyn Beyond,
     /// the camera's target and distance, in the map's own space
@@ -656,7 +666,8 @@ impl Feed<'_> {
                 r.set_grass(id, s, copies.into_iter().collect());
             }
             "props" => {
-                let mut scene = mesh::props_region(self.map, self.content, lh, self.models, reg);
+                let (map, content, flags) = (self.map, self.content, self.flags);
+                let mut scene = mesh::props_region_as(map, content, lh, self.models, reg, &|p| emptied_look(map, content, flags, p));
                 if self.actors {
                     // the people standing where they were put
                     for a in self.map.actors.iter().filter(|a| square(a.at[0], a.at[1]) == s) {
@@ -942,6 +953,7 @@ impl MapEditor {
             model_versions: &self.model_versions,
             grass: &self.grass_levels,
             level_height: self.level_height,
+            flags: &self.story.flags,
             beyond: &next,
             target: self.cam.target,
             distance: self.cam.distance,

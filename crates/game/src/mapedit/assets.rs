@@ -1249,6 +1249,25 @@ impl MapEditor {
                 ui.add(egui::DragValue::new(&mut after.sill).speed(0.05).range(0.0..=4.0)).on_hover_text("How high above the floor a window starts");
             });
         }
+        if after.category == "container" {
+            ui.horizontal(|ui| {
+                ui.label("Emptied");
+                let props: Vec<(String, String)> = self.content.props.iter().filter(|q| q.id != id).map(|q| (q.id.clone(), q.name.clone())).collect();
+                let shown = after.emptied.as_ref().and_then(|e| props.iter().find(|(i, _)| i == e)).map(|(_, n)| n.clone()).unwrap_or_else(|| "as it is".into());
+                let r = egui::ComboBox::from_id_salt(("prop-emptied", id)).selected_text(shown).width(150.0).show_ui(ui, |ui| {
+                    if ui.selectable_label(after.emptied.is_none(), "as it is").on_hover_text("Taken, it stays as it is").clicked() {
+                        after.emptied = None;
+                    }
+                    for (pid, name) in &props {
+                        if ui.selectable_label(after.emptied.as_deref() == Some(pid.as_str()), name).on_hover_text(pid).clicked() {
+                            after.emptied = Some(pid.clone());
+                        }
+                    }
+                });
+                mark("uiPropEmptied", &r.response);
+            });
+            hint(ui, "The prop drawn in its place once its item was taken: an open chest, the rubble scattered.");
+        }
         ui.horizontal(|ui| {
             let blocks = ui.selectable_label(after.blocks, "blocks").on_hover_text("The player can't walk through it");
             mark("uiPropBlocks", &blocks);

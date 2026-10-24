@@ -1506,6 +1506,10 @@ pub struct Prop {
     /// a tile of a set of floor tiles (category "floor"): its set, and what its edges are
     #[serde(skip_serializing_if = "Option::is_none")]
     pub floor: Option<FloorTile>,
+    /// a container's: the prop drawn in its place once its item was taken (an open chest, the
+    /// rubble scattered); none: it stays as it is
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub emptied: Option<String>,
     /// how its stand-in moves in the wind (a model moves by its own wind paint instead)
     #[serde(skip_serializing_if = "is_default")]
     pub wind: Breeze,

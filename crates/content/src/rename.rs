@@ -20,6 +20,8 @@ pub struct Renamed {
     pub terrains: Vec<String>,
     /// the creatures it stands for on the map (their `prop`)
     pub creatures: Vec<String>,
+    /// the containers it's the emptied look of (their `emptied`)
+    pub looks: Vec<String>,
 }
 
 /// Whether `id` can name a record: lowercase letters, digits, _ or -.
@@ -87,7 +89,7 @@ impl Content {
             prop.model = Some(to.clone());
         }
         self.props.put(prop, space);
-        let mut out = Renamed { space, model, maps: vec![], templates: vec![], terrains: vec![], creatures: vec![] };
+        let mut out = Renamed { space, model, maps: vec![], templates: vec![], terrains: vec![], creatures: vec![], looks: vec![] };
         let maps: Vec<_> = self.maps.entries().iter().filter_map(|e| {
             let mut m = e.value.clone();
             let did = placed(&mut m.props, old, new) | areas(&mut m.tree_areas, old, new) | actors(&mut m.actors, old, new);
@@ -129,6 +131,12 @@ impl Content {
             out.creatures.push(c.id.clone());
             self.creatures.put(c, space);
         }
+        let looks: Vec<_> = self.props.entries().iter().filter(|e| e.value.emptied.as_deref() == Some(old)).map(|e| (e.value.clone(), e.space)).collect();
+        for (mut q, space) in looks {
+            q.emptied = Some(new.to_string());
+            out.looks.push(q.id.clone());
+            self.props.put(q, space);
+        }
         Ok(out)
     }
 }
@@ -153,8 +161,10 @@ mod tests {
         c.terrains.put(Terrain { id: "scree".into(), growth: crate::model::Growth { props: vec![Grower { prop: "rock".into(), weight: 1.0 }], meadow: Meadow { plants: vec![Plant { shape: "model".into(), prop: "rock".into(), ..Default::default() }], ..Default::default() }, ..Default::default() }, ..Default::default() }, Space::Content);
         c.terrains.put(Terrain { id: "lawn".into(), ..Default::default() }, Space::Content);
         c.creatures.put(crate::model::Creature { id: "golem".into(), name: "Golem".into(), prop: Some("rock".into()), ..Default::default() }, Space::Temporary);
+        c.props.put(Prop { id: "cairn".into(), name: "Cairn".into(), category: "container".into(), emptied: Some("rock".into()), ..Default::default() }, Space::Content);
         let r = c.rename_prop("rock", "boulder").unwrap();
         assert_eq!((r.creatures.as_slice(), c.creatures.get("golem").unwrap().prop.as_deref()), (["golem".to_string()].as_slice(), Some("boulder")), "the creature it stands for follows");
+        assert_eq!((r.looks.as_slice(), c.props.get("cairn").unwrap().emptied.as_deref()), (["cairn".to_string()].as_slice(), Some("boulder")), "the container it's the emptied look of follows");
         assert_eq!(r.space, Space::Content);
         assert_eq!(r.model, Some(("models/rock.glb".to_string(), "models/boulder.glb".to_string())));
         assert_eq!((r.maps.as_slice(), r.templates.as_slice(), r.terrains.as_slice()), (["field".to_string()].as_slice(), ["cairn".to_string()].as_slice(), ["scree".to_string()].as_slice()));
@@ -171,7 +181,7 @@ mod tests {
         // refused
         for (old, new) in [("boulder", "Boulder"), ("boulder", "oak"), ("boulder", "boulder"), ("rock", "stone"), ("boulder", "")] {
             assert!(c.rename_prop(old, new).is_err(), "{old} -> {new}");
-            assert!(c.props.contains("boulder") && c.props.contains("oak") && c.props.len() == 2 && c.maps.get("field").unwrap().props[0].prop == "boulder", "nothing changed: {old} -> {new}");
+            assert!(c.props.contains("boulder") && c.props.contains("oak") && c.props.len() == 3 && c.maps.get("field").unwrap().props[0].prop == "boulder", "nothing changed: {old} -> {new}");
         }
     }
 }

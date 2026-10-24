@@ -782,6 +782,9 @@ impl Content {
             }
         }
         for p in self.props.iter() {
+            if let Some(e) = p.emptied.as_deref().filter(|e| !self.props.contains(e)) {
+                out.push(format!("prop \"{}\": its emptied look is \"{e}\", no such prop", p.id));
+            }
             if p.footprint[0] == 0 || p.footprint[1] == 0 {
                 out.push(format!("props/{}: an empty footprint", p.id));
             }
