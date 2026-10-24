@@ -1007,8 +1007,10 @@ request, and the runs after it are told them too. Any done one (but a floor set)
 Variants and What changes too, and **Make variants**: a run from the model made that keeps it as
 it is and adds that many variants, the style, the notes and the rest as they were (queued
 while another is being made); its panel lists the variants made. **Make it in stages** has
-it made by seven runs of Claude with one charge each (the study: the lines and the shape
-planned; the look: the colours and the materials; the detail: the detached parts, the fur, the
+it made by eight runs of Claude with one charge each (the study: the lines and the shape
+planned; the research: the design looked up online, reference pictures fetched into the
+request's folder, how-tos for the unusual steps, the one stage that may read the web; the
+look: the colours and the materials; the detail: the detached parts, the fur, the
 cloth; the merge: the plans checked against each other, into one; the body, built on the plan;
 the dress: the detail on the body; the assembly: rigged, finished), the next starting as the
 last ends, each planning in a file of its own under the request's `plan/` and noting its

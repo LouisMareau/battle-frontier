@@ -39,6 +39,10 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               [--details "..."] [--pose as_is] [--shapes 8-30|unlimited]
                                               [--notes "..."] [--variants 2] [--vary "size, colours"]
                                               [--mine] [--check-lines] [--many]
+    python tools/blender/model_requests.py fetch ID URL [--name NAME]
+                                              a reference picture from the web into the request's
+                                              plan/refs/ by its name (the research stage's: png,
+                                              jpeg, webp or gif, at most 8 MB)
     python tools/blender/model_requests.py rate ID 85
                                               the user's rating of the model made: 0 (nothing like
                                               it) to 100 (exactly as designed); "none" takes it off
@@ -170,9 +174,10 @@ LINES_PART = 0.4
 # of its own each, with one charge; the files each owns (written by it alone, all there once
 # it's done); what each takes of the whole's estimate (more in all: each reads the pictures and
 # the plan again); and what each is charged with, in a few words
-STAGES = ("study", "look", "detail", "merge", "body", "dress", "assemble")
+STAGES = ("study", "research", "look", "detail", "merge", "body", "dress", "assemble")
 STAGE_FILES = {
     "study": ("lines.json", "profiles.png", "plan/shape.md"),
+    "research": ("plan/research.md",),
     "look": ("plan/look.md", "materials.py"),
     "detail": ("plan/detail.md",),
     "merge": ("plan.md",),
@@ -180,9 +185,10 @@ STAGE_FILES = {
     "dress": ("detail.py",),
     "assemble": (),
 }
-STAGE_SHARE = {"study": 0.45, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
+STAGE_SHARE = {"study": 0.45, "research": 0.2, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
 STAGE_ABOUT = {
     "study": "the lines, the front and the side, and the shape planned",
+    "research": "the design looked up online: references, pictures, how-tos",
     "look": "the colours and the materials planned",
     "detail": "the detached parts and the detail planned",
     "merge": "the plans checked against each other, into one",
@@ -601,6 +607,48 @@ def start(root, rid, minutes=None):
     record = load(root, rid)
     minutes = float(minutes) if minutes else estimate(record)
     return update(root, rid, status="in_progress", progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+
+
+# a reference picture the research stage fetches from the web: what it may be, how heavy at most
+REF_TYPES = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp", "image/gif": ".gif"}
+REF_MOST = 8 * 1024 * 1024
+
+
+def fetch(root, rid, url, name=None):
+    """A reference picture from the web (the research stage's) into the request's plan/refs/,
+    by a name of its own (`name`, else the address's last part; numbered when one has it):
+    http(s), a picture (REF_TYPES), at most REF_MOST. The path written and its size; what
+    refused it raised as ValueError."""
+    import urllib.parse
+    import urllib.request
+
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        raise ValueError(f"not a web address: {url} (http or https)")
+    base = slug(Path(name or parts.path).stem) or "reference"
+    try:
+        answer = urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "battle-frontier-requests/1.0"}), timeout=30)
+    except OSError as e:
+        raise ValueError(f"couldn't fetch {url}: {e}") from None
+    with answer:
+        kind = (answer.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        ext = REF_TYPES.get(kind)
+        if ext is None:
+            raise ValueError(f"not a picture: {url} is {kind or 'of no type'} (png, jpeg, webp or gif only)")
+        length = answer.headers.get("Content-Length")
+        if length and length.isdigit() and int(length) > REF_MOST:
+            raise ValueError(f"too big: {url} weighs {int(length) // 1024} KB, at most {REF_MOST // 1024} allowed")
+        data = answer.read(REF_MOST + 1)
+    if len(data) > REF_MOST:
+        raise ValueError(f"too big: {url} weighs more than the {REF_MOST // 1024} KB allowed")
+    refs = folder(root, rid) / "plan" / "refs"
+    refs.mkdir(parents=True, exist_ok=True)
+    path, k = refs / f"{base}{ext}", 2
+    while path.exists():
+        path, k = refs / f"{base}_{k}{ext}", k + 1
+    path.write_bytes(data)
+    log(root, rid, f"Reference fetched: {path.relative_to(folder(root, rid)).as_posix()} ({len(data) // 1024} KB) from {url}")
+    return path, len(data)
 
 
 def next_stage(record):
@@ -1166,6 +1214,14 @@ def main(argv):
             print(e)
             return 1
         print(said)
+    elif verb == "fetch":
+        name = option("--name")
+        try:
+            path, size = fetch(root, argv[0], argv[1], name)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"{path.relative_to(folder(root, argv[0])).as_posix()}: {size // 1024} KB, in plan/refs/ (look at it with Read)")
     elif verb == "split":
         height = option("--height")
         name = option("--name")

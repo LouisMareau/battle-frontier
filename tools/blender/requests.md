@@ -332,7 +332,7 @@ stages, each stage's run (below).
 
 ### Made in stages
 
-Tick **"Make it in stages"** in the request's panel (`staged`) to have it made by seven runs
+Tick **"Make it in stages"** in the request's panel (`staged`) to have it made by eight runs
 of Claude, one charge each, the editor starting the next once the last has ended (`stages`
 lists the ones done, `stage` the one running or the last to end):
 
@@ -345,21 +345,30 @@ python tools/blender/run_claude.py ID --stage study
    the proportions measured, the pose, the block-out, the rig's chains, what stays detached.
    With `check_lines` it stops at the lines as any run does, and the run after the user's
    check (`--stage study --go-on`, their note with it) plans the shape on them.
-2. **look**: the colours measured off the pictures and the materials, in `plan/look.md` and
+2. **research**: the design looked up online for the stages after it: what it's drawn from
+   (its anatomy and proportions, how its parts attach, how its fur, scales or feathers lie),
+   the views the pictures lack, the colours it has in life, and how to do the plan's unusual
+   steps in Blender or the kit, each with its source; reference pictures fetched into
+   `plan/refs/` (`python tools/blender/model_requests.py fetch ID URL --name NAME`: png,
+   jpeg, webp or gif, 8 MB at most; to look at, never copied); all in `plan/research.md`,
+   with the lead's doubts answered. The one stage that may read the web: Claude Code's
+   WebSearch and WebFetch here; in the cloud the session's own web tools, and no picture
+   brought into the sandbox (its network is shut): their addresses noted instead.
+3. **look**: the colours measured off the pictures and the materials, in `plan/look.md` and
    `materials.py` (`COLOURS`, a dict of each region's hex; `PAINT(kit)`, each part's paint
    volumes: a module, no mesh).
-3. **detail**: the detached parts and the detail the skin can't carry (fur, feathers,
+4. **detail**: the detached parts and the detail the skin can't carry (fur, feathers,
    scales, hair, cloth, as cards or strands), where each roots and what the wind moves, in
    `plan/detail.md`.
-4. **merge**: the lead checks the three plans against each other and against the notes,
+5. **merge**: the lead checks the plans against each other, the research and the notes,
    decides each disagreement by the pictures, and writes `plan.md`, the one plan the build
-   stages follow.
-5. **body**: `body.py` (`build(job, kit, materials)`: the body alone, on the plan, accurate in
+   stages follow (the references a builder should look at named in it).
+6. **body**: `body.py` (`build(job, kit, materials)`: the body alone, on the plan, accurate in
    one skin) and a `model.py` that loads it, fits it and renders it; rendered and compared
    until it matches.
-6. **dress**: `detail.py` (`build(job, kit, materials, body)`: the detached parts and the
+7. **dress**: `detail.py` (`build(job, kit, materials, body)`: the detached parts and the
    detail on the body), `model.py` calling it after the body.
-7. **assemble**: `model.py` rigged (a character) with its idle and its roar, the small fixes
+8. **assemble**: `model.py` rigged (a character) with its idle and its roar, the small fixes
    that finish it made in whichever file owns them, `finish`, the check.
 
 The stages share the request's `plan/` folder: each writes its own file there and no other,
@@ -372,7 +381,8 @@ files of the stages before it fails at once. The window's panel shows the stages
 (done, running, failed, to come): a done one clicked runs it again, and the stages after it
 with it; Start on a failed one runs that stage again, Go on after a cancel the next not done;
 Make it again on a done one starts from the study. In the cloud, each stage is a session of
-its own, given the request's files and its plan folder. Each stage's run is estimated at its
+its own, given the request's files and its plan folder (the references under it too), the
+research's with the web tools on. Each stage's run is estimated at its
 share of the whole (`STAGE_SHARE`); together they take longer than one run, each reading the
 pictures and the plan again, and cost more.
 

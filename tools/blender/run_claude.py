@@ -4,8 +4,16 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID [--model opus|sonnet|haiku] [--go-on] [--note "what's off in the lines"]
     python tools/blender/run_claude.py ID --again [--note "what to change"]
     python tools/blender/run_claude.py ID --variants
-    python3 tools/blender/run_claude.py ID --prompt [--go-on] [--again] [--variants] [--note-file PATH]
+    python tools/blender/run_claude.py ID --stage study|research|look|detail|merge|body|dress|assemble [--go-on]
+    python3 tools/blender/run_claude.py ID --prompt [--go-on] [--again] [--variants] [--stage NAME] [--note-file PATH]
     python3 tools/blender/run_claude.py ID --settle [the same] [--reply "what was made"]
+
+A request made in stages ("staged", the editor's "Make it in stages"; requests.md, "Made in
+stages") is made by a run per stage, --stage NAME, each charged with one thing (the study, the
+research online, the look, the detail, the merge, the body, the dress, the assembly): its
+prompt is that charge, and it ends with the stage's files written, the editor starting the
+next. The research stage alone may read the web (Claude Code's WebSearch and WebFetch, and
+model_requests.py fetch for its reference pictures).
 
 A request whose pictures hold several drawings of the same kind of asset ("several", the
 editor's "Process multiple": trees, bushes, rocks...) is split by its first run: Claude finds
@@ -414,8 +422,45 @@ STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its sh
                    + READ + "{lessons}" + CHECKED_LINES
                    + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
                    + RULES.replace("{end}", "End with one line saying what you planned."))
-LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + """- read plan/shape.md (the parts, as the study stage planned them, by name) and plan/notes.log,
-  and look at the lines the study stage made (lines_PICTURE.png, profiles.png);
+# the research stage's reference pictures, fetched here; in the cloud (its sandbox's network
+# shut), their addresses noted instead
+FETCH_REFS = """- reference pictures: for each view or detail the pictures lack, find a picture that shows
+  it and fetch it: python tools/blender/model_requests.py fetch {id} URL --name NAME (into
+  plan/refs/: png, jpeg, webp or gif, at most 8 MB), then look at it (Read) and keep it only
+  when it shows what was wanted (one that doesn't is left out of research.md); three to
+  eight in all.
+  They're for the modeller to look at, never copied: no texture or shape taken from them;
+"""
+CLOUD_REFS = """- reference pictures: none can be brought into this sandbox (its network is shut): for each
+  view or detail the pictures lack, find a picture that shows it, look at it through the web
+  fetch tool when it can be read, and note its address and what it shows in research.md, for
+  the user to open; nothing copied from them;
+"""
+RESEARCH_RUN = (HEAD + STAGED + "Look the design up online, for the stages after you (it's started already):\n" + READ + """- read plan/shape.md (what the study stage made of the pictures: the parts, the proportions,
+  what it guessed) and every line of plan/notes.log (its guesses and doubts), and look at the
+  lines it made (lines_PICTURE.png, profiles.png);
+- research online with the web search and fetch tools, for what the stages after you need
+  and the pictures don't give: what the design is drawn from (a named creature, character or
+  object the notes or the pictures name: how it looks; a made-up one: the animals, plants or
+  things it's built from, their anatomy and proportions, how their parts attach and move, how
+  their fur, scales, feathers or bark lie); the views the pictures lack (the back, the
+  underside, the feet, the inside of the mouth); the colours such a thing has in life where
+  the pictures are unsure; and how to do the steps the plan calls for that are unusual, in
+  Blender or the kit (how scales are laid as cards, how a mane is carded, how a jaw or a
+  wing is rigged, how a fin bends): find a source that says, read it, and keep the gist;
+{refs}- write private/requests/{id}/plan/research.md: what the design is, in a line; the facts
+  found (proportions, how parts attach, colours in life, how the detail lies), each with
+  where it came from (the page's address); the references kept, each with its file in
+  plan/refs/ (or its address), what it shows and where it came from; the how-tos, each a few
+  lines with its source; the lead's doubts answered, and what stays unknown. What the user's
+  notes say wins over anything found;
+- append to plan/notes.log what the web changed in the lead's guesses and what you couldn't
+  find, "[research] " lines;
+""" + RULES.replace("{end}", "End with one line saying what you found."))
+LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + """- read plan/shape.md (the parts, as the study stage planned them, by name), plan/research.md
+  (what the research stage found online: the colours such a thing has in life, its
+  references in plan/refs/: look at them) and plan/notes.log, and look at the lines the study
+  stage made (lines_PICTURE.png, profiles.png);
 - tell the design's colours from the drawing's light (requests.md, "The design, not the
   drawing"): a part's colour is its lit tone, neither its shine nor its shade; shine and
   reflections make a glossy material, a glow a glowing one. Measure each region off the
@@ -434,8 +479,10 @@ LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started al
 - append to plan/notes.log what you guessed and what you'd change in shape.md (don't change
   it: the merge stage decides), "[look] " lines;
 """ + RULES.replace("{end}", "End with one line saying what you planned."))
-DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's started already):\n" + READ + """- read plan/shape.md and plan/look.md (the parts and the colours, by name) and plan/notes.log,
-  and look at the lines (lines_PICTURE.png, profiles.png);
+DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's started already):\n" + READ + """- read plan/shape.md and plan/look.md (the parts and the colours, by name), plan/research.md
+  (what the research stage found online: how the fur, scales or feathers lie, the how-tos,
+  its references in plan/refs/: look at them) and plan/notes.log, and look at the lines
+  (lines_PICTURE.png, profiles.png);
 - write private/requests/{id}/plan/detail.md: the detached parts, each named, with its shape,
   its size and place in cells, its colour regions (look.md's) and the bone or chain it follows
   (shape.md's chains: the lower jaw with its teeth and the tongue on the jaw's and the
@@ -450,15 +497,17 @@ DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's star
 - append to plan/notes.log what you guessed and what you'd change in shape.md or look.md
   (don't change them: the merge stage decides), "[detail] " lines;
 """ + RULES.replace("{end}", "End with one line saying what you planned."))
-MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started already):\n" + READ + """- read plan/shape.md, plan/look.md and plan/detail.md, and every line of plan/notes.log (the
-  stages' guesses, doubts and what each would change in the others'), and look at the lines
-  (lines_PICTURE.png, profiles.png) and at materials.py;
+MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started already):\n" + READ + """- read plan/shape.md, plan/research.md, plan/look.md and plan/detail.md, and every line of
+  plan/notes.log (the stages' guesses, doubts and what each would change in the others'), and
+  look at the lines (lines_PICTURE.png, profiles.png), the references in plan/refs/ and
+  materials.py;
 - check they agree: every part named in one plan is in the others under the same name, each
   colour region sits on a part, each detached part has its bone or chain, nothing is planned
   twice (a horn as a part and as cards), nothing the pictures show is left out, the budget
   holds. Decide each disagreement by the pictures and the user's notes;
 - write private/requests/{id}/plan.md, the one plan the build stages follow, whole: the design
-  and the drawing sorted (from shape.md); the parts in the order they're built, each with its
+  and the drawing sorted (from shape.md); the research's facts that bear on the build, and the
+  references in plan/refs/ a builder should look at, named; the parts in the order they're built, each with its
   shape, size and place in cells, its colours and paint, its bone; the body's block-out and
   how it's sculpted to the profiles (accurate), or its parts (smooth, low-poly); the
   materials; the detail, where it roots and how dense; the rig's chains with their joints in
@@ -469,7 +518,8 @@ MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started al
 """ + RULES.replace("{end}", "End with one line saying what you decided."))
 BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\n" + READ + """- read plan.md (whole: follow it) and plan/notes.log, and materials.py (its COLOURS and
   PAINT: use them, change nothing in it), and look at the lines (lines_PICTURE.png,
-  profiles.png; job.profiles() has them in cells, as the model will stand);
+  profiles.png; job.profiles() has them in cells, as the model will stand) and at the
+  references plan.md names in plan/refs/;
 {lessons}- write private/requests/{id}/body.py, a module model.py imports with kit.load("body"):
   def build(job, kit, materials) builds the body as plan.md says and returns its objects:
   the skin (accurate: the block-out laid for every mass, kit.wrap over them all, sculpted to
@@ -493,7 +543,8 @@ BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\
 """ + RULES.replace("{end}", "End with one line saying what you built."))
 DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its detail (it's started already):\n" + READ + """- read plan.md and plan/detail.md (whole: follow them) and plan/notes.log (the body stage's
   lines say what it changed), materials.py and body.py (read them, change nothing in them)
-  and model.py, and look at the renders (preview_*.png, compare.png) and the lines;
+  and model.py, and look at the renders (preview_*.png, compare.png), the lines and the
+  references plan.md names in plan/refs/;
 - write private/requests/{id}/detail.py, a module model.py imports with kit.load("detail"):
   def build(job, kit, materials, body) adds to the body built and returns what it adds: the
   detached parts as kit.part parts overlapping the body (the lower jaw with its teeth and the
@@ -532,7 +583,7 @@ ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's sta
 {variants}- add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """ + RULES.replace("{end}", MADE))
-STAGE_RUNS = {"look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
+STAGE_RUNS = {"research": RESEARCH_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
@@ -599,10 +650,11 @@ def signed_in(claude):
     return None, "nothing: Claude Code isn't signed in"
 
 
-def allowed(rid):
-    """What the run may do without asking; everything else is refused."""
+def allowed(rid, stage=None):
+    """What the run may do without asking; everything else is refused. The research stage
+    alone reads the web (model_requests.py fetch brings its pictures in)."""
     here = f"private/requests/{rid}"
-    return [
+    out = [
         "Read", "Glob", "Grep",
         f"Write({here}/**)", f"Edit({here}/**)",
         f"Bash(python tools/blender/run_request.py {rid})", f"Bash(python tools/blender/run_request.py {rid} *)",
@@ -610,6 +662,9 @@ def allowed(rid):
         "Bash(cargo run -q -p engine-content --bin content -- check)",
         "Bash(ls)", "Bash(ls *)",
     ]
+    if stage == "research":
+        out += ["WebSearch", "WebFetch"]
+    return out
 
 
 STYLES = {
@@ -858,7 +913,7 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
     # a stage's words: which it is, what it's charged with; a character's assembly rigs it
     k = mr.STAGES.index(stage) + 1 if stage else 0
     staged = dict(stages=", ".join(mr.STAGES), STAGE=(stage or "").upper(), stage=stage or "", k=k, n=len(mr.STAGES), about=mr.STAGE_ABOUT.get(stage, ""),
-                  assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "")
+                  assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "", refs=FETCH_REFS.format(id=rid))
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
@@ -1135,7 +1190,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     if env is None:
         return mr.fail(root, rid, f'Claude Code isn\'t signed in to Claude: the editor\'s Claude sign-in (or "{claude} auth login" in a terminal), then Start again')["status"]
     settings = here / "claude-settings.json"
-    settings.write_text(json.dumps({"permissions": {"allow": allowed(rid)}}, indent=2) + "\n", encoding="utf-8")
+    settings.write_text(json.dumps({"permissions": {"allow": allowed(rid, stage)}}, indent=2) + "\n", encoding="utf-8")
     args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
             "--settings", str(settings.relative_to(root))]
     if model:
@@ -1150,7 +1205,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     say(f"On: {on}")
     announce(record, part, note, say, go_on)
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
-    say("Allowed without asking: " + ", ".join(allowed(rid)))
+    say("Allowed without asking: " + ", ".join(allowed(rid, stage)))
     say("Prompt:\n" + text)
     extra = {} if os.name == "nt" else {"start_new_session": True}
     proc = subprocess.Popen(program(claude) + args, cwd=str(root), stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -1232,6 +1287,11 @@ reads the model once it's back).
 """
 
 
+def cloud_text(text, rid):
+    """A prompt as the cloud gets it: no cargo there, and no picture fetched into the sandbox."""
+    return CLOUD + text.replace(CHECK, CLOUD_CHECK).replace(FETCH_REFS.format(id=rid), CLOUD_REFS)
+
+
 def prompt_file(rid):
     """Where --prompt writes the prompt, for the sandbox's Claude to read."""
     return Path(tempfile.gettempdir()) / f"bf-prompt-{rid}.txt"
@@ -1254,7 +1314,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
     if ended is not None:
         print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
         return ended
-    text = CLOUD + prompt(record, go_on, note, again, variants, root=root, stage=stage).replace(CHECK, CLOUD_CHECK)
+    text = cloud_text(prompt(record, go_on, note, again, variants, root=root, stage=stage), rid)
     if stage:
         mr.stage_start(root, rid, stage)
     else:

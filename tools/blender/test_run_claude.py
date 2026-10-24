@@ -325,18 +325,64 @@ fresh("test_stages", kind="creature", staged=True)
 code, out, rec, log = run("test_stages", "stage", "--stage", "study")
 check("the study stage: done with its files, the request in progress still (the editor's turn)", code == 0 and rec["status"] == "in_progress" and rec["stage"] == "study"
       and rec["stages"] == ["study"] and rec["progress"]["step"] == "study done" and "test_stages: in_progress" in out, f"{code} {rec['status']} {rec['stage']} {rec['stages']} {out[-200:]}")
-check("  its log: the stage starting, which it is, done, the next the editor's", "the study stage starts" in log and "This run: the study stage, 1 of 7: the lines, the front and the side, and the shape planned" in log
-      and "The study stage is done: the editor starts the look stage next" in log, log[-600:])
+check("  its log: the stage starting, which it is, done, the next the editor's", "the study stage starts" in log and "This run: the study stage, 1 of 8: the lines, the front and the side, and the shape planned" in log
+      and "The study stage is done: the editor starts the research stage next" in log, log[-600:])
 asked = rc.prompt(rec, stage="study")
-check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 7: the lines, the front and the side, and the shape planned" in asked
+check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 8: the lines, the front and the side, and the shape planned" in asked
       and "write private/requests/test_stages/plan/shape.md" in asked and "plan/notes.log is append-only" in asked and 'starting with "[study] "' in asked
       and "from its step 3 to its step 5" in asked and "at the top of plan/shape.md (below)" in asked and "write private/requests/test_stages/model.py" not in asked, asked[-2500:])
 check("  the notes log appended, in the plan folder the stages share", (mr.folder(SCRATCH, "test_stages") / "plan" / "notes.log").read_text(encoding="utf-8") == "[study] a guess\n")
 check("  each stage estimated at its share of the whole; the stages together longer", mr.estimate(rec, "study") < mr.estimate(rec, "all") < sum(mr.estimate(rec, s) for s in mr.STAGES),
       f"{[mr.estimate(rec, s) for s in mr.STAGES]} of {mr.estimate(rec, 'all')}")
+# the research stage: the design looked up online for the stages after it, the one stage that
+# reads the web; its reference pictures fetched into plan/refs/ by model_requests.py fetch
+code, out, rec, log = run("test_stages", "stage", "--stage", "research")
+asked = rc.prompt(rec, stage="research")
+allow = json.loads((mr.folder(SCRATCH, "test_stages") / "claude-settings.json").read_text(encoding="utf-8"))["permissions"]["allow"]
+check("the research stage: the design looked up online, its references fetched, its findings in plan/research.md; the web's tools allowed to it alone", code == 0 and rec["stages"] == ["study", "research"]
+      and "research online with the web search and fetch tools" in asked and "python tools/blender/model_requests.py fetch test_stages URL --name NAME" in asked
+      and "write private/requests/test_stages/plan/research.md" in asked and "the lead's doubts answered" in asked and "WebSearch" in allow and "WebFetch" in allow
+      and "WebSearch" not in rc.allowed("test_stages", "look") and "WebSearch" not in rc.allowed("test_stages"), f"{rec['stages']} {allow}")
+check("  in the cloud: no picture brought into the sandbox, the references' addresses noted instead", "fetch test_stages URL" not in rc.cloud_text(asked, "test_stages")
+      and "note its address and what it shows in research.md" in rc.cloud_text(asked, "test_stages") and rc.cloud_text(asked, "test_stages").startswith(rc.CLOUD))
+check("  the stages after it read what it found", all("plan/research.md" in rc.prompt(rec, stage=s) for s in ("look", "detail", "merge")) and "references plan.md names in plan/refs/" in rc.prompt(rec, stage="body")
+      and "the research's facts that bear on the build" in rc.prompt(rec, stage="merge"))
+import http.server  # noqa: E402
+import threading  # noqa: E402
+from functools import partial  # noqa: E402
+served = SCRATCH / "served"
+served.mkdir(exist_ok=True)
+(served / "photo.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+(served / "page.html").write_text("<html>a page</html>", encoding="utf-8")
+(served / "huge.jpg").write_bytes(b"\xff\xd8" + b"\x00" * (mr.REF_MOST + 10))
+
+
+class Quiet(http.server.SimpleHTTPRequestHandler):
+    def log_message(self, *a):
+        pass
+
+
+server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), partial(Quiet, directory=str(served)))
+threading.Thread(target=server.serve_forever, daemon=True).start()
+at = f"http://127.0.0.1:{server.server_address[1]}"
+kit_cmd = lambda *a: subprocess.run([sys.executable, str(HERE / "model_requests.py"), *a], cwd=str(SCRATCH), capture_output=True, text=True, encoding="utf-8")  # noqa: E731
+got = kit_cmd("fetch", "test_stages", f"{at}/photo.png", "--name", "Back view")
+refs = mr.folder(SCRATCH, "test_stages") / "plan" / "refs"
+check("a reference picture fetched into plan/refs/ by its name", got.returncode == 0 and (refs / "back_view.png").read_bytes().startswith(b"\x89PNG") and "plan/refs/back_view.png: 0 KB" in got.stdout, got.stdout + got.stderr)
+again = kit_cmd("fetch", "test_stages", f"{at}/photo.png", "--name", "Back view")
+check("  a second of the same name numbered beside it", again.returncode == 0 and (refs / "back_view_2.png").is_file(), again.stdout + again.stderr)
+page = kit_cmd("fetch", "test_stages", f"{at}/page.html")
+huge = kit_cmd("fetch", "test_stages", f"{at}/huge.jpg")
+nowhere = kit_cmd("fetch", "test_stages", "file:///etc/passwd")
+gone = kit_cmd("fetch", "test_stages", f"{at}/missing.png")
+check("  a page, a picture too big, a file path and a missing one refused, each saying why", page.returncode == 1 and "not a picture" in page.stdout and huge.returncode == 1 and "too big" in huge.stdout
+      and nowhere.returncode == 1 and "not a web address" in nowhere.stdout and gone.returncode == 1 and "couldn't fetch" in gone.stdout and sorted(p.name for p in refs.iterdir()) == ["back_view.png", "back_view_2.png"],
+      f"{page.stdout} {huge.stdout} {nowhere.stdout} {gone.stdout}")
+check("  the log says what was fetched", "Reference fetched: plan/refs/back_view.png (0 KB) from " + at in (mr.folder(SCRATCH, "test_stages") / "log.txt").read_text(encoding="utf-8"))
+server.shutdown()
 code, out, rec, log = run("test_stages", "quit", "--stage", "look")
 check("a stage that ends without its files: failed, saying which, the stages before it kept", rec["status"] == "failed"
-      and rec["progress"]["step"] == "failed: Claude ended without writing plan/look.md, materials.py (the look stage's)" and rec["stages"] == ["study"] and rec["stage"] == "look",
+      and rec["progress"]["step"] == "failed: Claude ended without writing plan/look.md, materials.py (the look stage's)" and rec["stages"] == ["study", "research"] and rec["stage"] == "look",
       f"{rec['status']} {rec['progress']['step']} {rec['stages']}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "body")
 check("a stage without the stages' files before it: refused at once, saying which stage to run", rec["status"] == "failed"
@@ -345,7 +391,7 @@ for name in ("look", "detail", "merge", "body", "dress"):
     code, out, rec, log = run("test_stages", "stage", "--stage", name)
 asked = rc.prompt(rec, stage="body")
 check("the stages one after another, each done with its files; the body's prompt building on the plan and the materials, no detail, no rig",
-      rec["status"] == "in_progress" and rec["stages"] == ["study", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
+      rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
       and 'kit.load("body")' in asked and "materials.py (its COLOURS and\n  PAINT: use them, change nothing in it)" in asked and "No\n  detached part, no card, no fur, no rig" in asked
       and "write private/requests/test_stages/model.py (requests.md, \"The kit\": the usual start)" in asked and "No finish yet: the assemble stage adds it" in asked, f"{rec['status']} {rec['stages']}")
 asked = rc.prompt(rec, stage="dress")
@@ -357,14 +403,14 @@ check("the assembly: a character rigged, finished; done, every stage done", code
       and rec["stage"] == "assemble" and "rig it: every part on the\n  bones that move it, as plan.md's chains say" in asked and "run_request.py test_stages --finish" in asked
       and "Done: the prop test_prop" in log, f"{rec['status']} {rec['stages']} {log[-300:]}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "look")
-check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "look"] and rec["stage"] == "look", f"{rec['stages']}")
+check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "look"] and rec["stage"] == "look", f"{rec['stages']}")
 check("  made again with comments: told it was made in stages, which file holds what", "it was made in stages" in rc.prompt(dict(rec, comments="bigger ears"), again=True))
 check("  a stage the runner doesn't know: refused", run("test_stages", "stage", "--stage", "paint")[1].startswith("no such stage: paint"))
 # the study with the lines checked first: stops at them; after the check, the shape planned on them
 fresh("test_stages_check", kind="creature", staged=True, check_lines=True)
 code, out, rec, log = run("test_stages_check", "lines", "--stage", "study")
 check("the study stage with the lines checked first: stops at them, waiting for the user, the stage not done", rec["status"] == "waiting" and mr.lines_ready(rec) and rec["stages"] == []
-      and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 7: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
+      and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 8: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
       f"{rec['status']} {rec['stages']} {log[-500:]}")
 code, out, rec, log = run("test_stages_check", "stage", "--stage", "study", "--go-on", "--note", "the tail is longer")
 check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done", rec["status"] == "in_progress" and rec["stages"] == ["study"]

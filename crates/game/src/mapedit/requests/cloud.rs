@@ -150,14 +150,26 @@ pub(super) struct Ask {
     pub request: String,
     pub title: String,
     pub cap: u32,
+    /// the research stage's: the session's web tools on
+    pub web: bool,
 }
 
 /// A session for a run: the agent (on the model asked for), its environment, the files it's
 /// given (each its id and where it's mounted, under /mnt/session/uploads/), its first message,
 /// what it may cost at most.
 pub(super) fn session_body(agent: &str, environment: &str, files: &[(String, String)], ask: &Ask) -> Value {
+    let mut who = json!({"type": "agent_with_overrides", "id": agent, "model": {"id": ask.model, "effort": "high"}});
+    if ask.web {
+        // the research stage reads the web: the agent's toolset with its web tools on, for this
+        // session alone (an override lists every tool; the sandbox's own network stays shut)
+        who["tools"] = json!([{
+            "type": "agent_toolset_20260401",
+            "default_config": {"enabled": true, "permission_policy": {"type": "always_allow"}},
+            "configs": [{"name": "web_fetch", "enabled": true}, {"name": "web_search", "enabled": true}],
+        }]);
+    }
     json!({
-        "agent": {"type": "agent_with_overrides", "id": agent, "model": {"id": ask.model, "effort": "high"}},
+        "agent": who,
         "environment_id": environment,
         "title": ask.title,
         "resources": files.iter().map(|(id, at)| json!({"type": "file", "file_id": id, "mount_path": format!("/{at}")})).collect::<Vec<_>>(),
@@ -701,10 +713,17 @@ mod run {
         let mut out = vec![];
         for e in disk::read_dir(&folder(root).join(&r.id)).unwrap_or_default() {
             if e.dir {
-                // (its plan folder, when it's made in stages: the stages' files)
+                // (its plan folder, when it's made in stages: the stages' files, and the
+                // references the research fetched under it)
                 if e.name == "plan" {
-                    for f in disk::read_dir(&e.path).unwrap_or_default().into_iter().filter(|f| !f.dir) {
-                        if let Ok(bytes) = disk::read(&f.path) {
+                    for f in disk::read_dir(&e.path).unwrap_or_default() {
+                        if f.dir {
+                            for g in disk::read_dir(&f.path).unwrap_or_default().into_iter().filter(|g| !g.dir) {
+                                if let Ok(bytes) = disk::read(&g.path) {
+                                    out.push((format!("request/plan/{}/{}", f.name, g.name), bytes));
+                                }
+                            }
+                        } else if let Ok(bytes) = disk::read(&f.path) {
                             out.push((format!("request/plan/{}", f.name), bytes));
                         }
                     }
@@ -794,7 +813,7 @@ mod run {
             save(root, &r)?;
             log(root, &id, &format!("———————— in the cloud ————————\nA sandbox of Anthropic's, on your API key: {model}, at most ${:.2} for this run", cap as f64 / 100.0));
             let shared = Arc::new(Mutex::new(Shared::default()));
-            let ask = Ask { model, text, request: id.clone(), title: format!("{} (Battle Frontier model request)", r.name), cap };
+            let ask = Ask { model, text, request: id.clone(), title: format!("{} (Battle Frontier model request)", r.name), cap, web: stage == Some(RequestStage::Research) };
             wasm_bindgen_futures::spawn_local(begin(shared.clone(), key.clone(), files, ask));
             self.run = Some(Run { id, key, shared, stage: Stage::Starting, seen: HashSet::new(), stop: Arc::new(AtomicBool::new(false)), broke: None, cost: 0.0, told: 0.0, cap, quiet: false });
             Ok(())
@@ -1084,10 +1103,17 @@ mod tests {
         assert!(staged.contains("run_claude.py moss_toad --prompt --stage dress\n") && staged.contains("run_claude.py moss_toad --settle --stage dress --reply"), "{staged}");
         let whole = first_message("moss_toad", "Moss toad", How::Whole, false, Some(RequestStage::Study));
         assert!(whole.contains("its whole recipe: its study stage (it's made in stages, a session each") && whole.contains("--prompt --stage study\n"), "{whole}");
-        let ask = Ask { model: "claude-sonnet-5-5".into(), text: text.clone(), request: "moss_toad".into(), title: "Moss toad".into(), cap: 1500 };
+        let ask = Ask { model: "claude-sonnet-5-5".into(), text: text.clone(), request: "moss_toad".into(), title: "Moss toad".into(), cap: 1500, web: false };
         let body = session_body("agent_1", "env_1", &[("file_a".into(), "request/front.png".into())], &ask);
         assert_eq!(body["agent"]["type"], "agent_with_overrides");
         assert_eq!(body["agent"]["model"]["id"], "claude-sonnet-5-5");
+        assert!(body["agent"].get("tools").is_none(), "the agent's own tools: the web's off");
+        // the research stage: this session's web tools on, the toolset listed whole
+        let research = session_body("agent_1", "env_1", &[], &Ask { model: "claude-opus-5-5".into(), text: String::new(), request: "moss_toad".into(), title: "Moss toad".into(), cap: 1500, web: true });
+        let tools = &research["agent"]["tools"][0];
+        assert_eq!(tools["type"], "agent_toolset_20260401");
+        assert!(tools["configs"].as_array().unwrap().iter().all(|c| c["enabled"] == true) && tools["configs"].as_array().unwrap().len() == 2, "{tools}");
+        assert_eq!(tools["default_config"]["permission_policy"]["type"], "always_allow");
         assert_eq!(body["resources"][0]["mount_path"], "/request/front.png");
         assert_eq!(body["budget"]["max_list_cost"]["amount"], "1500");
         assert_eq!(body["initial_events"][0]["content"][0]["text"], text.as_str());

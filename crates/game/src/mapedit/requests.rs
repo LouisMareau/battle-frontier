@@ -472,6 +472,7 @@ pub(super) const LINES_READY: &str = "lines ready: check them";
 #[serde(rename_all = "snake_case")]
 pub(super) enum Stage {
     Study,
+    Research,
     Look,
     Detail,
     Merge,
@@ -481,12 +482,13 @@ pub(super) enum Stage {
 }
 
 impl Stage {
-    pub(super) const ALL: [Stage; 7] = [Stage::Study, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
+    pub(super) const ALL: [Stage; 8] = [Stage::Study, Stage::Research, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
 
     /// Its name, as the record and run_claude.py --stage have it.
     pub(super) fn name(self) -> &'static str {
         match self {
             Stage::Study => "study",
+            Stage::Research => "research",
             Stage::Look => "look",
             Stage::Detail => "detail",
             Stage::Merge => "merge",
@@ -504,6 +506,7 @@ impl Stage {
     pub(super) fn about(self) -> &'static str {
         match self {
             Stage::Study => "the lines, the front and the side, and the shape planned",
+            Stage::Research => "the design looked up online: references, pictures, how-tos",
             Stage::Look => "the colours and the materials planned",
             Stage::Detail => "the detached parts and the detail planned",
             Stage::Merge => "the plans checked against each other, into one",
@@ -2976,7 +2979,7 @@ mod desk {
                     if !(r.several && r.parent.is_empty()) {
                         ui.label("");
                         let staged = ui.checkbox(&mut r.staged, "Make it in stages").on_hover_text(
-                            "Seven runs of Claude, one charge each, the next starting as the last ends: the study (the lines, the front and the side, the shape planned), the look (the colours and the materials), the detail (the detached parts, the fur, the cloth), the merge (the plans checked against each other, into one), the body (built on the plan), the dress (the detail on the body) and the assembly (rigged, finished). Each plans in a file of its own under plan/; a done stage's chip below runs it again",
+                            "Eight runs of Claude, one charge each, the next starting as the last ends: the study (the lines, the front and the side, the shape planned), the research (the design looked up online: references fetched, how-tos), the look (the colours and the materials), the detail (the detached parts, the fur, the cloth), the merge (the plans checked against each other, into one), the body (built on the plan), the dress (the detail on the body) and the assembly (rigged, finished). Each plans in a file of its own under plan/; a done stage's chip below runs it again",
                         );
                         mark("uiRequestStaged", &staged);
                         ui.end_row();
@@ -4886,7 +4889,7 @@ mod tests {
         click(&ctx, &mut req, "uiRequestStaged");
         assert!(read(&root, "moss_toad").unwrap().staged, "the box ticked");
         frame_with(&ctx, &mut req, vec![]);
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,research:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
         // Start: the study stage
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]]);
@@ -4905,26 +4908,26 @@ mod tests {
         req.watch(1.0e9);
         assert!(req.desk().launched.len() == 1 && req.desk().busy().as_deref() == Some("moss_toad"));
         frame_with(&ctx, &mut req, vec![]);
-        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:running,look:pending"), "{:?}", crate::platform::hook("requeststages"));
+        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:running,research:pending"), "{:?}", crate::platform::hook("requeststages"));
         assert!(crate::platform::hook("uiRequestFoot_moss_toad").is_some(), "the foot drawn");
         stage(&root, "study", &["study"]);
         req.watch(2.0e9);
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "look"], "the next stage on its own");
-        assert!(req.said.take().unwrap().contains("the look stage of moss_toad"));
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "research"], "the next stage on its own");
+        assert!(req.said.take().unwrap().contains("the research stage of moss_toad"));
         assert_eq!(req.desk().launched.len(), 2);
         req.watch(2.5e9);
         assert_eq!(req.desk().launched.len(), 2, "once");
         // each stage done starts the next, up to the body, which fails: it stops there
         let names = Stage::ALL.map(Stage::name);
-        for (k, ran) in ["look", "detail", "merge"].into_iter().enumerate() {
+        for (k, ran) in ["research", "look", "detail", "merge"].into_iter().enumerate() {
             stage(&root, ran, &names[..k + 1]);
             req.watch(3.0e9 + k as f64 * 1.0e9);
             stage(&root, ran, &names[..k + 2]);
             req.watch(3.5e9 + k as f64 * 1.0e9);
         }
-        assert_eq!(req.desk().launched.len(), 5);
+        assert_eq!(req.desk().launched.len(), 6);
         assert_eq!(req.desk().launched.last().unwrap()[3], "body");
-        stage(&root, "body", &names[..4]);
+        stage(&root, "body", &names[..5]);
         req.watch(6.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Failed;
@@ -4932,7 +4935,7 @@ mod tests {
         save(&root, &r).unwrap();
         req.watch(7.0e9);
         req.watch(7.5e9);
-        assert_eq!(req.desk().launched.len(), 5, "nothing more after a failure");
+        assert_eq!(req.desk().launched.len(), 6, "nothing more after a failure");
         assert!(req.desk().busy().is_none());
         frame_with(&ctx, &mut req, vec![]);
         assert!(crate::platform::hook("requeststages").unwrap().contains("merge:done,body:failed,dress:pending"), "{:?}", crate::platform::hook("requeststages"));
@@ -4941,7 +4944,7 @@ mod tests {
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"]);
         // cancelled while it runs: it waits, its stages kept; a done stage's chip runs that
         // one again (with the ones after it), Go on the next not done
-        stage(&root, "body", &names[..4]);
+        stage(&root, "body", &names[..5]);
         req.watch(8.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Waiting;
@@ -4953,11 +4956,11 @@ mod tests {
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_look");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "look"], "a done stage's chip");
-        assert_eq!(req.desk().launched.len(), 7);
+        assert_eq!(req.desk().launched.len(), 8);
         req.desk().begun();
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_dress");
-        assert_eq!(req.desk().launched.len(), 7, "a stage not done yet isn't a button");
+        assert_eq!(req.desk().launched.len(), 8, "a stage not done yet isn't a button");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"], "Go on: the next not done");
         // done: made again from the first stage
@@ -4971,7 +4974,7 @@ mod tests {
         req.watch(10.0e9);
         req.watch(10.5e9);
         frame_with(&ctx, &mut req, vec![]);
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]);
         // a stage queued while another is being made: its turn in the queue
