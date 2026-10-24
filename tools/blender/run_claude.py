@@ -415,7 +415,7 @@ STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its sh
                    + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
                    + RULES.replace("{end}", "End with one line saying what you planned."))
 LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + """- read plan/shape.md (the parts, as the study stage planned them, by name) and plan/notes.log,
-  and look at the lines the study stage drew (lines_PICTURE.png, profiles.png);
+  and look at the lines the study stage made (lines_PICTURE.png, profiles.png);
 - tell the design's colours from the drawing's light (requests.md, "The design, not the
   drawing"): a part's colour is its lit tone, neither its shine nor its shade; shine and
   reflections make a glossy material, a glow a glowing one. Measure each region off the
