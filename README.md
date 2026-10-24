@@ -288,8 +288,10 @@ maps).
   `petals` round its heart) or a `model` (a grass prop's: one blade or a few, a flower), with
   its `weight`, its `height` (or a model's `scale`), `width`, `lean`, `bend`, its
   colours at its foot and tip (its terrain's where it has none), a flower's `petal`, `heart`
-  and `bloom`, `clusters` (how much it keeps to clusters of its own a few cells across) and
-  `glow` (how much it glows of itself: a flower its petals and heart, a blade its tip);
+  and `bloom`, `clusters` (how much it keeps to clusters of its own a few cells across),
+  `glow` (how much it glows of itself: a flower its petals and heart, a blade its tip) and
+  `rigidity` (its own stiffness, 0 to 1, in place of its terrain's: soft grass and stiff reeds
+  in one meadow, flowers that barely nod);
   and how it grows: `density` (how many to a cell, up to 128), `patchy`, `clump` and
   `clumping` (clumps of a Voronoi pattern whose blades are alike: as tall, leaning out from
   their middle), `toon` (lit in the toon look's steps, else as the ground). Each blade is

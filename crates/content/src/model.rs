@@ -1293,6 +1293,10 @@ pub struct Plant {
     /// heart, a blade towards its tip
     #[serde(skip_serializing_if = "is_default")]
     pub glow: f64,
+    /// how stiff it is, 0 to 1 (as `Terrain::rigidity`: 0 bends from its foot, 1 never
+    /// moves); none: its terrain's
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rigidity: Option<f64>,
 }
 
 impl Default for Plant {
@@ -1315,6 +1319,7 @@ impl Default for Plant {
             bloom: 0.08,
             clusters: 0.0,
             glow: 0.0,
+            rigidity: None,
         }
     }
 }

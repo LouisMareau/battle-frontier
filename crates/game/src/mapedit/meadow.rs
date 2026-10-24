@@ -102,6 +102,26 @@ fn range(ui: &mut egui::Ui, r: &mut [f64; 2], lo: f64, hi: f64, speed: f64, suff
     changed
 }
 
+/// A plant's rigidity row in its card: its terrain's (the default, `terrain`), or one of its
+/// own, so a meadow has soft grass and stiff reeds, flowers that barely nod.
+fn rigidity_row(ui: &mut egui::Ui, p: &mut content::Plant, k: usize, terrain: f64) {
+    ui.label("Rigidity");
+    ui.horizontal(|ui| {
+        let inherited = ui.selectable_label(p.rigidity.is_none(), "the terrain's").on_hover_text(format!("As stiff as its terrain says ({terrain:.2}: the Terrain fieldset's Rigidity)"));
+        mark(&format!("uiMeadowRigidityTerrain_{k}"), &inherited);
+        if inherited.clicked() {
+            p.rigidity = None;
+        }
+        let mut value = p.rigidity.unwrap_or(terrain);
+        let r = ui.add(egui::Slider::new(&mut value, 0.0..=1.0).fixed_decimals(2)).on_hover_text("Its own stiffness: 0 bends from its foot, swaying with the wind and giving way to whoever walks through it as far as they push; more and it's still that far up from the ground, its tip giving that much less; 1 never moves");
+        mark(&format!("uiMeadowRigidity_{k}"), &r);
+        if r.changed() {
+            p.rigidity = Some(value);
+        }
+    });
+    ui.end_row();
+}
+
 impl MapEditor {
     /// The grass props, by name: what a meadow's model can be.
     fn grass_models(&self) -> Vec<(String, String)> {
@@ -169,6 +189,7 @@ impl MapEditor {
                                     ui.label("Sizes");
                                     range(ui, &mut p.scale, 0.1, 4.0, 0.01, " ×");
                                     ui.end_row();
+                                    rigidity_row(ui, p, k, t.rigidity);
                                 });
                                 hint(ui, "A grass prop's model (a blade or a few, a flower): placed as the meadow's own are, fewer further off and shorter at the furthest.");
                             });
@@ -189,6 +210,7 @@ impl MapEditor {
                                     ui.label("Curve");
                                     ui.add(egui::Slider::new(&mut p.bend, 0.0..=1.0)).on_hover_text("How much it curves over as it rises");
                                     ui.end_row();
+                                    rigidity_row(ui, p, k, t.rigidity);
                                     if flower {
                                         ui.label("At its foot");
                                         colour(ui, &mut p.color, &foot);

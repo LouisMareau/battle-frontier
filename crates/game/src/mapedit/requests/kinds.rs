@@ -903,20 +903,41 @@ mod tests {
     /// the same keyword, the instructions for every category first); a variety added, named,
     /// taken out; a category of the user's own starting as its making's, taken out again (the
     /// kit's own never are); what older files leave out or name otherwise completed.
+    /// A catalogue as the standard one was first written (the standard file is the user's to
+    /// teach: the tests below don't lean on what it says now).
+    const FIXTURE: &str = r#"{"features": [], "kinds": [
+        {"id": "character", "name": "Character", "made_as": "character", "params": ["height", "style", "pose", "shapes", "bones", "check_lines"], "features": [],
+         "varieties": [{"id": "character", "name": "Character", "params": [], "features": []}, {"id": "creature", "name": "Creature", "params": [], "features": []}]},
+        {"id": "prop", "name": "Prop", "made_as": "prop", "params": ["height", "style", "shapes", "many", "check_lines"], "features": [], "varieties": [{"id": "prop", "name": "Prop", "params": [], "features": []}]},
+        {"id": "environment", "name": "Environment", "made_as": "environment", "params": ["height", "style", "shapes", "variants", "many", "check_lines"],
+         "features": [{"keyword": "wind", "text": "what the wind moves painted for it"}],
+         "varieties": [{"id": "environment", "name": "Environment", "params": [], "features": []},
+                       {"id": "grass", "name": "Grass", "made_as": "grass", "params": ["height", "cells", "style", "shapes", "variants", "many", "check_lines"], "features": [{"keyword": "edges", "text": "e"}, {"keyword": "pieces", "text": "p"}, {"keyword": "density", "text": "d"}]},
+                       {"id": "flower", "name": "Flower", "made_as": "flower", "params": [], "features": [{"keyword": "stem", "text": "s"}]},
+                       {"id": "rock", "name": "Rock", "made_as": "rock", "params": ["cells", "style", "shapes", "variants", "many", "check_lines"], "features": [{"keyword": "detail", "text": "a"}, {"keyword": "colour", "text": "b"}, {"keyword": "moss", "text": "c"}, {"keyword": "plants", "text": "d"}]},
+                       {"id": "tree", "name": "Tree", "made_as": "tree", "params": [], "features": [{"keyword": "trunk", "text": "t"}, {"keyword": "foliage", "text": "f"}, {"keyword": "colour", "text": "c"}, {"keyword": "wind", "text": "w"}]}]},
+        {"id": "floor", "name": "Floor set", "made_as": "floor", "params": ["style", "shapes"], "features": [], "varieties": [{"id": "floor", "name": "Floor set", "params": [], "features": []}]}]}"#;
+
     #[test]
     fn the_categories_shape_what_a_request_asks() {
-        let mut c = Catalogue::standard();
-        assert_eq!(c.kinds.iter().map(|k| k.id.as_str()).collect::<Vec<_>>(), ["character", "prop", "environment", "floor"]);
-        for k in &c.kinds {
+        // the standard file: its shape (what it says is the user's to change)
+        let standard = Catalogue::standard();
+        assert_eq!(standard.kinds.iter().map(|k| k.id.as_str()).collect::<Vec<_>>()[..4], ["character", "prop", "environment", "floor"]);
+        for k in &standard.kinds {
             assert!(k.built_in(), "{}", k.id);
-            assert_eq!(k.params, default_params(k.made_as), "{}: what the window always asked", k.id);
             assert_eq!(k.varieties[0].id, k.id, "{}: its generic variety first", k.id);
         }
-        let env = c.kind("environment").unwrap();
-        assert_eq!(env.varieties.iter().map(|v| (v.id.as_str(), v.made_as)).collect::<Vec<_>>(), [("environment", None), ("grass", Some(Kind::Grass)), ("flower", Some(Kind::Flower)), ("rock", Some(Kind::Rock)), ("tree", Some(Kind::Tree))]);
-        assert_eq!(env.variety("tree").unwrap().features.iter().map(|f| f.keyword.as_str()).collect::<Vec<_>>(), ["trunk", "foliage", "colour", "wind"]);
-        assert_eq!(c.kind("character").unwrap().varieties.iter().map(|v| (v.id.as_str(), v.name.as_str())).collect::<Vec<_>>(), [("character", "Character"), ("creature", "Creature")]);
-        assert_eq!(c.kind("floor").unwrap().varieties[0].name, "Floor set");
+        let env = standard.kind("environment").unwrap();
+        assert_eq!(env.varieties.iter().map(|v| (v.id.as_str(), v.made_as)).collect::<Vec<_>>()[..5], [("environment", None), ("grass", Some(Kind::Grass)), ("flower", Some(Kind::Flower)), ("rock", Some(Kind::Rock)), ("tree", Some(Kind::Tree))]);
+        assert_eq!(standard.kind("character").unwrap().varieties.iter().map(|v| v.id.as_str()).collect::<Vec<_>>()[..2], ["character", "creature"]);
+        assert_eq!(standard.kind("floor").unwrap().varieties[0].name, "Floor set");
+        // the rest on a catalogue of known words
+        let mut c: Catalogue = serde_json::from_str(FIXTURE).unwrap();
+        c.complete();
+        for k in &c.kinds {
+            assert_eq!(k.params, default_params(k.made_as), "{}: what the window always asked", k.id);
+        }
+        assert_eq!(c.kind("environment").unwrap().variety("tree").unwrap().features.iter().map(|f| f.keyword.as_str()).collect::<Vec<_>>(), ["trunk", "foliage", "colour", "wind"]);
         // a rock: the environment's variety, made as a rock, its settings a rock's
         let rock = ModelRequest { kind: Kind::Rock, kind_id: "environment".into(), variety: "rock".into(), ..Default::default() };
         assert_eq!(c.params_of(&rock), [Param::Cells, Param::Style, Param::Shapes, Param::Variants, Param::Many, Param::CheckLines]);

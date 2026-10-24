@@ -399,7 +399,7 @@ impl MapEditor {
                             ui.label("Rigidity");
                             self.change_mark(ui, "terrains", &id, "rigidity");
                         });
-                        let r = ui.add(egui::Slider::new(&mut t.rigidity, 0.0..=1.0).fixed_decimals(2)).on_hover_text("How stiff what grows on it is (its meadow, its grass): 0 bends from its foot, swaying with the wind and giving way to whoever walks through it as far as they push; more and it's still that far up from the ground, its tip giving that much less; 1 never moves");
+                        let r = ui.add(egui::Slider::new(&mut t.rigidity, 0.0..=1.0).fixed_decimals(2)).on_hover_text("How stiff what grows on it is (its meadow, its grass): 0 bends from its foot, swaying with the wind and giving way to whoever walks through it as far as they push; more and it's still that far up from the ground, its tip giving that much less; 1 never moves. The default for its meadow's plants: each may have its own (Grows here, a plant's Rigidity)");
                         mark("uiTerrainRigidity", &r);
                         ui.end_row();
                     });

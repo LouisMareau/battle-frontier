@@ -303,7 +303,8 @@ fn growth_digest(content: &content::Content, versions: &HashMap<String, u64>) ->
 
 /// Every meadow's kinds of blade and flower as the renderer has them (`world::meadow::Kinds`,
 /// in its order): their shapes, heights, widths, how they lean and curve, their
-/// colours (their terrain's where they have none), whether they're toon, how much they glow.
+/// colours (their terrain's where they have none), whether they're toon, how much they glow,
+/// how stiff they are (their own, else their terrain's rigidity).
 pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
     world::meadow::Kinds::of(content)
         .list
@@ -317,7 +318,7 @@ pub(super) fn blade_kinds(content: &content::Content) -> Vec<BladeKind> {
                 bend: [p.lean as f32, p.bend as f32, 1.0, if flower { p.bloom as f32 } else { 0.0 }],
                 foot: [foot[0], foot[1], foot[2], p.petals as f32],
                 tip: [tip[0], tip[1], tip[2], if t.growth.meadow.toon { 1.0 } else { 0.0 }],
-                petal: [petal[0], petal[1], petal[2], t.rigidity.clamp(0.0, 1.0) as f32],
+                petal: [petal[0], petal[1], petal[2], p.rigidity.unwrap_or(t.rigidity).clamp(0.0, 1.0) as f32],
                 heart: [heart[0], heart[1], heart[2], p.glow as f32],
             }
         })

@@ -137,8 +137,8 @@ pub fn grow(t: &Terrain, first: u32, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> 
     if m.plants.is_empty() {
         return;
     }
-    // (its models' tufts carry the terrain's rigidity; its blades' kinds have it)
-    let rigidity = t.rigidity as f32;
+    // (its models' tufts carry their rigidity, the plant's own or the terrain's; its blades'
+    // kinds have theirs)
     let density = m.density.clamp(0.0, Meadow::MOST) as f32;
     let n = (density + hash(x, z, 211)).floor() as i32;
     // spread evenly: a sequence that fills the cell however many there are (R2), from a
@@ -189,7 +189,7 @@ pub fn grow(t: &Terrain, first: u32, x: i32, z: i32, foot: &dyn Fn(f32, f32) -> 
                 let (lo, hi) = (p.scale[0].min(p.scale[1]), p.scale[0].max(p.scale[1]));
                 // (a tuft's turn: degrees, clockwise seen from above)
                 let turn = (-lean.y).atan2(lean.x).to_degrees();
-                tufts.push(Tuft { prop: p.prop.clone(), at: foot, turn: -turn, scale: (lo + (hi - lo) * big as f64) as f32, far: true, rigidity });
+                tufts.push(Tuft { prop: p.prop.clone(), at: foot, turn: -turn, scale: (lo + (hi - lo) * big as f64) as f32, far: true, rigidity: p.rigidity.unwrap_or(t.rigidity) as f32 });
             }
             continue;
         }
@@ -279,7 +279,7 @@ mod tests {
             plants: vec![
                 Plant { weight: 3.0, ..Default::default() },
                 Plant { shape: "flower".into(), weight: 1.0, ..Default::default() },
-                Plant { shape: "model".into(), prop: "tuft".into(), weight: 1.0, scale: [0.5, 0.5], ..Default::default() },
+                Plant { shape: "model".into(), prop: "tuft".into(), weight: 1.0, scale: [0.5, 0.5], rigidity: Some(0.7), ..Default::default() },
             ],
             ..Default::default()
         };
@@ -287,7 +287,7 @@ mod tests {
         let (grass, flowers) = (blades.iter().filter(|b| b.kind == 0).count(), blades.iter().filter(|b| b.kind == 1).count());
         let all = (grass + flowers + tufts.len()) as f32;
         assert!((grass as f32 / all - 0.6).abs() < 0.04 && (flowers as f32 / all - 0.2).abs() < 0.04, "{grass} {flowers} {}", tufts.len());
-        assert!(tufts.iter().all(|t| t.prop == "tuft" && t.scale == 0.5 && t.far));
+        assert!(tufts.iter().all(|t| t.prop == "tuft" && t.scale == 0.5 && t.far && (t.rigidity - 0.7).abs() < 1e-6), "a tuft as stiff as its plant says, not its terrain");
         // the flowers keeping to clusters: as many, near one another
         let mut c = m.clone();
         c.plants[1].clusters = 1.0;
