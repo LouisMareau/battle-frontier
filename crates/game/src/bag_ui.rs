@@ -2,7 +2,7 @@
 //! (Consumables, Items, Key items), each a grid of cells its items lie in, each taking its
 //! own; on the bag's side, always to hand whatever the tab, the IDPs' dispenser (a tube a
 //! kind, how many in each) and the tool rack (a tool a hook). An item dragged moves within
-//! its pocket (the cells it would take shown as it goes: lit where it fits, red where it
+//! its pocket (the cells it would take shown as it goes: lit where it fits, crimson where it
 //! doesn't; a right click or R turns it a quarter); the game's buttons do it all too: the
 //! arrows move a cursor over the cells, tubes and hooks, A takes the item there up and puts
 //! it down, L or R turns it, B puts it back (or, holding nothing, closes the window); L and R

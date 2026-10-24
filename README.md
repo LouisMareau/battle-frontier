@@ -530,7 +530,7 @@ maps).
   potions take two cells), and on the bag's side, to hand whatever the tab, the **IDPs' dispenser** (a
   tube a kind of IDP, as many as a tube holds) and the **tool rack** (a tool a hook: a
   scooter, say). Drag an item to move it within its pocket: the cells it would take show
-  as it goes, lit where it fits, red where it doesn't, and a right click (or R) turns it a
+  as it goes, lit where it fits, crimson where it doesn't, and a right click (or R) turns it a
   quarter; the game's buttons do it too (the arrows move a cursor over the cells, tubes and
   hooks, A takes up and puts down, L or R turns, B puts back or closes; L and R change the
   tab). The usual few of each come with a new story. Items are found in the world in
