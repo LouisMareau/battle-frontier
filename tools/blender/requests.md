@@ -42,7 +42,6 @@ Rules that hold all the way:
   "toon": true,
   "many": false,
   "check_lines": false,
-  "staged": false,
   "stage": "",
   "stages": [],
   "status": "waiting",
@@ -111,9 +110,11 @@ are.)
   lines before the model is built. The modelling stops once the lines and the front and the
   side are drawn (step 5) and the request waits again, its `progress.step` saying
   `lines ready: check them`, until the user says go on (below, "Checking the lines first").
-- `staged` (the window's **"Make it in stages"**): made by a run per stage, each with one
-  charge, the editor starting the next once the last has ended (below, "Made in stages");
-  `stage` is the one running (or the last to end), `stages` those done, in their order.
+- `style` `agentic` (after `accurate` in the panel, its info icon warning of the cost and the
+  lack of any guarantee): accurate, made by a run per stage, each with one charge, the
+  editor starting the next once the last has ended (below, "Made in stages"); `stage` is the
+  one running (or the last to end), `stages` those done, in their order; `director` (on
+  unless unticked) has each stage's work judged.
 - `status`: `waiting`, `in_progress`, `done`, or `failed` (the run ended without the model,
   stopped with an error or went silent: `progress.step` says why, `log.txt` has the rest).
   `progress` is what the editor's bar shows (in
@@ -332,9 +333,12 @@ stages, each stage's run (below).
 
 ### Made in stages
 
-Tick **"Make it in stages"** in the request's panel (`staged`) to have it made in nine
-stages, a run of Claude with one charge each, the editor starting the next once the last has
-ended (`stages` lists the ones done, `stage` the one running or the last to end):
+Pick the **agentic** style in the request's panel (after accurate; the info icon beside it
+says it spins several agents, costs far more than any other style and guarantees nothing of
+the result) to have it made in nine stages, a run of Claude with one charge each, the
+editor starting the next once the last has ended (`stages` lists the ones done, `stage` the
+one running or the last to end). Its agents run on Sonnet, its director on Opus (the
+window's model pick doesn't apply; `--model` does, by hand):
 
 ```bash
 python tools/blender/run_claude.py ID --stage study
@@ -393,7 +397,24 @@ with it; Start on a failed one runs that stage again, Go on after a cancel the n
 Make it again on a done one starts from the study. In the cloud, each stage is a session of
 its own, given the request's files and its plan folder (the references under it too), the
 research's with the web tools on. The researchers' lines in the log are tagged `[subject]`,
-`[references]` and `[methods]`, their raw streams in `run_ROLE.jsonl`. Each stage's run is estimated at its
+`[references]` and `[methods]`, their raw streams in `run_ROLE.jsonl`.
+
+**The director** (`director`, the panel's "A director judges each stage", on unless unticked):
+after each stage, a run of Claude (`--stage STAGE --direct`) judges its work against the
+artwork, the user's pictures and notes, for how accurate it is: the lines on the design, the
+research's facts and references true to the pictures, the colours measured right, the plan
+whole, the renders matching the silhouette and the proportions, the finished model as
+designed. It grades 0 to 100 (100: exactly as designed) in `plan/director/STAGE.md` (its
+first line `grade: N`, its second `verdict: go on` or `verdict: back to STAGE`, then what's
+right and each fault: where it shows, what it should be, how to fix it). At 70 and over
+(`GRADE_NEEDED`) the editor starts the next stage; under it the work goes back to the stage
+the director names (at or before the one judged: the earliest whose work caused the fault),
+the stages after it to do again, and that stage's run is told what to fix. A stage sent
+back three times stops the request for the user (failed, the director's notes in its step;
+Start again runs it once more). The record's `judgment` keeps the last grade, the stage it
+went back to and the notes (`backs`: how often each stage was sent back), `next` what the
+editor starts; `plan/director.log` lists every judgment. The panel's director chip shows
+the judging and the last grade. Each stage's run is estimated at its
 share of the whole (`STAGE_SHARE`); together they take longer than one run, each reading the
 pictures and the plan again, and cost more.
 

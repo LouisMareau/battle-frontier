@@ -210,6 +210,9 @@ pub(super) enum Style {
     LowPoly,
     /// as close to the pictures as it can be, whatever it takes (the model details say how)
     Accurate,
+    /// accurate, made in stages by agents with a director judging each (far costlier, with
+    /// no guarantee): "Made in stages"
+    Agentic,
 }
 
 /// How a creature stands in its model: the pose it's rigged in.
@@ -343,16 +346,22 @@ pub(super) struct ModelRequest {
     /// the user checks the lines first: a run stops once the lines and the front and the side
     /// are drawn, the request waiting (LINES_READY) until "The lines look right: go on"
     pub check_lines: bool,
-    /// made in stages ("Make it in stages"): a run of Claude per stage, each with one charge,
+    /// made in stages (the agentic style): a run of Claude per stage, each with one charge,
     /// the desk starting the next once the last has ended (`Stage`); the stage running (or
     /// the last to end), and the stages done, in their order
-    pub staged: bool,
     pub stage: String,
     pub stages: Vec<String>,
     /// the research stage's pass: its researchers run a second (and last) time when the
     /// lead's review asks more (`research_more`, until that run starts)
     pub research_pass: u32,
     pub research_more: bool,
+    /// made in stages: a director judges each stage's work against the artwork (0 to 100)
+    /// and sends it back under the grade needed, saying which stage starts over; its last
+    /// judgment; and what the desk starts next ("" while a run goes: a stage's name, or
+    /// "direct:STAGE" for the director's judgment of it)
+    pub director: bool,
+    pub judgment: Judgment,
+    pub next: String,
     pub status: Status,
     /// while it's modelled, how it goes (and once done, how long it took)
     pub progress: Progress,
@@ -422,11 +431,13 @@ impl Default for ModelRequest {
             toon: true,
             many: false,
             check_lines: false,
-            staged: false,
             stage: String::new(),
             stages: vec![],
             research_pass: 1,
             research_more: false,
+            director: true,
+            judgment: Judgment::default(),
+            next: String::new(),
             status: Status::Waiting,
             progress: Progress::default(),
             images: vec![],
@@ -470,6 +481,22 @@ pub(super) fn best_and_worst<'a>(list: &'a [ModelRequest], kind: &str, but: &str
 /// The step of a request waiting for the user to check its lines (run_claude.py writes it:
 /// model_requests.py's LINES_READY).
 pub(super) const LINES_READY: &str = "lines ready: check them";
+
+/// The director's last judgment of a stage's work (model_requests.py's `judgment`): the stage,
+/// its grade, the stage the work went back to ("" when it went on), the director's notes, and
+/// how often each stage was sent back.
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Judgment {
+    pub stage: String,
+    pub grade: u32,
+    pub to: String,
+    pub notes: String,
+    pub backs: BTreeMap<String, u32>,
+}
+
+/// The director's grade a stage's work needs to go on (model_requests.py's GRADE_NEEDED).
+pub(super) const GRADE_NEEDED: u32 = 70;
 
 /// The stages a request is made in when it asks ("Make it in stages"), in order: a run of
 /// Claude each, with one charge, the desk starting the next once the last has ended
@@ -554,6 +581,11 @@ impl ModelRequest {
         self.status == Status::Waiting && self.progress.step == LINES_READY
     }
 
+    /// Made in stages by agents: the agentic style.
+    pub(super) fn staged(&self) -> bool {
+        self.style == Style::Agentic
+    }
+
     /// Made in stages: the first stage not done yet (None once they all are: made again from
     /// the first).
     pub(super) fn next_stage(&self) -> Option<Stage> {
@@ -565,10 +597,27 @@ impl ModelRequest {
         Stage::of(&self.stage)
     }
 
-    /// Its stage's run ended well (its files written, the kit saying so), the request in
-    /// progress still: the desk starts the next.
+    /// Its run ended with the kit saying what the desk starts next (a stage, or the
+    /// director's judgment of one): the desk's turn.
     pub(super) fn stage_done(&self) -> bool {
-        self.status == Status::InProgress && !self.stage.is_empty() && self.stages.iter().any(|d| d == &self.stage)
+        self.next_run().is_some()
+    }
+
+    /// What the desk starts next, as the kit wrote it: a stage, or the director's judgment of
+    /// one (after the assembly's, the request done already).
+    pub(super) fn next_run(&self) -> Option<desk::How> {
+        if self.next.is_empty() || !matches!(self.status, Status::InProgress | Status::Done) {
+            return None;
+        }
+        match self.next.strip_prefix("direct:") {
+            Some(s) => Stage::of(s).map(desk::How::Direct),
+            None => Stage::of(&self.next).map(desk::How::Stage),
+        }
+    }
+
+    /// The director judging a stage's work now.
+    pub(super) fn judging(&self) -> bool {
+        self.status == Status::InProgress && self.progress.step.starts_with("the director judges")
     }
 
     /// Its outlines in turn, numbered as the split run numbers them: picture by picture in its
@@ -649,7 +698,7 @@ mod desk {
     use super::super::{badge, hint, mark, section, warn};
     use super::disk;
     use super::kinds::{KindDef, Param};
-    use super::{bone_colour, bone_names, outline_colour, Bone, Kind, ModelRequest, Outline, Pose, Progress, Requests, Stage, Status, Style, BONE_PARTS, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
+    use super::{bone_colour, bone_names, outline_colour, Bone, Kind, ModelRequest, Outline, Pose, Progress, Requests, Stage, Status, Style, BONE_PARTS, GRADE_NEEDED, LINES_READY, SHAPES_CAP, VARIANTS_CAP};
     use crate::platform::{self, Dropped};
 
     const WAITING: Color32 = Color32::from_rgb(255, 200, 90);
@@ -1228,9 +1277,9 @@ mod desk {
         starting: Option<(String, f64)>,
         /// a run being cancelled (its request and when): its stop file waits for the run
         cancelling: Option<(String, f64)>,
-        /// a request made in stages whose next stage was started here (its id, the stage that
-        /// had ended): started once, not again while the record still says so
-        continued: Option<(String, String)>,
+        /// a request made in stages whose next run was started here (its id, what the record
+        /// said to start, when that was written): started once, not again while it says so
+        continued: Option<(String, String, u64)>,
         /// silent requests already marked failed (once each)
         failed_silent: std::collections::HashSet<String>,
         /// the tools started, reaped as they end
@@ -1836,15 +1885,16 @@ mod desk {
         pub(in super::super) fn start_run(&mut self, id: &str, how: How) -> String {
             let r = self.list.iter().find(|r| r.id == id).cloned();
             // (a request made in stages, between two of them: its next stage, nothing else)
-            let between = r.as_ref().is_some_and(|r| r.staged && r.stage_done());
+            let between = r.as_ref().is_some_and(|r| r.staged() && r.stage_done());
             if let Some(other) = self.busy().filter(|b| !(between && b == id)) {
                 return format!("One at a time: {other} is being made");
             }
             let mut args = vec!["tools/blender/run_claude.py".to_string(), id.to_string()];
             // made in stages: the stage this run is (Start: the next not done, or the first
-            // again once they all are; the lines checked: the study's plan on them)
-            let stage = match (how, r.as_ref().filter(|r| r.staged)) {
-                (How::Stage(s), _) => Some(s),
+            // again once they all are; the lines checked: the study's plan on them), or the
+            // one the director judges
+            let stage = match (how, r.as_ref().filter(|r| r.staged())) {
+                (How::Stage(s) | How::Direct(s), _) => Some(s),
                 (How::Whole, Some(r)) => Some(r.next_stage().unwrap_or(Stage::Study)),
                 (How::GoOn, Some(_)) => Some(Stage::Study),
                 _ => None,
@@ -1856,19 +1906,27 @@ mod desk {
                 How::GoOn => args.push("--go-on".into()),
                 How::Again => args.push("--again".into()),
                 How::Variants => args.push("--variants".into()),
+                How::Direct(_) => args.push("--direct".into()),
                 How::Whole | How::Stage(_) => {}
             }
             let note = match how {
                 How::Again => self.list.iter().find(|r| r.id == id).map(|r| r.comments.trim().to_string()).unwrap_or_default(),
                 // (the variants run reads how many and how they differ in the request)
-                How::Variants | How::Stage(_) => String::new(),
+                How::Variants | How::Stage(_) | How::Direct(_) => String::new(),
                 _ => self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default(),
             };
             if !note.is_empty() {
                 args.extend(["--note".into(), note]);
             }
-            if !self.model.is_empty() {
-                args.extend(["--model".into(), self.model.clone()]);
+            // the agentic style's agents on Sonnet, its director on Opus; any other run on the
+            // window's pick
+            let model = match (how, stage) {
+                (How::Direct(_), _) => "opus".to_string(),
+                (_, Some(_)) => "sonnet".to_string(),
+                _ => self.model.clone(),
+            };
+            if !model.is_empty() {
+                args.extend(["--model".into(), model]);
             }
             match self.launch(&args) {
                 Ok(()) => {
@@ -1882,6 +1940,7 @@ mod desk {
                     self.console_open = true;
                     self.failed_silent.remove(id);
                     match (how, stage) {
+                        (How::Direct(s), _) => format!("The director judges the {} stage of {id} against the artwork: the console shows everything it does", s.name()),
                         (How::GoOn, _) => format!("{MAKER} goes on with {id} from its lines: the console shows everything it does"),
                         (How::Again, _) => format!("{MAKER} makes {id} again from its last model, with your comments: the console shows everything it does"),
                         (How::Variants, _) => format!("{MAKER} makes variants of {id} from its model: the console shows everything it does"),
@@ -1926,7 +1985,7 @@ mod desk {
                 How::GoOn => r.lines_ready(),
                 How::Again => r.status == Status::Done,
                 How::Variants => r.can_vary() && r.variants > 0,
-                How::Stage(_) => r.staged && r.status != Status::InProgress,
+                How::Stage(_) | How::Direct(_) => r.staged() && r.status != Status::InProgress,
             })
         }
 
@@ -2174,20 +2233,23 @@ mod desk {
                 }
                 self.reload();
             }
-            // a request made in stages, its stage ended well: the next, once its run is over
-            // (the stage's run wrote that it's done, then ended)
+            // a request made in stages, its run ended with what comes next (a stage, or the
+            // director's judgment of the one just done): started once its run is over
             if self.starting.is_none() && self.cancelling.is_none() && self.nothing_runs() {
-                let ended = self.list.iter().find(|r| r.staged && r.stage_done() && self.continued.as_ref() != Some(&(r.id.clone(), r.stage.clone()))).cloned();
+                let key = |r: &ModelRequest| (r.id.clone(), r.next.clone(), r.progress.started.to_bits());
+                let ended = self.list.iter().find(|r| r.staged() && r.next_run().is_some() && self.continued.as_ref() != Some(&key(r))).cloned();
                 if let Some(r) = ended {
-                    let next = r.next_stage();
-                    let s = match next {
-                        Some(next) => self.start_run(&r.id, How::Stage(next)),
-                        None => "every stage done, and no model added".to_string(),
-                    };
-                    self.continued = Some((r.id.clone(), r.stage.clone()));
+                    let how = r.next_run().unwrap_or_default();
+                    let s = self.start_run(&r.id, how);
+                    self.continued = Some(key(&r));
                     if self.starting.is_none() {
                         // (it didn't start: failed, rather than tried each second)
-                        let reason = format!("the {} stage didn't start: {s}", next.map(Stage::name).unwrap_or("last"));
+                        let what = match how {
+                            How::Direct(s) => format!("the director's judgment of the {} stage", s.name()),
+                            How::Stage(s) => format!("the {} stage", s.name()),
+                            _ => "the next run".to_string(),
+                        };
+                        let reason = format!("{what} didn't start: {s}");
                         let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
                         self.settle(&r.id, &args, |rec| {
                             rec.status = Status::Failed;
@@ -2434,16 +2496,16 @@ mod desk {
                 (Status::Failed, false) => "Start again",
                 (Status::Done, false) => "Make it again",
                 (Status::Waiting, false) if r.lines_ready() => "Start over",
-                (Status::Waiting, false) if r.staged && !r.stages.is_empty() => "Go on",
+                (Status::Waiting, false) if r.staged() && !r.stages.is_empty() => "Go on",
                 _ => "Start",
             };
             let stages = Stage::ALL.map(Stage::name).join(", ");
             let about = match (r.lines_ready(), r.check_lines) {
                 _ if r.several && r.parent.is_empty() => format!("{MAKER} finds each drawing on the pictures and makes it a request of its own; Make them all then has them made one after another"),
-                _ if r.staged && r.status == Status::Failed => format!("{MAKER} runs its {} stage again (the stages before it kept), then the ones after it", r.next_stage().unwrap_or(Stage::Study).name()),
-                _ if r.staged && r.status == Status::Done => format!("{MAKER} makes it once more, in stages from the first ({stages}); to change the model it made instead, say what in \"Make it again\" below"),
-                _ if r.staged && !r.stages.is_empty() && !r.lines_ready() => format!("{MAKER} goes on from its {} stage (the stages before it kept), the next starting as each ends", r.next_stage().unwrap_or(Stage::Study).name()),
-                (false, _) if r.staged => format!("{MAKER} makes it in stages, a run with one charge each ({stages}), the next starting as the last ends{}; the console shows everything it does", if r.check_lines { ", the study stopping first for your check of the lines" } else { "" }),
+                _ if r.staged() && r.status == Status::Failed => format!("{MAKER} runs its {} stage again (the stages before it kept), then the ones after it", r.next_stage().unwrap_or(Stage::Study).name()),
+                _ if r.staged() && r.status == Status::Done => format!("{MAKER} makes it once more, in stages from the first ({stages}); to change the model it made instead, say what in \"Make it again\" below"),
+                _ if r.staged() && !r.stages.is_empty() && !r.lines_ready() => format!("{MAKER} goes on from its {} stage (the stages before it kept), the next starting as each ends", r.next_stage().unwrap_or(Stage::Study).name()),
+                (false, _) if r.staged() => format!("{MAKER} makes it in stages, a run with one charge each ({stages}), the next starting as the last ends{}; the console shows everything it does", if r.check_lines { ", the study stopping first for your check of the lines" } else { "" }),
                 _ if r.status == Status::Done => format!("{MAKER} makes it once more, from the pictures; to change the model it made instead, say what in \"Make it again\" below"),
                 (true, true) => format!("{MAKER} starts again from the pictures: it checks the lines there against them (fixing first what your note above says is off), and stops for your check again"),
                 (true, false) => format!("{MAKER} starts again from the pictures, checking the lines there against them (fixing first what your note above says is off), and makes the whole model this time"),
@@ -2463,7 +2525,7 @@ mod desk {
         /// after it).
         fn stage_chips(&self, ui: &mut egui::Ui, r: &ModelRequest) -> Option<Run> {
             let mut asked = None;
-            let running = r.stage().filter(|_| r.status == Status::InProgress && !r.stage_done());
+            let running = r.stage().filter(|_| r.status == Status::InProgress && !r.stage_done() && !r.judging());
             let free = self.busy().is_none();
             let mut states = vec![];
             ui.horizontal_wrapped(|ui| {
@@ -2489,6 +2551,24 @@ mod desk {
                     if again && click.clicked() {
                         asked = Some(Run::Stage(r.id.clone(), s));
                     }
+                }
+                // the director: judging now, or its last word (the grade, on or back)
+                if r.director || !r.judgment.stage.is_empty() {
+                    let j = &r.judgment;
+                    let (text, color, about, state) = if r.judging() {
+                        ("director".to_string(), WORKING, format!("The director judges the {} stage's work against the artwork", r.stage), format!("judging:{}", r.stage))
+                    } else if j.stage.is_empty() {
+                        ("director".to_string(), Color32::from_gray(96), format!("The director judges each stage's work against the artwork, 0 to 100 (100: exactly as designed); under {GRADE_NEEDED} the work goes back to the stage at fault, told what to fix"), "none".to_string())
+                    } else if !j.to.is_empty() {
+                        (format!("director {}/100", j.grade), FAILED, format!("The {} stage's work judged {}/100: back to the {} stage. {}", j.stage, j.grade, j.to, j.notes), format!("{}:{}:{}", j.stage, j.grade, j.to))
+                    } else {
+                        (format!("director {}/100", j.grade), DONE, format!("The {} stage's work judged {}/100: go on. {}", j.stage, j.grade, j.notes), format!("{}:{}:go on", j.stage, j.grade))
+                    };
+                    ui.add_space(4.0);
+                    let drawn = tag(ui, &text, color);
+                    let hover = ui.interact(drawn.rect, ui.id().with(("request-director", &r.id)), Sense::hover()).on_hover_text(about);
+                    mark("uiRequestDirector", &hover);
+                    platform::set_hook("requestdirector", &state);
                 }
             });
             platform::set_hook("requeststages", &states.join(","));
@@ -2545,6 +2625,7 @@ mod desk {
                         How::Again => " · again".into(),
                         How::Variants => " · variants".into(),
                         How::Stage(s) => format!(" · {} stage", s.name()),
+                        How::Direct(s) => format!(" · the director on its {} stage", s.name()),
                     };
                     let row = ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{}.", k + 1)).size(11.5).color(Color32::from_gray(150)));
@@ -2580,6 +2661,7 @@ mod desk {
                         How::Again => "made again with your comments".into(),
                         How::Variants => "its variants, from its model".into(),
                         How::Stage(s) => format!("its {} stage again, and the stages after it", s.name()),
+                        How::Direct(s) => format!("the director's judgment of its {} stage", s.name()),
                     };
                     let row = row.response.on_hover_text(format!("{name}: {how_long}"));
                     mark(&format!("uiQueued_{}", q.id), &row);
@@ -2897,9 +2979,15 @@ mod desk {
                         "As close to the pictures as it can be, whatever it takes: Claude uses the fitting tool for each part (fur, textures...) and may take a long time",
                     );
                     mark("uiRequestAccurate", &accurate);
+                    let agentic = ui.selectable_value(&mut r.style, Style::Agentic, "agentic").on_hover_text("As accurate, made in stages by several agents with a director judging each stage (requests.md, \"Made in stages\"): read the warning beside it");
+                    mark("uiRequestAgentic", &agentic);
+                    let warned = info_icon(ui).on_hover_text(format!(
+                        "Agentic spins several agents in a row: a study, three researchers at once, a review, the look, the detail, a merge, the body, the dress and the assembly, each a run of Claude on Sonnet, and a director on Opus judging each stage against your pictures and sending work back under {GRADE_NEEDED} of 100 (the stages after it following). It costs far more than any other style, many runs of Claude for one model, and there's no guarantee the result matches what you expect."
+                    ));
+                    mark("uiRequestAgenticInfo", &warned);
                 });
                 ui.end_row();
-                if r.style == Style::Accurate {
+                if matches!(r.style, Style::Accurate | Style::Agentic) {
                     ui.label("Model details");
                     let details = ui.add(
                         egui::TextEdit::multiline(&mut r.details).desired_rows(3).desired_width(330.0).hint_text("How to build it, what matters most: the fur, a marking, a detail to get exactly right"),
@@ -2985,13 +3073,13 @@ mod desk {
                     );
                     mark("uiRequestCheckLines", &check);
                     ui.end_row();
-                    // made in stages: a run of Claude per stage, one charge each
-                    if !(r.several && r.parent.is_empty()) {
+                    // the agentic style, made in stages: its director's toggle
+                    if r.staged() && !(r.several && r.parent.is_empty()) {
                         ui.label("");
-                        let staged = ui.checkbox(&mut r.staged, "Make it in stages").on_hover_text(
-                            "Nine stages, a run of Claude with one charge each, the next starting as the last ends: the study (the lines, the front and the side, the shape planned), the research (three researchers at once: the subject, reference pictures fetched, how-tos), the review (the lead checks what they found and asks for a second pass, or compiles it), the look (the colours and the materials), the detail (the detached parts, the fur, the cloth), the merge (the plans checked against each other, into one), the body (built on the plan), the dress (the detail on the body) and the assembly (rigged, finished). Each plans in a file of its own under plan/; a done stage's chip below runs it again",
-                        );
-                        mark("uiRequestStaged", &staged);
+                        let directed = ui.checkbox(&mut r.director, "A director judges each stage").on_hover_text(format!(
+                            "After each stage, a run of Claude on Opus judges its work against your pictures and notes, 0 to 100 (100: exactly as designed): under {GRADE_NEEDED} the work goes back to the stage at fault, with what to fix, the stages after it following; a stage sent back three times stops for you"
+                        ));
+                        mark("uiRequestDirected", &directed);
                         ui.end_row();
                     }
                 }
@@ -3042,7 +3130,7 @@ mod desk {
                     self.model_pick(ui);
                 });
                 ui.end_row();
-                if r.staged || !r.stages.is_empty() {
+                if r.staged() || !r.stages.is_empty() {
                     ui.label("Stages");
                     if let Some(a) = self.stage_chips(ui, &r) {
                         asked = Some(a);
@@ -3791,6 +3879,7 @@ mod desk {
             Style::Smooth => "smooth",
             Style::LowPoly => "low-poly",
             Style::Accurate => "accurate",
+            Style::Agentic => "agentic",
         };
         let mine = if r.mine { " · mine" } else { "" };
         if r.kind == Kind::Floor {
@@ -3942,6 +4031,7 @@ mod desk {
                 Style::Smooth => "smooth",
                 Style::LowPoly => "low-poly",
                 Style::Accurate => "accurate",
+                Style::Agentic => "agentic",
             }
         ));
         if r.kind != Kind::Rock && (r.kind == Kind::Grass || r.cells != [1, 1]) {
@@ -4010,7 +4100,8 @@ mod desk {
         let (at, words) = r.progress.at(now_secs());
         let (fraction, color, text) = match r.status {
             _ if starting => (0.02, WORKING, format!("starting {MAKER}")),
-            Status::InProgress if r.staged && !r.stage.is_empty() => {
+            Status::InProgress if r.judging() => (at, WORKING, words),
+            Status::InProgress if r.staged() && !r.stage.is_empty() => {
                 let pass = if r.research_pass > 1 && (r.stage == "research" || r.stage == "review") { ", pass 2" } else { "" };
                 (at, WORKING, format!("{} stage{pass} · {words}", r.stage))
             }
@@ -4018,7 +4109,7 @@ mod desk {
             Status::Done => (1.0, DONE, "made".to_string()),
             Status::Failed => (r.progress.done.clamp(0.02, 1.0) as f32, FAILED, r.progress.step.clone()),
             Status::Waiting if r.lines_ready() => (r.progress.done as f32, WAITING, LINES_READY.to_string()),
-            Status::Waiting if r.staged && !r.stages.is_empty() => (r.stages.len() as f32 / Stage::ALL.len() as f32, WAITING, format!("{} of {} stages done: Go on", r.stages.len(), Stage::ALL.len())),
+            Status::Waiting if r.staged() && !r.stages.is_empty() => (r.stages.len() as f32 / Stage::ALL.len() as f32, WAITING, format!("{} of {} stages done: Go on", r.stages.len(), Stage::ALL.len())),
             Status::Waiting => (0.0, WAITING, "waiting to be made".to_string()),
         };
         ui.add_space(3.0);
@@ -4090,6 +4181,8 @@ mod desk {
         Again,
         Variants,
         Stage(Stage),
+        /// the director's judgment of that stage's work, after it (a request made in stages)
+        Direct(Stage),
     }
 
     impl Requests {
@@ -4343,7 +4436,8 @@ mod tests {
         assert!(at("images") < at("bones") && at("bones") < at("lines") && at("lines") < at("previews"), "the drawings between the pictures and the renders, as model_requests.py has them: {text}");
         assert!(text.contains("  \"outlines\": {},\n  \"lines\""), "the outlines after the bones, as model_requests.py has them: {text}");
         assert!(
-            text.contains("  \"mine\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"staged\": false,\n  \"stage\": \"\",\n  \"stages\": [],\n  \"research_pass\": 1,\n  \"research_more\": false,\n  \"status\""),
+            text.contains("  \"mine\": true,\n  \"many\": false,\n  \"check_lines\": false,\n  \"stage\": \"\",\n  \"stages\": [],\n  \"research_pass\": 1,\n  \"research_more\": false,\n  \"director\": true,\n  \"judgment\": {")
+                && text.contains("  \"next\": \"\",\n  \"status\""),
             "drawn by the thousand after mine (toon no longer written: every model is), then the lines' check and the stages, as model_requests.py has them: {text}"
         );
         assert!(
@@ -4898,109 +4992,155 @@ mod tests {
         for _ in 0..3 {
             frame_with(&ctx, &mut req, vec![]);
         }
-        assert!(marked("uiRequestStage_study").is_none(), "no stages until asked");
-        click(&ctx, &mut req, "uiRequestStaged");
-        assert!(read(&root, "moss_toad").unwrap().staged, "the box ticked");
+        assert!(marked("uiRequestStage_study").is_none() && marked("uiRequestDirected").is_none(), "no stages until the agentic style");
+        assert!(marked("uiRequestAgenticInfo").is_some(), "its warning beside it");
+        click(&ctx, &mut req, "uiRequestAgentic");
+        assert_eq!(read(&root, "moss_toad").unwrap().style, Style::Agentic, "the style picked");
         frame_with(&ctx, &mut req, vec![]);
         assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
         // Start: the study stage
+        assert!(read(&root, "moss_toad").unwrap().director, "a director, unless unticked");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
-        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]]);
+        assert_eq!(req.desk().launched, [["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--model", "sonnet"]]);
         assert!(req.said.take().unwrap().contains("the study stage of moss_toad"));
-        // the kit's word: a stage running (in progress, not among the done), then done
-        let stage = |root: &Path, name: &str, done: &[&str]| {
+        // the kit's word: a stage running (in progress, not among the done, nothing next), then
+        // done (what the desk starts next: the director's judgment, or a stage)
+        let stage = |root: &Path, name: &str, done: &[&str], next: &str| {
             let mut r = read(root, "moss_toad").unwrap();
             r.status = Status::InProgress;
             r.stage = name.into();
             r.stages = done.iter().map(|s| s.to_string()).collect();
-            let over = done.contains(&name);
-            r.progress = Progress { step: if over { format!("{name} done") } else { "reading the pictures".into() }, done: if over { 1.0 } else { 0.1 }, started: now_secs(), minutes: 4.0 };
+            r.next = next.into();
+            r.progress = Progress { step: if next.is_empty() { "reading the pictures".into() } else { format!("{name} done") }, done: if next.is_empty() { 0.1 } else { 1.0 }, started: now_secs(), minutes: 4.0 };
             save(root, &r).unwrap();
         };
-        stage(&root, "study", &[]);
+        // the director's word: judging, then its grade (on, or back to a stage)
+        let judged = |root: &Path, name: &str, grade: u32, to: &str, done: &[&str], next: &str| {
+            let mut r = read(root, "moss_toad").unwrap();
+            r.status = Status::InProgress;
+            r.stages = done.iter().map(|s| s.to_string()).collect();
+            r.judgment = Judgment { stage: name.into(), grade, to: to.into(), notes: "The tail is too short on the side.".into(), backs: BTreeMap::new() };
+            r.next = next.into();
+            r.progress = Progress { step: if next.is_empty() { format!("the director judges the {name} stage") } else { format!("{name} judged {grade}/100") }, done: 0.5, started: now_secs(), minutes: 2.0 };
+            save(root, &r).unwrap();
+        };
+        stage(&root, "study", &[], "");
         req.watch(1.0e9);
         assert!(req.desk().launched.len() == 1 && req.desk().busy().as_deref() == Some("moss_toad"));
         frame_with(&ctx, &mut req, vec![]);
         assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:running,research:pending"), "{:?}", crate::platform::hook("requeststages"));
+        assert_eq!(crate::platform::hook("requestdirector").as_deref(), Some("none"));
         assert!(crate::platform::hook("uiRequestFoot_moss_toad").is_some(), "the foot drawn");
-        stage(&root, "study", &["study"]);
+        stage(&root, "study", &["study"], "direct:study");
         req.watch(2.0e9);
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "research"], "the next stage on its own");
-        assert!(req.said.take().unwrap().contains("the research stage of moss_toad"));
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--direct", "--model", "opus"], "the director on it, on its own");
+        assert!(req.said.take().unwrap().contains("The director judges the study stage of moss_toad"));
         assert_eq!(req.desk().launched.len(), 2);
         req.watch(2.5e9);
         assert_eq!(req.desk().launched.len(), 2, "once");
+        judged(&root, "study", 85, "", &["study"], "");
+        req.watch(3.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        assert_eq!(crate::platform::hook("requestdirector").as_deref(), Some("judging:study"));
+        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:done,research:pending"), "the judged stage is done, not running: {:?}", crate::platform::hook("requeststages"));
+        judged(&root, "study", 85, "", &["study"], "research");
+        req.watch(3.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "research", "--model", "sonnet"], "the next stage on its own");
+        assert!(req.said.take().unwrap().contains("the research stage of moss_toad"));
+        // the research judged under the grade needed: back to the study (the stages after it
+        // to do again), its chip saying so
+        let names = Stage::ALL.map(Stage::name);
+        stage(&root, "research", &names[..1], "");
+        req.watch(4.0e9);
+        stage(&root, "research", &names[..2], "direct:research");
+        req.watch(4.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "research", "--direct", "--model", "opus"]);
+        judged(&root, "research", 40, "study", &[], "study");
+        req.watch(5.0e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--model", "sonnet"], "sent back");
+        assert_eq!(req.desk().launched.len(), 5);
+        frame_with(&ctx, &mut req, vec![]);
+        assert_eq!(crate::platform::hook("requestdirector").as_deref(), Some("research:40:study"));
+        // the director unticked from here: each stage done names the next
+        let mut r = read(&root, "moss_toad").unwrap();
+        r.director = false;
+        save(&root, &r).unwrap();
+        stage(&root, "study", &[], "");
+        req.watch(6.0e9);
+        stage(&root, "study", &["study"], "research");
+        req.watch(6.5e9);
+        assert_eq!(req.desk().launched.last().unwrap()[3], "research");
+        assert_eq!(req.desk().launched.len(), 6);
         // the researchers done: the lead's review, which asks for a second pass (the research
         // out of the stages done, the review in): the researchers again, the review again,
         // then on to the look
-        let names = Stage::ALL.map(Stage::name);
-        stage(&root, "research", &names[..1]);
-        req.watch(3.0e9);
-        stage(&root, "research", &names[..2]);
-        req.watch(3.5e9);
+        stage(&root, "research", &names[..1], "");
+        req.watch(7.0e9);
+        stage(&root, "research", &names[..2], "review");
+        req.watch(7.5e9);
         assert_eq!(req.desk().launched.last().unwrap()[3], "review");
-        stage(&root, "review", &names[..2]);
-        req.watch(4.0e9);
-        stage(&root, "review", &["study", "review"]);
-        req.watch(4.5e9);
+        stage(&root, "review", &names[..2], "");
+        req.watch(8.0e9);
+        stage(&root, "review", &["study", "review"], "research");
+        req.watch(8.5e9);
         assert_eq!(req.desk().launched.last().unwrap()[3], "research", "a second pass");
-        assert_eq!(req.desk().launched.len(), 4);
-        stage(&root, "research", &names[..1]);
-        req.watch(5.0e9);
-        stage(&root, "research", &names[..2]);
-        req.watch(5.5e9);
+        assert_eq!(req.desk().launched.len(), 8);
+        stage(&root, "research", &names[..1], "");
+        req.watch(9.0e9);
+        stage(&root, "research", &names[..2], "review");
+        req.watch(9.5e9);
         assert_eq!(req.desk().launched.last().unwrap()[3], "review");
-        stage(&root, "review", &names[..2]);
-        req.watch(6.0e9);
-        stage(&root, "review", &names[..3]);
-        req.watch(6.5e9);
+        stage(&root, "review", &names[..2], "");
+        req.watch(10.0e9);
+        stage(&root, "review", &names[..3], "look");
+        req.watch(10.5e9);
         assert_eq!(req.desk().launched.last().unwrap()[3], "look");
-        assert_eq!(req.desk().launched.len(), 6);
+        assert_eq!(req.desk().launched.len(), 10);
         // each stage done starts the next, up to the body, which fails: it stops there
         for (k, ran) in ["look", "detail", "merge"].into_iter().enumerate() {
-            stage(&root, ran, &names[..k + 3]);
-            req.watch(7.0e9 + k as f64 * 1.0e9);
-            stage(&root, ran, &names[..k + 4]);
-            req.watch(7.5e9 + k as f64 * 1.0e9);
+            stage(&root, ran, &names[..k + 3], "");
+            req.watch(11.0e9 + k as f64 * 1.0e9);
+            stage(&root, ran, &names[..k + 4], names[k + 4]);
+            req.watch(11.5e9 + k as f64 * 1.0e9);
         }
-        assert_eq!(req.desk().launched.len(), 9);
+        assert_eq!(req.desk().launched.len(), 13);
         assert_eq!(req.desk().launched.last().unwrap()[3], "body");
-        stage(&root, "body", &names[..6]);
-        req.watch(10.0e9);
+        stage(&root, "body", &names[..6], "");
+        req.watch(14.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Failed;
         r.progress.step = "failed: Claude ended without writing body.py, model.py (the body stage's)".into();
         save(&root, &r).unwrap();
-        req.watch(11.0e9);
-        req.watch(11.5e9);
-        assert_eq!(req.desk().launched.len(), 9, "nothing more after a failure");
+        req.watch(15.0e9);
+        req.watch(15.5e9);
+        assert_eq!(req.desk().launched.len(), 13, "nothing more after a failure");
         assert!(req.desk().busy().is_none());
         frame_with(&ctx, &mut req, vec![]);
         assert!(crate::platform::hook("requeststages").unwrap().contains("merge:done,body:failed,dress:pending"), "{:?}", crate::platform::hook("requeststages"));
         // Start again: the body stage again
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"]);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body", "--model", "sonnet"]);
         // cancelled while it runs: it waits, its stages kept; a done stage's chip runs that
         // one again (with the ones after it), Go on the next not done
-        stage(&root, "body", &names[..6]);
-        req.watch(12.0e9);
+        stage(&root, "body", &names[..6], "");
+        req.watch(16.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Waiting;
         r.progress = Progress::default();
         save(&root, &r).unwrap();
-        req.watch(13.0e9);
-        req.watch(13.5e9);
+        req.watch(17.0e9);
+        req.watch(17.5e9);
         assert!(req.desk().busy().is_none());
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_look");
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "look"], "a done stage's chip");
-        assert_eq!(req.desk().launched.len(), 11);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "look", "--model", "sonnet"], "a done stage's chip");
+        assert_eq!(req.desk().launched.len(), 15);
         req.desk().begun();
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestStage_dress");
-        assert_eq!(req.desk().launched.len(), 11, "a stage not done yet isn't a button");
+        assert_eq!(req.desk().launched.len(), 15, "a stage not done yet isn't a button");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body"], "Go on: the next not done");
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body", "--model", "sonnet"], "Go on: the next not done");
         // done: made again from the first stage
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Done;
@@ -5009,15 +5149,19 @@ mod tests {
         r.prop = "moss_toad".into();
         save(&root, &r).unwrap();
         req.desk().begun();
-        req.watch(14.0e9);
-        req.watch(14.5e9);
+        req.watch(18.0e9);
+        req.watch(18.5e9);
         frame_with(&ctx, &mut req, vec![]);
         assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,review:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
-        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study"]);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--model", "sonnet"]);
         // a stage queued while another is being made: its turn in the queue
         let queued = Queued { id: "moss_toad".into(), how: How::Stage(Stage::Body), ..Default::default() };
         assert_eq!(serde_json::to_string(&queued.how).unwrap(), "{\"stage\":\"body\"}");
+        // the director's toggle: off, the stages follow each other without it
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestDirected");
+        assert!(read(&root, "moss_toad").unwrap().director, "ticked again (it was unticked on disk)");
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -79,6 +79,14 @@ if mode == "finish":
         say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
     mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png"], "made a test prop")
 last = "Made it."
+if mode in ("judge", "judge_back"):
+    # the director's run: its grade and verdict on the stage judged, and a note
+    here = mr.folder(os.getcwd(), rid)
+    stage = prompt.split("Judged now: the ")[1].split(" stage")[0].lower()
+    (here / "plan" / "director").mkdir(parents=True, exist_ok=True)
+    text = "grade: 85\\nverdict: go on\\n\\nRight: the outline sits on the design.\\n" if mode == "judge" else "grade: 40\\nverdict: back to study\\n\\nThe tail is too short on the side (side.png: a third longer).\\nThe ears sit too high.\\n"
+    (here / "plan" / "director" / (stage + ".md")).write_text(text, encoding="utf-8")
+    last = "Judged."
 if mode in ("stage", "more"):
     # a stage's run: its files written (a stand-in each; a researcher's its own; the review
     # asking more: more.md), a line in the notes log
@@ -328,12 +336,32 @@ check("  and new --check-lines asks for it", mr.load(SCRATCH, "checked_one")["ch
 # stages' files before it refused at once; the study with the lines checked first stops at the
 # lines, its run after the check planning the shape; the assembly's finish makes it done, every
 # stage done; a stage run again takes the stages after it with it
-fresh("test_stages", kind="creature", staged=True)
+fresh("test_stages", kind="creature", style="agentic")
+check("a record made in stages by the toggle of before: the agentic style", mr.normal({"staged": True})["style"] == "agentic" and "staged" not in mr.normal({"staged": True}))
 code, out, rec, log = run("test_stages", "stage", "--stage", "study")
-check("the study stage: done with its files, the request in progress still (the editor's turn)", code == 0 and rec["status"] == "in_progress" and rec["stage"] == "study"
-      and rec["stages"] == ["study"] and rec["progress"]["step"] == "study done" and "test_stages: in_progress" in out, f"{code} {rec['status']} {rec['stage']} {rec['stages']} {out[-200:]}")
-check("  its log: the stage starting, which it is, done, the next the editor's", "the study stage starts" in log and "This run: the study stage, 1 of 9: the lines, the front and the side, and the shape planned" in log
-      and "The study stage is done: the editor starts the research stage next" in log, log[-600:])
+check("the study stage: done with its files, the request in progress still (the editor's turn: the director's judgment next)", code == 0 and rec["status"] == "in_progress" and rec["stage"] == "study"
+      and rec["stages"] == ["study"] and rec["progress"]["step"] == "study done" and rec["next"] == "direct:study" and "test_stages: in_progress" in out, f"{code} {rec['status']} {rec['stage']} {rec['stages']} {rec['next']} {out[-200:]}")
+check("  its log: the stage starting, which it is, on Sonnet, done, the director next", "the study stage starts" in log and "This run: the study stage, 1 of 9: the lines, the front and the side, and the shape planned" in log
+      and "--model sonnet" in log and "The study stage is done: the director judges it next" in log, log[-600:])
+words = rc.prompt(rec, stage="study")
+check("  the agentic style's words: accurate, in stages", "Style: agentic (accurate, made in stages by agents" in words and "1. block it out" in words and "Lines: every part, marking and detail" in words, words[:600])
+# the director: a run after each stage, judging its work against the artwork; on (the next stage
+# the editor's), or back to the stage at fault, its run told what to fix; stopped for the user
+# once a stage was sent back three times
+here = mr.folder(SCRATCH, "test_stages")
+code, out, rec, log = run("test_stages", "judge", "--stage", "study", "--direct")
+asked = rc.prompt(rec, stage="study", direct=True)
+check("the director after the study: its work judged against the artwork, 85/100, on to the research", code == 0 and rec["status"] == "in_progress" and rec["next"] == "research"
+      and rec["judgment"]["stage"] == "study" and rec["judgment"]["grade"] == 85 and rec["judgment"]["to"] == "" and rec["judgment"]["backs"] == {} and rec["stages"] == ["study"]
+      and "The director judges the study stage 85/100: go on to the research stage" in log and (here / "plan" / "director.log").read_text(encoding="utf-8").strip().endswith("study: 85/100, go on")
+      and "This run: the director judges the study stage's work against the artwork" in log and "--model opus" in log, f"{rec['status']} {rec['next']} {rec['judgment']} {log[-400:]}")
+check("  its prompt: the stage judged, its files, the criteria, the grade needed, the verdict's lines, the stages it may send back to", "Judged now: the STUDY stage" in asked
+      and "judge the study stage's work (lines.json, profiles.png, plan/shape.md): the lines: each outline on its picture's silhouette" in asked and "70 and over goes\n  on, under 70 the work goes back" in asked
+      and 'its first line "grade: N", its second\n  "verdict: go on" or "verdict: back to STAGE"' in asked and "the earliest whose work caused the fault (study)" in asked
+      and "write private/requests/test_stages/plan/director/study.md" in asked and "director judges its work (this run)" in asked, asked[-2200:])
+check("  a stage without its files can't be judged", run("test_stages", "judge", "--stage", "look", "--direct")[2]["progress"]["step"].startswith("failed: nothing to judge: no plan/research/subject.md yet (the research stage writes it"))
+check("  the verdict read leniently; none without its lines", rc.read_verdict("Grade: 62\nVerdict: Back to Research\n\nThe horns.\n") == (62, "research", "The horns.") and rc.read_verdict("grade: 120\nverdict: go on") == (100, "", "")
+      and rc.read_verdict("fine work") is None)
 asked = rc.prompt(rec, stage="study")
 check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 9: the lines, the front and the side, and the shape planned" in asked
       and "write private/requests/test_stages/plan/shape.md" in asked and "plan/notes.log is append-only" in asked and 'starting with "[study] "' in asked
@@ -357,13 +385,28 @@ asked = {r: rc.prompt(rec, stage="research", role=r) for r in mr.ROLES}
 check("  each researcher's prompt: its charge, its file, its pass, the pictures' room", "You are its SUBJECT researcher, one of three working at once" in asked["subject"] and "Pass 1 of at most 2" in asked["subject"]
       and "the lead's doubts answered" in asked["subject"] and "write private/requests/test_stages/plan/research/references.md" in asked["references"]
       and "python tools/blender/model_requests.py fetch test_stages URL --name NAME" in asked["references"] and "16 in all" in asked["references"] and "up to eight this pass" in asked["references"]
-      and "how a jaw, a wing or a tail is rigged" in asked["methods"] and "write private/requests/test_stages/plan/research/methods.md" in asked["methods"] and "read plan/research/more.md" not in asked["subject"],
+      and "a jaw, a wing or a tail is rigged" in asked["methods"] and "write private/requests/test_stages/plan/research/methods.md" in asked["methods"] and "read plan/research/more.md" not in asked["subject"],
       asked["references"][-1800:])
 cloud = rc.cloud_text(rc.prompt(rec, stage="research", cloud=True), "test_stages")
 check("  in the cloud: the three in turn in one session, no picture brought into the sandbox", "three researchers run one after another, in this one session" in cloud and "- as the methods researcher:" in cloud
       and "fetch test_stages URL" not in cloud and "note its address and what it shows" in cloud and cloud.startswith(rc.CLOUD), cloud[:600])
+# the director sending the research's work back to the study: the stages after it to do
+# again, the study's run told what to fix; a third time, stopped for the user
+code, out, rec, log = run("test_stages", "judge_back", "--stage", "research", "--direct")
+check("the director sending work back: under the grade needed, back to the stage at fault, the stages after it to do again, that stage told what to fix", rec["status"] == "in_progress"
+      and rec["next"] == "study" and rec["stages"] == [] and rec["judgment"]["to"] == "study" and rec["judgment"]["grade"] == 40 and rec["judgment"]["backs"] == {"study": 1}
+      and "under the 70 needed: back to the study stage: The tail is too short" in log and (here / "plan" / "director.log").read_text(encoding="utf-8").strip().endswith("research: 40/100, back to study")
+      and "the director judged the research stage's work 40 of 100 (under the 70 needed) and sent\n  it back to this stage, with this to fix:\n    The tail is too short on the side" in rc.prompt(rec, stage="study")
+      and "The ears sit too high" in rc.prompt(rec, stage="study") and "sent\n  it back" not in rc.prompt(rec, stage="look"), f"{rec['status']} {rec['next']} {rec['stages']} {rec['judgment']}")
+run("test_stages", "judge_back", "--stage", "research", "--direct")
+code, out, rec, log = run("test_stages", "judge_back", "--stage", "research", "--direct")
+check("  sent back a third time: stopped for the user, saying so", rec["status"] == "failed" and rec["progress"]["step"].startswith("failed: the director sent the study stage back 3 times (40/100): The tail is too short")
+      and rec["judgment"]["backs"] == {"study": 3} and rec["next"] == "", rec["progress"]["step"])
+run("test_stages", "stage", "--stage", "study")
+code, out, rec, log = run("test_stages", "stage", "--stage", "research")
+check("  the stages over again after it, the director's turn after each", rec["stages"] == ["study", "research"] and rec["next"] == "direct:research" and rec["status"] == "in_progress", f"{rec['stages']} {rec['next']}")
 code, out, rec, log = run("test_stages", "more", "--stage", "review")
-check("the review asking more: the research to run again, a second pass, the review done for now", rec["status"] == "in_progress" and rec["stages"] == ["study", "review"] and rec["research_more"] is True
+check("the review asking more: the research to run again, a second pass, the review done for now", rec["status"] == "in_progress" and rec["stages"] == ["study", "review"] and rec["research_more"] is True and rec["next"] == "research"
       and rec["progress"]["step"] == "review done: a second research pass" and "(pass 1 of at most 2;" in rc.prompt(rec, stage="review") and "this being the first pass" in rc.prompt(rec, stage="review")
       and "a second research pass" in log, f"{rec['status']} {rec['stages']} {rec['progress']['step']}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "research")
@@ -436,21 +479,24 @@ check("  the dress's: the detached parts and the detail on the body, the body's 
       and "body.py (read them, change nothing in them)" in asked, asked[-1500:])
 code, out, rec, log = run("test_stages", "finish", "--stage", "assemble")
 asked = rc.prompt(rec, stage="assemble")
-check("the assembly: a character rigged, finished; done, every stage done", code == 0 and rec["status"] == "done" and rec["prop"] == "test_prop" and rec["stages"] == list(mr.STAGES)
-      and rec["stage"] == "assemble" and "rig it: every part on the\n  bones that move it, as plan.md's chains say" in asked and "run_request.py test_stages --finish" in asked
-      and "Done: the prop test_prop" in log, f"{rec['status']} {rec['stages']} {log[-300:]}")
+check("the assembly: a character rigged, finished; done, every stage done, the director's judgment of it next", code == 0 and rec["status"] == "done" and rec["prop"] == "test_prop" and rec["stages"] == list(mr.STAGES)
+      and rec["stage"] == "assemble" and rec["next"] == "direct:assemble" and "rig it: every part on the\n  bones that move it, as plan.md's chains say" in asked and "run_request.py test_stages --finish" in asked
+      and "Done: the prop test_prop" in log and "The director judges the assembly next" in log, f"{rec['status']} {rec['stages']} {rec['next']} {log[-300:]}")
+code, out, rec, log = run("test_stages", "judge", "--stage", "assemble", "--direct")
+check("  the assembly judged: done, nothing next", rec["status"] == "done" and rec["next"] == "" and rec["judgment"]["stage"] == "assemble" and "the prop it added, its record and its .glb, and its renders" in rc.prompt(rec, stage="assemble", direct=True)
+      and "The director judges the assemble stage 85/100: go on" in log, f"{rec['status']} {rec['next']} {log[-300:]}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "look")
 check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look"] and rec["stage"] == "look", f"{rec['stages']}")
 check("  made again with comments: told it was made in stages, which file holds what", "it was made in stages" in rc.prompt(dict(rec, comments="bigger ears"), again=True))
 check("  a stage the runner doesn't know: refused", run("test_stages", "stage", "--stage", "paint")[1].startswith("no such stage: paint"))
 # the study with the lines checked first: stops at them; after the check, the shape planned on them
-fresh("test_stages_check", kind="creature", staged=True, check_lines=True)
+fresh("test_stages_check", kind="creature", style="agentic", check_lines=True, director=False)
 code, out, rec, log = run("test_stages_check", "lines", "--stage", "study")
 check("the study stage with the lines checked first: stops at them, waiting for the user, the stage not done", rec["status"] == "waiting" and mr.lines_ready(rec) and rec["stages"] == []
       and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 9: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
       f"{rec['status']} {rec['stages']} {log[-500:]}")
 code, out, rec, log = run("test_stages_check", "stage", "--stage", "study", "--go-on", "--note", "the tail is longer")
-check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done", rec["status"] == "in_progress" and rec["stages"] == ["study"]
+check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done; no director: the research next", rec["status"] == "in_progress" and rec["stages"] == ["study"] and rec["next"] == "research"
       and "plan its shape on them" in log and "the tail is longer" in log and "Fix that in lines.json first" in log and "(the shape planned on the lines the user checked)" in log, f"{rec['status']} {rec['stages']} {log[-800:]}")
 
 # 9b. made once, made again with the user's comments on it (the window's "Make it again with these

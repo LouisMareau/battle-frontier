@@ -35,7 +35,7 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               a picture's (or a box's) main colours: each one's
                                               share, hex, name and place
     python tools/blender/model_requests.py new "Name" PICTURE... [--kind prop|grass|flower|rock|environment]
-                                              [--height 1.2] [--cells 1x1] [--style low_poly|accurate]
+                                              [--height 1.2] [--cells 1x1] [--style low_poly|accurate|agentic]
                                               [--details "..."] [--pose as_is] [--shapes 8-30|unlimited]
                                               [--notes "..."] [--variants 2] [--vary "size, colours"]
                                               [--mine] [--check-lines] [--many]
@@ -101,16 +101,23 @@ FIELDS = {
     # it can be
     "many": False,
     "check_lines": False,
-    # made in stages (requests.md, "Made in stages"): a run of Claude per stage, each with one
-    # charge, the editor starting the next once the last has ended; the stage running (or the
-    # last to end), and the stages done, in their order
-    "staged": False,
+    # made in stages (the "agentic" style; requests.md, "Made in stages"): a run of Claude per
+    # stage, each with one charge, the editor starting the next once the last has ended; the
+    # stage running (or the last to end), and the stages done, in their order
     "stage": "",
     "stages": [],
     # the research stage's pass: its researchers run a second (and last) time when the lead's
     # review asks more (`research_more`, until that run starts)
     "research_pass": 1,
     "research_more": False,
+    # made in stages: a director judges each stage's work against the artwork (0 to 100: 100 is
+    # exactly as designed) and sends it back under GRADE_NEEDED, saying what to fix and which
+    # stage starts over; its last judgment (`backs`: how often each stage was sent back); and
+    # what the editor starts next ("" while a run goes: a stage's name, or "direct:STAGE" for
+    # the director's judgment of that stage)
+    "director": True,
+    "judgment": {"stage": "", "grade": 0, "to": "", "notes": "", "backs": {}},
+    "next": "",
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
@@ -163,7 +170,8 @@ OWN_KINDS = Path("private") / "requests" / "kinds.json"
 # world::mesh::GROWN_HEAVIEST and GROWN_MOST: more and it doesn't grow
 GRASS_MOST = 60000
 GRASS_THINNEST = 1000
-STYLES = ("smooth", "low_poly", "accurate")
+# the agentic style: accurate, made in stages by agents (requests.md, "Made in stages")
+STYLES = ("smooth", "low_poly", "accurate", "agentic")
 POSES = ("t_pose", "as_is")
 # "unlimited" shapes stop at about this many
 SHAPES_CAP = 100
@@ -198,7 +206,11 @@ STAGE_FILES = {
     "dress": ("detail.py",),
     "assemble": (),
 }
-STAGE_SHARE = {"study": 0.45, "research": 0.25, "review": 0.15, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35}
+STAGE_SHARE = {"study": 0.45, "research": 0.25, "review": 0.15, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35, "direct": 0.15}
+# the director's judgment of a stage's work, 0 to 100: under this it goes back to the stage at
+# fault; a stage sent back more often than this stops the request for the user
+GRADE_NEEDED = 70
+BACKS_MOST = 2
 STAGE_ABOUT = {
     "study": "the lines, the front and the side, and the shape planned",
     "research": "the design looked up online by three researchers at once: the subject, the references, the methods",
@@ -323,8 +335,11 @@ def normal(record):
         out["kind_id"] = "environment"
     # a request is one of a variety: the generic one, named after its making, when none
     out["variety"] = out.get("variety") or out["kind"]
+    # a request from before the agentic style, made in stages by a toggle: that style
+    if record.get("staged") and out["style"] != "agentic":
+        out["style"] = "agentic"
     for k, v in record.items():
-        if k not in out:
+        if k not in out and k != "staged":
             out[k] = v
     return out
 
@@ -600,11 +615,11 @@ def estimate(record, part="all"):
     that makes the model makes its variants too: a part more for each."""
     if part == "split":
         return 3.0
-    if part in STAGES:
+    if part in STAGES or part == "direct":
         return float(max(1, round(estimate(record, "all") * STAGE_SHARE[part])))
     # what the first runs took: a creature about 10 minutes, a small one 2
     minutes = 12.0 if record["kind"] == "character" else 8.0
-    minutes *= {"low_poly": 0.8, "accurate": 2.5}.get(record["style"], 1.0)
+    minutes *= {"low_poly": 0.8, "accurate": 2.5, "agentic": 2.5}.get(record["style"], 1.0)
     # as many shapes as it needs: worked out first, written out long
     minutes *= 1.5 if record["shapes"]["unlimited"] else 1.0
     variants = int(record.get("variants") or 0) if record["kind"] != "floor" else 0
@@ -700,8 +715,47 @@ def stage_start(root, rid, stage, minutes=None):
         passes = {"research_pass": 2 if record.get("research_more") else 1, "research_more": False}
     second = ", pass 2" if passes.get("research_pass") == 2 else ""
     log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}){second}: {STAGE_ABOUT[stage]}")
-    return update(root, rid, status="in_progress", stage=stage, stages=done,
+    return update(root, rid, status="in_progress", stage=stage, stages=done, next="",
                   progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes}, **passes)
+
+
+def direct_start(root, rid, stage, minutes=None):
+    """The director's run on a stage's work in progress from now (the request as it stood: the
+    stage done, among the done)."""
+    record = load(root, rid)
+    minutes = float(minutes) if minutes else estimate(record, "direct")
+    log(root, rid, f"The director judges the {stage} stage against the artwork (under {GRADE_NEEDED} of 100 it goes back)")
+    return update(root, rid, status="in_progress", next="",
+                  progress={"step": f"the director judges the {stage} stage", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+
+
+def directed(root, rid, stage, grade, to, notes):
+    """The director's judgment of a stage's work: under GRADE_NEEDED, the work goes back to `to`
+    (a stage at or before it, else that one; the stages after it to do again; its run told
+    what to fix), unless that stage was sent back BACKS_MOST times already (failed then, for
+    the user); else on to the next stage (after the assembly's: the request done)."""
+    record = load(root, rid)
+    j = dict(FIELDS["judgment"], **(record.get("judgment") or {}))
+    backs = dict(j.get("backs") or {})
+    back = int(grade) < GRADE_NEEDED
+    if back:
+        to = to if to in STAGES and STAGES.index(to) <= STAGES.index(stage) else stage
+        backs[to] = int(backs.get(to, 0)) + 1
+    j.update(stage=stage, grade=int(grade), to=to if back else "", notes=notes.strip(), backs=backs)
+    head = notes.strip().splitlines()[0].strip() if notes.strip() else ""
+    if back and backs[to] > BACKS_MOST:
+        log(root, rid, f"The director sent the {to} stage back {backs[to]} times: stopped for the user (its notes in plan/director/{stage}.md)")
+        p = dict(record["progress"], step=f"failed: the director sent the {to} stage back {backs[to]} times ({grade}/100): {head}")
+        return update(root, rid, status="failed", judgment=j, next="", progress=p)
+    if back:
+        stages = [s for s in record.get("stages") or [] if STAGES.index(s) < STAGES.index(to)]
+        log(root, rid, f"The director judges the {stage} stage {grade}/100, under the {GRADE_NEEDED} needed: back to the {to} stage: {head}")
+        p = dict(record["progress"], step=f"{stage} judged {grade}/100: back to {to}", done=1.0)
+        return update(root, rid, status="in_progress", judgment=j, stages=stages, next=to, progress=p)
+    after = next_stage(record)
+    log(root, rid, f"The director judges the {stage} stage {grade}/100: go on" + (f" to the {after} stage" if after else ""))
+    p = dict(record["progress"], step=f"{stage} judged {grade}/100: go on", done=1.0)
+    return update(root, rid, status="done" if after is None else "in_progress", judgment=j, next=after or "", progress=p)
 
 
 def review_more(root, rid):
@@ -713,7 +767,7 @@ def review_more(root, rid):
     p.update(step="review done: a second research pass", done=1.0, minutes=float(round(took, 1)))
     stages = [s for s in stages_with(record, "review") if s != "research"]
     log(root, rid, "The review asks for a second research pass (plan/research/more.md): the editor starts the researchers again")
-    return update(root, rid, status="in_progress", stage="review", stages=stages, research_more=True, progress=p)
+    return update(root, rid, status="in_progress", stage="review", stages=stages, research_more=True, next="research", progress=p)
 
 
 def stage_done(root, rid, stage):
@@ -725,8 +779,10 @@ def stage_done(root, rid, stage):
     p.update(step=f"{stage} done", done=1.0, minutes=float(round(took, 1)))
     stages = stages_with(record, stage)
     after = next_stage(dict(record, stages=stages))
-    log(root, rid, f"The {stage} stage is done" + (f": the editor starts the {after} stage next" if after else ""))
-    return update(root, rid, status="in_progress", stage=stage, stages=stages, progress=p)
+    # the director next, when the request has one; else the next stage
+    following = f"direct:{stage}" if record.get("director", True) else (after or "")
+    log(root, rid, f"The {stage} stage is done" + (": the director judges it next" if following.startswith("direct:") else f": the editor starts the {after} stage next" if after else ""))
+    return update(root, rid, status="in_progress", stage=stage, stages=stages, next=following, progress=p)
 
 
 def step(root, rid, text, done=None):

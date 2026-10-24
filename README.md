@@ -1006,8 +1006,10 @@ what it said) and changes what you say, keeping the rest; the comments are kept 
 request, and the runs after it are told them too. Any done one (but a floor set) has
 Variants and What changes too, and **Make variants**: a run from the model made that keeps it as
 it is and adds that many variants, the style, the notes and the rest as they were (queued
-while another is being made); its panel lists the variants made. **Make it in stages** has
-it made in nine stages, a run of Claude with one charge each (the study: the lines and the
+while another is being made); its panel lists the variants made. The **agentic** style
+(after accurate; its info icon warns that it spins several agents, costs far more than any
+other style and guarantees nothing) has it made in nine stages, a run of Claude on Sonnet
+with one charge each (the study: the lines and the
 shape planned; the research: three researchers at once, the one stage that may read the
 web, looking up what the design is drawn from, fetching reference pictures into the
 request's folder within a room for them, and how-tos for the unusual steps; the review: the
@@ -1017,8 +1019,11 @@ cloth; the merge: the plans checked against each other, into one; the body, buil
 the dress: the detail on the body; the assembly: rigged, finished), the next starting as the
 last ends, each planning in a file of its own under the request's `plan/` and noting its
 guesses in a shared log; the panel shows the stages as chips, a done one clicked run again
-with those after it, a failed one run again by Start (`tools/blender/requests.md`, "Made in
-stages"). A tree's cells are its trunk's foot (what
+with those after it, a failed one run again by Start. **A director judges each stage** (on
+unless unticked): after each stage a run of Claude on Opus grades its work against your pictures and
+notes, 0 to 100; under 70 the work goes back to the stage at fault with what to fix, the
+stages after it following, a stage sent back three times stopping for you
+(`tools/blender/requests.md`, "Made in stages"). A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Process multiple" and Start
 has each drawing made a request of its own (its crop, its name and height, the request's

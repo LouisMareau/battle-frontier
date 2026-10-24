@@ -213,13 +213,13 @@ try {
   await browser.drop([picture], 900, 400);
   await browser.waitFor(`(document.body.dataset.request_${ID} ?? "").startsWith("waiting")`, { what: 'the request made' });
   check('  a picture dropped on it makes a request', (await request())[0] === 'waiting', (await request()).join(' '));
-  // "Make it in stages": its seven stages as chips, each to come; off again (the run below is
-  // one run)
-  await press('uiRequestStaged');
+  // the agentic style: its stages as chips, each to come, its director's toggle; accurate
+  // again (the run below is one run)
+  await press('uiRequestAgentic');
   check('  made in stages: its nine stages shown, each to come', (await data('requeststages')) === 'study:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending'
-    && (await data('uiRequestStage_study')) !== '', await data('requeststages'));
+    && (await data('uiRequestStage_study')) !== '' && (await data('requestdirector')) === 'none' && (await data('uiRequestDirected')) !== '', `${await data('requeststages')} ${await data('requestdirector')}`);
   await shot('3a-stages');
-  await press('uiRequestStaged');
+  await press('uiRequestAccurate');
   await sleep(300);
   await shot('3-request');
   // its picture clicked: the viewer (no download), closed again
