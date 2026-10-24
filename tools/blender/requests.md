@@ -199,8 +199,10 @@ on its own (it goes on if the editor closes), which:
   request, from step 3, unattended;
 - allows it only what the recipe needs, without asking (`claude-settings.json`): reading the
   project, writing and editing in the request's folder, `python tools/blender/run_request.py
-  ID` (Blender), `python tools/blender/model_requests.py ...`, the content check and `ls`.
-  Anything else is refused, never asked: nobody is there to answer;
+  ID` (Blender), `python tools/blender/model_requests.py ...`, its own helper scripts in its
+  folder (`python private/requests/ID/NAME.py`: one that writes `lines.json` from numbers,
+  say), the content check and `ls`. Anything else is refused, never asked: nobody is there to
+  answer (a run that needs more stops and says so in its reply);
 - writes everything to the request's `log.txt`, a line each, timed: the run starting, the
   program and its version, what was sent (the command, what's allowed, the prompt), "Claude
   reached" with the model it runs, each message, thought, tool call (→) and answer (←, × for
