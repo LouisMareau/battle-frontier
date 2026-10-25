@@ -708,6 +708,9 @@ mod desk {
     /// a request in progress with nothing written in its folder for this long (minutes) has
     /// failed: run_claude.py stops a silent run at 30, this catches one whose run is gone
     pub(in super::super) const SILENT: f64 = 31.0;
+    /// A moment (ms) between a run writing what comes next and the desk starting it: for the
+    /// run's process to close (nothing in the tests).
+    pub(in super::super) const GRACE: f64 = if cfg!(test) { 0.0 } else { 2000.0 };
     /// the models a run can be given (the empty one: Claude Code's own default)
     const MODELS: [(&str, &str); 4] = [("", "default model"), ("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")];
     /// the console shows this many of the log's last lines (Copy takes them all)
@@ -1007,10 +1010,10 @@ mod desk {
     /// One of the requests' Python tools started in the project's folder, on its own (no
     /// console window; it outlives the editor).
     #[cfg(not(target_arch = "wasm32"))]
-    fn python(root: &Path, args: &[&str]) -> Result<std::process::Child, String> {
+    fn python(root: &Path, args: &[&str], err: Option<std::fs::File>) -> Result<std::process::Child, String> {
         let python = find_python().ok_or("Python not found: set PYTHON to python.exe")?;
         let mut c = std::process::Command::new(&python);
-        c.args(args).current_dir(root).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        c.args(args).current_dir(root).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(err.map(std::process::Stdio::from).unwrap_or_else(std::process::Stdio::null));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
@@ -1024,7 +1027,7 @@ mod desk {
     fn python_now(root: &Path, args: &[&str]) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
         {
-            python(root, args).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
+            python(root, args, None).and_then(|mut c| c.wait().map_err(|e| e.to_string())).map(|s| s.success()).unwrap_or(false)
         }
         #[cfg(target_arch = "wasm32")]
         {
@@ -1280,6 +1283,9 @@ mod desk {
         /// a request made in stages whose next run was started here (its id, what the record
         /// said to start, when that was written): started once, not again while it says so
         continued: Option<(String, String, u64)>,
+        /// a request made in stages whose next run waits for GRACE: its key and when it was
+        /// first seen
+        pending: Option<((String, String, u64), f64)>,
         /// silent requests already marked failed (once each)
         failed_silent: std::collections::HashSet<String>,
         /// the tools started, reaped as they end
@@ -2090,19 +2096,18 @@ mod desk {
             None
         }
 
-        /// No run of this desk's own going (a stage's run over, its next may start).
+        /// No run of this desk's own that the next may not overlap: in the browser, the
+        /// cloud's session (one at a time); here, none: a run writes what comes next as its
+        /// last word, so a process still closing doesn't hold the next back (GRACE gives it a
+        /// moment).
         fn nothing_runs(&self) -> bool {
-            #[cfg(test)]
-            {
-                true
-            }
-            #[cfg(all(not(test), not(target_arch = "wasm32")))]
-            {
-                self.children.is_empty()
-            }
             #[cfg(all(not(test), target_arch = "wasm32"))]
             {
                 self.cloud.busy().is_none()
+            }
+            #[cfg(not(all(not(test), target_arch = "wasm32")))]
+            {
+                true
             }
         }
 
@@ -2117,7 +2122,10 @@ mod desk {
             #[cfg(all(not(test), not(target_arch = "wasm32")))]
             {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                let child = python(&self.root(), &args)?;
+                // (what Python says on its stderr, should it die before writing anything: kept
+                // in the request's folder)
+                let err = args.get(1).and_then(|id| std::fs::OpenOptions::new().create(true).append(true).open(folder(&self.root()).join(id).join("launch.err")).ok());
+                let child = python(&self.root(), &args, err)?;
                 self.children.push(child);
                 Ok(())
             }
@@ -2207,6 +2215,18 @@ mod desk {
                 } else if now_secs() - at > 30.0 {
                     self.starting = None;
                     said = Some(format!("{id}: the run didn't start (is Python there?)"));
+                    // a run the desk started for a request made in stages, and nothing written
+                    // by it: failed now, rather than left for the silence to catch (Python's
+                    // words, if any, are in the request's launch.err)
+                    if let Some(r) = self.list.iter().find(|r| r.id == id && r.staged() && r.next_run().is_some()).cloned() {
+                        let reason = "the run the editor started wrote nothing in 30 s (Python's words, if any, are in launch.err)".to_string();
+                        let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
+                        self.settle(&r.id, &args, |rec| {
+                            rec.status = Status::Failed;
+                            rec.progress.step = format!("failed: {reason}");
+                        });
+                        said = Some(format!("{}: failed, {reason}", r.name));
+                    }
                 }
             }
             let mut seen = snapshot(&root);
@@ -2238,10 +2258,22 @@ mod desk {
             if self.starting.is_none() && self.cancelling.is_none() && self.nothing_runs() {
                 let key = |r: &ModelRequest| (r.id.clone(), r.next.clone(), r.progress.started.to_bits());
                 let ended = self.list.iter().find(|r| r.staged() && r.next_run().is_some() && self.continued.as_ref() != Some(&key(r))).cloned();
-                if let Some(r) = ended {
+                // (a moment for the last run's process to close: it wrote what's next last)
+                let waited = ended.as_ref().map(|r| {
+                    let k = key(r);
+                    match &self.pending {
+                        Some((pk, at)) if *pk == k => now - *at,
+                        _ => {
+                            self.pending = Some((k, now));
+                            0.0
+                        }
+                    }
+                });
+                if let Some(r) = ended.filter(|_| waited.is_some_and(|w| w >= GRACE)) {
                     let how = r.next_run().unwrap_or_default();
                     let s = self.start_run(&r.id, how);
                     self.continued = Some(key(&r));
+                    self.pending = None;
                     if self.starting.is_none() {
                         // (it didn't start: failed, rather than tried each second)
                         let what = match how {
