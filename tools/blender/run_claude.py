@@ -269,11 +269,11 @@ Run commands with the Bash tool, exactly as written above, from the project fold
 command a call: a call is refused whole when any part of it isn't allowed (nothing joined with
 ; or &&, no cd, nothing from /tmp), and a refusal is of that one call, never of the session:
 run the allowed command on its own and go on. Allowed besides the commands above: python -c
-"...", a helper script of your own in private/requests/{id}/ run as python
-private/requests/{id}/NAME.py (one that writes lines.json from numbers, say), mkdir there, ls,
-and reading files. Write only inside private/requests/{id}/. Don't use git, don't change
-anything else in the project (finishing writes the prop itself), don't touch other requests.
-{end}"""
+"...", python - with a heredoc, a helper script of your own in private/requests/{id}/ run as
+python private/requests/{id}/NAME.py (one that writes lines.json from numbers, say), mkdir
+there, ls, and reading files; to change a file, the Edit tool (not a script that rewrites
+it). Write only inside private/requests/{id}/. Don't use git, don't change anything else in
+the project (finishing writes the prop itself), don't touch other requests. {end}"""
 MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
@@ -533,13 +533,15 @@ DIRECTOR_CRITERIA = {
     "look": ("each colour region measured off the pictures (python tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1 "
              "checks one), its lit tone, on the right part, its borders where the pictures put them; materials.py's COLOURS and PAINT "
              "as plan/look.md has them"),
-    "detail": ("every detached part and detail the pictures show is planned (teeth, claws, tufts, a mane, a crest...), none invented, "
-               "each on the right part with the right bone, within the budget"),
+    "detail": ("every detached part and detail the pictures show is planned (teeth, claws, tufts, a mane, a crest; on a clothed "
+               "character, what stands off the body: a jacket's tails, hair, accessories), none invented, each on the right part with "
+               "the right bone, within the budget"),
     "merge": ("plan.md is whole and consistent: every part once, each with its shape, size, place, colours and bone; the research's "
               "facts folded in; nothing the pictures show missing; the block-out and the sculpting right for the style"),
     "body": ("the renders against the pictures (compare.png: the lines on the model and the overlap numbers; the previews): the "
-             "silhouette, the proportions and the masses match, the colour regions sit right; a primitive left showing through "
-             "unchanged isn't accurate"),
+             "silhouette, the proportions and the masses match where the body stage owns them (on a clothed character, the figure in "
+             "its fitted clothes; hair, what hangs or stands off the body and accessories are the dress stage's and don't count "
+             "against the body), the colour regions sit right; a primitive left showing through unchanged isn't accurate"),
     "dress": ("the detached parts and the detail on the renders against the pictures: the eyes' size and place, the ears, the horns, "
               "the fur's density and length, the markings; nothing missing, nothing the pictures don't show"),
     "assemble": ("the finished model: preview_idle.png and preview_roar.png (nothing torn, the jaw turning the right way, the lips "
@@ -620,7 +622,10 @@ DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's star
   (what the research stage found online: how the fur, scales or feathers lie, the how-tos,
   its references in plan/refs/: look at them) and plan/notes.log, and look at the lines
   (lines_PICTURE.png, profiles.png);
-- write private/requests/{id}/plan/detail.md: the detached parts, each named, with its shape,
+- write private/requests/{id}/plan/detail.md: the detached parts, each named (on a clothed
+  character, what stands off the body: a jacket's tails, a cape, a skirt's flare, hair and a
+  ponytail, straps, accessories; the clothes that follow the body are the body's skin, the
+  body stage's), with its shape,
   its size and place in cells, its colour regions (look.md's) and the bone or chain it follows
   (shape.md's chains: the lower jaw with its teeth and the tongue on the jaw's and the
   tongue's, the eyes and the lids, claws, horns, plates, wings' spars, a prop's lid or door
@@ -662,8 +667,14 @@ BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\
   the skin (accurate: the block-out laid for every mass, kit.wrap over them all, sculpted to
   the profiles; requests.md, "Accurate", 1 to 3), or its parts (smooth, low-poly: the torso,
   the neck, the head with the upper jaw, the limbs, the tail, fleshy ears, a kit.part each
-  with its bone), coloured with materials.COLOURS and painted with materials.PAINT(kit). No
-  detached part, no card, no fur, no rig: the dress and assemble stages add those;
+  with its bone), coloured with materials.COLOURS and painted with materials.PAINT(kit). On a
+  clothed character the body is the figure as the pictures' silhouette has it: the clothes
+  that follow the body (a bodysuit, trousers, a shirt, boots) are the body's skin, in their
+  colours, their seams and stripes painted; only what stands off the body (a jacket's tails,
+  a cape, a skirt's flare, hair and a ponytail, straps, accessories) is the dress stage's.
+  No detached part, no card, no fur, no rig: the dress and assemble stages add those. When
+  body.py and model.py are there from an earlier run of this stage, change them (Edit) rather
+  than start over; model.py needs no change when it still fits;
 - write private/requests/{id}/model.py (requests.md, "The kit": the usual start), then
   materials = kit.load("materials"); body = kit.load("body").build(job, kit, materials);
   kit.fit(body, job.height) (or as the settings above fit it); files = kit.previews(job,
@@ -689,8 +700,10 @@ DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its d
   with bone= or bones= as plan.md says; then the detail grown on the body where the pictures
   show it (requests.md, "Accurate", 4): kit.cards for tufts of fur, feathers, scales, leaves,
   spines, a mane, cloth; kit.fur for a coat of strands; paint for the markings the body stage
-  left; and what the wind moves painted for it (kit.wind; a plant's parts in ONE
-  kit.plant_wind call), as plan.md and detail.md say, within the budget;
+  left; on a clothed character, what stands off the body (a jacket's tails, a cape, a skirt's
+  flare, hair and a ponytail, straps, accessories: the fitted clothes are the body's); and
+  what the wind moves painted for it (kit.wind; a plant's parts in ONE kit.plant_wind call),
+  as plan.md and detail.md say, within the budget;
 - in model.py, after the body is built and fitted: detail = kit.load("detail").build(job,
   kit, materials, body), then fit again when the detail changed its height (kit.fit(body +
   detail, job.height)), then the previews and the compare on body + detail; change nothing
@@ -798,7 +811,7 @@ def allowed(rid, stage=None):
         "Bash(python tools/blender/model_requests.py *)",
         # a helper script of its own, in its folder (one that writes lines.json from numbers, say),
         # a one-liner, and a folder made there
-        f"Bash(python {here}/*)", "Bash(python -c *)", f"Bash(mkdir {here}/*)", f"Bash(mkdir -p {here}/*)",
+        f"Bash(python {here}/*)", "Bash(python -c *)", "Bash(python - *)", f"Bash(mkdir {here}/*)", f"Bash(mkdir -p {here}/*)",
         "Bash(cargo run -q -p engine-content --bin content -- check)",
         "Bash(ls)", "Bash(ls *)",
     ]
@@ -1337,11 +1350,14 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
         # the lead asks for a second research pass: the researchers again, then this review
         return mr.review_more(root, rid)["status"]
     elif stage and stage != "assemble":
-        # its files written (the lines there, the rest by this run)
-        missing = [f for f in mr.STAGE_FILES[stage] if not ((here / f).is_file() if f in ("lines.json", "profiles.png") else drawn_since(here / f, began))]
-        if not missing:
+        # its files there, and one of them this run's (a stage run again changes what it must,
+        # and may leave a file as it was)
+        owned = mr.STAGE_FILES[stage]
+        missing = [f for f in owned if not (here / f).is_file()]
+        if not missing and any(drawn_since(here / f, began) for f in owned):
             return mr.stage_done(root, rid, stage)["status"]
-        reason = f"Claude ended without writing {', '.join(missing)} (the {stage} stage's)"
+        reason = (f"Claude ended without writing {', '.join(missing)} (the {stage} stage's)" if missing
+                  else f"Claude ended without changing any of its files ({', '.join(owned)})")
     elif part == "lines" and drawn_since(here / "profiles.png", began):
         # where it was asked to stop: the user's turn
         return mr.wait_for_check(root, rid)["status"]

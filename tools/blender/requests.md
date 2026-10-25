@@ -401,7 +401,12 @@ with it; Start on a failed one runs that stage again, Go on after a cancel the n
 Make it again on a done one starts from the study. In the cloud, each stage is a session of
 its own, given the request's files and its plan folder (the references under it too), the
 research's with the web tools on. The researchers' lines in the log are tagged `[subject]`,
-`[references]` and `[methods]`, their raw streams in `run_ROLE.jsonl`.
+`[references]` and `[methods]`, their raw streams in `run_ROLE.jsonl`. A stage ends done when
+its files are there and this run changed at least one (a stage run again, by the director or
+a chip, changes what it must and may leave a file as it was). On a clothed character the body
+stage builds the figure as the silhouette has it, the fitted clothes its skin in their
+colours; what stands off the body (a jacket's tails, a cape, hair, accessories) is the dress
+stage's, and the director judges the body only where it owns the silhouette.
 
 **The director** (`director`, the panel's "A director judges each stage", on unless unticked):
 after each stage, a run of Claude (`--stage STAGE --direct`) judges its work against the

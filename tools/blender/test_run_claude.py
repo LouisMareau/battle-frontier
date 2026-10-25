@@ -87,13 +87,15 @@ if mode in ("judge", "judge_back"):
     text = "grade: 85\\nverdict: go on\\n\\nRight: the outline sits on the design.\\n" if mode == "judge" else "grade: 40\\nverdict: back to study\\n\\nThe tail is too short on the side (side.png: a third longer).\\nThe ears sit too high.\\n"
     (here / "plan" / "director" / (stage + ".md")).write_text(text, encoding="utf-8")
     last = "Judged."
-if mode in ("stage", "more"):
+if mode in ("stage", "more", "partial"):
     # a stage's run: its files written (a stand-in each; a researcher's its own; the review
-    # asking more: more.md), a line in the notes log
+    # asking more: more.md; run again, the first of them only), a line in the notes log
     here = mr.folder(os.getcwd(), rid)
     stage = prompt.split("This run is its\\n")[1].split(" stage,")[0].lower()
     if mode == "more":
         names = ["plan/research/more.md"]
+    elif mode == "partial":
+        names = list(mr.STAGE_FILES[stage])[:1]
     elif "You are its " in prompt:
         names = ["plan/research/" + prompt.split("You are its ")[1].split(" researcher")[0].lower() + ".md"]
     else:
@@ -187,7 +189,7 @@ for wanted in ("a run starts", "Claude Code: ", "(9.9.9 (stand-in))", "--model o
 settings = json.loads((mr.folder(SCRATCH, "test_one") / "claude-settings.json").read_text(encoding="utf-8"))
 allow = settings["permissions"]["allow"]
 check("  its tools: reading, writing in its folder, Blender through run_request.py, its own scripts there, nothing else", "Write(private/requests/test_one/**)" in allow
-      and "Bash(python tools/blender/run_request.py test_one *)" in allow and "Bash(python private/requests/test_one/*)" in allow and "Bash(python -c *)" in allow
+      and "Bash(python tools/blender/run_request.py test_one *)" in allow and "Bash(python private/requests/test_one/*)" in allow and "Bash(python -c *)" in allow and "Bash(python - *)" in allow
       and not any(a in ("Write", "Edit", "Bash") or a.startswith("Bash(git") for a in allow), str(allow))
 check("  told so: one command a call, a refusal of that call only, a helper script of its own from its folder", "private/requests/test_one/NAME.py (one that writes lines.json from numbers, say)" in log
       and "from the project folder (no cd), one" in log and "a refusal is of that one call, never of the session" in log and "nothing joined with" in log)
@@ -488,6 +490,16 @@ check("the assembly: a character rigged, finished; done, every stage done, the d
 code, out, rec, log = run("test_stages", "judge", "--stage", "assemble", "--direct")
 check("  the assembly judged: done, nothing next", rec["status"] == "done" and rec["next"] == "" and rec["judgment"]["stage"] == "assemble" and "the prop it added, its record and its .glb, and its renders" in rc.prompt(rec, stage="assemble", direct=True)
       and "The director judges the assemble stage 85/100: go on" in log, f"{rec['status']} {rec['next']} {log[-300:]}")
+# a stage run again: its files there already, one of them changed is enough; none changed isn't
+code, out, rec, log = run("test_stages", "partial", "--stage", "body")
+check("a stage run again that changes one of its files (the other as it was): done", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look", "detail", "merge", "body"]
+      and rec["next"] == "direct:body", f"{rec['status']} {rec['stages']} {rec['progress']['step']}")
+code, out, rec, log = run("test_stages", "quit", "--stage", "look")
+check("  one that changes none of them: failed, saying so", rec["status"] == "failed" and rec["progress"]["step"] == "failed: Claude ended without changing any of its files (plan/look.md, materials.py)", rec["progress"]["step"])
+check("  the body's prompt: on a clothed character the fitted clothes are the body's, what stands off the dress's; change the files there rather than start over",
+      "the clothes\n  that follow the body (a bodysuit, trousers, a shirt, boots) are the body's skin" in rc.prompt(rec, stage="body") and "change them (Edit) rather\n  than start over" in rc.prompt(rec, stage="body")
+      and "what stands off the body (a jacket's tails, a cape, a skirt's\n  flare, hair and a ponytail, straps, accessories" in rc.prompt(rec, stage="dress")
+      and "the figure in its fitted clothes" in rc.prompt(rec, stage="body", direct=True) and "python - with a heredoc" in rc.prompt(rec, stage="body"))
 code, out, rec, log = run("test_stages", "stage", "--stage", "look")
 check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look"] and rec["stage"] == "look", f"{rec['stages']}")
 check("  made again with comments: told it was made in stages, which file holds what", "it was made in stages" in rc.prompt(dict(rec, comments="bigger ears"), again=True))
