@@ -4395,11 +4395,17 @@ mod desk {
     }
 
     fn tag(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
+        // (a row of tags wraps whole tags: one that doesn't fit the row's rest starts the next
+        // row, its text never broken into letters)
+        let galley = ui.painter().layout_no_wrap(text.to_string(), egui::FontId::proportional(9.5), Color32::BLACK);
+        if ui.layout().main_wrap && galley.size().x + 8.0 > ui.available_size_before_wrap().x {
+            ui.end_row();
+        }
         egui::Frame::new()
             .fill(color)
             .corner_radius(3.0)
             .inner_margin(egui::Margin::symmetric(4, 1))
-            .show(ui, |ui| ui.label(RichText::new(text).size(9.5).strong().color(Color32::BLACK)))
+            .show(ui, |ui| ui.add(egui::Label::new(RichText::new(text).size(9.5).strong().color(Color32::BLACK)).wrap_mode(egui::TextWrapMode::Extend)))
             .response
     }
 
