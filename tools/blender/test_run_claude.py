@@ -477,7 +477,7 @@ for name in ("look", "detail", "merge", "body", "dress"):
 asked = rc.prompt(rec, stage="body")
 check("the stages one after another, each done with its files; the body's prompt building on the plan and the materials, no detail, no rig",
       rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
-      and 'kit.load("body")' in asked and "materials.py (its COLOURS and\n  PAINT: use them, change nothing in it)" in asked and "No\n  detached part, no card, no fur, no rig" in asked
+      and 'kit.load("body")' in asked and "materials.py (its COLOURS and\n  PAINT: use them, change nothing in it)" in asked and "No detached part, no card, no fur, no rig" in asked
       and "write private/requests/test_stages/model.py (requests.md, \"The kit\": the usual start)" in asked and "No finish yet: the assemble stage adds it" in asked, f"{rec['status']} {rec['stages']}")
 asked = rc.prompt(rec, stage="dress")
 check("  the dress's: the detached parts and the detail on the body, the body's file unchanged", 'kit.load("detail")' in asked and "def build(job, kit, materials, body)" in asked
