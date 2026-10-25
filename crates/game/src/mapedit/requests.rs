@@ -711,6 +711,9 @@ mod desk {
     /// A moment (ms) between a run writing what comes next and the desk starting it: for the
     /// run's process to close (nothing in the tests).
     pub(in super::super) const GRACE: f64 = if cfg!(test) { 0.0 } else { 2000.0 };
+    /// How long (ms) a next run may wait on the desk before the request fails, saying what held
+    /// it.
+    pub(in super::super) const STUCK: f64 = 5.0 * 60.0 * 1000.0;
     /// the models a run can be given (the empty one: Claude Code's own default)
     const MODELS: [(&str, &str); 4] = [("", "default model"), ("opus", "opus"), ("sonnet", "sonnet"), ("haiku", "haiku")];
     /// the console shows this many of the log's last lines (Copy takes them all)
@@ -2164,6 +2167,12 @@ mod desk {
             }
         }
 
+        /// A line of the desk's own in a request's log (model_requests.py's note: timed as the
+        /// runs' lines are); nothing when Python can't.
+        fn note(&self, id: &str, text: &str) {
+            let _ = python_now(&self.root(), &["tools/blender/model_requests.py", "note", id, text]);
+        }
+
         /// A request's status set by model_requests.py (which writes the log line, timed by the
         /// computer's clock), or here when Python can't.
         fn settle(&mut self, id: &str, args: &[&str], fallback: impl FnOnce(&mut ModelRequest)) {
@@ -2220,6 +2229,7 @@ mod desk {
                     // words, if any, are in the request's launch.err)
                     if let Some(r) = self.list.iter().find(|r| r.id == id && r.staged() && r.next_run().is_some()).cloned() {
                         let reason = "the run the editor started wrote nothing in 30 s (Python's words, if any, are in launch.err)".to_string();
+                        self.note(&r.id, &format!("The editor: {reason}"));
                         let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
                         self.settle(&r.id, &args, |rec| {
                             rec.status = Status::Failed;
@@ -2233,7 +2243,8 @@ mod desk {
             let wall = disk::now();
             for r in self.list.clone() {
                 let dir = folder(&root).join(&r.id);
-                if gone_silent(&r, last_word(&seen, &dir), wall) && self.failed_silent.insert(r.id.clone()) {
+                // (a request whose next run is this desk's to start isn't a run gone quiet)
+                if gone_silent(&r, last_word(&seen, &dir), wall) && r.next_run().is_none() && self.failed_silent.insert(r.id.clone()) {
                     let reason = format!("no news for {} min (nothing written in its folder)", SILENT as i64 - 1);
                     let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
                     self.settle(&r.id, &args, |rec| {
@@ -2254,42 +2265,68 @@ mod desk {
                 self.reload();
             }
             // a request made in stages, its run ended with what comes next (a stage, or the
-            // director's judgment of the one just done): started once its run is over
-            if self.starting.is_none() && self.cancelling.is_none() && self.nothing_runs() {
-                let key = |r: &ModelRequest| (r.id.clone(), r.next.clone(), r.progress.started.to_bits());
-                let ended = self.list.iter().find(|r| r.staged() && r.next_run().is_some() && self.continued.as_ref() != Some(&key(r))).cloned();
-                // (a moment for the last run's process to close: it wrote what's next last)
-                let waited = ended.as_ref().map(|r| {
-                    let k = key(r);
-                    match &self.pending {
-                        Some((pk, at)) if *pk == k => now - *at,
-                        _ => {
-                            self.pending = Some((k, now));
-                            0.0
-                        }
-                    }
-                });
-                if let Some(r) = ended.filter(|_| waited.is_some_and(|w| w >= GRACE)) {
+            // director's judgment of the one just done): started once its run is over, GRACE
+            // after it was seen; what holds it noted, and five minutes of it failing the request
+            let key = |r: &ModelRequest| (r.id.clone(), r.next.clone(), r.progress.started.to_bits());
+            let due = self.list.iter().find(|r| r.staged() && r.next_run().is_some() && self.continued.as_ref() != Some(&key(r))).cloned();
+            match due {
+                None => self.pending = None,
+                Some(r) => {
                     let how = r.next_run().unwrap_or_default();
-                    let s = self.start_run(&r.id, how);
-                    self.continued = Some(key(&r));
-                    self.pending = None;
-                    if self.starting.is_none() {
-                        // (it didn't start: failed, rather than tried each second)
-                        let what = match how {
-                            How::Direct(s) => format!("the director's judgment of the {} stage", s.name()),
-                            How::Stage(s) => format!("the {} stage", s.name()),
-                            _ => "the next run".to_string(),
-                        };
-                        let reason = format!("{what} didn't start: {s}");
+                    let what = match how {
+                        How::Direct(s) => format!("the director's judgment of the {} stage", s.name()),
+                        How::Stage(s) => format!("the {} stage", s.name()),
+                        _ => "the next run".to_string(),
+                    };
+                    let k = key(&r);
+                    let since = match &self.pending {
+                        Some((pk, at)) if *pk == k => *at,
+                        _ => {
+                            self.pending = Some((k.clone(), now));
+                            self.note(&r.id, &format!("The editor sees {what} next: it starts in a moment"));
+                            now
+                        }
+                    };
+                    let held = if self.starting.is_some() {
+                        "a run starting"
+                    } else if self.cancelling.is_some() {
+                        "a cancel"
+                    } else if !self.nothing_runs() {
+                        "the run in the cloud"
+                    } else {
+                        ""
+                    };
+                    if held.is_empty() && now - since >= GRACE {
+                        let s = self.start_run(&r.id, how);
+                        self.continued = Some(k);
+                        self.pending = None;
+                        if self.starting.is_none() {
+                            // (it didn't start: failed, rather than tried each second)
+                            let reason = format!("{what} didn't start: {s}");
+                            self.note(&r.id, &format!("The editor: {reason}"));
+                            let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
+                            self.settle(&r.id, &args, |rec| {
+                                rec.status = Status::Failed;
+                                rec.progress.step = format!("failed: {reason}");
+                            });
+                            self.reload();
+                        } else {
+                            self.note(&r.id, &format!("The editor starts {what}"));
+                        }
+                        said = Some(s);
+                    } else if now - since >= STUCK {
+                        // held too long: failed, saying by what (Start again goes on from here)
+                        let reason = format!("the editor didn't start {what} in {} min (held by {})", (STUCK / 60000.0) as i64, if held.is_empty() { "nothing it can name" } else { held });
+                        self.note(&r.id, &format!("The editor: {reason}"));
                         let args = ["tools/blender/model_requests.py", "fail", r.id.as_str(), reason.as_str()];
                         self.settle(&r.id, &args, |rec| {
                             rec.status = Status::Failed;
                             rec.progress.step = format!("failed: {reason}");
                         });
+                        self.pending = None;
                         self.reload();
+                        said = Some(format!("{}: failed, {reason}", r.name));
                     }
-                    said = Some(s);
                 }
             }
             // a request the queue had split: once it's split (its run over), its requests next,
@@ -5194,6 +5231,71 @@ mod tests {
         frame_with(&ctx, &mut req, vec![]);
         click(&ctx, &mut req, "uiRequestDirected");
         assert!(read(&root, "moss_toad").unwrap().director, "ticked again (it was unticked on disk)");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A send-back as the kit writes it (a record as one stood, its start the director's run's,
+    /// its stages cut back, its judgment with a count): the director launched on the merge
+    /// done, then its verdict sending the work back to the merge: the desk starts the merge
+    /// again. And a request whose next run is the desk's to start isn't failed for silence.
+    #[test]
+    fn a_send_back_as_the_kit_writes_it_starts_the_stage_again() {
+        let root = scratch("emma");
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let record = ModelRequest {
+            id: "emma".into(),
+            name: "Emma".into(),
+            kind: Kind::Character,
+            style: Style::Agentic,
+            status: Status::InProgress,
+            stage: "merge".into(),
+            stages: ["study", "research", "review", "look", "detail"].iter().map(|s| s.to_string()).collect(),
+            next: "merge".into(),
+            judgment: Judgment { stage: "merge".into(), grade: 61, to: "merge".into(), notes: "Bone names; hands; eyes.".into(), backs: [("merge".to_string(), 1)].into_iter().collect() },
+            progress: Progress { step: "merge judged 61/100: back to merge".into(), done: 1.0, started: 1792905188.0, minutes: 7.0 },
+            ..ModelRequest::default()
+        };
+        let dir = root.join("private/requests/emma");
+        std::fs::create_dir_all(&dir).unwrap();
+        // the merge done: the director next
+        let mut done = record.clone();
+        done.next = "direct:merge".into();
+        done.stages.push("merge".into());
+        done.progress = Progress { step: "merge done".into(), done: 1.0, started: 1792905096.0, minutes: 2.0 };
+        save(&root, &done).unwrap();
+        req.watch(1.0e9);
+        req.watch(2.0e9);
+        let launched = req.desk().launched.clone();
+        assert_eq!(launched.last().map(|a| a[3].as_str()), Some("merge"), "{launched:?}");
+        assert!(req.desk().launched.last().unwrap().contains(&"--direct".to_string()));
+        // the director's run starting (as direct_start writes it), then its verdict as it stood
+        // on disk, its start kept
+        let judging_at = now_secs();
+        let mut judging = done.clone();
+        judging.next = String::new();
+        judging.progress = Progress { step: "the director judges the merge stage".into(), done: 0.05, started: judging_at, minutes: 2.0 };
+        save(&root, &judging).unwrap();
+        req.watch(2.5e9);
+        let mut verdict = record.clone();
+        verdict.progress.started = judging_at;
+        save(&root, &verdict).unwrap();
+        req.watch(3.0e9);
+        req.watch(4.0e9);
+        req.watch(5.0e9);
+        let (launched, said) = (req.desk().launched.clone(), req.said.clone());
+        assert_eq!(launched.len(), 2, "the merge again: {launched:?} (said: {said:?})");
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "emma", "--stage", "merge", "--model", "sonnet"]);
+        // a verdict written long ago with nothing since, its run never started (the desk away):
+        // not silence, the desk's own turn
+        let mut old = verdict.clone();
+        old.progress.started = now_secs() - 3.0 * 3600.0;
+        save(&root, &old).unwrap();
+        let long_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(3 * 3600);
+        assert!(gone_silent(&old, Some(long_ago), std::time::SystemTime::now()), "quiet by the clock");
+        req.desk().begun();
+        req.watch(6.0e9);
+        assert_eq!(read(&root, "emma").unwrap().status, Status::InProgress, "not failed for silence: its next run is the desk's to start");
         std::fs::remove_dir_all(&root).ok();
     }
 
