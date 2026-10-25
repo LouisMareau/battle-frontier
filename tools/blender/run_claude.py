@@ -420,7 +420,9 @@ SHAPE_PLAN = """- write private/requests/{id}/plan/shape.md, the shape plan the 
   centre, radii and rotation in cells); the rig's chains (named as requests.md step 9 names
   them, each joint in cells, the body's first; with the user's bones, theirs); and what stays
   detached from the body (the lower jaw, the eyes, horns, claws, a prop's lid), named, for
-  the detail stage to plan;
+  the detail stage to plan. The breakdown stage cuts each contoured element out next: give
+  every line of lines.json its own name (a part, a marking, a piece of clothing or gear) and
+  contour every element the pictures show, the outline included;
 - append to plan/notes.log what you took for the drawing, what you guessed and what you're
   unsure of ("[study] " lines);
 """
@@ -442,6 +444,62 @@ STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its sh
                    + READ + "{directed}{stage_lessons}" + "{lessons}" + CHECKED_LINES
                    + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
                    + RULES.replace("{end}", "End with one line saying what you planned."))
+# the games whose anime style the game's characters aim at: what the breakdown's research plan
+# and the researchers look to for the style's proportions, faces, hair, shading and rigging
+STYLE_GAMES = "Granblue Fantasy: Relink, Wuthering Waves, Genshin Impact, Zenless Zone Zero and DragonSword: Awakening"
+# the breakdown stage: each contoured element of the study cut out enhanced, contoured again
+# precisely and analysed, and the research planned from what it found
+BREAKDOWN_RUN = (HEAD + STAGED + "Break the artwork down, element by element, for the stages after you (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan/shape.md and plan/notes.log, and the lines the study stage made: python
+  tools/blender/model_requests.py breakdown {id} lists each picture's contoured elements with
+  their boxes (look at lines_PICTURE.png too);
+- for each contoured element of each picture (every line, the outline included as the whole;
+  a mark alone, when it names something the pictures show, too), cut it out enhanced:
+  python tools/blender/model_requests.py cutout {id} PICTURE "NAME"
+  (plan/breakdown/PICTURE/NAME.png, enlarged and sharpened; NAME.json beside it holds its
+  box, its scale and the study's line in the cutout's pixels, a start). Look at it, and
+  zoom further where a detail hides (python tools/blender/model_requests.py zoom {id}
+  plan/breakdown/PICTURE/NAME.png X0 Y0 X1 Y1);
+- contour it again, precisely, in NAME.json's "lines" (in the cutout's pixels; the shapes
+  lines.json takes: points with closed and smooth, ellipse, mark; a line's "corners", the
+  indices of its points where the edge turns sharply): the element's edge as it truly runs,
+  straight runs as straight segments through their corners, curves as smooth lines, so a
+  flat face or a right angle is told from a rounded one; then its inner lines: seams, folds,
+  plates, the border of each material and each colour. Then
+  python tools/blender/model_requests.py contour {id} PICTURE "NAME"
+  draws them over the cutout (NAME_lines.png, the corners squared): look, and move the lines
+  until they sit on the enhanced edge to the pixel;
+- write NAME.md beside it, the element's analysis: its geometry (the straight edges and their
+  angles, the curves and how tight, its symmetry, its proportions against the body in heads
+  or against the part it's on, measured on the cutout and given in the picture's pixels),
+  what it's made of and its finish (skin, fur, cloth, leather, metal, glass, wood...; matte,
+  glossy, rough, worn, how it catches light in the picture), its colours (measured: python
+  tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1), how it attaches and
+  moves, and what the picture leaves unsure;
+- write private/requests/{id}/plan/breakdown.md, the index: a line per element (its picture,
+  its name, its files, its material in a word, and what to model it as: the skin's, a
+  detached part, cards, a painted texture), then the style the pictures are drawn in (anime,
+  cartoon, painterly, realistic) and what that asks of the model in a few lines;
+- write private/requests/{id}/plan/research_plan.md, the plan the researchers follow, a
+  section each ("## subject", "## references", "## methods"), each item a question to answer
+  with the element it serves: for the subject, what the design is drawn from and what to
+  settle about it; for the references, each material and finish to find references of (a
+  metal limb: metal items and how their roughness and specular read; a leather pouch: how
+  leather is made and how it reflects; cloth, fur, glass, wood likewise) and each view or
+  detail the pictures lack; for the methods, each unusual thing to learn: the style and what
+  it asks (anime proportions, how anime eyes are made and animated, hair and how it's rigged,
+  when that's the style; the game's characters aim at the anime style of {games}: how those
+  games build, shade and rig their characters is the target), and how each material is done
+  in Blender and the kit (a glossy
+  metal, a rough leather, a texture painted from the picture);
+- append to plan/notes.log what you're unsure of and what the study's lines got wrong (so
+  the study's next run learns), "[breakdown] " lines;
+""" + RULES.replace("{end}", "End with one line saying how many elements you broke down."))
+# what the stages after the breakdown read of it
+BREAKDOWN_READ = """- read plan/breakdown.md and, for each element you work on, its analysis (plan/breakdown/
+  PICTURE/NAME.md) and its precise contour drawn over the enhanced cutout (NAME_lines.png
+  over NAME.png): the geometry as measured, straight and curved told apart, the corners,
+  and the material and its finish;
+"""
 # the research stage: three researchers at once (a run of Claude each, its own file; in the
 # cloud, one session does the three in turn), and a second pass when the lead's review asks
 # more ({more}: MORE then)
@@ -456,6 +514,10 @@ pass" heading, keeping the first pass's text."""
 RESEARCH_READ = """- read plan/shape.md (what the study stage made of the pictures: the parts, the proportions,
   what it guessed) and every line of plan/notes.log (its guesses and doubts), and look at the
   lines it made (lines_PICTURE.png, profiles.png);
+- read plan/research_plan.md, the breakdown's plan for the research: your section first,
+  question by question (each names the element it serves: look at that element's cutout and
+  analysis in plan/breakdown/, listed in plan/breakdown.md), then the other sections for what
+  touches yours;
 """
 # how the references researcher brings a picture in: fetched here; in the cloud (its sandbox's
 # network shut), its address noted instead
@@ -489,6 +551,9 @@ REFERENCES = """- first, the reference pictures earlier requests kept, each with
   details (how the fur lies, a scale's shape, a claw, a horn's ridges), of the thing the
   design is drawn from (a named one: itself; a made-up one: what it's built from). For each,
   {fetching};
+- a character: two or three pictures of characters from the anime-styled games the look aims
+  at ({games}), kept as references of the style: how their faces, hair, hands and clothes are
+  built in 3D;
 - write private/requests/{id}/plan/research/references.md: each picture kept, with its file in
   plan/refs/ (or its address), what it shows (which view, which detail), where it came from;
   and the views and details you couldn't find;
@@ -504,6 +569,10 @@ METHODS = """- first, the how-tos earlier requests kept (kit calls that worked, 
   how a surface is sculpted to a reference: for each, find a source that says, read it, and
   keep the gist, worked into the kit's own calls where it maps onto them. A picture that
   shows a technique is kept as the references researcher keeps pictures, at most three;
+- the style: the game's characters aim at the anime style of {games}: look up how those
+  games model their characters (proportions, faces and eyes, hair as cards or strands,
+  cloth), shade them (toon ramps, outlines) and rig them (faces, hair, cloth), and what of
+  it the kit can do (requests.md, "The toon look");
 - write private/requests/{id}/plan/research/methods.md: each how-to a few lines, in the order
   the stages will need them, with its source; what you couldn't find;
 """
@@ -547,6 +616,11 @@ DIRECTOR_CRITERIA = {
     "study": ("the lines: each outline on its picture's silhouette (the overlap on lines_PICTURE.png), the parts' lines on the parts; "
               "the front and the side (profiles.png) true to the pictures' proportions (measure: heights in heads, widths against "
               "heights); plan/shape.md: every part the pictures show, none invented, the measurements right, the design told from the drawing"),
+    "breakdown": ("every contoured element of the study has its enhanced cutout, its precise contour sitting on the enhanced edge "
+                  "(straight runs straight, the corners listed where the edge turns, curves smooth: look at a few NAME_lines.png against "
+                  "their NAME.png) and its analysis true to the picture (measure a few: a straight edge called curved, a metal called "
+                  "cloth, a proportion off by a head sends it back); plan/breakdown.md complete, with the style; plan/research_plan.md "
+                  "asking for each material and finish, each missing view and the style's how-tos"),
     "research": ("the subject found is the design's own (not another creature or thing of a like name); the facts true to the pictures "
                  "(the pictures and the user's notes win over the web); the references show what the pictures lack, of the right "
                  "thing (look at each in plan/refs/); the how-tos map onto the kit; the three files complete, their sources given"),
@@ -638,8 +712,8 @@ REVIEW_RUN = (HEAD + STAGED + "Review the research (pass {pass_} of at most 2; i
 - check them: each reference against the design (does it show the view or the detail it was
   kept for, of the right kind of thing? one that misleads is left out), each fact against the
   pictures and the user's notes (the notes win), each how-to against the kit (does the kit do
-  it, and how); and what's still missing for a model as detailed as the pictures and the
-  style allow;
+  it, and how); each question of plan/research_plan.md answered, or said unanswerable; and
+  what's still missing for a model as detailed as the pictures and the style allow;
 {review_end}- private/requests/{id}/plan/research.md, the one research the stages after you read: what
   the design is, in a line; the facts kept, each with its source; the references kept, each
   with its file in plan/refs/ (or its address), what it shows and when a builder should look
@@ -652,7 +726,7 @@ LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started al
   (what the research stage found online: the colours such a thing has in life, its
   references in plan/refs/: look at them) and plan/notes.log, and look at the lines the study
   stage made (lines_PICTURE.png, profiles.png);
-- tell the design's colours from the drawing's light (requests.md, "The design, not the
+""" + BREAKDOWN_READ + """- tell the design's colours from the drawing's light (requests.md, "The design, not the
   drawing"): a part's colour is its lit tone, neither its shine nor its shade; shine and
   reflections make a glossy material, a glow a glowing one. Measure each region off the
   pictures: python tools/blender/model_requests.py colours {id} PICTURE X0 Y0 X1 Y1 lists a
@@ -674,7 +748,7 @@ DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's star
   (what the research stage found online: how the fur, scales or feathers lie, the how-tos,
   its references in plan/refs/: look at them) and plan/notes.log, and look at the lines
   (lines_PICTURE.png, profiles.png);
-- write private/requests/{id}/plan/detail.md: the detached parts, each named (on a clothed
+""" + BREAKDOWN_READ + """- write private/requests/{id}/plan/detail.md: the detached parts, each named (on a clothed
   character, what stands off the body: a jacket's tails, a cape, a skirt's flare, hair and a
   ponytail, straps, accessories; the clothes that follow the body are the body's skin, the
   body stage's), with its shape,
@@ -695,7 +769,7 @@ MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started al
   plan/notes.log (the stages' guesses, doubts and what each would change in the others'), and
   look at the lines (lines_PICTURE.png, profiles.png), the references in plan/refs/ and
   materials.py;
-- check they agree: every part named in one plan is in the others under the same name, each
+""" + BREAKDOWN_READ + """- check they agree: every part named in one plan is in the others under the same name, each
   colour region sits on a part, each detached part has its bone or chain, nothing is planned
   twice (a horn as a part and as cards), nothing the pictures show is left out, the budget
   holds. Decide each disagreement by the pictures and the user's notes;
@@ -716,7 +790,7 @@ BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\
   references plan.md names in plan/refs/; the how-tos plan.md or plan/research.md name are
   in private/requests/.lessons/methods/ (python tools/blender/model_requests.py methods
   lists them): kit calls that worked before, to build on;
-{lessons}- write private/requests/{id}/body.py, a module model.py imports with kit.load("body"):
+""" + BREAKDOWN_READ + """{lessons}- write private/requests/{id}/body.py, a module model.py imports with kit.load("body"):
   def build(job, kit, materials) builds the body as plan.md says and returns its objects:
   the skin (accurate: the block-out laid for every mass, kit.wrap over them all, sculpted to
   the profiles; requests.md, "Accurate", 1 to 3), or its parts (smooth, low-poly: the torso,
@@ -749,7 +823,7 @@ DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its d
   references plan.md names in plan/refs/; the how-tos plan.md or plan/research.md name are in
   private/requests/.lessons/methods/ (python tools/blender/model_requests.py methods lists
   them): kit calls that worked before, to build on;
-- write private/requests/{id}/detail.py, a module model.py imports with kit.load("detail"):
+""" + BREAKDOWN_READ + """- write private/requests/{id}/detail.py, a module model.py imports with kit.load("detail"):
   def build(job, kit, materials, body) adds to the body built and returns what it adds: the
   detached parts as kit.part parts overlapping the body (the lower jaw with its teeth and the
   tongue, the eyes with kit.eyes, the lids, claws, horns, plates, a prop's lid or door), each
@@ -789,7 +863,7 @@ ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's sta
 {variants}- add it to the project: python tools/blender/run_request.py {id} --finish
 - check: cargo run -q -p engine-content --bin content -- check
 """ + RULES.replace("{end}", MADE))
-STAGE_RUNS = {"review": REVIEW_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
+STAGE_RUNS = {"breakdown": BREAKDOWN_RUN, "review": REVIEW_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "merge": MERGE_RUN, "body": BODY_RUN, "dress": DRESS_RUN, "assemble": ASSEMBLE_RUN}
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
@@ -1137,7 +1211,7 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
     # the research's researchers and its pass, the review's
     second = int(record.get("research_pass") or 1) >= 2
     fetching = (CLOUD_FETCH_HOW if cloud else FETCH_HOW).format(id=rid)
-    charge = ROLE_CHARGE.get(role, "").format(id=rid, fetching=fetching)
+    charge = ROLE_CHARGE.get(role, "").format(id=rid, fetching=fetching, games=STYLE_GAMES)
     # the director's: the stage it judges; a stage it sent back: what it said
     j = record.get("judgment") or {}
     directed = ""
@@ -1155,7 +1229,7 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
                   assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "",
                   ROLE=(role or "").upper(), role=role or "", roles="the subject, the references, the methods", pass_=2 if second else 1, more=MORE if second else "",
                   fetching=fetching, charge=charge, review_end=REVIEW_LAST if second else REVIEW_FIRST.format(id=rid), directed=directed,
-                  judged=judged, JUDGED=judged.upper(), files=files, needed=mr.GRADE_NEEDED, criteria=DIRECTOR_CRITERIA.get(judged, "").format(id=rid),
+                  judged=judged, JUDGED=judged.upper(), files=files, needed=mr.GRADE_NEEDED, criteria=DIRECTOR_CRITERIA.get(judged, "").format(id=rid), games=STYLE_GAMES,
                   before=", ".join(mr.STAGES[:mr.STAGES.index(judged) + 1]) if judged else "",
                   folder=Path(root).resolve().as_posix() if root is not None else "the project folder", stage_lessons=stage_lessons, calibrated=calibrated)
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
@@ -1444,7 +1518,7 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
     return mr.fail(root, rid, reason)["status"]
 
 
-def claude_once(root, rid, claude, env, args, text, say, stop, quiet, raw_name="run.jsonl"):
+def claude_once(root, rid, claude, env, args, text, say, stop, quiet, raw_name="run.jsonl", agent="Claude"):
     """One Claude Code on a prompt, followed to its end: what it did in the log (`say`), its
     whole events raw in `raw_name`. Its result event (or {}), its exit code, an error its
     messages had, what it cost, and how it was stopped: "cancelled" (the stop file), "quiet"
@@ -1473,6 +1547,11 @@ def claude_once(root, rid, claude, env, args, text, say, stop, quiet, raw_name="
                     raw.flush()
                 for said in describe(event, state):
                     say(said)
+                # what it's doing now, for the editor's panel: its latest words
+                if event.get("type") == "assistant":
+                    words = [c["text"] for c in event.get("message", {}).get("content", []) if c.get("type") == "text" and c.get("text", "").strip()]
+                    if words:
+                        mr.now(root, rid, agent, words[-1])
 
     def err():
         for line in proc.stderr:
@@ -1577,23 +1656,28 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         say("The three researchers at once, each its own Claude: their lines tagged [subject], [references], [methods]")
     outs = {}
 
+    agent = "retrospective" if retrospect else "director" if direct else (stage or "Claude")
+
     def go(r, t):
         tagged = (lambda s, r=r: say(f"[{r}] {s}")) if r else say
-        outs[r] = claude_once(root, rid, claude, env, args, t, tagged, stop, quiet, f"run_{r}.jsonl" if r else "run.jsonl")
+        outs[r] = claude_once(root, rid, claude, env, args, t, tagged, stop, quiet, f"run_{r}.jsonl" if r else "run.jsonl", f"{agent}:{r}" if r else agent)
 
     workers = [threading.Thread(target=go, args=(r, t), daemon=True) for r, t in texts.items()]
     for w in workers:
         w.start()
     for w in workers:
         w.join()
-    # what the run cost, kept with the request (its runs' costs add up; the researchers' together)
+    # what the run cost, on the request's current run: its stage's (the researchers' together;
+    # the director's on the stage it judged; a plain run's by its part)
     cost = sum(o["cost"] for o in outs.values())
     if cost:
-        mr.update(root, rid, costs=list(mr.load(root, rid).get("costs", [])) + [round(cost, 2)])
+        named = {"all": "the model", "floor": "the tiles", "lines": "the lines", "model": "the model", "again": "made again", "variants": "the variants", "split": "the split"}
+        mr.charge(root, rid, "retrospective" if retrospect else stage or named.get(part, part), cost, director=direct)
     endings = [o["ended"] for o in outs.values()]
     if "cancelled" in endings:
         stop.unlink(missing_ok=True)
         say("Cancelled from the editor: Claude stopped, the request waits again")
+        mr.run_ended(root, rid, "waiting")
         return mr.update(root, rid, status="waiting", progress=dict(mr.FIELDS["progress"]))["status"]
     if "quiet" in endings:
         who = [r for r, o in outs.items() if o["ended"] == "quiet"]

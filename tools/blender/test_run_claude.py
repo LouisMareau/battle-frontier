@@ -213,12 +213,15 @@ raw = (mr.folder(SCRATCH, "test_one") / "run.jsonl").read_text(encoding="utf-8")
 check("  the raw stream kept, without the pieces of what was being written", len(raw) == 4 and json.loads(raw[0])["model"] == "claude-test-1"
       and "stream_event" not in log and "partial_json" not in log, f"{len(raw)} lines")
 check("  a smooth prop's prompt: its style and its shapes, no pose", "Style: smooth" in log and "Shapes: build it from 8 to 30 shapes" in log and "Pose:" not in log)
+check("  its run: one, from Start to done, its one process's cost on the model", len(rec["runs"]) == 1 and rec["runs"][0]["status"] == "done" and rec["runs"][0]["ended"] > 0
+      and rec["runs"][0]["stages"] == [{"stage": "the model", "cost": 0.42, "director": 0.0}] and mr.run_cost(rec) == 0.42 and rec["costs"] == [0.42], str(rec["runs"]))
 
 # 2. it ends without the model: failed, why, its last word kept
 fresh("test_two")
 code, out, rec, log = run("test_two", "quit")
 check("a run that ends without the model: failed, and why", code == 1 and rec["status"] == "failed" and rec["progress"]["step"] == "failed: Claude ended without adding the model"
       and rec["reply"] == "Made it.", json.dumps(rec["progress"]))
+check("  its run over, failed", rec["runs"][-1]["status"] == "failed" and rec["runs"][-1]["ended"] > 0, str(rec["runs"]))
 check("  the log says so", "FAILED: Claude ended without adding the model" in log)
 # 3. it crashes
 fresh("test_three")
@@ -361,7 +364,7 @@ check("a record made in stages by the toggle of before: the agentic style", mr.n
 code, out, rec, log = run("test_stages", "stage", "--stage", "study")
 check("the study stage: done with its files, the request in progress still (the editor's turn: the director's judgment next)", code == 0 and rec["status"] == "in_progress" and rec["stage"] == "study"
       and rec["stages"] == ["study"] and rec["progress"]["step"] == "study done" and rec["next"] == "direct:study" and "test_stages: in_progress" in out, f"{code} {rec['status']} {rec['stage']} {rec['stages']} {rec['next']} {out[-200:]}")
-check("  its log: the stage starting, which it is, on Sonnet, done, the director next", "the study stage starts" in log and "This run: the study stage, 1 of 9: the lines, the front and the side, and the shape planned" in log
+check("  its log: the stage starting, which it is, on Sonnet, done, the director next", "the study stage starts" in log and "This run: the study stage, 1 of 10: the lines, the front and the side, and the shape planned" in log
       and "--model sonnet" in log and "The study stage is done: the director judges it next" in log, log[-600:])
 words = rc.prompt(rec, stage="study")
 check("  the agentic style's words: accurate, in stages", "Style: agentic (accurate, made in stages by agents" in words and "1. block it out" in words and "Lines: every part, marking and detail" in words, words[:600])
@@ -371,22 +374,38 @@ check("  the agentic style's words: accurate, in stages", "Style: agentic (accur
 here = mr.folder(SCRATCH, "test_stages")
 code, out, rec, log = run("test_stages", "judge", "--stage", "study", "--direct")
 asked = rc.prompt(rec, stage="study", direct=True)
-check("the director after the study: its work judged against the artwork, 85/100, on to the research", code == 0 and rec["status"] == "in_progress" and rec["next"] == "research"
+check("the run's costs: one run going since the Start, the study's process on its stage, the director's judgment with it", len(rec["runs"]) == 1 and rec["runs"][0]["status"] == "in_progress"
+      and rec["runs"][0]["stages"] == [{"stage": "study", "cost": 0.42, "director": 0.42}] and mr.run_cost(rec) == 0.84, str(rec["runs"]))
+check("the director after the study: its work judged against the artwork, 85/100, on to the breakdown", code == 0 and rec["status"] == "in_progress" and rec["next"] == "breakdown"
       and rec["judgment"]["stage"] == "study" and rec["judgment"]["grade"] == 85 and rec["judgment"]["to"] == "" and rec["judgment"]["backs"] == {} and rec["stages"] == ["study"]
-      and "The director judges the study stage 85/100: go on to the research stage" in log and (here / "plan" / "director.log").read_text(encoding="utf-8").strip().endswith("study: 85/100, go on")
+      and "The director judges the study stage 85/100: go on to the breakdown stage" in log and (here / "plan" / "director.log").read_text(encoding="utf-8").strip().endswith("study: 85/100, go on")
       and "This run: the director judges the study stage's work against the artwork" in log and "--model opus" in log, f"{rec['status']} {rec['next']} {rec['judgment']} {log[-400:]}")
 check("  its prompt: the stage judged, its files, the criteria, the grade needed, the verdict's lines, the stages it may send back to", "Judged now: the STUDY stage" in asked
       and "judge the study stage's work (lines.json, profiles.png, plan/shape.md): the lines: each outline on its picture's silhouette" in asked and "70 and over goes\n  on, under 70 the work goes back" in asked
       and 'its first line "grade: N", its second\n  "verdict: go on" or "verdict: back to STAGE"' in asked and "the earliest whose work caused the fault (study)" in asked
       and "write private/requests/test_stages/plan/director/study.md" in asked and "director judges its work (this run)" in asked, asked[-2200:])
-check("  a stage without its files can't be judged", run("test_stages", "judge", "--stage", "look", "--direct")[2]["progress"]["step"].startswith("failed: nothing to judge: no plan/research/subject.md yet (the research stage writes it"))
+check("  a stage without its files can't be judged", run("test_stages", "judge", "--stage", "look", "--direct")[2]["progress"]["step"].startswith("failed: nothing to judge: no plan/breakdown.md yet (the breakdown stage writes it"))
+# the breakdown: each contoured element cut out, contoured again precisely and analysed, the
+# research planned; its prompt, and what the researchers read of it
+code, out, rec, log = run("test_stages", "stage", "--stage", "breakdown")
+asked = rc.prompt(rec, stage="breakdown")
+check("the breakdown stage: done with its index and the research plan, the director next; its prompt the cutouts, the precise contours with their corners, the analyses, the plan, the style's games", code == 0
+      and rec["stages"] == ["study", "breakdown"] and rec["next"] == "direct:breakdown" and "model_requests.py cutout test_stages PICTURE" in asked and 'a line\'s "corners"' in asked.replace("\n  ", " ")
+      and "model_requests.py contour test_stages PICTURE" in asked and "write private/requests/test_stages/plan/research_plan.md" in asked and "anime proportions" in asked and "a leather pouch" in asked
+      and "Genshin Impact, Zenless Zone Zero" in asked, f"{rec['stages']} {rec['next']}")
+check("  the researchers follow its plan, the methods' and the references' with the style's games; the review checks each question; the builders read the analyses",
+      "read plan/research_plan.md, the breakdown's plan for the research" in rc.prompt(rec, stage="research", role="subject") and "Wuthering Waves" in rc.prompt(rec, stage="research", role="methods")
+      and "Granblue Fantasy: Relink" in rc.prompt(rec, stage="research", role="references") and "Wuthering Waves" in rc.cloud_text(rc.prompt(rec, stage="research", cloud=True), "test_stages")
+      and "each question of plan/research_plan.md answered" in rc.prompt(rec, stage="review") and "plan/breakdown.md and, for each element" in rc.prompt(rec, stage="look")
+      and "plan/breakdown.md and, for each element" in rc.prompt(rec, stage="dress") and "every contoured element of the study has its enhanced cutout" in rc.prompt(rec, stage="breakdown", direct=True))
 check("  the verdict read leniently; none without its lines", rc.read_verdict("Grade: 62\nVerdict: Back to Research\n\nThe horns.\n") == (62, "research", "The horns.") and rc.read_verdict("grade: 120\nverdict: go on") == (100, "", "")
       and rc.read_verdict("fine work") is None)
 asked = rc.prompt(rec, stage="study")
-check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 9: the lines, the front and the side, and the shape planned" in asked
+check("  its prompt: the stages, its charge, its plan file, the notes log append-only, the lines' steps, nothing of the model", "This run is its\nSTUDY stage, 1 of 10: the lines, the front and the side, and the shape planned" in asked
       and "write private/requests/test_stages/plan/shape.md" in asked and "plan/notes.log is append-only" in asked and 'starting with "[study] "' in asked
       and "from its step 3 to its step 5" in asked and "at the top of plan/shape.md (below)" in asked and "write private/requests/test_stages/model.py" not in asked, asked[-2500:])
-check("  the notes log appended, in the plan folder the stages share", (mr.folder(SCRATCH, "test_stages") / "plan" / "notes.log").read_text(encoding="utf-8") == "[study] a guess\n")
+notes_now = (mr.folder(SCRATCH, "test_stages") / "plan" / "notes.log").read_text(encoding="utf-8")
+check("  the notes log appended, in the plan folder the stages share (the study's line, the breakdown's after it)", notes_now == "[study] a guess\n[breakdown] a guess\n", repr(notes_now))
 check("  each stage estimated at its share of the whole; the stages together longer", mr.estimate(rec, "study") < mr.estimate(rec, "all") < sum(mr.estimate(rec, s) for s in mr.STAGES),
       f"{[mr.estimate(rec, s) for s in mr.STAGES]} of {mr.estimate(rec, 'all')}")
 # the research stage: three researchers at once (a Claude each, its own file under plan/research/),
@@ -396,7 +415,7 @@ check("  each stage estimated at its share of the whole; the stages together lon
 code, out, rec, log = run("test_stages", "stage", "--stage", "research")
 here = mr.folder(SCRATCH, "test_stages")
 allow = json.loads((here / "claude-settings.json").read_text(encoding="utf-8"))["permissions"]["allow"]
-check("the research stage: three researchers at once, each its own file, the stage done with all three; the web's tools allowed to it alone", code == 0 and rec["stages"] == ["study", "research"]
+check("the research stage: three researchers at once, each its own file, the stage done with all three; the web's tools allowed to it alone", code == 0 and rec["stages"] == ["study", "breakdown", "research"]
       and rec["research_pass"] == 1 and all((here / "plan" / "research" / f"{r}.md").is_file() for r in mr.ROLES) and "WebSearch" in allow and "WebFetch" in allow
       and "WebSearch" not in rc.allowed("test_stages", "look") and "WebSearch" not in rc.allowed("test_stages"), f"{rec['stages']} {allow}")
 check("  its log: each researcher's lines tagged, the three prompts, each raw stream its own", "[subject] Claude: Reading the request." in log and "[methods] Claude finished" in log
@@ -425,18 +444,21 @@ check("  sent back a third time: stopped for the user, saying so", rec["status"]
 code, out, rec, log = run("test_stages", "stage", "--stage", "study")
 check("  started again by the user (the request failed): the send-backs counted anew, the director's notes still read", rec["judgment"]["backs"] == {} and rec["judgment"]["to"] == "study"
       and "sent\n  it back to this stage" in rc.prompt(rec, stage="study"), f"{rec['judgment']}")
+check("  the failed runs ended (the look judged without its files, then the third send-back); a new run begun by the user's Start, the study's cost on it alone", len(rec["runs"]) == 3
+      and all(r["status"] == "failed" and r["ended"] > 0 for r in rec["runs"][:2]) and rec["runs"][2]["status"] == "in_progress" and rec["runs"][2]["stages"] == [{"stage": "study", "cost": 0.42, "director": 0.0}], str(rec["runs"]))
+run("test_stages", "stage", "--stage", "breakdown")
 code, out, rec, log = run("test_stages", "stage", "--stage", "research")
-check("  the stages over again after it, the director's turn after each", rec["stages"] == ["study", "research"] and rec["next"] == "direct:research" and rec["status"] == "in_progress", f"{rec['stages']} {rec['next']}")
+check("  the stages over again after it, the director's turn after each", rec["stages"] == ["study", "breakdown", "research"] and rec["next"] == "direct:research" and rec["status"] == "in_progress", f"{rec['stages']} {rec['next']}")
 code, out, rec, log = run("test_stages", "more", "--stage", "review")
-check("the review asking more: the research to run again, a second pass, the review done for now", rec["status"] == "in_progress" and rec["stages"] == ["study", "review"] and rec["research_more"] is True and rec["next"] == "research"
+check("the review asking more: the research to run again, a second pass, the review done for now", rec["status"] == "in_progress" and rec["stages"] == ["study", "breakdown", "review"] and rec["research_more"] is True and rec["next"] == "research"
       and rec["progress"]["step"] == "review done: a second research pass" and "(pass 1 of at most 2;" in rc.prompt(rec, stage="review") and "this being the first pass" in rc.prompt(rec, stage="review")
       and "a second research pass" in log, f"{rec['status']} {rec['stages']} {rec['progress']['step']}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "research")
-check("  the researchers again: pass 2, on the lead's questions", rec["stages"] == ["study", "research"] and rec["research_pass"] == 2 and rec["research_more"] is False
+check("  the researchers again: pass 2, on the lead's questions", rec["stages"] == ["study", "breakdown", "research"] and rec["research_pass"] == 2 and rec["research_more"] is False
       and "Pass 2 of at most 2" in rc.prompt(rec, stage="research", role="subject") and "read plan/research/more.md" in rc.prompt(rec, stage="research", role="subject") and ", pass 2:" in log,
       f"{rec['stages']} {rec['research_pass']} {log[-400:]}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "review")
-check("  the review again: the research compiled, no third pass", rec["stages"] == ["study", "research", "review"] and "this being the second pass (the last" in rc.prompt(rec, stage="review")
+check("  the review again: the research compiled, no third pass", rec["stages"] == ["study", "breakdown", "research", "review"] and "this being the second pass (the last" in rc.prompt(rec, stage="review")
       and (here / "plan" / "research.md").is_file(), f"{rec['stages']}")
 check("  the stages after it read what the review compiled", all("plan/research.md" in rc.prompt(rec, stage=s) for s in ("look", "detail", "merge")) and "references plan.md names in plan/refs/" in rc.prompt(rec, stage="body")
       and "the research's facts that bear on the build" in rc.prompt(rec, stage="merge"))
@@ -484,7 +506,7 @@ for k in range(mr.REFS_MOST - 2):
 server.shutdown()
 code, out, rec, log = run("test_stages", "quit", "--stage", "look")
 check("a stage that ends without its files: failed, saying which, the stages before it kept", rec["status"] == "failed"
-      and rec["progress"]["step"] == "failed: Claude ended without writing plan/look.md, materials.py (the look stage's)" and rec["stages"] == ["study", "research", "review"] and rec["stage"] == "look",
+      and rec["progress"]["step"] == "failed: Claude ended without writing plan/look.md, materials.py (the look stage's)" and rec["stages"] == ["study", "breakdown", "research", "review"] and rec["stage"] == "look",
       f"{rec['status']} {rec['progress']['step']} {rec['stages']}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "body")
 check("a stage without the stages' files before it: refused at once, saying which stage to run", rec["status"] == "failed"
@@ -493,7 +515,7 @@ for name in ("look", "detail", "merge", "body", "dress"):
     code, out, rec, log = run("test_stages", "stage", "--stage", name)
 asked = rc.prompt(rec, stage="body")
 check("the stages one after another, each done with its files; the body's prompt building on the plan and the materials, no detail, no rig",
-      rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
+      rec["status"] == "in_progress" and rec["stages"] == ["study", "breakdown", "research", "review", "look", "detail", "merge", "body", "dress"] and rec["stage"] == "dress"
       and 'kit.load("body")' in asked and "materials.py (its COLOURS and\n  PAINT: use them, change nothing in it)" in asked and "No detached part, no card, no fur, no rig" in asked
       and "write private/requests/test_stages/model.py (requests.md, \"The kit\": the usual start)" in asked and "No finish yet: the assemble stage adds it" in asked, f"{rec['status']} {rec['stages']}")
 asked = rc.prompt(rec, stage="dress")
@@ -515,6 +537,8 @@ check("  the assembly judged: done, the retrospective next, the grades kept per 
 lessons_dir = SCRATCH / mr.STAGE_LESSONS
 code, out, rec, log = run("test_stages", "retro", "--retrospect")
 study_taught = (lessons_dir / "study.md").read_text(encoding="utf-8") if (lessons_dir / "study.md").is_file() else ""
+check("  the run over at the retrospective, done, its stages' costs added up (a stage run again on its own row)", rec["runs"][-1]["status"] == "done" and rec["runs"][-1]["ended"] > 0
+      and [s["stage"] for s in rec["runs"][-1]["stages"]].count("look") == 1 and mr.run_cost(rec) == round(sum(s["cost"] + s["director"] for s in rec["runs"][-1]["stages"]), 2), str(rec["runs"][-1]))
 check("the retrospective: run after the assembly's judgment, on Sonnet, the request done again; a lesson a stage, dated and signed", code == 0 and rec["status"] == "done" and rec["next"] == ""
       and "--model sonnet" in log and "The retrospective says: Kept 2 lessons" in log and study_taught.strip() == f"- {time.strftime('%Y-%m-%d')} test_stages: measure the head in heads before any line"
       and (lessons_dir / "director.md").read_text(encoding="utf-8").strip().endswith("test_stages: check the eye sockets before the grade"), f"{rec['status']} {rec['next']} {study_taught!r} {log[-400:]}")
@@ -566,7 +590,7 @@ check("the record written by two at once: both their last words there, the lock 
 mr.update(SCRATCH, "test_stages", notes="", comments="")
 # a stage run again: its files there already, one of them changed is enough; none changed isn't
 code, out, rec, log = run("test_stages", "partial", "--stage", "body")
-check("a stage run again that changes one of its files (the other as it was): done", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look", "detail", "merge", "body"]
+check("a stage run again that changes one of its files (the other as it was): done", rec["status"] == "in_progress" and rec["stages"] == ["study", "breakdown", "research", "review", "look", "detail", "merge", "body"]
       and rec["next"] == "direct:body", f"{rec['status']} {rec['stages']} {rec['progress']['step']}")
 code, out, rec, log = run("test_stages", "quit", "--stage", "look")
 check("  one that changes none of them: failed, saying so", rec["status"] == "failed" and rec["progress"]["step"] == "failed: Claude ended without changing any of its files (plan/look.md, materials.py)", rec["progress"]["step"])
@@ -575,17 +599,17 @@ check("  the body's prompt: on a clothed character the fitted clothes are the bo
       and "what stands off the body (a jacket's tails, a cape, a skirt's\n  flare, hair and a ponytail, straps, accessories" in rc.prompt(rec, stage="dress")
       and "the figure in its fitted clothes" in rc.prompt(rec, stage="body", direct=True) and "python - with a heredoc" in rc.prompt(rec, stage="body"))
 code, out, rec, log = run("test_stages", "stage", "--stage", "look")
-check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look"] and rec["stage"] == "look", f"{rec['stages']}")
+check("a stage run again: the stages after it to do again, from it", rec["status"] == "in_progress" and rec["stages"] == ["study", "breakdown", "research", "review", "look"] and rec["stage"] == "look", f"{rec['stages']}")
 check("  made again with comments: told it was made in stages, which file holds what", "it was made in stages" in rc.prompt(dict(rec, comments="bigger ears"), again=True))
 check("  a stage the runner doesn't know: refused", run("test_stages", "stage", "--stage", "paint")[1].startswith("no such stage: paint"))
 # the study with the lines checked first: stops at them; after the check, the shape planned on them
 fresh("test_stages_check", kind="creature", style="agentic", check_lines=True, director=False)
 code, out, rec, log = run("test_stages_check", "lines", "--stage", "study")
 check("the study stage with the lines checked first: stops at them, waiting for the user, the stage not done", rec["status"] == "waiting" and mr.lines_ready(rec) and rec["stages"] == []
-      and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 9: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
+      and "then stop: the user checks the lines before the stages go on" in log and "This run: the study stage, 1 of 10: the lines, the front and the side, and the shape planned (the lines first, for the user to check)" in log,
       f"{rec['status']} {rec['stages']} {log[-500:]}")
 code, out, rec, log = run("test_stages_check", "stage", "--stage", "study", "--go-on", "--note", "the tail is longer")
-check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done; no director: the research next", rec["status"] == "in_progress" and rec["stages"] == ["study"] and rec["next"] == "research"
+check("  after the check: the shape planned on the lines, with the user's note fixed first, the stage done; no director: the breakdown next", rec["status"] == "in_progress" and rec["stages"] == ["study"] and rec["next"] == "breakdown"
       and "plan its shape on them" in log and "the tail is longer" in log and "Fix that in lines.json first" in log and "(the shape planned on the lines the user checked)" in log, f"{rec['status']} {rec['stages']} {log[-800:]}")
 
 # 9b. made once, made again with the user's comments on it (the window's "Make it again with these
@@ -1257,6 +1281,40 @@ if Image is not None:
     check("  what's wrong with what it says of them: said", "pictures.front.png.bones: one for each of the user's bone lines on it" in wrong, wrong)
     fresh("test_boneless", kind="creature", images=["front.png"])
     check("bones with none drawn: read the pictures as they are", rl.bones(SCRATCH, "test_boneless")[0].startswith("The user has drawn no bones"))
+    # the breakdown's cutouts: an element cut out of its picture enlarged and sharpened, the
+    # study's line carried into it; its precise contour drawn with its corners squared; the
+    # inventory saying what of each is made; what's wrong refused
+    from PIL import Image, ImageDraw
+    fresh("test_cut", kind="creature", images=["front.png"])
+    img = Image.new("RGB", (300, 400), (240, 240, 240))
+    d = ImageDraw.Draw(img)
+    d.polygon([(100, 100), (200, 100), (220, 300), (80, 300)], fill=(90, 60, 30))
+    d.ellipse([130, 150, 170, 190], fill=(20, 20, 20))
+    img.save(mr.folder(SCRATCH, "test_cut") / "front.png")
+    (mr.folder(SCRATCH, "test_cut") / "lines.json").write_text(json.dumps({"pictures": {"front.png": {"view": "front", "camera": {"turn": 0, "tilt": 0}, "lines": [
+        {"name": "outline", "closed": True, "points": [[100, 100], [200, 100], [220, 300], [80, 300]]}, {"name": "eye", "ellipse": [150, 170, 20, 20]}]}},
+        "front": {"lines": []}, "side": {"lines": []}}), encoding="utf-8")
+    listed = kit_cmd("breakdown", "test_cut")
+    cut = kit_cmd("cutout", "test_cut", "front.png", "outline")
+    png, side, drawn = rl.cutout_paths(SCRATCH, "test_cut", "front.png", "outline")
+    carried = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
+    check("an element cut out: enlarged, its box and scale kept, the study's line carried into the cutout's pixels", cut.returncode == 0 and png.is_file() and "the box 56,76 to 244,324 of front.png, 4.00 times as big" in cut.stdout
+          and Image.open(png).size == (752, 992) and carried.get("scale") == 4.0 and carried["lines"][0]["points"][:2] == [[176.0, 96.0], [576.0, 96.0]]
+          and "outline: 80,100 to 220,300 (nothing yet)" in listed.stdout, cut.stdout + listed.stdout)
+    carried["lines"][0]["corners"] = [0, 1, 2, 3]
+    carried["lines"].append({"name": "belly seam", "points": [[60, 80], [200, 90]]})
+    side.write_text(json.dumps(carried), encoding="utf-8")
+    traced = kit_cmd("contour", "test_cut", "front.png", "outline")
+    check("  its precise contour drawn over the cutout, the corners squared, each line said", traced.returncode == 0 and drawn.is_file() and "outline: 4 points, closed, 4 corners; belly seam: 2 points" in traced.stdout
+          and "outline: 80,100 to 220,300 (cutout, contour)" in kit_cmd("breakdown", "test_cut").stdout, traced.stdout)
+    carried["lines"][0]["corners"] = [9]
+    side.write_text(json.dumps(carried), encoding="utf-8")
+    wrong = kit_cmd("contour", "test_cut", "front.png", "outline")
+    nobody = kit_cmd("cutout", "test_cut", "front.png", "tail")
+    unmade = kit_cmd("contour", "test_cut", "front.png", "eye")
+    check("  a corner past the points, an element the study didn't contour, a contour before its cutout: refused, saying so", wrong.returncode == 1 and '"corners" are the indices of its points' in wrong.stdout
+          and nobody.returncode == 1 and "no element named 'tail' on front.png: outline, eye" in nobody.stdout and unmade.returncode == 1 and "no cutout of 'eye' on front.png yet" in unmade.stdout,
+          wrong.stdout + nobody.stdout + unmade.stdout)
 else:
     print("(no Pillow here: zoom, colours and the lines not checked)")
 

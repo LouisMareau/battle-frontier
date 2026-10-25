@@ -339,7 +339,7 @@ stages, each stage's run (below).
 
 Pick the **agentic** style in the request's panel (after accurate; the info icon beside it
 says it spins several agents, costs far more than any other style and guarantees nothing of
-the result) to have it made in nine stages, a run of Claude with one charge each, the
+the result) to have it made in ten stages, a run of Claude with one charge each, the
 editor starting the next once the last has ended (`stages` lists the ones done, `stage` the
 one running or the last to end). Its agents run on Sonnet, its director on Opus (the
 window's model pick doesn't apply; `--model` does, by hand):
@@ -353,7 +353,27 @@ python tools/blender/run_claude.py ID --stage study
    the proportions measured, the pose, the block-out, the rig's chains, what stays detached.
    With `check_lines` it stops at the lines as any run does, and the run after the user's
    check (`--stage study --go-on`, their note with it) plans the shape on them.
-2. **research**: three researchers at once, a Claude each (`--role` runs one alone), each
+2. **breakdown**: each contoured element of the study cut out of its picture, enlarged and
+   sharpened (`python tools/blender/model_requests.py cutout ID PICTURE "NAME"`, into
+   `plan/breakdown/PICTURE/NAME.png`, its box and scale and the study's line in `NAME.json`),
+   looked at closely and contoured again precisely in `NAME.json` (straight runs as straight
+   segments through their corners, listed in a line's `"corners"`, curves as smooth lines,
+   the inner lines: seams, folds, plates, each material's border; `contour ID PICTURE "NAME"`
+   draws them over the cutout as `NAME_lines.png`, the corners squared), and analysed in
+   `NAME.md` (its geometry measured, its material and finish, its colours, how it attaches
+   and moves); `plan/breakdown.md` indexes them and names the pictures' style; and
+   `plan/research_plan.md` plans the research, a section per researcher, each item a question
+   with the element it serves: the materials and finishes to find references of (metal and
+   how its roughness and specular read, leather and how it reflects...), the views the
+   pictures lack, and the how-tos to learn (the style and what it asks: anime proportions,
+   eyes and how they animate, hair and its rigging; each material in Blender and the kit).
+   The game's characters aim at the anime style of Granblue Fantasy: Relink, Wuthering Waves,
+   Genshin Impact, Zenless Zone Zero and DragonSword: Awakening (`run_claude.py`'s
+   `STYLE_GAMES`): the plan and the methods and references researchers look to how those
+   games build, shade and rig their characters. `breakdown ID` lists each picture's
+   elements with what of each is made. The stages after it read the analyses and the
+   precise contours.
+3. **research**: three researchers at once, a Claude each (`--role` runs one alone), each
    writing its own file under `plan/research/`: the **subject** (what the design is drawn
    from: its anatomy and proportions, how its parts attach and move, how its fur, scales or
    feathers lie, its colours in life, the lead's doubts answered), the **references**
@@ -365,28 +385,28 @@ python tools/blender/run_claude.py ID --stage study
    source). The one stage that may read the web: Claude Code's WebSearch and WebFetch here;
    in the cloud one session does the three in turn with its own web tools, and no picture
    is brought into the sandbox (its network is shut): their addresses noted instead.
-3. **review**: the lead reads the three files and looks at every picture fetched, checks
+4. **review**: the lead reads the three files and looks at every picture fetched, checks
    each reference against the design, each fact against the pictures and the user's notes,
    each how-to against the kit, and lists what's still missing. On the first pass, when
    something is, it writes `plan/research/more.md` (a section of questions per researcher)
    and stops: the three run again on it (their second and last pass, `research_pass` 2,
    each answering under a "Second pass" heading) and the review runs again. Otherwise it
    writes `plan/research.md`, the one research the stages after it read.
-4. **look**: the colours measured off the pictures and the materials, in `plan/look.md` and
+5. **look**: the colours measured off the pictures and the materials, in `plan/look.md` and
    `materials.py` (`COLOURS`, a dict of each region's hex; `PAINT(kit)`, each part's paint
    volumes: a module, no mesh).
-5. **detail**: the detached parts and the detail the skin can't carry (fur, feathers,
+6. **detail**: the detached parts and the detail the skin can't carry (fur, feathers,
    scales, hair, cloth, as cards or strands), where each roots and what the wind moves, in
    `plan/detail.md`.
-6. **merge**: the lead checks the plans against each other, the research and the notes,
+7. **merge**: the lead checks the plans against each other, the research and the notes,
    decides each disagreement by the pictures, and writes `plan.md`, the one plan the build
    stages follow (the references a builder should look at named in it).
-7. **body**: `body.py` (`build(job, kit, materials)`: the body alone, on the plan, accurate in
+8. **body**: `body.py` (`build(job, kit, materials)`: the body alone, on the plan, accurate in
    one skin) and a `model.py` that loads it, fits it and renders it; rendered and compared
    until it matches.
-8. **dress**: `detail.py` (`build(job, kit, materials, body)`: the detached parts and the
+9. **dress**: `detail.py` (`build(job, kit, materials, body)`: the detached parts and the
    detail on the body), `model.py` calling it after the body.
-9. **assemble**: `model.py` rigged (a character) with its idle and its roar, the small fixes
+10. **assemble**: `model.py` rigged (a character) with its idle and its roar, the small fixes
    that finish it made in whichever file owns them, `finish`, the check.
 
 The stages share the request's `plan/` folder: each writes its own file there and no other,
@@ -407,6 +427,21 @@ a chip, changes what it must and may leave a file as it was). On a clothed chara
 stage builds the figure as the silhouette has it, the fitted clothes its skin in their
 colours; what stands off the body (a jacket's tails, a cape, hair, accessories) is the dress
 stage's, and the director judges the body only where it owns the silhouette.
+
+**What a run costs.** A run is one making of the request, from the user's Start to its end
+(done, failed or cancelled; `runs`, each with its stages' costs: a stage run again adds to
+its own row, the director's judgment counts on the stage it judged, the retrospective is a
+row of its own; `costs` keeps every process's cost as before). The request's card shows the
+current run's total; its panel's Cost row unfolds each run to its stages.
+
+**The panel's pipeline.** Below the pictures (a collapsible, each with its × and its bone
+icon, which opens the Bones window on it, green once bones are drawn; Start waits for a
+picture), the Pipeline section shows the newest image of the stages' work (a cutout, a
+drawing, a render: clicked, a window follows it as it changes, zooming by the wheel or its
+buttons), the contours over the pictures and the breakdown's over its cutouts, the front and
+the side, and the renders, each in its own box; the links the researchers found; what the
+agent is doing now (its latest words, written to `plan/now.json` by every run) and the
+director's last word. The console at the foot has every line.
 
 **What the stages learn.** After the assembly's judgment (or the assembly, without a
 director), a last run, the retrospective (`--retrospect`, on Sonnet), reads the whole plan

@@ -43,6 +43,16 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               a reference picture from the web into the request's
                                               plan/refs/ by its name (the research stage's: png,
                                               jpeg, webp or gif, at most 8 MB)
+    python tools/blender/model_requests.py breakdown ID
+                                              each picture's contoured elements (lines.json), with
+                                              what of each the breakdown has made
+    python tools/blender/model_requests.py cutout ID PICTURE "NAME" [--scale N] [--margin F]
+                                              an element cut out of its picture, enlarged and
+                                              sharpened: plan/breakdown/PICTURE/NAME.png, its box
+                                              and scale in NAME.json
+    python tools/blender/model_requests.py contour ID PICTURE "NAME"
+                                              NAME.json's precise lines drawn over the cutout
+                                              (NAME_lines.png), its corners squared
     python tools/blender/model_requests.py lesson ID STAGE "a line"
                                               what a request taught a stage, for the next requests
                                               (the retrospective's: private/requests/.lessons/stages/)
@@ -81,6 +91,7 @@ import os
 import re
 import shutil
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -132,8 +143,12 @@ FIELDS = {
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
     "images": [],
-    # what each of its runs cost (dollars, at the API's prices), the first first
+    # what each of its runs cost (dollars, at the API's prices), the first first: a run is
+    # one making from a Start to its end (done, failed or cancelled), its stages' costs within
+    # it (a stage run again adds to its own; the director's on the stage it judged); `costs`
+    # keeps every process's cost, the oldest first, as it was
     "costs": [],
+    "runs": [],
     "bones": {},
     # with several (the editor's "Process multiple"), the drawings the user has outlined on the
     # pictures, by picture: [{"points": [[x, y]...], "height": 1.2, "cells": [1, 1]}], only those
@@ -197,7 +212,7 @@ LINES_PART = 0.4
 # of its own each, with one charge; the files each owns (written by it alone, all there once
 # it's done); what each takes of the whole's estimate (more in all: each reads the pictures and
 # the plan again); and what each is charged with, in a few words
-STAGES = ("study", "research", "review", "look", "detail", "merge", "body", "dress", "assemble")
+STAGES = ("study", "breakdown", "research", "review", "look", "detail", "merge", "body", "dress", "assemble")
 # the research stage's researchers, at once (a run of Claude each, its own file under
 # plan/research/), and what each is charged with
 ROLES = ("subject", "references", "methods")
@@ -208,6 +223,7 @@ ROLE_ABOUT = {
 }
 STAGE_FILES = {
     "study": ("lines.json", "profiles.png", "plan/shape.md"),
+    "breakdown": ("plan/breakdown.md", "plan/research_plan.md"),
     "research": tuple(f"plan/research/{r}.md" for r in ROLES),
     "review": ("plan/research.md",),
     "look": ("plan/look.md", "materials.py"),
@@ -217,13 +233,14 @@ STAGE_FILES = {
     "dress": ("detail.py",),
     "assemble": (),
 }
-STAGE_SHARE = {"study": 0.45, "research": 0.25, "review": 0.15, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35, "direct": 0.15}
+STAGE_SHARE = {"study": 0.45, "breakdown": 0.4, "research": 0.25, "review": 0.15, "look": 0.15, "detail": 0.15, "merge": 0.1, "body": 0.5, "dress": 0.35, "assemble": 0.35, "direct": 0.15}
 # the director's judgment of a stage's work, 0 to 100: under this it goes back to the stage at
 # fault; a stage sent back more often than this stops the request for the user
 GRADE_NEEDED = 70
 BACKS_MOST = 2
 STAGE_ABOUT = {
     "study": "the lines, the front and the side, and the shape planned",
+    "breakdown": "each contoured element cut out enhanced, contoured precisely and analysed; the research planned",
     "research": "the design looked up online by three researchers at once: the subject, the references, the methods",
     "review": "the research reviewed by the lead: more asked, or compiled into one",
     "look": "the colours and the materials planned",
@@ -643,6 +660,9 @@ def stamp():
     return time.strftime("%Y-%m-%d %H:%M:%S")
 
 
+LOG_LOCK = threading.Lock()
+
+
 def log(root, rid, text):
     """Lines added to the request's log.txt: `[2026-10-16 09:41:07] text`, a text of several
     lines indented under its time."""
@@ -651,7 +671,9 @@ def log(root, rid, text):
     told(root, "request-log", {"id": rid, "text": str(text)})
     at = stamp()
     lines = str(text).splitlines() or [""]
-    with open(path, "a", encoding="utf-8", newline="\n") as f:
+    # (one writer at a time: on Windows two appends at the same instant from two threads, the
+    # researchers' say, can land on the same end and one wipe the other)
+    with LOG_LOCK, open(path, "a", encoding="utf-8", newline="\n") as f:
         f.write(f"[{at}] {lines[0]}\n")
         for line in lines[1:]:
             f.write(" " * (len(at) + 3) + line + "\n")
@@ -686,10 +708,62 @@ def estimate(record, part="all"):
 
 
 def start(root, rid, minutes=None):
-    """In progress from now, with its estimate (the editor's bar runs on it)."""
+    """In progress from now, with its estimate (the editor's bar runs on it); a run of the
+    request begun, unless one is still open (its lines checked by the user, say)."""
     record = load(root, rid)
     minutes = float(minutes) if minutes else estimate(record)
-    return update(root, rid, status="in_progress", progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+    return update(root, rid, status="in_progress", runs=run_begun(record), progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes})
+
+
+# ---------------------------------------------------------------- the runs and what they cost
+
+def run_begun(record):
+    """The request's runs with a new one begun, unless the last is still open: a run is one
+    making from a Start to its end, done, failed or cancelled."""
+    runs = [dict(r) for r in record.get("runs") or []]
+    if not runs or runs[-1].get("ended"):
+        runs.append({"started": float(round(time.time())), "ended": 0.0, "status": "in_progress", "stages": []})
+    return runs
+
+
+def run_cost(record):
+    """What the request's current (last) run has cost, its stages added up; with no run noted
+    yet, every process's cost added up."""
+    runs = record.get("runs") or []
+    if runs:
+        return round(sum(float(s.get("cost", 0.0)) + float(s.get("director", 0.0)) for s in runs[-1].get("stages") or []), 2)
+    return round(sum(float(c) for c in record.get("costs") or []), 2)
+
+
+def charge(root, rid, part, cost, director=False):
+    """What a process cost, on the current run's stage named `part` (made anew when the run
+    hasn't it; a stage run again adds to its own), the director's on the stage it judged; and
+    among every process's costs."""
+    if not cost:
+        return load(root, rid)
+    record = load(root, rid)
+    runs = [dict(r) for r in record.get("runs") or []] or run_begun(record)
+    run = runs[-1]
+    stages = [dict(s) for s in run.get("stages") or []]
+    entry = next((s for s in stages if s.get("stage") == part), None)
+    if entry is None:
+        entry = {"stage": part, "cost": 0.0, "director": 0.0}
+        stages.append(entry)
+    key = "director" if director else "cost"
+    entry[key] = round(float(entry.get(key, 0.0)) + float(cost), 2)
+    run["stages"] = stages
+    runs[-1] = run
+    return update(root, rid, runs=runs, costs=list(record.get("costs") or []) + [round(float(cost), 2)])
+
+
+def run_ended(root, rid, status):
+    """The request's current run over, as `status` says (done, failed, waiting: cancelled)."""
+    record = load(root, rid)
+    runs = [dict(r) for r in record.get("runs") or []]
+    if not runs or runs[-1].get("ended"):
+        return record
+    runs[-1].update(ended=float(round(time.time())), status=status)
+    return update(root, rid, runs=runs)
 
 
 # a reference picture the research stage fetches from the web: what it may be, how heavy at most;
@@ -763,6 +837,9 @@ def stage_start(root, rid, stage, minutes=None):
             passes["judgment"] = dict(j, backs={})
     second = ", pass 2" if passes.get("research_pass") == 2 else ""
     log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}){second}: {STAGE_ABOUT[stage]}")
+    # (a run of the request begun on a Start of the user's; the editor's own, between stages, go on with it)
+    if record["status"] != "in_progress":
+        passes["runs"] = run_begun(record)
     return update(root, rid, status="in_progress", stage=stage, stages=done, next="",
                   progress={"step": "reading the pictures", "done": 0.05, "started": float(round(time.time())), "minutes": minutes}, **passes)
 
@@ -796,6 +873,7 @@ def directed(root, rid, stage, grade, to, notes):
     if back and backs[to] > BACKS_MOST:
         log(root, rid, f"The director sent the {to} stage back {backs[to]} times: stopped for the user (its notes in plan/director/{stage}.md; Start again runs the stage once more, its send-backs counted anew)")
         p = dict(record["progress"], step=f"failed: the director sent the {to} stage back {backs[to]} times ({grade}/100): {head}")
+        run_ended(root, rid, "failed")
         return update(root, rid, status="failed", judgment=j, next="", progress=p)
     if back:
         stages = [s for s in record.get("stages") or [] if STAGES.index(s) < STAGES.index(to)]
@@ -809,6 +887,18 @@ def directed(root, rid, stage, grade, to, notes):
     return update(root, rid, status="done" if after is None else "in_progress", judgment=j, next=after or "retrospect", progress=p)
 
 
+def now(root, rid, agent, text):
+    """What the agent is doing now, for the editor's panel (plan/now.json: the agent, its latest
+    words cut short, when): written over each time."""
+    text = " ".join(str(text).split())
+    if len(text) > 700:
+        text = text[:697].rstrip() + "..."
+    path = folder(root, rid) / "plan" / "now.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"agent": agent, "says": text, "at": round(time.time())}, ensure_ascii=False) + "\n", encoding="utf-8")
+    return path
+
+
 def retrospect_start(root, rid):
     """The retrospective's run in progress: what the request taught, kept for the next ones."""
     record = load(root, rid)
@@ -818,10 +908,11 @@ def retrospect_start(root, rid):
 
 
 def retrospected(root, rid, said=""):
-    """The retrospective over, whatever it kept: the request done again."""
+    """The retrospective over, whatever it kept: the request done again, its run over."""
     record = load(root, rid)
     p = dict(record["progress"], step="done", done=1.0)
     log(root, rid, "The retrospective is over" + (f": {said}" if said else ""))
+    run_ended(root, rid, "done")
     return update(root, rid, status="done", next="", progress=p)
 
 
@@ -1029,10 +1120,11 @@ def wait_for_check(root, rid):
 
 
 def fail(root, rid, reason):
-    """Failed, and why (the editor shows it; Start again makes it once more)."""
+    """Failed, and why (the editor shows it; Start again makes it once more); its run over."""
     record = load(root, rid)
     p = dict(record["progress"], step=f"failed: {reason}")
     log(root, rid, f"FAILED: {reason}")
+    run_ended(root, rid, "failed")
     return update(root, rid, status="failed", progress=p)
 
 
@@ -1048,6 +1140,8 @@ def finish(root, rid, prop, previews, reply=None, variant_props=None):
         fields["reply"] = reply
     if variant_props is not None:
         fields["variant_props"] = list(variant_props)
+    if record.get("style") != "agentic":
+        run_ended(root, rid, "done")
     return update(root, rid, **fields)
 
 
@@ -1574,6 +1668,31 @@ def main(argv):
         value = None if argv[1].lower() == "none" else int(argv[1])
         r = rate(root, argv[0], value)
         print(f"{r['id']}: " + ("not rated" if r["rating"] is None else f"rated {r['rating']}"))
+    elif verb == "breakdown":
+        import request_lines as rl
+        try:
+            print("\n".join(rl.breakdown(root, argv[0])))
+        except rl.LinesError as e:
+            print(e)
+            return 1
+    elif verb == "cutout":
+        import request_lines as rl
+        scale, margin = option("--scale"), option("--margin")
+        try:
+            png, side, box, k = rl.cutout(root, argv[0], argv[1], argv[2], float(scale) if scale else None, float(margin) if margin else 0.12)
+        except (rl.LinesError, OSError) as e:
+            print(e)
+            return 1
+        rel = png.relative_to(folder(root, argv[0])).as_posix()
+        print(f"{rel}: the box {box[0]},{box[1]} to {box[2]},{box[3]} of {argv[1]}, {k:.2f} times as big, enhanced; its lines in {side.name} (the study's, in the cutout's pixels, to make precise). Look at it, then contour it")
+    elif verb == "contour":
+        import request_lines as rl
+        try:
+            out, said = rl.contour(root, argv[0], argv[1], argv[2])
+        except (rl.LinesError, OSError) as e:
+            print(e)
+            return 1
+        print(f"{out.relative_to(folder(root, argv[0])).as_posix()}: " + "; ".join(said) + ". Look at it: do the lines sit on the enhanced edge, the corners where the edge turns?")
     elif verb == "lesson":
         try:
             path = lesson(root, argv[0], argv[1], argv[2])

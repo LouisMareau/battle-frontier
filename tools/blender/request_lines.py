@@ -673,6 +673,125 @@ def bones(root, rid):
 
 # ---------------------------------------------------------------- the lines command
 
+# ---------------------------------------------------------------- the breakdown: cutouts and precise contours
+
+BREAKDOWN = Path("plan") / "breakdown"
+
+
+def _element(data, picture, name):
+    """A picture's contoured element by its name (its slug too), from lines.json."""
+    part = data.get("pictures", {}).get(picture)
+    if not part or not part.get("lines"):
+        raise LinesError(f"{picture} has no lines in {FILE} yet")
+    for item in part["lines"]:
+        if item["name"] == name or mr.slug(item["name"]) == mr.slug(name):
+            return item
+    raise LinesError(f"no element named {name!r} on {picture}: " + ", ".join(i["name"] for i in part["lines"]))
+
+
+def cutout_paths(root, rid, picture, name):
+    """Where an element's cutout, its sidecar and its contour drawing go."""
+    base = mr.folder(root, rid) / BREAKDOWN / Path(picture).stem
+    key = mr.slug(name) or "element"
+    return base / f"{key}.png", base / f"{key}.json", base / f"{key}_lines.png"
+
+
+def cutout(root, rid, picture, name, scale=None, margin=0.12):
+    """A contoured element of a picture cut out and enhanced for the breakdown: the box round
+    its line with a margin (`margin` of its longest side), enlarged (its longest side about
+    1000 pixels, at most four times; `scale` given) and sharpened, written to
+    plan/breakdown/<picture>/<element>.png; beside it <element>.json with the box, the scale
+    and the study's line in the cutout's pixels, a start for the precise contour. The paths,
+    the box and the scale."""
+    mr._pillow("cutout")
+    from PIL import Image, ImageFilter, ImageOps
+    data = read(root, rid)
+    item = _element(data, picture, name)
+    img = Image.open(mr.folder(root, rid) / picture)
+    w, h = img.size
+    x0, y0, x1, y1 = _box(shape(item))
+    m = max(8.0, margin * max(x1 - x0, y1 - y0))
+    box = (max(0, int(x0 - m)), max(0, int(y0 - m)), min(w, int(math.ceil(x1 + m))), min(h, int(math.ceil(y1 + m))))
+    if box[2] - box[0] < 2 or box[3] - box[1] < 2:
+        raise LinesError(f"{name!r} on {picture} is too small to cut out")
+    k = float(scale) if scale else max(1.0, min(4.0, 1000.0 / max(box[2] - box[0], box[3] - box[1])))
+    piece = img.convert("RGB").crop(box).resize((max(1, round((box[2] - box[0]) * k)), max(1, round((box[3] - box[1]) * k))), Image.LANCZOS)
+    piece = ImageOps.autocontrast(piece, cutoff=1).filter(ImageFilter.UnsharpMask(radius=2, percent=120, threshold=3))
+    png, side, _ = cutout_paths(root, rid, picture, name)
+    png.parent.mkdir(parents=True, exist_ok=True)
+    piece.save(mr.free(png))
+    moved = dict(item)
+    for key in ("points", "ellipse", "mark"):
+        if key in item:
+            if key == "ellipse":
+                ex, ey, rx, ry = item["ellipse"]
+                moved["ellipse"] = [round((ex - box[0]) * k, 1), round((ey - box[1]) * k, 1), round(rx * k, 1), round(ry * k, 1)]
+            elif key == "mark":
+                moved["mark"] = [round((item["mark"][0] - box[0]) * k, 1), round((item["mark"][1] - box[1]) * k, 1)]
+            else:
+                moved["points"] = [[round((x - box[0]) * k, 1), round((y - box[1]) * k, 1)] for x, y in item["points"]]
+    kept = json.loads(side.read_text(encoding="utf-8")) if side.is_file() else {}
+    side.write_text(json.dumps({"picture": picture, "name": item["name"], "box": list(box), "scale": round(k, 4), "size": list(piece.size),
+                                "lines": kept.get("lines") or [moved]}, indent=1) + "\n", encoding="utf-8")
+    return png, side, box, k
+
+
+def contour(root, rid, picture, name):
+    """The precise contour the breakdown wrote in the element's sidecar ("lines", in the cutout's
+    pixels, the same shapes as lines.json's; a line's "corners": the indices of its sharp
+    vertices) drawn over the enhanced cutout, the corners squared: <element>_lines.png. What
+    it holds, line by line."""
+    mr._pillow("contour")
+    from PIL import Image, ImageDraw
+    png, side, out = cutout_paths(root, rid, picture, name)
+    if not png.is_file() or not side.is_file():
+        raise LinesError(f"no cutout of {name!r} on {picture} yet: python tools/blender/model_requests.py cutout {rid} {picture} \"{name}\" first")
+    data = json.loads(side.read_text(encoding="utf-8"))
+    items = data.get("lines") or []
+    problems = _check_lines({"lines": items}, f"{side.name}")
+    for item in items:
+        corners = item.get("corners")
+        if corners is not None and (not isinstance(corners, list) or any(not isinstance(c, int) or c < 0 or c >= len(item.get("points") or []) for c in corners)):
+            problems.append(f"{side.name}: {item.get('name')!r}: \"corners\" are the indices of its points")
+    if problems:
+        raise LinesError("\n".join(problems))
+    img = Image.open(png)
+    colours = {item["name"]: PENS[k % len(PENS)] for k, item in enumerate(items)}
+    drawing = draw_picture(img, (0, 0, img.width, img.height), 1.0, items, colours)
+    d = ImageDraw.Draw(drawing)
+    said = []
+    for item in items:
+        corners = item.get("corners") or []
+        for c in corners:
+            x, y = item["points"][c]
+            d.rectangle([36 + x - 5, 36 + y - 5, 36 + x + 5, 36 + y + 5], outline=(255, 255, 255), width=2)
+        kind = "an ellipse" if "ellipse" in item else "a mark" if "mark" in item else f"{len(item['points'])} points{', closed' if item.get('closed') else ''}{', smooth' if item.get('smooth') else ''}"
+        said.append(f"{item['name']}: {kind}" + (f", {len(corners)} corner{'s' if len(corners) != 1 else ''}" if corners else ""))
+    drawing.save(mr.free(out))
+    return out, said
+
+
+def breakdown(root, rid):
+    """The contoured elements of each picture, as the breakdown works through them: a line each
+    with its box in the picture's pixels and what of it is made (its cutout, its contour, its
+    analysis)."""
+    record = mr.load(root, rid)
+    data = read(root, rid)
+    out = []
+    for pic in record["images"]:
+        part = data.get("pictures", {}).get(pic)
+        if not part or not part.get("lines"):
+            out.append(f"{pic}: no lines yet")
+            continue
+        out.append(f"{pic}: {len(part['lines'])} elements")
+        for item in part["lines"]:
+            x0, y0, x1, y1 = _box(shape(item))
+            png, side, drawn = cutout_paths(root, rid, pic, item["name"])
+            made = [w for w, p in (("cutout", png), ("contour", drawn), ("analysis", side.with_suffix(".md"))) if p.is_file()]
+            out.append(f"  {item['name']}: {x0:.0f},{y0:.0f} to {x1:.0f},{y1:.0f}" + (f" ({', '.join(made)})" if made else " (nothing yet)"))
+    return out
+
+
 def shown(root, rid):
     """The drawings the editor shows for the request, those there are, in order."""
     d = mr.folder(root, rid)

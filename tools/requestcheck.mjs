@@ -216,7 +216,7 @@ try {
   // the agentic style: its stages as chips, each to come, its director's toggle; accurate
   // again (the run below is one run)
   await press('uiRequestAgentic');
-  check('  made in stages: its nine stages shown, each to come', (await data('requeststages')) === 'study:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending'
+  check('  made in stages: its ten stages shown, each to come', (await data('requeststages')) === 'study:pending,breakdown:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending'
     && (await data('uiRequestStage_study')) !== '' && (await data('requestdirector')) === 'none' && (await data('uiRequestDirected')) !== '', `${await data('requeststages')} ${await data('requestdirector')}`);
   await shot('3a-stages');
   await press('uiRequestAccurate');

@@ -371,6 +371,8 @@ pub(super) struct ModelRequest {
     /// up as it's made again
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub costs: Vec<f64>,
+    /// its runs, each one making from a Start to its end, with what each stage cost in it
+    pub runs: Vec<RunCost>,
     /// the bones the user has drawn over the pictures (the Bones window), by picture: the body
     /// plan as they see it, which parts there are and where they join, for Claude to read the
     /// pictures by and to rig the creature on
@@ -442,6 +444,7 @@ impl Default for ModelRequest {
             progress: Progress::default(),
             images: vec![],
             costs: vec![],
+            runs: vec![],
             bones: BTreeMap::new(),
             outlines: BTreeMap::new(),
             lines: vec![],
@@ -482,6 +485,33 @@ pub(super) fn best_and_worst<'a>(list: &'a [ModelRequest], kind: &str, but: &str
 /// model_requests.py's LINES_READY).
 pub(super) const LINES_READY: &str = "lines ready: check them";
 
+/// One making of a request, from a Start to its end (model_requests.py's `runs`): when, how it
+/// ended, and what each stage cost in it (a stage run again adds to its own; the director's
+/// judgment on the stage it judged).
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct RunCost {
+    pub started: f64,
+    pub ended: f64,
+    pub status: String,
+    pub stages: Vec<StageCost>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct StageCost {
+    pub stage: String,
+    pub cost: f64,
+    pub director: f64,
+}
+
+impl RunCost {
+    /// What it cost in all.
+    pub fn total(&self) -> f64 {
+        self.stages.iter().map(|s| s.cost + s.director).sum()
+    }
+}
+
 /// The director's last judgment of a stage's work (model_requests.py's `judgment`): the stage,
 /// its grade, the stage the work went back to ("" when it went on), the director's notes, and
 /// how often each stage was sent back.
@@ -507,6 +537,7 @@ pub(super) const GRADE_NEEDED: u32 = 70;
 #[serde(rename_all = "snake_case")]
 pub(super) enum Stage {
     Study,
+    Breakdown,
     Research,
     Review,
     Look,
@@ -518,12 +549,13 @@ pub(super) enum Stage {
 }
 
 impl Stage {
-    pub(super) const ALL: [Stage; 9] = [Stage::Study, Stage::Research, Stage::Review, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
+    pub(super) const ALL: [Stage; 10] = [Stage::Study, Stage::Breakdown, Stage::Research, Stage::Review, Stage::Look, Stage::Detail, Stage::Merge, Stage::Body, Stage::Dress, Stage::Assemble];
 
     /// Its name, as the record and run_claude.py --stage have it.
     pub(super) fn name(self) -> &'static str {
         match self {
             Stage::Study => "study",
+            Stage::Breakdown => "breakdown",
             Stage::Research => "research",
             Stage::Review => "review",
             Stage::Look => "look",
@@ -543,6 +575,7 @@ impl Stage {
     pub(super) fn about(self) -> &'static str {
         match self {
             Stage::Study => "the lines, the front and the side, and the shape planned",
+            Stage::Breakdown => "each contoured element cut out enhanced, contoured precisely and analysed; the research planned",
             Stage::Research => "the design looked up online by three researchers at once: the subject, the references, the methods",
             Stage::Review => "the research reviewed by the lead: more asked, or compiled into one",
             Stage::Look => "the colours and the materials planned",
@@ -1279,8 +1312,9 @@ mod desk {
         renamed: Option<String>,
         /// asking whether to delete the selected request
         deleting: bool,
-        /// the browser: a picture clicked, shown full size in a window of its own
-        viewing: Option<PathBuf>,
+        /// a picture clicked, shown full size in a window of its own (the browser's; the
+        /// desktop's for the current image, which the window follows)
+        pub(in super::super) viewing: Option<PathBuf>,
         /// the model the runs ask for ("": Claude Code's default)
         model: String,
         /// the console open at the window's foot
@@ -1297,6 +1331,21 @@ mod desk {
         /// a request made in stages whose next run waits for GRACE: its key and when it was
         /// first seen
         pending: Option<((String, String, u64), f64)>,
+        /// the newest image of each request's folder (the stages' work: cutouts, drawings,
+        /// renders; not the user's pictures), for the panel's "current"
+        current: HashMap<String, (PathBuf, SystemTime)>,
+        /// the breakdown's contours drawn over its cutouts, per request
+        contours: HashMap<String, Vec<PathBuf>>,
+        /// the links the researchers found, per request, with the files' times they were read at
+        links: HashMap<String, (Vec<SystemTime>, Vec<String>)>,
+        /// what the agent is doing now, per request (plan/now.json): when it was read, the
+        /// agent, its latest words
+        now: HashMap<String, (SystemTime, String, String)>,
+        /// the viewer follows the current image, shown again as it changes
+        pub(in super::super) follow: bool,
+        /// the viewer's zoom (1: as the window allows; 0: not set) and where it's panned to
+        zoom: f32,
+        pan: egui::Vec2,
         /// silent requests already marked failed (once each)
         failed_silent: std::collections::HashSet<String>,
         /// the tools started, reaped as they end
@@ -2177,6 +2226,104 @@ mod desk {
             }
         }
 
+        /// The newest image a request's stages made (anything in its folder but the user's
+        /// pictures and the references fetched), for the panel's "current" and the viewer
+        /// following it; its thumbnail forgotten when it changed. The breakdown's contour
+        /// drawings gathered on the way.
+        fn refresh_current(&mut self, root: &Path, r: &ModelRequest) {
+            let dir = folder(root).join(&r.id);
+            let mut newest: Option<(PathBuf, SystemTime)> = None;
+            let mut contours = vec![];
+            let mut stack = vec![dir.clone()];
+            while let Some(d) = stack.pop() {
+                for e in disk::read_dir(&d).unwrap_or_default() {
+                    if e.dir {
+                        if e.name != "refs" {
+                            stack.push(e.path);
+                        }
+                        continue;
+                    }
+                    let lower = e.name.to_lowercase();
+                    if !(lower.ends_with(".png") || lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".webp")) {
+                        continue;
+                    }
+                    if d == dir && r.images.contains(&e.name) {
+                        continue;
+                    }
+                    if lower.ends_with("_lines.png") && d != dir {
+                        contours.push(e.path.clone());
+                    }
+                    if let Some(t) = disk::modified(&e.path) {
+                        if newest.as_ref().is_none_or(|(_, n)| t > *n) {
+                            newest = Some((e.path, t));
+                        }
+                    }
+                }
+            }
+            contours.sort();
+            self.contours.insert(r.id.clone(), contours);
+            match newest {
+                Some((p, t)) => {
+                    if self.current.get(&r.id).is_none_or(|(q, u)| *q != p || *u != t) {
+                        self.thumbs.forget(&p);
+                        self.current.insert(r.id.clone(), (p, t));
+                    }
+                }
+                None => {
+                    self.current.remove(&r.id);
+                }
+            }
+        }
+
+        /// What the agent is doing now (plan/now.json, the runs write it over as they go), read
+        /// again when it changed.
+        fn refresh_now(&mut self, root: &Path, id: &str) {
+            let path = folder(root).join(id).join("plan").join("now.json");
+            let Some(t) = disk::modified(&path) else {
+                self.now.remove(id);
+                return;
+            };
+            if self.now.get(id).is_some_and(|(u, _, _)| *u == t) {
+                return;
+            }
+            if let Some(v) = disk::read_to_string(&path).ok().and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok()) {
+                let agent = v.get("agent").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                let says = v.get("says").and_then(serde_json::Value::as_str).unwrap_or("").to_string();
+                self.now.insert(id.to_string(), (t, agent, says));
+            }
+        }
+
+        /// The links the researchers found (their files, and the review's), read again when
+        /// one changed.
+        fn refresh_links(&mut self, root: &Path, id: &str) {
+            let base = folder(root).join(id).join("plan");
+            let mut files = vec![base.join("research.md")];
+            for e in disk::read_dir(&base.join("research")).unwrap_or_default() {
+                if !e.dir && e.name.ends_with(".md") {
+                    files.push(e.path);
+                }
+            }
+            let times: Vec<SystemTime> = files.iter().filter_map(|p| disk::modified(p)).collect();
+            if times.is_empty() {
+                self.links.remove(id);
+                return;
+            }
+            if self.links.get(id).is_some_and(|(u, _)| *u == times) {
+                return;
+            }
+            let mut found: Vec<String> = vec![];
+            for p in &files {
+                let Ok(text) = disk::read_to_string(p) else { continue };
+                for word in text.split(|c: char| c.is_whitespace() || matches!(c, '(' | ')' | '<' | '>' | '"' | '\'')) {
+                    let w = word.trim_end_matches(['.', ',', ';', ':', ']', '*', '`']);
+                    if (w.starts_with("http://") || w.starts_with("https://")) && !found.iter().any(|f| f == w) {
+                        found.push(w.to_string());
+                    }
+                }
+            }
+            self.links.insert(id.to_string(), (times, found));
+        }
+
         /// A line of the desk's own in a request's log (model_requests.py's note: timed as the
         /// runs' lines are); nothing when Python can't.
         fn note(&self, id: &str, text: &str) {
@@ -2273,6 +2420,13 @@ mod desk {
                     }
                 }
                 self.reload();
+            }
+            // the panel's pipeline: the newest image, the contours, what the agent's doing and
+            // the links found, of the request shown (else the one being made)
+            if let Some(r) = self.selected.clone().or_else(|| self.busy()).and_then(|id| self.list.iter().find(|r| r.id == id).cloned()) {
+                self.refresh_current(&root, &r);
+                self.refresh_now(&root, &r.id);
+                self.refresh_links(&root, &r.id);
             }
             // a request made in stages, its run ended with what comes next (a stage, or the
             // director's judgment of the one just done): started once its run is over, GRACE
@@ -2437,6 +2591,8 @@ mod desk {
         /// A picture clicked, opened: the desktop in the system's viewer; the browser in a
         /// window of its own (`viewer`), never a download. What went wrong, if it did.
         fn open_picture(&mut self, path: &Path) -> Option<String> {
+            self.follow = false;
+            (self.zoom, self.pan) = (1.0, egui::Vec2::ZERO);
             if cfg!(target_arch = "wasm32") {
                 self.viewing = Some(path.to_path_buf());
                 return None;
@@ -2448,6 +2604,15 @@ mod desk {
         /// screen allows (at most its own size), its size in pixels, Download for a copy of
         /// it, Close (Esc or the window's close too). A hook (picture) says which is open.
         pub(in super::super) fn viewer(&mut self, ctx: &egui::Context) {
+            // following the stages' newest image: the one there now
+            if self.follow {
+                let newest = self.selected.clone().or_else(|| self.busy()).and_then(|id| self.current.get(&id).map(|(p, _)| p.clone()));
+                if let Some(p) = newest {
+                    if self.viewing.as_ref() != Some(&p) {
+                        self.viewing = Some(p);
+                    }
+                }
+            }
             let Some(path) = self.viewing.clone() else {
                 platform::set_hook("picture", "");
                 return;
@@ -2456,14 +2621,51 @@ mod desk {
             platform::set_hook("picture", &name);
             let (mut open, mut close) = (true, false);
             let screen = ctx.content_rect();
-            let most = egui::vec2(screen.width() * 0.8, screen.height() * 0.8 - 40.0);
-            egui::Window::new(&name).id(egui::Id::new("request-picture")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            let most = egui::vec2(screen.width() * 0.8, screen.height() * 0.8 - 64.0);
+            let zoom = if self.zoom <= 0.0 { 1.0 } else { self.zoom };
+            let title = if self.follow { format!("{name} (the current image, followed)") } else { name.clone() };
+            egui::Window::new(&title).id(egui::Id::new("request-picture")).open(&mut open).collapsible(false).resizable(false).anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                 match self.thumbs.at(ctx, &path, 1600) {
                     Some(Ok((id, size))) => {
-                        let scale = (most.x / size.x.max(1.0)).min(most.y / size.y.max(1.0)).min(1.0);
-                        let r = ui.add(egui::Image::new((id, size * scale)).corner_radius(3.0));
+                        // as big as the window allows, zoomed by the wheel (or the buttons) and
+                        // panned by a drag, clipped to its box
+                        let fit = (most.x / size.x.max(1.0)).min(most.y / size.y.max(1.0)).min(1.0);
+                        let shown = size * fit * zoom;
+                        let (rect, r) = ui.allocate_exact_size(egui::vec2(shown.x.min(most.x), shown.y.min(most.y)), Sense::click_and_drag());
+                        if r.hovered() {
+                            let (scroll, pinch) = ui.input(|i| (i.smooth_scroll_delta.y, i.zoom_delta()));
+                            let factor = pinch * (1.0 + scroll * 0.002);
+                            if (factor - 1.0).abs() > 1e-4 {
+                                self.zoom = (zoom * factor).clamp(0.5, 8.0);
+                            }
+                        }
+                        if r.dragged() {
+                            self.pan += r.drag_delta();
+                        }
+                        if zoom <= 1.0 {
+                            self.pan = egui::Vec2::ZERO;
+                        }
+                        let image = egui::Rect::from_center_size(rect.center() + self.pan, shown);
+                        ui.painter().with_clip_rect(rect).image(id, image, egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)), Color32::WHITE);
                         mark("uiPictureShown", &r);
-                        hint(ui, &format!("{:.0} × {:.0} pixels", size.x, size.y));
+                        ui.horizontal(|ui| {
+                            hint(ui, &format!("{:.0} × {:.0} pixels, {:.0}%", size.x, size.y, fit * zoom * 100.0));
+                            let less = ui.small_button("−").on_hover_text("Zoom out (the wheel too)");
+                            mark("uiPictureZoomOut", &less);
+                            if less.clicked() {
+                                self.zoom = (zoom / 1.25).max(0.5);
+                            }
+                            let fitted = ui.small_button("fit").on_hover_text("As big as the window allows");
+                            mark("uiPictureFit", &fitted);
+                            if fitted.clicked() {
+                                (self.zoom, self.pan) = (1.0, egui::Vec2::ZERO);
+                            }
+                            let more = ui.small_button("+").on_hover_text("Zoom in (the wheel too); drag to move around");
+                            mark("uiPictureZoomIn", &more);
+                            if more.clicked() {
+                                self.zoom = (zoom * 1.25).min(8.0);
+                            }
+                        });
                     }
                     Some(Err(e)) => warn(ui, &e),
                     None => hint(ui, "Reading it…"),
@@ -2483,6 +2685,7 @@ mod desk {
             });
             if !open || close || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
                 self.viewing = None;
+                self.follow = false;
             }
         }
 
@@ -2593,9 +2796,9 @@ mod desk {
                 (false, false) => format!("{MAKER} models it in Blender, unattended, following tools/blender/requests.md; the console shows everything it does"),
             };
             let start = ui
-                .add_enabled(busy.is_none(), egui::Button::new(label))
+                .add_enabled(busy.is_none() && !r.images.is_empty(), egui::Button::new(label))
                 .on_hover_text(about)
-                .on_disabled_hover_text(format!("One at a time: {} is being made", busy.unwrap_or_default()));
+                .on_disabled_hover_text(if r.images.is_empty() { "Drop a picture on the window first".to_string() } else { format!("One at a time: {} is being made", busy.unwrap_or_default()) });
             mark(&format!("uiRequestStart_{}", r.id), &start);
             start.clicked().then(|| Run::Start(r.id.clone()))
         }
@@ -2975,20 +3178,34 @@ mod desk {
                 ui.end_row();
                 // what its runs have cost: the total, each run's under it when there's more
                 // than one
-                if !r.costs.is_empty() {
+                // what its runs cost: each one making from a Start to its end, a row that
+                // unfolds to its stages (the current one first)
+                if !r.runs.is_empty() || !r.costs.is_empty() {
                     ui.label("Cost");
-                    let total = costs_text(&r);
-                    if r.costs.len() == 1 {
-                        let c = ui.label(RichText::new(&total).size(12.5)).on_hover_text("At the API's prices, for its one run");
-                        mark("uiRequestCost", &c);
-                    } else {
-                        let fold = egui::CollapsingHeader::new(RichText::new(format!("{total} over {} runs", r.costs.len())).size(12.5)).id_salt(("request-costs", &r.id)).show(ui, |ui| {
-                            for (k, c) in r.costs.iter().enumerate() {
-                                ui.label(RichText::new(format!("run {}: ${c:.2}", k + 1)).size(11.5).color(Color32::from_gray(190)));
+                    ui.vertical(|ui| {
+                        if r.runs.is_empty() {
+                            let c = ui.label(RichText::new(costs_text(&r)).size(12.5)).on_hover_text("At the API's prices, its runs added up");
+                            mark("uiRequestCost", &c);
+                        }
+                        for (k, run) in r.runs.iter().enumerate().rev() {
+                            let state = match run.status.as_str() {
+                                "in_progress" => "going",
+                                "waiting" => "cancelled",
+                                other => other,
+                            };
+                            let fold = egui::CollapsingHeader::new(RichText::new(format!("run {}: ${:.2} · {state}", k + 1, run.total())).size(12.5)).id_salt(("request-run", &r.id, k)).show(ui, |ui| {
+                                for s in &run.stages {
+                                    let judged = if s.director > 0.0 { format!(" + the director ${:.2}", s.director) } else { String::new() };
+                                    ui.label(RichText::new(format!("{}: ${:.2}{judged}", s.stage, s.cost)).size(11.5).color(Color32::from_gray(190)));
+                                }
+                            });
+                            let fold = fold.header_response.on_hover_text("At the API's prices: this run's stages, a stage run again adding to its own, the director's judgment on the stage it judged");
+                            mark(&format!("uiRequestRun_{}", k + 1), &fold);
+                            if k + 1 == r.runs.len() {
+                                mark("uiRequestCost", &fold);
                             }
-                        });
-                        mark("uiRequestCost", &fold.header_response);
-                    }
+                        }
+                    });
                     ui.end_row();
                 }
                 ui.label("Category");
@@ -3073,7 +3290,7 @@ mod desk {
                     let agentic = ui.selectable_value(&mut r.style, Style::Agentic, "agentic").on_hover_text("As accurate, made in stages by several agents with a director judging each stage (requests.md, \"Made in stages\"): read the warning beside it");
                     mark("uiRequestAgentic", &agentic);
                     let warned = info_icon(ui).on_hover_text(format!(
-                        "Agentic spins several agents in a row: a study, three researchers at once, a review, the look, the detail, a merge, the body, the dress and the assembly, each a run of Claude on Sonnet, and a director on Opus judging each stage against your pictures and sending work back under {GRADE_NEEDED} of 100 (the stages after it following). It costs far more than any other style, many runs of Claude for one model, and there's no guarantee the result matches what you expect."
+                        "Agentic spins several agents in a row: a study, a breakdown of every contoured element, three researchers at once, a review, the look, the detail, a merge, the body, the dress and the assembly, each a run of Claude on Sonnet, and a director on Opus judging each stage against your pictures and sending work back under {GRADE_NEEDED} of 100 (the stages after it following). It costs far more than any other style, many runs of Claude for one model, and there's no guarantee the result matches what you expect."
                     ));
                     mark("uiRequestAgenticInfo", &warned);
                 });
@@ -3276,58 +3493,167 @@ mod desk {
             } else if r.status == Status::Done && r.progress.minutes > 0.0 {
                 hint(ui, &format!("Modelled in {} min", r.progress.minutes.round()));
             }
-            section(ui, &format!("Pictures ({})", r.images.len()));
-            hint(ui, "Pictures dropped on the window go here (PNG, JPG, WebP): front, side, back, close-ups.");
-            ui.horizontal_wrapped(|ui| {
-                for (i, f) in r.images.clone().into_iter().enumerate() {
-                    ui.vertical(|ui| {
-                        let path = self.picture_path(&r.id, &f);
-                        let shown = self.picture(ui, &path, 96.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
-                        mark(&format!("uiRequestPicture_{i}"), &shown);
-                        if shown.clicked() {
-                            said = self.open_picture(&path);
-                        }
-                        if ui.small_button("× take out").on_hover_text("Its copy in the request's folder goes too").clicked() {
-                            remove = Some(f.clone());
+            // the pictures: a collapsible, the hint in an info icon, each picture with its
+            // removal (×) and its bones (the Bones window on it)
+            let bones_ok = params.contains(&Param::Bones);
+            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pictures", &r.id)), true)
+                .show_header(ui, |ui| {
+                    ui.label(RichText::new(format!("PICTURES ({})", r.images.len())).size(11.0).strong().color(Color32::from_gray(170)));
+                    let tip = info_icon(ui).on_hover_text("Pictures dropped on the window go here (PNG, JPG, WebP): front, side, back, close-ups. Click one to open it; its × takes it out (its copy in the request's folder goes too); the bone icon opens the Bones window on it, to draw the body's bones over it, a colour per part: Claude reads them when it draws its own lines, and rigs the creature on them (best drawn before Start)");
+                    mark("uiRequestPicturesInfo", &tip);
+                })
+                .body(|ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, f) in r.images.clone().into_iter().enumerate() {
+                            let path = self.picture_path(&r.id, &f);
+                            let shown = self.picture(ui, &path, 96.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
+                            mark(&format!("uiRequestPicture_{i}"), &shown);
+                            let rect = shown.rect;
+                            // its × at the top right
+                            let out = egui::Rect::from_min_size(rect.right_top() + egui::vec2(-19.0, 3.0), egui::vec2(16.0, 16.0));
+                            let take = ui.interact(out, ui.id().with(("picture-out", &r.id, i)), Sense::click()).on_hover_text("Take it out: its copy in the request's folder goes too");
+                            ui.painter().circle_filled(out.center(), 8.0, Color32::from_black_alpha(160));
+                            egui::Image::new(egui::include_image!("../../icons/close.svg"))
+                                .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                                .tint(if take.hovered() { Color32::WHITE } else { Color32::from_gray(200) })
+                                .paint_at(ui, egui::Rect::from_center_size(out.center(), egui::vec2(10.0, 10.0)));
+                            mark(&format!("uiRequestPictureRemove_{i}"), &take);
+                            if take.clicked() {
+                                remove = Some(f.clone());
+                            }
+                            let mut over = take.hovered() || take.clicked();
+                            // its bones at the bottom right: green once some are drawn, with their count
+                            if bones_ok {
+                                let n = r.bones.get(&f).map_or(0, Vec::len);
+                                let extra = if n > 0 { 10.0 } else { 0.0 };
+                                let at = egui::Rect::from_min_size(rect.right_bottom() + egui::vec2(-21.0 - extra, -21.0), egui::vec2(18.0 + extra, 18.0));
+                                let bones = ui.interact(at, ui.id().with(("picture-bones", &r.id, i)), Sense::click()).on_hover_text(if n == 0 {
+                                    "Draw the body's bones over it (the Bones window)".to_string()
+                                } else {
+                                    format!("{n} bone line{} drawn on it: the Bones window", if n == 1 { "" } else { "s" })
+                                });
+                                let tint = if n > 0 { Color32::from_rgb(120, 220, 120) } else if bones.hovered() { Color32::WHITE } else { Color32::from_gray(210) };
+                                ui.painter().rect_filled(at, 4.0, Color32::from_black_alpha(160));
+                                egui::Image::new(egui::include_image!("../../icons/bone.svg"))
+                                    .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                                    .tint(tint)
+                                    .paint_at(ui, egui::Rect::from_min_size(at.left_top() + egui::vec2(2.0, 2.0), egui::vec2(14.0, 14.0)));
+                                if n > 0 {
+                                    ui.painter().text(at.right_center() + egui::vec2(-3.0, 0.0), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(10.5), tint);
+                                }
+                                mark(&format!("uiRequestBones_{i}"), &bones);
+                                if bones.clicked() {
+                                    self.bones.open = true;
+                                    self.bones.of = r.id.clone();
+                                    self.bones.picture = Some(f.clone());
+                                }
+                                over |= bones.hovered() || bones.clicked();
+                            }
+                            if shown.clicked() && !over {
+                                said = self.open_picture(&path);
+                            }
                         }
                     });
-                }
-            });
-            if r.images.is_empty() {
-                hint(ui, "Drop pictures on the window to add them.");
-            }
-            if params.contains(&Param::Bones) && !r.images.is_empty() {
-                ui.horizontal(|ui| {
-                    let open = self.bones.open && self.bones.of == r.id;
-                    let b = ui.button(if open { "Drawing the bones…" } else { "Draw the bones…" }).on_hover_text(
-                        "A window with a picture large, to draw the body's bones over it, a colour per part: Claude reads them when it draws its own lines, and rigs the creature on them. Best drawn before Start",
-                    );
-                    mark("uiRequestBones", &b);
-                    if b.clicked() {
-                        self.bones.open = !open;
+                    if r.images.is_empty() {
+                        hint(ui, "Drop pictures on the window to add them: Start needs one.");
                     }
-                    let n: usize = r.bones.values().map(Vec::len).sum();
-                    hint(ui, &if n == 0 { "no bones drawn yet".to_string() } else { format!("{n} bone line{} drawn", if n == 1 { "" } else { "s" }) });
                 });
-            }
-            if !drawn.is_empty() && !r.lines_ready() {
-                section(ui, "Lines");
-                hint(ui, "Claude's lines over the pictures and the front and side it made from them; once rendered, those lines over the model, with how far they overlap. Click one to see it full size.");
-                if let Some(s) = self.drawings(ui, &r.id, &drawn) {
-                    said = Some(s);
-                }
-            }
-            if !r.previews.is_empty() {
-                section(ui, "The model");
-                ui.horizontal_wrapped(|ui| {
-                    for f in r.previews.clone() {
-                        let path = self.picture_path(&r.id, &f);
-                        let shown = self.picture(ui, &path, 130.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
-                        if shown.clicked() {
-                            said = self.open_picture(&path);
+            // the pipeline: the newest image of the stages' work (a window follows it), the
+            // contours over the pictures, the front and the side, the renders; the links the
+            // researchers found; what the agent is doing now, and the director's word
+            let newest = self.current.get(&r.id).map(|(p, _)| p.clone());
+            let contours = self.contours.get(&r.id).cloned().unwrap_or_default();
+            platform::set_hook("requestcurrent", &newest.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default());
+            let (mut open_now, mut follow_now) = (None, false);
+            if (newest.is_some() || !drawn.is_empty() || !r.previews.is_empty() || r.staged()) && !r.lines_ready() {
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pipeline", &r.id)), true)
+                    .show_header(ui, |ui| {
+                        ui.label(RichText::new("PIPELINE").size(11.0).strong().color(Color32::from_gray(170)));
+                        let tip = info_icon(ui).on_hover_text("What the stages make as they go: the newest image (a cutout, a drawing, a render; click it for a window that follows it as it changes), the contours over the pictures and the breakdown's over its cutouts, the front and the side, the renders; the links the researchers found; what the agent is doing now, and the director's last word. The console at the foot has every line");
+                        mark("uiRequestPipeline", &tip);
+                    })
+                    .body(|ui| {
+                        // (the four boxes share the width exactly: a box wider than its share
+                        // would widen the window a little every frame, up to the screen's edge)
+                        let gap = ui.spacing().item_spacing.x;
+                        let each = ((ui.available_width() - 3.0 * gap) / 4.0).floor().max(110.0);
+                        let groups: [(&str, Vec<PathBuf>); 3] = [
+                            ("contouring", drawn.iter().filter(|f| f.starts_with("lines_") || f.starts_with("bones_")).map(|f| self.picture_path(&r.id, f)).chain(contours.iter().cloned()).collect()),
+                            ("front/side views", drawn.iter().filter(|f| f.as_str() == "profiles.png").map(|f| self.picture_path(&r.id, f)).collect()),
+                            ("processed", r.previews.iter().chain(drawn.iter().filter(|f| f.starts_with("match_") || f.starts_with("fit_") || f.starts_with("seen_"))).map(|f| self.picture_path(&r.id, f)).collect()),
+                        ];
+                        ui.horizontal_top(|ui| {
+                            legend(ui, "current", each, |ui| match &newest {
+                                Some(p) => {
+                                    let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text("The newest image of the stages' work: click for a window that follows it as it changes");
+                                    mark("uiRequestCurrent", &shown);
+                                    if shown.clicked() {
+                                        follow_now = true;
+                                    }
+                                }
+                                None => hint(ui, "nothing yet"),
+                            });
+                            for (title, files) in groups {
+                                legend(ui, title, each, |ui| {
+                                    if files.is_empty() {
+                                        hint(ui, "nothing yet");
+                                        return;
+                                    }
+                                    egui::ScrollArea::horizontal().id_salt(("pipeline", title, &r.id)).max_height(130.0).show(ui, |ui| {
+                                        ui.horizontal(|ui| {
+                                            for p in &files {
+                                                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                                let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text(format!("{name}: click to open it"));
+                                                if shown.clicked() {
+                                                    open_now = Some(p.clone());
+                                                }
+                                            }
+                                        });
+                                    });
+                                });
+                            }
+                        });
+                        // the links the researchers found
+                        let links = self.links.get(&r.id).map(|(_, l)| l.clone()).unwrap_or_default();
+                        let found = egui::CollapsingHeader::new(RichText::new(format!("researched references ({})", links.len())).size(11.5)).id_salt(("request-links", &r.id)).show(ui, |ui| {
+                            if links.is_empty() {
+                                hint(ui, "none yet: the research stage finds them");
+                            }
+                            for l in &links {
+                                ui.hyperlink(l);
+                            }
+                        });
+                        mark("uiRequestLinks", &found.header_response);
+                        // what the agent is doing now (its latest words), and the director's word
+                        if let Some((_, agent, says)) = self.now.get(&r.id).cloned() {
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new(format!("[{agent}]")).size(11.5).strong().color(WORKING));
+                                ui.label(RichText::new(&says).size(11.5));
+                            });
+                            platform::set_hook("requestnow", &format!("{agent}|{}", says.chars().take(80).collect::<String>()));
                         }
-                    }
-                });
+                        if !r.judgment.stage.is_empty() {
+                            let j = &r.judgment;
+                            let verdict = if j.to.is_empty() { "go on".to_string() } else { format!("back to {}", j.to) };
+                            let head = j.notes.lines().filter(|l| !l.trim().is_empty()).take(3).collect::<Vec<_>>().join(" ");
+                            ui.add_space(4.0);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(RichText::new("[director]").size(11.5).strong().color(if j.to.is_empty() { DONE } else { FAILED }));
+                                ui.label(RichText::new(format!("the {} stage {}/100, {verdict}. {}", j.stage, j.grade, head.chars().take(400).collect::<String>())).size(11.5));
+                            });
+                        }
+                    });
+            }
+            if let Some(p) = open_now {
+                said = self.open_picture(&p);
+            }
+            if follow_now {
+                if let Some(p) = newest {
+                    self.viewing = Some(p);
+                    self.follow = true;
+                    (self.zoom, self.pan) = (1.0, egui::Vec2::ZERO);
+                }
             }
             // made: how close it came, for the next ones of its kind
             if r.status == Status::Done && !r.prop.is_empty() {
@@ -3421,10 +3747,6 @@ mod desk {
                         }
                     }
                 });
-            }
-            if !r.reply.is_empty() && !r.lines_ready() {
-                section(ui, "What Claude says");
-                ui.label(RichText::new(&r.reply).size(12.0));
             }
             // made once: what to look for and change in the next run, which starts from it
             if !r.prop.is_empty() && r.status != Status::InProgress && !r.lines_ready() {
@@ -4047,6 +4369,27 @@ mod desk {
     }
 
     /// A word on a colour, its corners a little rounded.
+    /// A box with its title on its border, `width` wide.
+    fn legend(ui: &mut egui::Ui, title: &str, width: f32, add: impl FnOnce(&mut egui::Ui)) -> egui::Response {
+        let shown = egui::Frame::new()
+            .stroke(egui::Stroke::new(1.0, Color32::from_gray(70)))
+            .corner_radius(4.0)
+            .inner_margin(egui::Margin { left: 6, right: 6, top: 10, bottom: 6 })
+            .show(ui, |ui| {
+                // (the box is `width` wide in all: its margins and its stroke counted)
+                ui.set_width(width - 14.0);
+                ui.set_min_height(126.0);
+                add(ui);
+            });
+        let rect = shown.response.rect;
+        let p = ui.painter();
+        let galley = p.layout_no_wrap(title.to_string(), egui::FontId::proportional(10.5), Color32::from_gray(190));
+        let at = egui::Rect::from_min_size(rect.left_top() + egui::vec2(8.0, -galley.size().y / 2.0), galley.size() + egui::vec2(6.0, 0.0));
+        p.rect_filled(at, 0.0, ui.visuals().panel_fill);
+        p.galley(at.min + egui::vec2(3.0, 0.0), galley, Color32::from_gray(190));
+        shown.response
+    }
+
     fn tag(ui: &mut egui::Ui, text: &str, color: Color32) -> egui::Response {
         egui::Frame::new()
             .fill(color)
@@ -4221,12 +4564,13 @@ mod desk {
         mark(&format!("uiRequestFoot_{}", r.id), &bar.on_hover_text(format!("{}: {text}", r.name)));
     }
 
-    /// What a request's runs have cost in all ("$2.12"; nothing before a run has ended).
+    /// What a request's current run has cost so far, its stages added up ("$2.12"; with no
+    /// run noted, every process's cost; nothing before any).
     fn costs_text(r: &ModelRequest) -> String {
-        if r.costs.is_empty() {
-            String::new()
-        } else {
-            format!("${:.2}", r.costs.iter().sum::<f64>())
+        match r.runs.last() {
+            Some(run) => format!("${:.2}", run.total()),
+            None if r.costs.is_empty() => String::new(),
+            None => format!("${:.2}", r.costs.iter().sum::<f64>()),
         }
     }
 
@@ -5090,7 +5434,7 @@ mod tests {
         click(&ctx, &mut req, "uiRequestAgentic");
         assert_eq!(read(&root, "moss_toad").unwrap().style, Style::Agentic, "the style picked");
         frame_with(&ctx, &mut req, vec![]);
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:pending,breakdown:pending,research:pending,review:pending,look:pending,detail:pending,merge:pending,body:pending,dress:pending,assemble:pending"));
         // Start: the study stage
         assert!(read(&root, "moss_toad").unwrap().director, "a director, unless unticked");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
@@ -5121,7 +5465,7 @@ mod tests {
         req.watch(1.0e9);
         assert!(req.desk().launched.len() == 1 && req.desk().busy().as_deref() == Some("moss_toad"));
         frame_with(&ctx, &mut req, vec![]);
-        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:running,research:pending"), "{:?}", crate::platform::hook("requeststages"));
+        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:running,breakdown:pending"), "{:?}", crate::platform::hook("requeststages"));
         assert_eq!(crate::platform::hook("requestdirector").as_deref(), Some("none"));
         assert!(crate::platform::hook("uiRequestFoot_moss_toad").is_some(), "the foot drawn");
         stage(&root, "study", &["study"], "direct:study");
@@ -5135,7 +5479,7 @@ mod tests {
         req.watch(3.0e9);
         frame_with(&ctx, &mut req, vec![]);
         assert_eq!(crate::platform::hook("requestdirector").as_deref(), Some("judging:study"));
-        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:done,research:pending"), "the judged stage is done, not running: {:?}", crate::platform::hook("requeststages"));
+        assert!(crate::platform::hook("requeststages").unwrap().starts_with("study:done,breakdown:pending"), "the judged stage is done, not running: {:?}", crate::platform::hook("requeststages"));
         judged(&root, "study", 85, "", &["study"], "research");
         req.watch(3.5e9);
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "research", "--model", "sonnet"], "the next stage on its own");
@@ -5191,14 +5535,14 @@ mod tests {
         assert_eq!(req.desk().launched.len(), 10);
         // each stage done starts the next, up to the body, which fails: it stops there
         for (k, ran) in ["look", "detail", "merge"].into_iter().enumerate() {
-            stage(&root, ran, &names[..k + 3], "");
+            stage(&root, ran, &names[..k + 4], "");
             req.watch(11.0e9 + k as f64 * 1.0e9);
-            stage(&root, ran, &names[..k + 4], names[k + 4]);
+            stage(&root, ran, &names[..k + 5], names[k + 5]);
             req.watch(11.5e9 + k as f64 * 1.0e9);
         }
         assert_eq!(req.desk().launched.len(), 13);
         assert_eq!(req.desk().launched.last().unwrap()[3], "body");
-        stage(&root, "body", &names[..6], "");
+        stage(&root, "body", &names[..7], "");
         req.watch(14.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Failed;
@@ -5215,7 +5559,7 @@ mod tests {
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body", "--model", "sonnet"]);
         // cancelled while it runs: it waits, its stages kept; a done stage's chip runs that
         // one again (with the ones after it), Go on the next not done
-        stage(&root, "body", &names[..6], "");
+        stage(&root, "body", &names[..7], "");
         req.watch(16.0e9);
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Waiting;
@@ -5268,7 +5612,7 @@ mod tests {
         req.watch(20.5e9);
         frame_with(&ctx, &mut req, vec![]);
         assert!(marked("uiRequestLessons").is_none());
-        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,review:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
+        assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,breakdown:done,research:done,review:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--model", "sonnet"]);
         // a stage queued while another is being made: its turn in the queue
@@ -5343,6 +5687,64 @@ mod tests {
         req.desk().begun();
         req.watch(6.0e9);
         assert_eq!(read(&root, "emma").unwrap().status, Status::InProgress, "not failed for silence: its next run is the desk's to start");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// The panel's pictures: a collapsible, the hint in an info icon, each picture with its ×
+    /// and its bones icon (which opens the Bones window on it); Start waits for a picture.
+    /// Its pipeline: the newest image of the stages' work (a window follows it as it
+    /// changes), the drawings in their boxes, the links, what the agent's doing now.
+    #[test]
+    fn the_panel_shows_the_pictures_and_the_pipeline() {
+        let root = scratch("panel");
+        let ctx = egui::Context::default();
+        crate::title::install_fonts(&ctx);
+        let mut req = Requests::at(&root);
+        req.open = true;
+        let mut r = create(&root, "Moss toad.png").unwrap();
+        add_picture(&root, &mut r, "front.png", &png(60, 40, 3)).unwrap();
+        save(&root, &r).unwrap();
+        req.desk().reload();
+        req.desk().selected = Some("moss_toad".into());
+        for _ in 0..3 {
+            frame_with(&ctx, &mut req, vec![]);
+        }
+        assert!(marked("uiRequestPicturesInfo").is_some() && marked("uiRequestPictureRemove_0").is_some() && marked("uiRequestBones_0").is_some(), "the pictures' info, × and bones");
+        assert!(marked("uiRequestPipeline").is_none(), "no pipeline before any work");
+        click(&ctx, &mut req, "uiRequestBones_0");
+        assert!(req.desk().bones.open && req.desk().bones.picture.as_deref() == Some("front.png"), "the bones icon opens the Bones window on that picture");
+        req.desk().bones.open = false;
+        // a drawing made, the agent at work: the pipeline, the drawing in its box, the newest
+        // image (followed in the viewer), what the agent says
+        let dir = root.join("private/requests/moss_toad");
+        std::fs::write(dir.join("lines_front.png"), png(40, 30, 4)).unwrap();
+        let mut r = read(&root, "moss_toad").unwrap();
+        r.lines = vec!["lines_front.png".into()];
+        save(&root, &r).unwrap();
+        std::fs::create_dir_all(dir.join("plan")).unwrap();
+        std::fs::write(dir.join("plan/now.json"), r#"{"agent": "study", "says": "Tracing the outline.", "at": 1}"#).unwrap();
+        req.watch(1.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestPipeline").is_some() && marked("uiRequestCurrent").is_some() && marked("uiRequestLinks").is_some(), "the pipeline, its current image, its links");
+        assert_eq!(crate::platform::hook("requestcurrent").as_deref(), Some("lines_front.png"));
+        assert_eq!(crate::platform::hook("requestnow").as_deref(), Some("study|Tracing the outline."));
+        click(&ctx, &mut req, "uiRequestCurrent");
+        assert!(req.desk().follow && req.desk().viewing.as_ref().is_some_and(|p| p.ends_with("lines_front.png")), "the current image in a window that follows it");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        std::fs::write(dir.join("compare.png"), png(50, 30, 5)).unwrap();
+        req.watch(2.0e9);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(req.desk().viewing.as_ref().is_some_and(|p| p.ends_with("compare.png")), "the window follows the newest image: {:?}", req.desk().viewing);
+        assert_eq!(crate::platform::hook("requestcurrent").as_deref(), Some("compare.png"));
+        req.desk().viewing = None;
+        req.desk().follow = false;
+        // the picture taken out: Start waits for one
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestPictureRemove_0");
+        assert!(read(&root, "moss_toad").unwrap().images.is_empty(), "taken out");
+        frame_with(&ctx, &mut req, vec![]);
+        click(&ctx, &mut req, "uiRequestStart_moss_toad");
+        assert!(req.desk().launched.is_empty(), "Start waits for a picture");
         std::fs::remove_dir_all(&root).ok();
     }
 
@@ -5905,8 +6307,8 @@ mod tests {
         req.desk().selected = Some("moss_toad".into());
         frame_with(&ctx, &mut req, vec![]);
         frame_with(&ctx, &mut req, vec![]);
-        click(&ctx, &mut req, "uiRequestBones");
-        assert!(req.desk().bones.open, "Draw the bones… opens its window");
+        click(&ctx, &mut req, "uiRequestBones_0");
+        assert!(req.desk().bones.open, "the bones icon on the picture opens its window");
         let c = canvas(&ctx, &mut req);
         let at = |u: f32, v: f32| c.min + egui::vec2(u * c.width(), v * c.height());
         let bones = |root: &Path| read(root, "moss_toad").unwrap().bones.get("front.png").cloned().unwrap_or_default();

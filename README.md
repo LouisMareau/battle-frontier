@@ -1008,9 +1008,10 @@ Variants and What changes too, and **Make variants**: a run from the model made 
 it is and adds that many variants, the style, the notes and the rest as they were (queued
 while another is being made); its panel lists the variants made. The **agentic** style
 (after accurate; its info icon warns that it spins several agents, costs far more than any
-other style and guarantees nothing) has it made in nine stages, a run of Claude on Sonnet
+other style and guarantees nothing) has it made in ten stages, a run of Claude on Sonnet
 with one charge each (the study: the lines and the
-shape planned; the research: three researchers at once, the one stage that may read the
+shape planned; the breakdown: each contoured element cut out enlarged, contoured again
+precisely and analysed, the research planned from it; the research: three researchers at once, the one stage that may read the
 web, looking up what the design is drawn from, fetching reference pictures into the
 request's folder within a room for them, and how-tos for the unusual steps; the review: the
 lead checks what they found and sends them out for a second pass when something's missing,
@@ -1027,7 +1028,12 @@ judgment a retrospective keeps what the request taught, a few lines per stage, t
 that worked and the reference pictures worth keeping, under `private/requests/.lessons/`,
 which the next requests' stages read first; your rating of a finished model is kept against
 the director's grade of it, so the director learns whether it's harsh or lenient
-(`tools/blender/requests.md`, "Made in stages"). A tree's cells are its trunk's foot (what
+(`tools/blender/requests.md`, "Made in stages"). The request's panel shows its pictures (each
+with its × and its bone icon, green once bones are drawn) and, below, the pipeline: the
+newest image of the stages' work (a window follows it as it changes, zooming), the contours,
+the front and the side, the renders, the links the researchers found, what the agent is doing
+now and the director's last word; its card shows what its current run has cost, its panel
+each run's stages. A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Process multiple" and Start
 has each drawing made a request of its own (its crop, its name and height, the request's
