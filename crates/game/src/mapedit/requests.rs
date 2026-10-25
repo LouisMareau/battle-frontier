@@ -3496,68 +3496,70 @@ mod desk {
             // the pictures: a collapsible, the hint in an info icon, each picture with its
             // removal (×) and its bones (the Bones window on it)
             let bones_ok = params.contains(&Param::Bones);
-            egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pictures", &r.id)), true)
-                .show_header(ui, |ui| {
-                    ui.label(RichText::new(format!("PICTURES ({})", r.images.len())).size(11.0).strong().color(Color32::from_gray(170)));
-                    let tip = info_icon(ui).on_hover_text("Pictures dropped on the window go here (PNG, JPG, WebP): front, side, back, close-ups. Click one to open it; its × takes it out (its copy in the request's folder goes too); the bone icon opens the Bones window on it, to draw the body's bones over it, a colour per part: Claude reads them when it draws its own lines, and rigs the creature on them (best drawn before Start)");
-                    mark("uiRequestPicturesInfo", &tip);
-                })
-                .body(|ui| {
-                    ui.horizontal_wrapped(|ui| {
-                        for (i, f) in r.images.clone().into_iter().enumerate() {
-                            let path = self.picture_path(&r.id, &f);
-                            let shown = self.picture(ui, &path, 96.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
-                            mark(&format!("uiRequestPicture_{i}"), &shown);
-                            let rect = shown.rect;
-                            // its × at the top right
-                            let out = egui::Rect::from_min_size(rect.right_top() + egui::vec2(-19.0, 3.0), egui::vec2(16.0, 16.0));
-                            let take = ui.interact(out, ui.id().with(("picture-out", &r.id, i)), Sense::click()).on_hover_text("Take it out: its copy in the request's folder goes too");
-                            ui.painter().circle_filled(out.center(), 8.0, Color32::from_black_alpha(160));
-                            egui::Image::new(egui::include_image!("../../icons/close.svg"))
-                                .fit_to_exact_size(egui::vec2(10.0, 10.0))
-                                .tint(if take.hovered() { Color32::WHITE } else { Color32::from_gray(200) })
-                                .paint_at(ui, egui::Rect::from_center_size(out.center(), egui::vec2(10.0, 10.0)));
-                            mark(&format!("uiRequestPictureRemove_{i}"), &take);
-                            if take.clicked() {
-                                remove = Some(f.clone());
-                            }
-                            let mut over = take.hovered() || take.clicked();
-                            // its bones at the bottom right: green once some are drawn, with their count
-                            if bones_ok {
-                                let n = r.bones.get(&f).map_or(0, Vec::len);
-                                let extra = if n > 0 { 10.0 } else { 0.0 };
-                                let at = egui::Rect::from_min_size(rect.right_bottom() + egui::vec2(-21.0 - extra, -21.0), egui::vec2(18.0 + extra, 18.0));
-                                let bones = ui.interact(at, ui.id().with(("picture-bones", &r.id, i)), Sense::click()).on_hover_text(if n == 0 {
-                                    "Draw the body's bones over it (the Bones window)".to_string()
-                                } else {
-                                    format!("{n} bone line{} drawn on it: the Bones window", if n == 1 { "" } else { "s" })
-                                });
-                                let tint = if n > 0 { Color32::from_rgb(120, 220, 120) } else if bones.hovered() { Color32::WHITE } else { Color32::from_gray(210) };
-                                ui.painter().rect_filled(at, 4.0, Color32::from_black_alpha(160));
-                                egui::Image::new(egui::include_image!("../../icons/bone.svg"))
-                                    .fit_to_exact_size(egui::vec2(14.0, 14.0))
-                                    .tint(tint)
-                                    .paint_at(ui, egui::Rect::from_min_size(at.left_top() + egui::vec2(2.0, 2.0), egui::vec2(14.0, 14.0)));
-                                if n > 0 {
-                                    ui.painter().text(at.right_center() + egui::vec2(-3.0, 0.0), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(10.5), tint);
+            card(ui, |ui| {
+                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pictures", &r.id)), true)
+                    .show_header(ui, |ui| {
+                        ui.label(RichText::new(format!("PICTURES ({})", r.images.len())).size(11.0).strong().color(Color32::from_gray(170)));
+                        let tip = info_icon(ui).on_hover_text("Pictures dropped on the window go here (PNG, JPG, WebP): front, side, back, close-ups. Click one to open it; its × takes it out (its copy in the request's folder goes too); the bone icon opens the Bones window on it, to draw the body's bones over it, a colour per part: Claude reads them when it draws its own lines, and rigs the creature on them (best drawn before Start)");
+                        mark("uiRequestPicturesInfo", &tip);
+                    })
+                    .body(|ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, f) in r.images.clone().into_iter().enumerate() {
+                                let path = self.picture_path(&r.id, &f);
+                                let shown = self.picture(ui, &path, 96.0, Sense::click()).on_hover_text(format!("{f}: click to open it"));
+                                mark(&format!("uiRequestPicture_{i}"), &shown);
+                                let rect = shown.rect;
+                                // its × at the top right
+                                let out = egui::Rect::from_min_size(rect.right_top() + egui::vec2(-19.0, 3.0), egui::vec2(16.0, 16.0));
+                                let take = ui.interact(out, ui.id().with(("picture-out", &r.id, i)), Sense::click()).on_hover_text("Take it out: its copy in the request's folder goes too");
+                                ui.painter().circle_filled(out.center(), 8.0, Color32::from_black_alpha(160));
+                                egui::Image::new(egui::include_image!("../../icons/close.svg"))
+                                    .fit_to_exact_size(egui::vec2(10.0, 10.0))
+                                    .tint(if take.hovered() { Color32::WHITE } else { Color32::from_gray(200) })
+                                    .paint_at(ui, egui::Rect::from_center_size(out.center(), egui::vec2(10.0, 10.0)));
+                                mark(&format!("uiRequestPictureRemove_{i}"), &take);
+                                if take.clicked() {
+                                    remove = Some(f.clone());
                                 }
-                                mark(&format!("uiRequestBones_{i}"), &bones);
-                                if bones.clicked() {
-                                    self.bones.open = true;
-                                    self.bones.of = r.id.clone();
-                                    self.bones.picture = Some(f.clone());
+                                let mut over = take.hovered() || take.clicked();
+                                // its bones at the bottom right: green once some are drawn, with their count
+                                if bones_ok {
+                                    let n = r.bones.get(&f).map_or(0, Vec::len);
+                                    let extra = if n > 0 { 10.0 } else { 0.0 };
+                                    let at = egui::Rect::from_min_size(rect.right_bottom() + egui::vec2(-21.0 - extra, -21.0), egui::vec2(18.0 + extra, 18.0));
+                                    let bones = ui.interact(at, ui.id().with(("picture-bones", &r.id, i)), Sense::click()).on_hover_text(if n == 0 {
+                                        "Draw the body's bones over it (the Bones window)".to_string()
+                                    } else {
+                                        format!("{n} bone line{} drawn on it: the Bones window", if n == 1 { "" } else { "s" })
+                                    });
+                                    let tint = if n > 0 { Color32::from_rgb(120, 220, 120) } else if bones.hovered() { Color32::WHITE } else { Color32::from_gray(210) };
+                                    ui.painter().rect_filled(at, 4.0, Color32::from_black_alpha(160));
+                                    egui::Image::new(egui::include_image!("../../icons/bone.svg"))
+                                        .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                                        .tint(tint)
+                                        .paint_at(ui, egui::Rect::from_min_size(at.left_top() + egui::vec2(2.0, 2.0), egui::vec2(14.0, 14.0)));
+                                    if n > 0 {
+                                        ui.painter().text(at.right_center() + egui::vec2(-3.0, 0.0), egui::Align2::RIGHT_CENTER, n.to_string(), egui::FontId::proportional(10.5), tint);
+                                    }
+                                    mark(&format!("uiRequestBones_{i}"), &bones);
+                                    if bones.clicked() {
+                                        self.bones.open = true;
+                                        self.bones.of = r.id.clone();
+                                        self.bones.picture = Some(f.clone());
+                                    }
+                                    over |= bones.hovered() || bones.clicked();
                                 }
-                                over |= bones.hovered() || bones.clicked();
+                                if shown.clicked() && !over {
+                                    said = self.open_picture(&path);
+                                }
                             }
-                            if shown.clicked() && !over {
-                                said = self.open_picture(&path);
-                            }
+                        });
+                        if r.images.is_empty() {
+                            hint(ui, "Drop pictures on the window to add them: Start needs one.");
                         }
                     });
-                    if r.images.is_empty() {
-                        hint(ui, "Drop pictures on the window to add them: Start needs one.");
-                    }
-                });
+            });
             // the pipeline: the newest image of the stages' work (a window follows it), the
             // contours over the pictures, the front and the side, the renders; the links the
             // researchers found; what the agent is doing now, and the director's word
@@ -3566,84 +3568,86 @@ mod desk {
             platform::set_hook("requestcurrent", &newest.as_ref().and_then(|p| p.file_name().map(|n| n.to_string_lossy().to_string())).unwrap_or_default());
             let (mut open_now, mut follow_now) = (None, false);
             if (newest.is_some() || !drawn.is_empty() || !r.previews.is_empty() || r.staged()) && !r.lines_ready() {
-                egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pipeline", &r.id)), true)
-                    .show_header(ui, |ui| {
-                        ui.label(RichText::new("PIPELINE").size(11.0).strong().color(Color32::from_gray(170)));
-                        let tip = info_icon(ui).on_hover_text("What the stages make as they go: the newest image (a cutout, a drawing, a render; click it for a window that follows it as it changes), the contours over the pictures and the breakdown's over its cutouts, the front and the side, the renders; the links the researchers found; what the agent is doing now, and the director's last word. The console at the foot has every line");
-                        mark("uiRequestPipeline", &tip);
-                    })
-                    .body(|ui| {
-                        // (the four boxes share the width exactly: a box wider than its share
-                        // would widen the window a little every frame, up to the screen's edge)
-                        let gap = ui.spacing().item_spacing.x;
-                        let each = ((ui.available_width() - 3.0 * gap) / 4.0).floor().max(110.0);
-                        let groups: [(&str, Vec<PathBuf>); 3] = [
-                            ("contouring", drawn.iter().filter(|f| f.starts_with("lines_") || f.starts_with("bones_")).map(|f| self.picture_path(&r.id, f)).chain(contours.iter().cloned()).collect()),
-                            ("front/side views", drawn.iter().filter(|f| f.as_str() == "profiles.png").map(|f| self.picture_path(&r.id, f)).collect()),
-                            ("processed", r.previews.iter().chain(drawn.iter().filter(|f| f.starts_with("match_") || f.starts_with("fit_") || f.starts_with("seen_"))).map(|f| self.picture_path(&r.id, f)).collect()),
-                        ];
-                        ui.horizontal_top(|ui| {
-                            legend(ui, "current", each, |ui| match &newest {
-                                Some(p) => {
-                                    let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text("The newest image of the stages' work: click for a window that follows it as it changes");
-                                    mark("uiRequestCurrent", &shown);
-                                    if shown.clicked() {
-                                        follow_now = true;
+                card(ui, |ui| {
+                    egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), ui.id().with(("request-pipeline", &r.id)), true)
+                        .show_header(ui, |ui| {
+                            ui.label(RichText::new("PIPELINE").size(11.0).strong().color(Color32::from_gray(170)));
+                            let tip = info_icon(ui).on_hover_text("What the stages make as they go: the newest image (a cutout, a drawing, a render; click it for a window that follows it as it changes), the contours over the pictures and the breakdown's over its cutouts, the front and the side, the renders; the links the researchers found; what the agent is doing now, and the director's last word. The console at the foot has every line");
+                            mark("uiRequestPipeline", &tip);
+                        })
+                        .body(|ui| {
+                            // (the four boxes share the width exactly: a box wider than its share
+                            // would widen the window a little every frame, up to the screen's edge)
+                            let gap = ui.spacing().item_spacing.x;
+                            let each = ((ui.available_width() - 3.0 * gap) / 4.0).floor().max(110.0);
+                            let groups: [(&str, Vec<PathBuf>); 3] = [
+                                ("contouring", drawn.iter().filter(|f| f.starts_with("lines_") || f.starts_with("bones_")).map(|f| self.picture_path(&r.id, f)).chain(contours.iter().cloned()).collect()),
+                                ("front/side views", drawn.iter().filter(|f| f.as_str() == "profiles.png").map(|f| self.picture_path(&r.id, f)).collect()),
+                                ("processed", r.previews.iter().chain(drawn.iter().filter(|f| f.starts_with("match_") || f.starts_with("fit_") || f.starts_with("seen_"))).map(|f| self.picture_path(&r.id, f)).collect()),
+                            ];
+                            ui.horizontal_top(|ui| {
+                                legend(ui, "current", each, |ui| match &newest {
+                                    Some(p) => {
+                                        let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text("The newest image of the stages' work: click for a window that follows it as it changes");
+                                        mark("uiRequestCurrent", &shown);
+                                        if shown.clicked() {
+                                            follow_now = true;
+                                        }
                                     }
-                                }
-                                None => hint(ui, "nothing yet"),
-                            });
-                            for (title, files) in groups {
-                                legend(ui, title, each, |ui| {
-                                    if files.is_empty() {
-                                        hint(ui, "nothing yet");
-                                        return;
-                                    }
-                                    egui::ScrollArea::horizontal().id_salt(("pipeline", title, &r.id)).max_height(130.0).show(ui, |ui| {
-                                        ui.horizontal(|ui| {
-                                            for p in &files {
-                                                let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                                                let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text(format!("{name}: click to open it"));
-                                                if shown.clicked() {
-                                                    open_now = Some(p.clone());
+                                    None => hint(ui, "nothing yet"),
+                                });
+                                for (title, files) in groups {
+                                    legend(ui, title, each, |ui| {
+                                        if files.is_empty() {
+                                            hint(ui, "nothing yet");
+                                            return;
+                                        }
+                                        egui::ScrollArea::horizontal().id_salt(("pipeline", title, &r.id)).max_height(130.0).show(ui, |ui| {
+                                            ui.horizontal(|ui| {
+                                                for p in &files {
+                                                    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                                    let shown = self.picture(ui, p, 110.0, Sense::click()).on_hover_text(format!("{name}: click to open it"));
+                                                    if shown.clicked() {
+                                                        open_now = Some(p.clone());
+                                                    }
                                                 }
-                                            }
+                                            });
                                         });
                                     });
+                                }
+                            });
+                            // the links the researchers found
+                            let links = self.links.get(&r.id).map(|(_, l)| l.clone()).unwrap_or_default();
+                            let found = egui::CollapsingHeader::new(RichText::new(format!("researched references ({})", links.len())).size(11.5)).id_salt(("request-links", &r.id)).show(ui, |ui| {
+                                if links.is_empty() {
+                                    hint(ui, "none yet: the research stage finds them");
+                                }
+                                for l in &links {
+                                    ui.hyperlink(l);
+                                }
+                            });
+                            mark("uiRequestLinks", &found.header_response);
+                            // what the agent is doing now (its latest words), and the director's word
+                            if let Some((_, agent, says)) = self.now.get(&r.id).cloned() {
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new(format!("[{agent}]")).size(11.5).strong().color(WORKING));
+                                    ui.label(RichText::new(&says).size(11.5));
+                                });
+                                platform::set_hook("requestnow", &format!("{agent}|{}", says.chars().take(80).collect::<String>()));
+                            }
+                            if !r.judgment.stage.is_empty() {
+                                let j = &r.judgment;
+                                let verdict = if j.to.is_empty() { "go on".to_string() } else { format!("back to {}", j.to) };
+                                let head = j.notes.lines().filter(|l| !l.trim().is_empty()).take(3).collect::<Vec<_>>().join(" ");
+                                ui.add_space(4.0);
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(RichText::new("[director]").size(11.5).strong().color(if j.to.is_empty() { DONE } else { FAILED }));
+                                    ui.label(RichText::new(format!("the {} stage {}/100, {verdict}. {}", j.stage, j.grade, head.chars().take(400).collect::<String>())).size(11.5));
                                 });
                             }
                         });
-                        // the links the researchers found
-                        let links = self.links.get(&r.id).map(|(_, l)| l.clone()).unwrap_or_default();
-                        let found = egui::CollapsingHeader::new(RichText::new(format!("researched references ({})", links.len())).size(11.5)).id_salt(("request-links", &r.id)).show(ui, |ui| {
-                            if links.is_empty() {
-                                hint(ui, "none yet: the research stage finds them");
-                            }
-                            for l in &links {
-                                ui.hyperlink(l);
-                            }
-                        });
-                        mark("uiRequestLinks", &found.header_response);
-                        // what the agent is doing now (its latest words), and the director's word
-                        if let Some((_, agent, says)) = self.now.get(&r.id).cloned() {
-                            ui.add_space(4.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new(format!("[{agent}]")).size(11.5).strong().color(WORKING));
-                                ui.label(RichText::new(&says).size(11.5));
-                            });
-                            platform::set_hook("requestnow", &format!("{agent}|{}", says.chars().take(80).collect::<String>()));
-                        }
-                        if !r.judgment.stage.is_empty() {
-                            let j = &r.judgment;
-                            let verdict = if j.to.is_empty() { "go on".to_string() } else { format!("back to {}", j.to) };
-                            let head = j.notes.lines().filter(|l| !l.trim().is_empty()).take(3).collect::<Vec<_>>().join(" ");
-                            ui.add_space(4.0);
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(RichText::new("[director]").size(11.5).strong().color(if j.to.is_empty() { DONE } else { FAILED }));
-                                ui.label(RichText::new(format!("the {} stage {}/100, {verdict}. {}", j.stage, j.grade, head.chars().take(400).collect::<String>())).size(11.5));
-                            });
-                        }
-                    });
+                });
             }
             if let Some(p) = open_now {
                 said = self.open_picture(&p);
@@ -4500,6 +4504,14 @@ mod desk {
         }
         out.push(format!("Folder: private/requests/{}", r.id));
         out.join("\n")
+    }
+
+    /// A section of the pane framed like the list's cards: padded, bordered, the pane's width.
+    fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
+        egui::Frame::new().fill(Color32::from_gray(28)).stroke(egui::Stroke::new(1.0, Color32::from_gray(50))).corner_radius(6.0).inner_margin(egui::Margin::symmetric(6, 5)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            add(ui);
+        });
     }
 
     /// A small box on a card, its title over what's in it.
