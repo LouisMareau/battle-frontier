@@ -265,15 +265,18 @@ CHECKED = CHECKED_LINES + """- model.py may already start with the design and th
   doesn't, sort them first, at its top, and say in the reply what you took for the drawing;
 """
 RULES = """
-Run commands with the Bash tool, exactly as written above, from the project folder (no cd), one
-command a call: a call is refused whole when any part of it isn't allowed (nothing joined with
-; or &&, no cd, nothing from /tmp), and a refusal is of that one call, never of the session:
-run the allowed command on its own and go on. Allowed besides the commands above: python -c
-"...", python - with a heredoc, a helper script of your own in private/requests/{id}/ run as
-python private/requests/{id}/NAME.py (one that writes lines.json from numbers, say), mkdir
-there, ls, and reading files; to change a file, the Edit tool (not a script that rewrites
-it). Write only inside private/requests/{id}/. Don't use git, don't change anything else in
-the project (finishing writes the prop itself), don't touch other requests. {end}"""
+Run commands with the Bash tool, exactly as written above, from the project folder, {folder}:
+the shell keeps its folder between calls, so never cd into the request's folder (every path
+above is from the project's); if a command fails with "can't open file tools/...", the shell
+has moved: run cd {folder} first, on its own. One command a call: a call is refused whole when
+any part of it isn't allowed (nothing joined with ; or &&, nothing from /tmp), and a refusal
+is of that one call, never of the session: run the allowed command on its own and go on.
+Allowed besides the commands above: python -c "...", python - with a heredoc, a helper script
+of your own in private/requests/{id}/ run as python private/requests/{id}/NAME.py (one that
+writes lines.json from numbers, say), mkdir there, ls, and reading files; to change a file,
+the Edit tool (not a script that rewrites it). Write only inside private/requests/{id}/. Don't
+use git, don't change anything else in the project (finishing writes the prop itself), don't
+touch other requests. {end}"""
 MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
@@ -1091,7 +1094,8 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
                   ROLE=(role or "").upper(), role=role or "", roles="the subject, the references, the methods", pass_=2 if second else 1, more=MORE if second else "",
                   fetching=fetching, charge=charge, review_end=REVIEW_LAST if second else REVIEW_FIRST.format(id=rid), directed=directed,
                   judged=judged, JUDGED=judged.upper(), files=files, needed=mr.GRADE_NEEDED, criteria=DIRECTOR_CRITERIA.get(judged, "").format(id=rid),
-                  before=", ".join(mr.STAGES[:mr.STAGES.index(judged) + 1]) if judged else "")
+                  before=", ".join(mr.STAGES[:mr.STAGES.index(judged) + 1]) if judged else "",
+                  folder=Path(root).resolve().as_posix() if root is not None else "the project folder")
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,

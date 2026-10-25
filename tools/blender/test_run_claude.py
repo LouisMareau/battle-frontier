@@ -31,6 +31,7 @@ HERE = Path(__file__).resolve().parent
 PROJECT = HERE.parent.parent
 sys.path.insert(0, str(HERE))
 import model_requests as mr  # noqa: E402
+import run_claude as rc  # noqa: E402
 
 SCRATCH = PROJECT / "build" / "run-claude-test"
 FAKE = '''
@@ -191,8 +192,11 @@ allow = settings["permissions"]["allow"]
 check("  its tools: reading, writing in its folder, Blender through run_request.py, its own scripts there, nothing else", "Write(private/requests/test_one/**)" in allow
       and "Bash(python tools/blender/run_request.py test_one *)" in allow and "Bash(python private/requests/test_one/*)" in allow and "Bash(python -c *)" in allow and "Bash(python - *)" in allow
       and not any(a in ("Write", "Edit", "Bash") or a.startswith("Bash(git") for a in allow), str(allow))
-check("  told so: one command a call, a refusal of that call only, a helper script of its own from its folder", "private/requests/test_one/NAME.py (one that writes lines.json from numbers, say)" in log
-      and "from the project folder (no cd), one" in log and "a refusal is of that one call, never of the session" in log and "nothing joined with" in log)
+asked = rc.prompt(mr.load(SCRATCH, "test_one"), root=SCRATCH)
+check("  told so: the project folder by its path, the shell keeping its folder, the way back; one command a call, a refusal of that call only; a helper script of its own from its folder",
+      "python private/requests/test_one/NAME.py (one that\nwrites lines.json from numbers, say)" in asked and f"from the project folder, {SCRATCH.resolve().as_posix()}:" in asked
+      and "the shell keeps its folder between calls" in asked and f"run cd {SCRATCH.resolve().as_posix()} first, on its own" in asked
+      and "a refusal\nis of that one call, never of the session" in asked and "nothing joined with" in asked and f"run cd {SCRATCH.resolve().as_posix()} first" in log, asked[-1400:])
 raw = (mr.folder(SCRATCH, "test_one") / "run.jsonl").read_text(encoding="utf-8").splitlines()
 check("  the raw stream kept, without the pieces of what was being written", len(raw) == 4 and json.loads(raw[0])["model"] == "claude-test-1"
       and "stream_event" not in log and "partial_json" not in log, f"{len(raw)} lines")
@@ -264,7 +268,6 @@ check("  lines first: over each picture, the front and the side drawn from them,
       and "then draw the front and the side in lines.json" in log and "means drawing the design again, from the front and from the side" in log
       and "job.profiles() has each of their lines in cells" in log and "row has the lines on the model and how far each outline and the model overlap" in log)
 sys.path.insert(0, str(HERE))
-import run_claude as rc  # noqa: E402
 tpose = rc.settings_lines(mr.normal({"kind": "creature", "pose": "t_pose"}))
 check("a T-pose creature: the T-pose of its body plan, said in the reply", "no limbs (a grub" in tpose and "more legs: each" in tpose and "wings: spread" in tpose
       and "Say in your reply which of these it got" in tpose, tpose[:200])
@@ -407,7 +410,9 @@ run("test_stages", "judge_back", "--stage", "research", "--direct")
 code, out, rec, log = run("test_stages", "judge_back", "--stage", "research", "--direct")
 check("  sent back a third time: stopped for the user, saying so", rec["status"] == "failed" and rec["progress"]["step"].startswith("failed: the director sent the study stage back 3 times (40/100): The tail is too short")
       and rec["judgment"]["backs"] == {"study": 3} and rec["next"] == "", rec["progress"]["step"])
-run("test_stages", "stage", "--stage", "study")
+code, out, rec, log = run("test_stages", "stage", "--stage", "study")
+check("  started again by the user (the request failed): the send-backs counted anew, the director's notes still read", rec["judgment"]["backs"] == {} and rec["judgment"]["to"] == "study"
+      and "sent\n  it back to this stage" in rc.prompt(rec, stage="study"), f"{rec['judgment']}")
 code, out, rec, log = run("test_stages", "stage", "--stage", "research")
 check("  the stages over again after it, the director's turn after each", rec["stages"] == ["study", "research"] and rec["next"] == "direct:research" and rec["status"] == "in_progress", f"{rec['stages']} {rec['next']}")
 code, out, rec, log = run("test_stages", "more", "--stage", "review")

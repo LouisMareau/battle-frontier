@@ -713,6 +713,12 @@ def stage_start(root, rid, stage, minutes=None):
         passes = {"research_pass": 1, "research_more": False}
     elif stage == "research":
         passes = {"research_pass": 2 if record.get("research_more") else 1, "research_more": False}
+    # a run the user starts (the request failed, waiting or done, not between the editor's own
+    # runs) gives the stages their send-backs anew: the director's count starts over
+    if record["status"] != "in_progress":
+        j = dict(FIELDS["judgment"], **(record.get("judgment") or {}))
+        if j.get("backs"):
+            passes["judgment"] = dict(j, backs={})
     second = ", pass 2" if passes.get("research_pass") == 2 else ""
     log(root, rid, f"The {stage} stage ({k + 1} of {len(STAGES)}){second}: {STAGE_ABOUT[stage]}")
     return update(root, rid, status="in_progress", stage=stage, stages=done, next="",
@@ -744,7 +750,7 @@ def directed(root, rid, stage, grade, to, notes):
     j.update(stage=stage, grade=int(grade), to=to if back else "", notes=notes.strip(), backs=backs)
     head = notes.strip().splitlines()[0].strip() if notes.strip() else ""
     if back and backs[to] > BACKS_MOST:
-        log(root, rid, f"The director sent the {to} stage back {backs[to]} times: stopped for the user (its notes in plan/director/{stage}.md)")
+        log(root, rid, f"The director sent the {to} stage back {backs[to]} times: stopped for the user (its notes in plan/director/{stage}.md; Start again runs the stage once more, its send-backs counted anew)")
         p = dict(record["progress"], step=f"failed: the director sent the {to} stage back {backs[to]} times ({grade}/100): {head}")
         return update(root, rid, status="failed", judgment=j, next="", progress=p)
     if back:

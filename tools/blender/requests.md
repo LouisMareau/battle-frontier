@@ -420,7 +420,8 @@ right and each fault: where it shows, what it should be, how to fix it). At 70 a
 the director names (at or before the one judged: the earliest whose work caused the fault),
 the stages after it to do again, and that stage's run is told what to fix. A stage sent
 back three times stops the request for the user (failed, the director's notes in its step;
-Start again runs it once more). The record's `judgment` keeps the last grade, the stage it
+Start again runs it once more, the send-backs counted anew: a run the user starts resets the
+count, the editor's own between runs keep it). The record's `judgment` keeps the last grade, the stage it
 went back to and the notes (`backs`: how often each stage was sent back), `next` what the
 editor starts; `plan/director.log` lists every judgment. The panel's director chip shows
 the judging and the last grade. Each stage's run is estimated at its
