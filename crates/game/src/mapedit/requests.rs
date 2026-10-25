@@ -493,6 +493,8 @@ pub struct Judgment {
     pub to: String,
     pub notes: String,
     pub backs: BTreeMap<String, u32>,
+    /// each stage's last grade
+    pub grades: BTreeMap<String, u32>,
 }
 
 /// The director's grade a stage's work needs to go on (model_requests.py's GRADE_NEEDED).
@@ -611,6 +613,7 @@ impl ModelRequest {
         }
         match self.next.strip_prefix("direct:") {
             Some(s) => Stage::of(s).map(desk::How::Direct),
+            None if self.next == "retrospect" => Some(desk::How::Retrospect),
             None => Stage::of(&self.next).map(desk::How::Stage),
         }
     }
@@ -618,6 +621,11 @@ impl ModelRequest {
     /// The director judging a stage's work now.
     pub(super) fn judging(&self) -> bool {
         self.status == Status::InProgress && self.progress.step.starts_with("the director judges")
+    }
+
+    /// The retrospective running now: what the finished request taught, kept for the next.
+    pub(super) fn retrospecting(&self) -> bool {
+        self.status == Status::InProgress && self.progress.step.starts_with("the retrospective")
     }
 
     /// Its outlines in turn, numbered as the split run numbers them: picture by picture in its
@@ -1916,12 +1924,13 @@ mod desk {
                 How::Again => args.push("--again".into()),
                 How::Variants => args.push("--variants".into()),
                 How::Direct(_) => args.push("--direct".into()),
+                How::Retrospect => args.push("--retrospect".into()),
                 How::Whole | How::Stage(_) => {}
             }
             let note = match how {
                 How::Again => self.list.iter().find(|r| r.id == id).map(|r| r.comments.trim().to_string()).unwrap_or_default(),
                 // (the variants run reads how many and how they differ in the request)
-                How::Variants | How::Stage(_) | How::Direct(_) => String::new(),
+                How::Variants | How::Stage(_) | How::Direct(_) | How::Retrospect => String::new(),
                 _ => self.lines_notes.get(id).map(|n| n.trim().to_string()).unwrap_or_default(),
             };
             if !note.is_empty() {
@@ -1931,7 +1940,7 @@ mod desk {
             // window's pick
             let model = match (how, stage) {
                 (How::Direct(_), _) => "opus".to_string(),
-                (_, Some(_)) => "sonnet".to_string(),
+                (How::Retrospect, _) | (_, Some(_)) => "sonnet".to_string(),
                 _ => self.model.clone(),
             };
             if !model.is_empty() {
@@ -1949,6 +1958,7 @@ mod desk {
                     self.console_open = true;
                     self.failed_silent.remove(id);
                     match (how, stage) {
+                        (How::Retrospect, _) => format!("The retrospective of {id}: what it taught, kept for the next requests: the console shows everything it does"),
                         (How::Direct(s), _) => format!("The director judges the {} stage of {id} against the artwork: the console shows everything it does", s.name()),
                         (How::GoOn, _) => format!("{MAKER} goes on with {id} from its lines: the console shows everything it does"),
                         (How::Again, _) => format!("{MAKER} makes {id} again from its last model, with your comments: the console shows everything it does"),
@@ -1994,7 +2004,7 @@ mod desk {
                 How::GoOn => r.lines_ready(),
                 How::Again => r.status == Status::Done,
                 How::Variants => r.can_vary() && r.variants > 0,
-                How::Stage(_) | How::Direct(_) => r.staged() && r.status != Status::InProgress,
+                How::Stage(_) | How::Direct(_) | How::Retrospect => r.staged() && r.status != Status::InProgress,
             })
         }
 
@@ -2276,6 +2286,7 @@ mod desk {
                     let what = match how {
                         How::Direct(s) => format!("the director's judgment of the {} stage", s.name()),
                         How::Stage(s) => format!("the {} stage", s.name()),
+                        How::Retrospect => "the retrospective".to_string(),
                         _ => "the next run".to_string(),
                     };
                     let k = key(&r);
@@ -2594,7 +2605,7 @@ mod desk {
         /// after it).
         fn stage_chips(&self, ui: &mut egui::Ui, r: &ModelRequest) -> Option<Run> {
             let mut asked = None;
-            let running = r.stage().filter(|_| r.status == Status::InProgress && !r.stage_done() && !r.judging());
+            let running = r.stage().filter(|_| r.status == Status::InProgress && !r.stage_done() && !r.judging() && !r.retrospecting());
             let free = self.busy().is_none();
             let mut states = vec![];
             ui.horizontal_wrapped(|ui| {
@@ -2612,7 +2623,8 @@ mod desk {
                     states.push(format!("{}:{state}", s.name()));
                     let drawn = tag(ui, s.name(), color);
                     let pass = if r.research_pass > 1 && matches!(s, Stage::Research | Stage::Review) { ", pass 2" } else { "" };
-                    let about = format!("The {} stage, {state}{pass}: {}", s.name(), s.about());
+                    let graded = r.judgment.grades.get(s.name()).map(|g| format!(", graded {g}/100 last")).unwrap_or_default();
+                    let about = format!("The {} stage, {state}{pass}{graded}: {}", s.name(), s.about());
                     let again = done && free;
                     let click = ui.interact(drawn.rect, ui.id().with(("request-stage", &r.id, s.name())), if again { Sense::click() } else { Sense::hover() });
                     let click = if again { click.on_hover_text(format!("{about}. Click to run it again, and the stages after it")).on_hover_cursor(egui::CursorIcon::PointingHand) } else { click.on_hover_text(about) };
@@ -2639,8 +2651,16 @@ mod desk {
                     mark("uiRequestDirector", &hover);
                     platform::set_hook("requestdirector", &state);
                 }
+                // the retrospective: what the finished request taught, kept for the next
+                if r.retrospecting() {
+                    ui.add_space(4.0);
+                    let drawn = tag(ui, "lessons", WORKING);
+                    let hover = ui.interact(drawn.rect, ui.id().with(("request-lessons", &r.id)), Sense::hover()).on_hover_text("The retrospective: what this request taught its stages, kept for the next requests (private/requests/.lessons/)");
+                    mark("uiRequestLessons", &hover);
+                }
             });
             platform::set_hook("requeststages", &states.join(","));
+            platform::set_hook("requestgrades", &r.judgment.grades.iter().map(|(k, v)| format!("{k}:{v}")).collect::<Vec<_>>().join(","));
             asked
         }
 
@@ -2695,6 +2715,7 @@ mod desk {
                         How::Variants => " · variants".into(),
                         How::Stage(s) => format!(" · {} stage", s.name()),
                         How::Direct(s) => format!(" · the director on its {} stage", s.name()),
+                        How::Retrospect => " · the retrospective".into(),
                     };
                     let row = ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{}.", k + 1)).size(11.5).color(Color32::from_gray(150)));
@@ -2731,6 +2752,7 @@ mod desk {
                         How::Variants => "its variants, from its model".into(),
                         How::Stage(s) => format!("its {} stage again, and the stages after it", s.name()),
                         How::Direct(s) => format!("the director's judgment of its {} stage", s.name()),
+                        How::Retrospect => "its retrospective: what it taught, kept for the next requests".into(),
                     };
                     let row = row.response.on_hover_text(format!("{name}: {how_long}"));
                     mark(&format!("uiQueued_{}", q.id), &row);
@@ -4169,7 +4191,7 @@ mod desk {
         let (at, words) = r.progress.at(now_secs());
         let (fraction, color, text) = match r.status {
             _ if starting => (0.02, WORKING, format!("starting {MAKER}")),
-            Status::InProgress if r.judging() => (at, WORKING, words),
+            Status::InProgress if r.judging() || r.retrospecting() => (at, WORKING, words),
             Status::InProgress if r.staged() && !r.stage.is_empty() => {
                 let pass = if r.research_pass > 1 && (r.stage == "research" || r.stage == "review") { ", pass 2" } else { "" };
                 (at, WORKING, format!("{} stage{pass} · {words}", r.stage))
@@ -4252,6 +4274,8 @@ mod desk {
         Stage(Stage),
         /// the director's judgment of that stage's work, after it (a request made in stages)
         Direct(Stage),
+        /// the retrospective after the last stage: what the request taught, kept for the next
+        Retrospect,
     }
 
     impl Requests {
@@ -5088,7 +5112,7 @@ mod tests {
             let mut r = read(root, "moss_toad").unwrap();
             r.status = Status::InProgress;
             r.stages = done.iter().map(|s| s.to_string()).collect();
-            r.judgment = Judgment { stage: name.into(), grade, to: to.into(), notes: "The tail is too short on the side.".into(), backs: BTreeMap::new() };
+            r.judgment = Judgment { stage: name.into(), grade, to: to.into(), notes: "The tail is too short on the side.".into(), ..Default::default() };
             r.next = next.into();
             r.progress = Progress { step: if next.is_empty() { format!("the director judges the {name} stage") } else { format!("{name} judged {grade}/100") }, done: 0.5, started: now_secs(), minutes: 2.0 };
             save(root, &r).unwrap();
@@ -5210,17 +5234,40 @@ mod tests {
         assert_eq!(req.desk().launched.len(), 15, "a stage not done yet isn't a button");
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "body", "--model", "sonnet"], "Go on: the next not done");
-        // done: made again from the first stage
+        // done, the assembly judged: the retrospective next (what it taught, kept), the grades
+        // on the chips; then made again from the first stage
         let mut r = read(&root, "moss_toad").unwrap();
         r.status = Status::Done;
         r.stage = "assemble".into();
         r.stages = Stage::ALL.iter().map(|s| s.name().to_string()).collect();
         r.prop = "moss_toad".into();
+        r.next = "retrospect".into();
+        r.judgment.grades = [("body".to_string(), 74), ("assemble".to_string(), 82)].into_iter().collect();
+        r.progress.started = now_secs();
         save(&root, &r).unwrap();
         req.desk().begun();
         req.watch(18.0e9);
         req.watch(18.5e9);
+        assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--retrospect", "--model", "sonnet"], "the retrospective on its own");
+        assert!(req.said.take().unwrap().contains("The retrospective of moss_toad"));
+        let mut r = read(&root, "moss_toad").unwrap();
+        r.status = Status::InProgress;
+        r.progress = Progress { step: "the retrospective: what this request taught".into(), done: 0.1, started: now_secs(), minutes: 2.0 };
+        save(&root, &r).unwrap();
+        req.watch(19.0e9);
         frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestLessons").is_some(), "the lessons chip while it runs");
+        assert_eq!(crate::platform::hook("requestgrades").as_deref(), Some("assemble:82,body:74"));
+        assert!(crate::platform::hook("requeststages").unwrap().ends_with("assemble:done"), "the assembly isn't running: {:?}", crate::platform::hook("requeststages"));
+        r.status = Status::Done;
+        r.next = String::new();
+        r.progress.step = "done".into();
+        save(&root, &r).unwrap();
+        req.desk().begun();
+        req.watch(20.0e9);
+        req.watch(20.5e9);
+        frame_with(&ctx, &mut req, vec![]);
+        assert!(marked("uiRequestLessons").is_none());
         assert_eq!(crate::platform::hook("requeststages").as_deref(), Some("study:done,research:done,review:done,look:done,detail:done,merge:done,body:done,dress:done,assemble:done"));
         click(&ctx, &mut req, "uiRequestStart_moss_toad");
         assert_eq!(req.desk().launched.last().unwrap(), &["tools/blender/run_claude.py", "moss_toad", "--stage", "study", "--model", "sonnet"]);
@@ -5252,7 +5299,7 @@ mod tests {
             stage: "merge".into(),
             stages: ["study", "research", "review", "look", "detail"].iter().map(|s| s.to_string()).collect(),
             next: "merge".into(),
-            judgment: Judgment { stage: "merge".into(), grade: 61, to: "merge".into(), notes: "Bone names; hands; eyes.".into(), backs: [("merge".to_string(), 1)].into_iter().collect() },
+            judgment: Judgment { stage: "merge".into(), grade: 61, to: "merge".into(), notes: "Bone names; hands; eyes.".into(), backs: [("merge".to_string(), 1)].into_iter().collect(), ..Default::default() },
             progress: Progress { step: "merge judged 61/100: back to merge".into(), done: 1.0, started: 1792905188.0, minutes: 7.0 },
             ..ModelRequest::default()
         };

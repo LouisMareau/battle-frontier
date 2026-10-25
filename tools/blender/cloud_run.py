@@ -46,7 +46,7 @@ BLENDER_SHA256 = "c1d345b25c6f83708b2681d354d70a3e6023c04bb73cc7943366c0c19e5429
 TOOLS = Path(os.environ.get("BF_SANDBOX_TOOLS", "/opt/battle-frontier"))
 # where a run's changes are looked for, the files never sent back (the editor keeps its own log)
 WATCHED = ("content", "temporary", "private/requests")
-LEFT = {"log.txt", "run.jsonl", "claude-settings.json", "stop", ".cloud.json"}
+LEFT = {"log.txt", "run.jsonl", "claude-settings.json", "stop", ".cloud.json", ".lock", "launch.err"}
 # what the files were at setup
 BEFORE = Path(tempfile.gettempdir()) / "bf-cloud-before.json"
 

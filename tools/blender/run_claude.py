@@ -6,6 +6,7 @@ Requests window starts with its Start button (and stops with Cancel), or by hand
     python tools/blender/run_claude.py ID --variants
     python tools/blender/run_claude.py ID --stage study|research|review|look|detail|merge|body|dress|assemble [--go-on] [--role subject|references|methods]
     python tools/blender/run_claude.py ID --stage STAGE --direct      the director judges that stage's work
+    python tools/blender/run_claude.py ID --retrospect                after the last: what it taught, kept
     python3 tools/blender/run_claude.py ID --prompt [--go-on] [--again] [--variants] [--stage NAME] [--note-file PATH]
     python3 tools/blender/run_claude.py ID --settle [the same] [--reply "what was made"]
 
@@ -281,15 +282,15 @@ MADE = "End with one line saying what you made."
 
 # ({noted}: what the user said is off in the lines an earlier run made, when they start again)
 PROMPT = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
-          + READ + "{directed}" + "{lessons}{bones}{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
+          + READ + "{directed}{stage_lessons}" + "{lessons}{bones}{noted}" + LINES + MODEL + RULES.replace("{end}", MADE))
 LINES_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
              "started already), then stop: the user checks the lines before the model is built (the request\n"
              "says \"Let me check the lines first\"):\n"
-             + READ + "{directed}" + "{bones}{noted}" + LINES + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
+             + READ + "{directed}{stage_lessons}" + "{bones}{noted}" + LINES + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
                                                            "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
                                                            "lines you're unsure of."))
 GO_ON_RUN = (HEAD + "Follow tools/blender/requests.md for this one request from its step 6, the model (it's started\n"
-             "already):\n" + READ + "{directed}" + "{lessons}" + CHECKED + MODEL + RULES.replace("{end}", MADE))
+             "already):\n" + READ + "{directed}{stage_lessons}" + "{lessons}" + CHECKED + MODEL + RULES.replace("{end}", MADE))
 # a request made once, made again with the user's comments on it ({said}), from what the last
 # run made ({reply}: what it said back; {earlier}: what the runs made again before were told)
 AGAIN = """- the last run made it: private/requests/{id}/model.py built it (its parts listed at its top,
@@ -325,7 +326,7 @@ SPLIT = """- its pictures hold several drawings of the same kind of asset (the r
   none;
 """
 SPLIT_RUN = (HEAD + "This one request is split first (tools/blender/requests.md, \"Process multiple\"; it's started already):\n"
-             + READ + "{directed}" + SPLIT + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's name and height, and\n"
+             + READ + "{directed}{stage_lessons}" + SPLIT + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's name and height, and\n"
                                                     "anything on the pictures you left out, and why."))
 # split, the user having outlined the drawings to make ({outlined}: how many on which pictures;
 # {count}: how many in all): those only, each cut to its outline
@@ -346,7 +347,7 @@ OUTLINED = """- its pictures hold several drawings of the same kind of asset (th
 - that's all: no lines, no model (each new request is made by a run of its own);
 """
 OUTLINED_RUN = (HEAD + "This one request is split first, into the drawings the user outlined (tools/blender/requests.md,\n"
-                "\"Process multiple\"; it's started already):\n" + READ + "{directed}" + OUTLINED
+                "\"Process multiple\"; it's started already):\n" + READ + "{directed}{stage_lessons}" + OUTLINED
                 + RULES.replace("{end}", "End with a few lines for the user: the requests you made, each one's number and name."))
 # a set of floor tiles: the pattern on the pictures broken into cells, each a tile whose edges
 # say what goes on into the next, laid by wave function collapse
@@ -384,15 +385,15 @@ FLOOR = """- the pictures show a floor, a pavement or a tiling (or a part of one
 - check: cargo run -q -p engine-content --bin content -- check
 """
 FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, from its step 3 (it's started already):\n"
-             "it's a set of floor tiles (\"A set of floor tiles\"):\n" + READ + "{directed}" + "{lessons}{noted}" + FLOOR + RULES.replace("{end}", MADE))
+             "it's a set of floor tiles (\"A set of floor tiles\"):\n" + READ + "{directed}{stage_lessons}" + "{lessons}{noted}" + FLOOR + RULES.replace("{end}", MADE))
 AGAIN_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, made again from what the last run made,\n"
              "with the user's comments on it (requests.md, \"Made again, with the user's comments\"; it's started\n"
-             "already):\n" + READ + "{directed}" + AGAIN
+             "already):\n" + READ + "{directed}{stage_lessons}" + AGAIN
              + MODEL.replace("- write private/requests/{id}/model.py with", "- change private/requests/{id}/model.py, the last run's, with", 1)
              + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
                                       "you left as it was."))
 VARIANTS_RUN = (HEAD + "Follow tools/blender/requests.md for this one request: variants of the model made (requests.md,\n"
-                "\"Variants of a model made\"; it's started already):\n" + READ + "{directed}" + VARIED
+                "\"Variants of a model made\"; it's started already):\n" + READ + "{directed}{stage_lessons}" + VARIED
                 + RULES.replace("{end}", "End with a few lines for the user: the variants you made, and how each differs from the\n"
                                          "model."))
 # a request made in stages (requests.md, "Made in stages"): each stage a run of its own, with
@@ -424,7 +425,7 @@ SHAPE_PLAN = """- write private/requests/{id}/plan/shape.md, the shape plan the 
   unsure of ("[study] " lines);
 """
 STUDY_RUN = (HEAD + STAGED + "Follow tools/blender/requests.md for this one request from its step 3 to its step 5 (it's\n"
-             "started already), then plan its shape:\n" + READ + "{directed}" + "{lessons}{bones}{noted}"
+             "started already), then plan its shape:\n" + READ + "{directed}{stage_lessons}" + "{lessons}{bones}{noted}"
              + LINES.replace("Write both lists as comments\n  at the top of model.py before any shape", "Write both lists\n  at the top of plan/shape.md (below) before any shape")
              + SHAPE_PLAN + RULES.replace("{end}", "End with one line saying what you planned."))
 # the study stage of a request that checks its lines first: it stops at the lines, as
@@ -432,13 +433,13 @@ STUDY_RUN = (HEAD + STAGED + "Follow tools/blender/requests.md for this one requ
 STUDY_LINES_RUN = (HEAD + STAGED + "Follow tools/blender/requests.md for this one request, from its step 3 to its step 5 (it's\n"
                    "started already), then stop: the user checks the lines before the stages go on (the request\n"
                    "says \"Let me check the lines first\"):\n"
-                   + READ + "{directed}" + "{bones}{noted}"
+                   + READ + "{directed}{stage_lessons}" + "{bones}{noted}"
                    + LINES.replace("Write both lists as comments\n  at the top of model.py before any shape", "Keep both lists for\n  the reply")
                    + STOP + RULES.replace("{end}", "End with a few lines for the user, who\n"
                                                    "checks the lines next: what you took for the drawing, what you guessed, and anything in the\n"
                                                    "lines you're unsure of."))
 STUDY_GO_ON_RUN = (HEAD + STAGED + "The lines are drawn and checked: plan its shape on them (it's started already):\n"
-                   + READ + "{directed}" + "{lessons}" + CHECKED_LINES
+                   + READ + "{directed}{stage_lessons}" + "{lessons}" + CHECKED_LINES
                    + SHAPE_PLAN.replace("the\n  design and the drawing sorted (above)", "the\n  design and the drawing sorted (requests.md, \"The design, not the drawing\")")
                    + RULES.replace("{end}", "End with one line saying what you planned."))
 # the research stage: three researchers at once (a run of Claude each, its own file; in the
@@ -479,7 +480,11 @@ SUBJECT = """- research online with the web search and fetch tools what the desi
   the facts, each with where it came from (the page's address); the lead's doubts answered;
   what stays unknown. What the user's notes say wins over anything found;
 """
-REFERENCES = """- gather reference pictures of what the user's pictures don't show: the views the model needs
+REFERENCES = """- first, the reference pictures earlier requests kept, each with what it shows:
+  python tools/blender/model_requests.py refs (words after it narrow the list); one that shows
+  what you need comes in with python tools/blender/model_requests.py reuse {id} PATH --name
+  NAME (into plan/refs/, counted as a fetched one is); the web is for the rest;
+- gather reference pictures of what the user's pictures don't show: the views the model needs
   (the back, the underside, the feet, the face straight on, the inside of the mouth) and the
   details (how the fur lies, a scale's shape, a claw, a horn's ridges), of the thing the
   design is drawn from (a named one: itself; a made-up one: what it's built from). For each,
@@ -488,7 +493,11 @@ REFERENCES = """- gather reference pictures of what the user's pictures don't sh
   plan/refs/ (or its address), what it shows (which view, which detail), where it came from;
   and the views and details you couldn't find;
 """
-METHODS = """- research online how to do the steps the plan calls for that are unusual, in Blender or the
+METHODS = """- first, the how-tos earlier requests kept (kit calls that worked, the director's word for
+  it): python tools/blender/model_requests.py methods lists them, each a file in
+  private/requests/.lessons/methods/: read the ones that apply, and keep them in your file as
+  they are, with their source (the web is for what the library lacks);
+- research online how to do the steps the plan calls for that are unusual, in Blender or the
   kit (tools/blender/request_kit.py: read what it offers first; requests.md's "Accurate",
   "Parts", "The wind"): how scales are laid as cards, how a mane or feathers are carded, how
   a jaw, a wing or a tail is rigged, how a fin or a cloth bends, how a marking is painted,
@@ -502,15 +511,25 @@ ROLE_CHARGE = {"subject": SUBJECT, "references": REFERENCES, "methods": METHODS}
 RESEARCH_END = RULES.replace("{end}", "End with one line saying what you found.")
 # one researcher's run (here: the three at once)
 RESEARCHER_RUN = (HEAD + STAGED + RESEARCHER + "Look the design up online, for the stages after you (it's started already):\n"
-                  + READ + "{directed}" + RESEARCH_READ + "{charge}" + RESEARCH_END)
+                  + READ + "{directed}{stage_lessons}" + RESEARCH_READ + "{charge}" + RESEARCH_END)
 # in the cloud, one session does the three in turn
 RESEARCH_CLOUD_RUN = (HEAD + STAGED + """In the cloud this stage's three researchers run one after another, in this one session, you
 being each in turn ({roles}): each writes its own file, private/requests/{id}/plan/research/ROLE.md,
 and "[research:ROLE] " lines in plan/notes.log. Pass {pass_} of at most 2.{more}
 
 Look the design up online, for the stages after you (it's started already):
-""" + READ + "{directed}" + RESEARCH_READ + "- as the subject researcher:\n" + SUBJECT + "- as the references researcher:\n" + REFERENCES
+""" + READ + "{directed}{stage_lessons}" + RESEARCH_READ + "- as the subject researcher:\n" + SUBJECT + "- as the references researcher:\n" + REFERENCES
                       + "- as the methods researcher:\n" + METHODS + RESEARCH_END)
+# what earlier requests taught a stage (requests.md, "What the stages learn"): read first
+STAGE_LESSONS_READ = """- what earlier requests taught this stage ({path}; dated, a request each: measure rather
+  than take their numbers):
+{lines}
+"""
+# the director's grades against the user's ratings so far
+CALIBRATED = """- your grades against the user's ratings of the finished models so far ({path}): where
+  the user rated higher than you graded, you've been harsh; lower, lenient; grade accordingly:
+{lines}
+"""
 # what a stage sent back by the director is told ({notes}: the director's, indented)
 DIRECTED = """- the director judged the {judged} stage's work {grade} of 100 (under the {needed} needed) and sent
   it back to this stage, with this to fix:
@@ -554,7 +573,7 @@ DIRECTOR_CRITERIA = {
 DIRECTOR_RUN = (HEAD + STAGED_DIRECTOR + """You are the director of this request, made in stages: after each stage you judge its work
 against the artwork (the user's pictures and notes: the design, never the drawing's light),
 for how accurate it is. Judged now: the {JUDGED} stage.
-""" + READ + """- read what the stages have made so far, as far as they go: plan/shape.md, plan/research/,
+""" + READ + "{stage_lessons}{calibrated}" + """- read what the stages have made so far, as far as they go: plan/shape.md, plan/research/,
   plan/research.md, plan/look.md, plan/detail.md, plan.md, lines.json and the lines drawn
   (lines_PICTURE.png, profiles.png), materials.py, body.py, detail.py, model.py, the renders
   (compare.png, preview_*.png), and every line of plan/notes.log; your earlier judgments are
@@ -572,6 +591,36 @@ for how accurate it is. Judged now: the {JUDGED} stage.
   {judged}: N/100, back to STAGE: why";
 - change no other file.
 """ + RULES.replace("{end}", "End with one line: the grade and the verdict."))
+# the retrospective, after the last stage: what the request taught, kept for the next ones
+RETROSPECT_RUN = (HEAD + """This request was made in stages, each a run of Claude with one charge, a director judging
+each against the artwork (requests.md, "Made in stages"), and it's finished. You are its
+retrospective: what it taught, kept for the next requests (requests.md, "What the stages
+learn"). Nobody answers questions: decide.
+""" + READ + """- read every line of plan/notes.log and plan/director.log, every plan/director/*.md (the
+  grades and faults, stage by stage, and what was sent back), plan.md, the stages' files
+  (plan/shape.md, plan/research/, plan/research.md, plan/look.md, plan/detail.md,
+  materials.py, body.py, detail.py, model.py), the renders (compare.png, preview_*.png) and
+  the request's reply; and what the stages' lessons say already (private/requests/.lessons/
+  stages/*.md: don't repeat them);
+- for each stage, what this request taught it that the next requests' runs of it should
+  know: at most three lines a stage, each a fact of method and not of this model (what to
+  measure first, a kit call that did the job, a fault the director found that the stage
+  should check itself, a step that wasted a run); a stage that taught nothing gets none; and
+  for the director, what to check first next time. Each line:
+  python tools/blender/model_requests.py lesson {id} STAGE "the line"
+  (STAGE: study, research, review, look, detail, merge, body, dress, assemble, or director);
+- the how-tos that worked (the director's grades of the body, the dress and the assembly say
+  which: {needed} and over): each a short file written in the request's folder (a heading,
+  when it applies, the kit calls as written, 10 to 30 lines), then kept in the library:
+  python tools/blender/model_requests.py method {id} "topic" --file private/requests/{id}/plan/method_NAME.md
+  (python tools/blender/model_requests.py methods lists the topics kept: a topic given its
+  exact name again replaces it, when this request did it better); at most four;
+- the reference pictures worth keeping for requests of the same kind of thing (plan/research.md
+  says what each shows; none of the user's own pictures):
+  python tools/blender/model_requests.py keep-ref {id} FILE "what it shows, of what"
+  at most six;
+- change no file of the request but the method files you write.
+""" + RULES.replace("{end}", "End with one line: how many lessons, how-tos and references you kept."))
 # the lead's review of the research: on the first pass, more asked when something's missing
 # (the researchers run again on plan/research/more.md), else compiled; the second compiles
 REVIEW_FIRST = """- then, this being the first pass: when something the model needs is still missing (a view
@@ -583,7 +632,7 @@ REVIEW_FIRST = """- then, this being the first pass: when something the model ne
 REVIEW_LAST = """- then, this being the second pass (the last: no more research after it), write
   plan/research.md as below;
 """
-REVIEW_RUN = (HEAD + STAGED + "Review the research (pass {pass_} of at most 2; it's started already):\n" + READ + "{directed}" + """- read plan/shape.md and every line of plan/notes.log, then the researchers' files:
+REVIEW_RUN = (HEAD + STAGED + "Review the research (pass {pass_} of at most 2; it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan/shape.md and every line of plan/notes.log, then the researchers' files:
   plan/research/subject.md, plan/research/references.md and plan/research/methods.md, and
   look at every picture in plan/refs/ beside the user's pictures;
 - check them: each reference against the design (does it show the view or the detail it was
@@ -599,7 +648,7 @@ REVIEW_RUN = (HEAD + STAGED + "Review the research (pass {pass_} of at most 2; i
 - append to plan/notes.log what you dropped and why, and what stays unknown, "[review] "
   lines;
 """ + RULES.replace("{end}", "End with one line saying what you decided."))
-LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + "{directed}" + """- read plan/shape.md (the parts, as the study stage planned them, by name), plan/research.md
+LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan/shape.md (the parts, as the study stage planned them, by name), plan/research.md
   (what the research stage found online: the colours such a thing has in life, its
   references in plan/refs/: look at them) and plan/notes.log, and look at the lines the study
   stage made (lines_PICTURE.png, profiles.png);
@@ -621,7 +670,7 @@ LOOK_RUN = (HEAD + STAGED + "Plan its colours and its materials (it's started al
 - append to plan/notes.log what you guessed and what you'd change in shape.md (don't change
   it: the merge stage decides), "[look] " lines;
 """ + RULES.replace("{end}", "End with one line saying what you planned."))
-DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's started already):\n" + READ + "{directed}" + """- read plan/shape.md and plan/look.md (the parts and the colours, by name), plan/research.md
+DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan/shape.md and plan/look.md (the parts and the colours, by name), plan/research.md
   (what the research stage found online: how the fur, scales or feathers lie, the how-tos,
   its references in plan/refs/: look at them) and plan/notes.log, and look at the lines
   (lines_PICTURE.png, profiles.png);
@@ -642,7 +691,7 @@ DETAIL_RUN = (HEAD + STAGED + "Plan its detached parts and its detail (it's star
 - append to plan/notes.log what you guessed and what you'd change in shape.md or look.md
   (don't change them: the merge stage decides), "[detail] " lines;
 """ + RULES.replace("{end}", "End with one line saying what you planned."))
-MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started already):\n" + READ + "{directed}" + """- read plan/shape.md, plan/research.md, plan/look.md and plan/detail.md, and every line of
+MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan/shape.md, plan/research.md, plan/look.md and plan/detail.md, and every line of
   plan/notes.log (the stages' guesses, doubts and what each would change in the others'), and
   look at the lines (lines_PICTURE.png, profiles.png), the references in plan/refs/ and
   materials.py;
@@ -661,10 +710,12 @@ MERGE_RUN = (HEAD + STAGED + "Bring the plans together into one (it's started al
 - append to plan/notes.log each disagreement and how you decided it, "[merge] " lines; leave
   lines.json, materials.py and the plan/ files as they are;
 """ + RULES.replace("{end}", "End with one line saying what you decided."))
-BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\n" + READ + "{directed}" + """- read plan.md (whole: follow it) and plan/notes.log, and materials.py (its COLOURS and
+BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan.md (whole: follow it) and plan/notes.log, and materials.py (its COLOURS and
   PAINT: use them, change nothing in it), and look at the lines (lines_PICTURE.png,
   profiles.png; job.profiles() has them in cells, as the model will stand) and at the
-  references plan.md names in plan/refs/;
+  references plan.md names in plan/refs/; the how-tos plan.md or plan/research.md name are
+  in private/requests/.lessons/methods/ (python tools/blender/model_requests.py methods
+  lists them): kit calls that worked before, to build on;
 {lessons}- write private/requests/{id}/body.py, a module model.py imports with kit.load("body"):
   def build(job, kit, materials) builds the body as plan.md says and returns its objects:
   the skin (accurate: the block-out laid for every mass, kit.wrap over them all, sculpted to
@@ -692,10 +743,12 @@ BODY_RUN = (HEAD + STAGED + "Build its body on the plan (it's started already):\
 - append to plan/notes.log what you changed from the plan and why, and what the dress stage
   should know (the body's objects' names, their regions), "[body] " lines;
 """ + RULES.replace("{end}", "End with one line saying what you built."))
-DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its detail (it's started already):\n" + READ + "{directed}" + """- read plan.md and plan/detail.md (whole: follow them) and plan/notes.log (the body stage's
+DRESS_RUN = (HEAD + STAGED + "Dress the body built: its detached parts and its detail (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan.md and plan/detail.md (whole: follow them) and plan/notes.log (the body stage's
   lines say what it changed), materials.py and body.py (read them, change nothing in them)
   and model.py, and look at the renders (preview_*.png, compare.png), the lines and the
-  references plan.md names in plan/refs/;
+  references plan.md names in plan/refs/; the how-tos plan.md or plan/research.md name are in
+  private/requests/.lessons/methods/ (python tools/blender/model_requests.py methods lists
+  them): kit calls that worked before, to build on;
 - write private/requests/{id}/detail.py, a module model.py imports with kit.load("detail"):
   def build(job, kit, materials, body) adds to the body built and returns what it adds: the
   detached parts as kit.part parts overlapping the body (the lower jaw with its teeth and the
@@ -723,7 +776,7 @@ RIGGED = """rig it{rig}: every part on the
   the eyes' and the lids' when they move); give it its idle and its roar (kit.idle,
   kit.action), render and look at preview_idle.png and preview_roar.png: nothing torn, the
   jaw turning the right way, the lips meeting at rest (requests.md, step 9); then """
-ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's started already):\n" + READ + "{directed}" + """- read plan.md and every line of plan/notes.log (each stage's guesses and changes), body.py,
+ASSEMBLE_RUN = (HEAD + STAGED + "Put it together, rig it and finish it (it's started already):\n" + READ + "{directed}{stage_lessons}" + """- read plan.md and every line of plan/notes.log (each stage's guesses and changes), body.py,
   materials.py, detail.py and model.py, and look at the renders (preview_*.png, compare.png)
   and the lines;
 - in model.py: the body and the detail built and fitted as they are; {assemble}the previews,
@@ -740,7 +793,7 @@ STAGE_RUNS = {"review": REVIEW_RUN, "look": LOOK_RUN, "detail": DETAIL_RUN, "mer
 # a set of floor tiles made again: the same, its tiles changed in the last run's model.py
 AGAIN_FLOOR_RUN = (HEAD + "Follow tools/blender/requests.md for this one request, a set of floor tiles, made again from what\n"
                    "the last run made, with the user's comments on it (requests.md, \"Made again, with the user's comments\"\n"
-                   "and \"A set of floor tiles\"; it's started already):\n" + READ + "{directed}" + AGAIN
+                   "and \"A set of floor tiles\"; it's started already):\n" + READ + "{directed}{stage_lessons}" + AGAIN
                    + FLOOR.replace("- build each in model.py with", "- change the last run's model.py: each tile built with", 1)
                    + RULES.replace("{end}", "End with a few lines for the user: what you changed for each of their comments, and what\n"
                                             "you left as it was."))
@@ -995,14 +1048,15 @@ def vary_text(record):
             "  its shape, how its parts sit, its colours a shade apart; never another kind of thing.")
 
 
-def prompt(record, go_on=False, note="", again=False, variants=False, root=None, stage=None, role=None, cloud=False, direct=False):
+def prompt(record, go_on=False, note="", again=False, variants=False, root=None, stage=None, role=None, cloud=False, direct=False, retrospect=False):
     """What Claude is asked for the request: the recipe, or its part (part_of), with what the
     user says is off in the lines (`note`, from the window's check) fixed first; made again
     (`again`), what the user says of the last run's model (`note`, else the record's comments);
     `variants`, its variants made from its model; a `stage` of a request made in stages, that
     stage's charge (the study's, `go_on`: the shape planned on the lines the user checked; the
     research's, `role`: one of its researchers, else the three in turn, as the `cloud` does;
-    `direct`: the director's judgment of that stage's work). A
+    `direct`: the director's judgment of that stage's work; `retrospect`: what the finished
+    request taught, kept). A
     request that asks for variants has them made with its model. With the project (`root`), a
     run that builds the model reads first what the ratings teach of its kind, when they teach
     anything yet."""
@@ -1032,7 +1086,9 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
                + "\n".join(f"    {k}. " + "\n       ".join(c.splitlines()) for k, c in enumerate(told, 1)) + "\n") if told else ""
     part = part_of(record, go_on, again, variants, stage)
     shapes = mr.outlined(record)
-    if direct:
+    if retrospect:
+        template = RETROSPECT_RUN
+    elif direct:
         template = DIRECTOR_RUN
     elif stage == "study":
         template = STUDY_GO_ON_RUN if go_on else STUDY_LINES_RUN if record["check_lines"] else STUDY_RUN
@@ -1089,13 +1145,19 @@ def prompt(record, go_on=False, note="", again=False, variants=False, root=None,
         directed = DIRECTED.format(judged=j.get("stage", ""), grade=j.get("grade", 0), needed=mr.GRADE_NEEDED, notes=indented(str(j["notes"])))
     judged = stage if direct else ""
     files = ", ".join(mr.STAGE_FILES.get(judged, ())) or "the prop it added, its record and its .glb, and its renders"
+    # what earlier requests taught the stage (the director: its own lessons, and its grades
+    # against the user's ratings)
+    taught = mr.stage_lessons(root, "director" if direct else stage) if root is not None and (stage or direct) else []
+    stage_lessons = STAGE_LESSONS_READ.format(path=(mr.STAGE_LESSONS / f"{'director' if direct else stage}.md").as_posix(), lines="\n".join("  " + line for line in taught)) if taught else ""
+    graded = mr.calibration(root) if root is not None and direct else []
+    calibrated = CALIBRATED.format(path=mr.CALIBRATION.as_posix(), lines="\n".join("  " + line for line in graded)) if graded else ""
     staged = dict(stages=", ".join(mr.STAGES), STAGE=(stage or "").upper(), stage=stage or "", k=k, n=len(mr.STAGES), about=mr.STAGE_ABOUT.get(stage, ""),
                   assemble=RIGGED.format(rig=rig) if kind == "character" else "", staged=WAS_STAGED if record.get("stages") else "",
                   ROLE=(role or "").upper(), role=role or "", roles="the subject, the references, the methods", pass_=2 if second else 1, more=MORE if second else "",
                   fetching=fetching, charge=charge, review_end=REVIEW_LAST if second else REVIEW_FIRST.format(id=rid), directed=directed,
                   judged=judged, JUDGED=judged.upper(), files=files, needed=mr.GRADE_NEEDED, criteria=DIRECTOR_CRITERIA.get(judged, "").format(id=rid),
                   before=", ".join(mr.STAGES[:mr.STAGES.index(judged) + 1]) if judged else "",
-                  folder=Path(root).resolve().as_posix() if root is not None else "the project folder")
+                  folder=Path(root).resolve().as_posix() if root is not None else "the project folder", stage_lessons=stage_lessons, calibrated=calibrated)
     return template.format(id=rid, name=record["name"], what=what, height=height, notes=record["notes"].strip() or "(none)",
                            settings=settings_lines(record, root), checked=checked, noted=noted, bones=bones, rig=rig,
                            prop=record["prop"] or "(none)", reply=indented(record["reply"]) or "    (nothing)", earlier=earlier, said=said,
@@ -1248,10 +1310,12 @@ def unrunnable(root, rid, record, part, go_on, note, again, variants, say, direc
     return None
 
 
-def announce(record, part, note, say, go_on=False, direct=False):
+def announce(record, part, note, say, go_on=False, direct=False, retrospect=False):
     """What the run is, in its log: its part of the recipe (or its stage, or the director's
-    judgment of one), what the user said, their bones."""
-    if direct:
+    judgment of one, or the retrospective), what the user said, their bones."""
+    if retrospect:
+        say("This run: the retrospective: what this request taught its stages, kept for the next requests (private/requests/.lessons/)")
+    elif direct:
         say(f"This run: the director judges the {part} stage's work against the artwork, 0 to 100 (under {mr.GRADE_NEEDED} it goes back to the stage at fault)")
     elif part in mr.STAGES:
         k = mr.STAGES.index(part) + 1
@@ -1291,7 +1355,7 @@ def read_verdict(text):
     return min(100, int(grade.group(1))), to, notes
 
 
-def conclude(root, rid, part, began, again, note, result, returncode, error, claude, say, go_on=False, direct=False):
+def conclude(root, rid, part, began, again, note, result, returncode, error, claude, say, go_on=False, direct=False, retrospect=False):
     """A run's end, by what's on disk and what Claude said last (`result`: its result event, or
     {}; `error`: an error its messages had): done (split: its requests to make), waiting for the
     user's check of its lines, a stage done (its files written: the editor starts the next), or
@@ -1300,6 +1364,12 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
     record = mr.load(root, rid)
     last = str(result.get("result") or "").strip()
     stage = part if part in mr.STAGES else None
+    if retrospect:
+        # over, whatever it kept (its lines are in the library and the log): the request done
+        # again; what it said last, the console's
+        if last:
+            say(f"The retrospective says: {last}")
+        return mr.retrospected(root, rid, last.splitlines()[0][:160] if last else "")["status"]
     if part == "split" and record["children"] and returncode == 0 and not result.get("is_error"):
         # split: done, its requests to make
         p = dict(record["progress"])
@@ -1311,11 +1381,11 @@ def conclude(root, rid, part, began, again, note, result, returncode, error, cla
     if record["status"] == "done" and not direct:
         say(f"Done: the prop {record['prop']}" + (f", and its variants {', '.join(record['variant_props'])}" if record["variant_props"] else ""))
         if stage:
-            # (the director judges the assembly too, when the request has one)
-            following = f"direct:{stage}" if record.get("director", True) else ""
+            # (the director judges the assembly too, when the request has one; then the
+            # retrospective keeps what the request taught)
+            following = f"direct:{stage}" if record.get("director", True) else "retrospect"
             mr.update(root, rid, stage=stage, stages=mr.stages_with(record, stage), next=following)
-            if following:
-                say("The director judges the assembly next")
+            say("The director judges the assembly next" if following.startswith("direct:") else "The retrospective next: what this request taught")
         if again:
             # the comments made: told to the runs made again after this one; the field emptied
             # unless the user has written others meanwhile
@@ -1438,7 +1508,7 @@ def claude_once(root, rid, claude, env, args, text, say, stop, quiet, raw_name="
     return {"result": state["result"] or {}, "returncode": proc.returncode, "error": state["error"], "cost": float(cost or 0.0), "ended": ended}
 
 
-def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False):
+def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False, retrospect=False):
     """The run, start to end; the request's status as it ended. `go_on`: on from the model, on
     the lines the user checked, `note` saying what's off in them. `again`: the model the last
     run made, made again as the user's comments say (`note`, else the record's). `variants`:
@@ -1459,7 +1529,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     def say(text):
         mr.log(root, rid, text)
 
-    say(f"———————— the director judges the {stage} stage ————————" if direct else f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
+    say("———————— the retrospective starts ————————" if retrospect else f"———————— the director judges the {stage} stage ————————" if direct else f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
     ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say, direct)
     if ended is not None:
         return ended
@@ -1478,7 +1548,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     args = ["-p", "--output-format", "stream-json", "--verbose", "--include-partial-messages", "--permission-mode", "dontAsk", "--strict-mcp-config", "--no-session-persistence",
             "--settings", str(settings.relative_to(root))]
     # the agentic style's agents on Sonnet, its director on Opus, unless the caller says
-    if stage and not model:
+    if (stage or retrospect) and not model:
         model = "opus" if direct else "sonnet"
     if model:
         args += ["--model", model]
@@ -1486,8 +1556,10 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     if stage == "research" and not role and not direct:
         texts = {r: prompt(record, root=root, stage=stage, role=r) for r in mr.ROLES}
     else:
-        texts = {role: prompt(record, go_on, note, again, variants, root=root, stage=stage, role=role, direct=direct)}
-    if direct:
+        texts = {role: prompt(record, go_on, note, again, variants, root=root, stage=stage, role=role, direct=direct, retrospect=retrospect)}
+    if retrospect:
+        mr.retrospect_start(root, rid)
+    elif direct:
         mr.direct_start(root, rid, stage)
     elif stage:
         mr.stage_start(root, rid, stage)
@@ -1496,7 +1568,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
     mr.step(root, rid, "Claude is starting", 0.05)
     say(f"Claude Code: {claude} ({version})")
     say(f"On: {on}")
-    announce(record, part, note, say, go_on, direct)
+    announce(record, part, note, say, go_on, direct, retrospect)
     say(f"Sent: claude {' '.join(args)}   (the prompt on its input; model: {model or 'its default'})")
     say("Allowed without asking: " + ", ".join(allowed(rid, stage)))
     for r, t in texts.items():
@@ -1529,7 +1601,7 @@ def run(root, rid, model=None, quiet=QUIET, go_on=False, note="", again=False, v
         return mr.fail(root, rid, f"no word from {whom} for {max(1, round(quiet / 60))} min, so it was stopped")["status"]
     if None in outs:
         o = outs[None]
-        return conclude(root, rid, part, began, again, note, o["result"], o["returncode"], o["error"], claude, say, go_on, direct)
+        return conclude(root, rid, part, began, again, note, o["result"], o["returncode"], o["error"], claude, say, go_on, direct, retrospect)
     # the researchers' ends together: their last words, the first error among them
     replies = [f"{r}: {(o['result'].get('result') or '').strip()}" for r, o in outs.items() if (o["result"].get("result") or "").strip()]
     broke = next((o for o in outs.values() if o["result"].get("is_error") or o["returncode"]), None)
@@ -1563,7 +1635,7 @@ def prompt_file(rid):
     return Path(tempfile.gettempdir()) / f"bf-prompt-{rid}.txt"
 
 
-def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False):
+def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False, retrospect=False):
     """--prompt: the run's start in the cloud, as Start's here (its checks, in progress from
     now, its log), and its prompt written for the sandbox's Claude to follow. The request's
     status."""
@@ -1575,13 +1647,15 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
     def say(text):
         mr.log(root, rid, text)
 
-    say(f"———————— the director judges the {stage} stage ————————" if direct else f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
+    say("———————— the retrospective starts ————————" if retrospect else f"———————— the director judges the {stage} stage ————————" if direct else f"———————— the {stage} stage starts ————————" if stage else "———————— a run starts ————————")
     ended = unrunnable(root, rid, record, part, go_on, note, again, variants, say, direct)
     if ended is not None:
         print(f"Nothing to run: {mr.load(root, rid)['progress']['step'] or 'the request stays as it is'}")
         return ended
-    text = cloud_text(prompt(record, go_on, note, again, variants, root=root, stage=stage, cloud=True, direct=direct), rid)
-    if direct:
+    text = cloud_text(prompt(record, go_on, note, again, variants, root=root, stage=stage, cloud=True, direct=direct, retrospect=retrospect), rid)
+    if retrospect:
+        mr.retrospect_start(root, rid)
+    elif direct:
         mr.direct_start(root, rid, stage)
     elif stage:
         mr.stage_start(root, rid, stage)
@@ -1589,7 +1663,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
         mr.start(root, rid, mr.estimate(record, part))
     mr.step(root, rid, "Claude is starting", 0.05)
     say("In the cloud: Claude in a sandbox of Anthropic's, on the user's own API key (the web editor's run)")
-    announce(record, part, note, say, go_on, direct)
+    announce(record, part, note, say, go_on, direct, retrospect)
     say("Prompt:\n" + text)
     path = prompt_file(rid)
     path.write_text(text, encoding="utf-8")
@@ -1597,7 +1671,7 @@ def start_in_cloud(root, rid, go_on=False, note="", again=False, variants=False,
     return "in_progress"
 
 
-def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False):
+def settle(root, rid, reply="", go_on=False, note="", again=False, variants=False, stage=None, role=None, direct=False, retrospect=False):
     """--settle: the run's end in the cloud, as a run's here ends, by what's on disk (`reply`:
     the sandbox's Claude's line on what it made). The request's status."""
     record = mr.load(root, rid)
@@ -1609,7 +1683,7 @@ def settle(root, rid, reply="", go_on=False, note="", again=False, variants=Fals
         mr.log(root, rid, text)
 
     began = record["progress"]["started"] or time.time()
-    return conclude(root, rid, part, began, again, note, {"result": reply} if reply.strip() else {}, 0, None, "claude", say, go_on, direct)
+    return conclude(root, rid, part, began, again, note, {"result": reply} if reply.strip() else {}, 0, None, "claude", say, go_on, direct, retrospect)
 
 
 def main(argv):
@@ -1639,7 +1713,7 @@ def main(argv):
     if direct and stage is None:
         print("--direct judges a stage: say which with --stage")
         return 2
-    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv, stage, role, direct)
+    how = ("--go-on" in argv, note, "--again" in argv, "--variants" in argv, stage, role, direct, "--retrospect" in argv)
     root = mr.find_root(Path.cwd())
     if "--prompt" in argv:
         status = start_in_cloud(root, rid, *how)

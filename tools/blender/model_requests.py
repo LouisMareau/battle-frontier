@@ -43,6 +43,16 @@ Python, and from Blender through request_kit.py. tools/blender/requests.md is th
                                               a reference picture from the web into the request's
                                               plan/refs/ by its name (the research stage's: png,
                                               jpeg, webp or gif, at most 8 MB)
+    python tools/blender/model_requests.py lesson ID STAGE "a line"
+                                              what a request taught a stage, for the next requests
+                                              (the retrospective's: private/requests/.lessons/stages/)
+    python tools/blender/model_requests.py method ID "topic" --file private/requests/ID/plan/method_NAME.md
+                                              a how-to that worked, into the methods library
+                                              (.lessons/methods/TOPIC.md); methods lists them
+    python tools/blender/model_requests.py keep-ref ID FILE "what it shows"
+                                              a reference picture kept for later requests
+                                              (.lessons/refs/ID/, its line in the index); refs [words]
+                                              lists them; reuse ID PATH [--name NAME] brings one in
     python tools/blender/model_requests.py rate ID 85
                                               the user's rating of the model made: 0 (nothing like
                                               it) to 100 (exactly as designed); "none" takes it off
@@ -65,6 +75,7 @@ In the cloud (a sandbox of Anthropic's, which the web editor's runs go in: cloud
 change to a request and each line of its log is printed too, as `[request] {...}` and
 `[request-log] {...}`: the editor follows the run by them.
 """
+import contextlib
 import json
 import os
 import re
@@ -116,7 +127,7 @@ FIELDS = {
     # what the editor starts next ("" while a run goes: a stage's name, or "direct:STAGE" for
     # the director's judgment of that stage)
     "director": True,
-    "judgment": {"stage": "", "grade": 0, "to": "", "notes": "", "backs": {}},
+    "judgment": {"stage": "", "grade": 0, "to": "", "notes": "", "backs": {}, "grades": {}},
     "next": "",
     "status": "waiting",
     "progress": {"step": "", "done": 0.0, "started": 0.0, "minutes": 0.0},
@@ -372,12 +383,44 @@ def save(root, record, said=True):
     return record
 
 
+@contextlib.contextmanager
+def locked(root, rid):
+    """The record's lock while it's read and written again (the researchers write at once): a
+    file made exclusively, waited for a moment; one left by a run that died is taken after a
+    while."""
+    path = folder(root, rid) / ".lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = None
+    for _ in range(200):
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            break
+        except FileExistsError:
+            try:
+                if time.time() - path.stat().st_mtime > 30:
+                    path.unlink()
+            except OSError:
+                pass
+            time.sleep(0.05)
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+
 def update(root, rid, **fields):
-    """Read again, changed, written at once: what the editor changed meanwhile stays."""
-    record = load(root, rid)
-    record.update(fields)
-    told(root, "request", dict(fields, id=rid))
-    return save(root, normal(record), said=False)
+    """Read again, changed, written at once (one writer at a time): what the editor changed
+    meanwhile stays."""
+    with locked(root, rid):
+        record = load(root, rid)
+        record.update(fields)
+        told(root, "request", dict(fields, id=rid))
+        return save(root, normal(record), said=False)
 
 
 def every(root):
@@ -405,6 +448,14 @@ def waiting(root):
 BEST, WORST, SHOWN = 60, 40, 3
 # what the runs have learnt from them, a kind's to a file (written again whole, short)
 LESSONS = Path("private") / "requests" / ".lessons"
+# what the stages learn across requests (the retrospective's; requests.md, "What the stages
+# learn"): a file of dated lines per stage, a library of how-tos that worked, an index of the
+# reference pictures kept, and the director's grades against the user's ratings
+STAGE_LESSONS = LESSONS / "stages"
+METHODS = LESSONS / "methods"
+REFS = LESSONS / "refs"
+CALIBRATION = LESSONS / "director.md"
+LESSON_LINES = 30
 
 
 def kind_key(record):
@@ -550,10 +601,13 @@ def learnt(root, rid, works="", fails=""):
 
 
 def rate(root, rid, rating):
-    """The user's rating of the model made (0 to 100; None: not rated)."""
+    """The user's rating of the model made (0 to 100; None: not rated); against the director's
+    grade of its assembly, a line the director's next runs read."""
     if rating is not None:
         rating = max(0, min(100, int(rating)))
-    return update(root, rid, rating=rating)
+    record = update(root, rid, rating=rating)
+    calibrate(root, rid, rating)
+    return record
 
 
 def free(path):
@@ -674,19 +728,7 @@ def fetch(root, rid, url, name=None):
         data = answer.read(REF_MOST + 1)
     if len(data) > REF_MOST:
         raise ValueError(f"too big: {url} weighs more than the {REF_MOST // 1024} KB allowed")
-    refs = folder(root, rid) / "plan" / "refs"
-    refs.mkdir(parents=True, exist_ok=True)
-    taken = [p for p in refs.iterdir() if p.is_file()]
-    if len(taken) >= REFS_MOST:
-        raise ValueError(f"the references' room is full: {REFS_MOST} pictures in plan/refs/ already: pick among them")
-    if sum(p.stat().st_size for p in taken) + len(data) > REFS_BYTES:
-        raise ValueError(f"the references' room is full: plan/refs/ would weigh more than the {REFS_BYTES // (1024 * 1024)} MB allowed")
-    path, k = refs / f"{base}{ext}", 2
-    while path.exists():
-        path, k = refs / f"{base}_{k}{ext}", k + 1
-    path.write_bytes(data)
-    log(root, rid, f"Reference fetched: {path.relative_to(folder(root, rid)).as_posix()} ({len(data) // 1024} KB) from {url}")
-    return path, len(data), len(taken) + 1
+    return _room(root, rid, base, ext, data, f"fetched from {url}")
 
 
 def next_stage(record):
@@ -747,7 +789,9 @@ def directed(root, rid, stage, grade, to, notes):
     if back:
         to = to if to in STAGES and STAGES.index(to) <= STAGES.index(stage) else stage
         backs[to] = int(backs.get(to, 0)) + 1
-    j.update(stage=stage, grade=int(grade), to=to if back else "", notes=notes.strip(), backs=backs)
+    grades = dict(j.get("grades") or {})
+    grades[stage] = int(grade)
+    j.update(stage=stage, grade=int(grade), to=to if back else "", notes=notes.strip(), backs=backs, grades=grades)
     head = notes.strip().splitlines()[0].strip() if notes.strip() else ""
     if back and backs[to] > BACKS_MOST:
         log(root, rid, f"The director sent the {to} stage back {backs[to]} times: stopped for the user (its notes in plan/director/{stage}.md; Start again runs the stage once more, its send-backs counted anew)")
@@ -759,9 +803,175 @@ def directed(root, rid, stage, grade, to, notes):
         p = dict(record["progress"], step=f"{stage} judged {grade}/100: back to {to}", done=1.0)
         return update(root, rid, status="in_progress", judgment=j, stages=stages, next=to, progress=p)
     after = next_stage(record)
-    log(root, rid, f"The director judges the {stage} stage {grade}/100: go on" + (f" to the {after} stage" if after else ""))
+    log(root, rid, f"The director judges the {stage} stage {grade}/100: go on" + (f" to the {after} stage" if after else ": the retrospective next"))
     p = dict(record["progress"], step=f"{stage} judged {grade}/100: go on", done=1.0)
-    return update(root, rid, status="done" if after is None else "in_progress", judgment=j, next=after or "", progress=p)
+    # (after the last: the request done, and the retrospective to keep what it taught)
+    return update(root, rid, status="done" if after is None else "in_progress", judgment=j, next=after or "retrospect", progress=p)
+
+
+def retrospect_start(root, rid):
+    """The retrospective's run in progress: what the request taught, kept for the next ones."""
+    record = load(root, rid)
+    log(root, rid, "The retrospective: what this request taught, kept for the next requests (private/requests/.lessons/)")
+    return update(root, rid, status="in_progress", next="",
+                  progress={"step": "the retrospective: what this request taught", "done": 0.05, "started": float(round(time.time())), "minutes": estimate(record, "direct")})
+
+
+def retrospected(root, rid, said=""):
+    """The retrospective over, whatever it kept: the request done again."""
+    record = load(root, rid)
+    p = dict(record["progress"], step="done", done=1.0)
+    log(root, rid, "The retrospective is over" + (f": {said}" if said else ""))
+    return update(root, rid, status="done", next="", progress=p)
+
+
+# ---------------------------------------------------------------- what the stages learn
+
+def lesson(root, rid, stage, text):
+    """A line a request taught a stage (or the director), for the next requests' runs of it:
+    appended to the stage's lessons, dated and signed; the file keeps its last LESSON_LINES.
+    The path."""
+    if stage not in STAGES and stage != "director":
+        raise ValueError(f"no such stage: {stage} (one of {', '.join(STAGES)}, or director)")
+    text = " ".join(str(text).split())
+    if not text:
+        raise ValueError("an empty lesson")
+    path = Path(root) / STAGE_LESSONS / f"{stage}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.is_file() else []
+    lines.append(f"- {time.strftime('%Y-%m-%d')} {rid}: {text}")
+    path.write_text("\n".join(lines[-LESSON_LINES:]) + "\n", encoding="utf-8", newline="\n")
+    log(root, rid, f"lesson for the {stage} stage: {text}")
+    return path
+
+
+def stage_lessons(root, stage):
+    """What earlier requests taught a stage, as its run reads it: the file's lines, or none."""
+    path = Path(root) / STAGE_LESSONS / f"{stage}.md"
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.is_file() else []
+
+
+def method(root, rid, topic, source):
+    """A how-to that worked (the retrospective's), into the methods library under its topic: the
+    file at `source` (in the request's folder) copied over, headed with the topic, the request
+    and the date; a topic there already is replaced. The path."""
+    topic = " ".join(str(topic).split())
+    key = slug(topic)
+    if not key:
+        raise ValueError("a topic needs a name")
+    src = (Path(root) / source).resolve()
+    here = folder(root, rid).resolve()
+    if here not in src.parents or not src.is_file():
+        raise ValueError(f"the method's file must be in private/requests/{rid}/: {source}")
+    path = Path(root) / METHODS / f"{key}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    body = src.read_text(encoding="utf-8").strip()
+    # (the file's own heading goes: the topic is its heading)
+    if body.startswith("#"):
+        body = body.split("\n", 1)[1].strip() if "\n" in body else ""
+    path.write_text(f"# {topic}\n\nFrom {rid}, {time.strftime('%Y-%m-%d')}.\n\n{body}\n", encoding="utf-8", newline="\n")
+    log(root, rid, f"method kept: {topic} ({path.relative_to(root).as_posix()})")
+    return path
+
+
+def methods(root):
+    """The methods library: [(topic, its file's path in the project, its first line of substance)]."""
+    out = []
+    base = Path(root) / METHODS
+    for path in sorted(base.glob("*.md")) if base.is_dir() else []:
+        lines = [line.strip() for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        topic = lines[0].lstrip("# ").strip() if lines else path.stem
+        gist = next((line for line in lines[1:] if not line.startswith("From ") and not line.startswith("#")), "")
+        out.append((topic, path.relative_to(root).as_posix(), gist))
+    return out
+
+
+def keep_ref(root, rid, file, what):
+    """A reference picture kept for later requests (the retrospective's): copied from the
+    request's plan/refs/ into the library under the request's name, with its line in the index
+    (what it shows). The path."""
+    src = folder(root, rid) / "plan" / "refs" / Path(file).name
+    if not src.is_file():
+        raise ValueError(f"no such picture in private/requests/{rid}/plan/refs/: {Path(file).name}")
+    what = " ".join(str(what).split())
+    if not what:
+        raise ValueError("say what the picture shows")
+    dst = Path(root) / REFS / rid / src.name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
+    index = Path(root) / REFS / "index.md"
+    key = f"{rid}/{src.name}"
+    lines = [line for line in index.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith(f"- {key}:")] if index.is_file() else []
+    lines.append(f"- {key}: {what}")
+    index.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
+    log(root, rid, f"reference kept for later requests: {key}: {what}")
+    return dst
+
+
+def refs(root, words=""):
+    """The reference pictures kept, [(path under the library, what it shows)]; `words` keeps the
+    lines holding every word."""
+    index = Path(root) / REFS / "index.md"
+    out = []
+    for line in index.read_text(encoding="utf-8").splitlines() if index.is_file() else []:
+        if not line.startswith("- ") or ": " not in line:
+            continue
+        path, _, what = line[2:].partition(": ")
+        if all(w.lower() in line.lower() for w in words.split()):
+            out.append((path, what))
+    return out
+
+
+def _room(root, rid, base, ext, data, source):
+    """A picture into the request's plan/refs/ while the room holds (fetch's and reuse's): the
+    path written, its size, how many the room holds now."""
+    refs_dir = folder(root, rid) / "plan" / "refs"
+    refs_dir.mkdir(parents=True, exist_ok=True)
+    taken = [p for p in refs_dir.iterdir() if p.is_file()]
+    if len(taken) >= REFS_MOST:
+        raise ValueError(f"the references' room is full: {REFS_MOST} pictures in plan/refs/ already: pick among them")
+    if sum(p.stat().st_size for p in taken) + len(data) > REFS_BYTES:
+        raise ValueError(f"the references' room is full: plan/refs/ would weigh more than the {REFS_BYTES // (1024 * 1024)} MB allowed")
+    path, k = refs_dir / f"{base}{ext}", 2
+    while path.exists():
+        path, k = refs_dir / f"{base}_{k}{ext}", k + 1
+    path.write_bytes(data)
+    log(root, rid, f"Reference {source}: {path.relative_to(folder(root, rid)).as_posix()} ({len(data) // 1024} KB)")
+    return path, len(data), len(taken) + 1
+
+
+def reuse(root, rid, kept, name=None):
+    """A picture kept by an earlier request (its path under the library, as refs lists it) into
+    this request's plan/refs/, as fetch brings one in (the room counted). The path written, its
+    size, how many the room holds."""
+    src = (Path(root) / REFS / kept).resolve()
+    if (Path(root) / REFS).resolve() not in src.parents or not src.is_file():
+        raise ValueError(f"no such picture kept: {kept} (python tools/blender/model_requests.py refs lists them)")
+    base = slug(Path(name or src.name).stem) or "reference"
+    return _room(root, rid, base, src.suffix.lower(), src.read_bytes(), f"reused from {kept}")
+
+
+def calibrate(root, rid, rating):
+    """The director's grade of the assembly against the user's rating of the model, a line for
+    the director's next runs (CALIBRATION; its last LESSON_LINES kept). The path, or None when
+    the director didn't judge it."""
+    record = load(root, rid)
+    j = record.get("judgment") or {}
+    grade = (j.get("grades") or {}).get("assemble", j.get("grade") if j.get("stage") == "assemble" else None)
+    if rating is None or grade is None:
+        return None
+    path = Path(root) / CALIBRATION
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lines = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip() and not line.startswith(f"- {rid}:")] if path.is_file() else []
+    lines.append(f"- {rid}: the director graded the assembly {int(grade)}/100, the user rated the model {int(rating)}/100 ({time.strftime('%Y-%m-%d')})")
+    path.write_text("\n".join(lines[-LESSON_LINES:]) + "\n", encoding="utf-8", newline="\n")
+    return path
+
+
+def calibration(root):
+    """The director's grades against the user's ratings so far, a line each (none yet: [])."""
+    path = Path(root) / CALIBRATION
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()] if path.is_file() else []
 
 
 def review_more(root, rid):
@@ -1364,6 +1574,45 @@ def main(argv):
         value = None if argv[1].lower() == "none" else int(argv[1])
         r = rate(root, argv[0], value)
         print(f"{r['id']}: " + ("not rated" if r["rating"] is None else f"rated {r['rating']}"))
+    elif verb == "lesson":
+        try:
+            path = lesson(root, argv[0], argv[1], argv[2])
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"{path.relative_to(root).as_posix()}: a line more (its last {LESSON_LINES} kept)")
+    elif verb == "method":
+        source = option("--file")
+        if not source:
+            print("--file names the how-to's file, in the request's folder")
+            return 1
+        try:
+            path = method(root, argv[0], argv[1], source)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"{path.relative_to(root).as_posix()}: kept")
+    elif verb == "methods":
+        found = methods(root)
+        print("\n".join(f"{topic} ({path}): {gist}" for topic, path, gist in found) if found else "No methods kept yet (the retrospective keeps the how-tos that worked).")
+    elif verb == "keep-ref":
+        try:
+            path = keep_ref(root, argv[0], argv[1], argv[2])
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"{path.relative_to(root).as_posix()}: kept, in the index")
+    elif verb == "refs":
+        found = refs(root, " ".join(argv))
+        print("\n".join(f"{path}: {what}" for path, what in found) if found else "No reference pictures kept" + (" for those words" if argv else " yet") + ".")
+    elif verb == "reuse":
+        name = option("--name")
+        try:
+            path, size, held = reuse(root, argv[0], argv[1], name)
+        except ValueError as e:
+            print(e)
+            return 1
+        print(f"{path.relative_to(folder(root, argv[0])).as_posix()}: {size // 1024} KB, in plan/refs/ ({held} of {REFS_MOST} pictures taken; look at it with Read)")
     elif verb == "lessons":
         said = lessons(root, argv[0])
         print("\n".join(said) if said else f"Nothing to learn yet: no {lesson_key(load(root, argv[0]))} model is rated, and no run has learnt anything.")

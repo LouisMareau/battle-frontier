@@ -408,6 +408,24 @@ stage builds the figure as the silhouette has it, the fitted clothes its skin in
 colours; what stands off the body (a jacket's tails, a cape, hair, accessories) is the dress
 stage's, and the director judges the body only where it owns the silhouette.
 
+**What the stages learn.** After the assembly's judgment (or the assembly, without a
+director), a last run, the retrospective (`--retrospect`, on Sonnet), reads the whole plan
+folder, the director's judgments and the request's reply, and keeps what the request taught
+under `private/requests/.lessons/`: a line or three per stage in `stages/STAGE.md` (dated,
+signed with the request, the last 30 kept: `python tools/blender/model_requests.py lesson ID
+STAGE "..."`; `director` for what the director should check first), the how-tos that worked
+in `methods/TOPIC.md` (a short file of kit calls, written in the request's folder and kept
+with `method ID "topic" --file ...`; `methods` lists them; a topic named again is replaced),
+and the reference pictures worth keeping in `refs/ID/` with their line in `refs/index.md`
+(`keep-ref ID FILE "what it shows"`; `refs [words]` lists them, `reuse ID PATH --name NAME`
+brings one into a request's `plan/refs/` as fetch does). Every stage's run reads its own
+lessons first (measure rather than take their numbers), the methods researcher the library
+before the web, the references researcher the index before the web, the body and the dress
+the how-tos the plan names. The director reads its own lessons and, in `director.md`, its
+grades of each assembly against the user's rating of that model (written when the user
+rates), to tell whether it's been harsh or lenient. The panel shows each stage's last grade
+on its chip, and a "lessons" chip while the retrospective runs.
+
 **The director** (`director`, the panel's "A director judges each stage", on unless unticked):
 after each stage, a run of Claude (`--stage STAGE --direct`) judges its work against the
 artwork, the user's pictures and notes, for how accurate it is: the lines on the design, the

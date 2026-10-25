@@ -80,6 +80,18 @@ if mode == "finish":
         say({{"type": "stream_event", "event": {{"type": "content_block_delta", "delta": {{"type": "input_json_delta", "partial_json": piece}}}}}})
     mr.finish(os.getcwd(), rid, "test_prop", ["preview_front.png"], "made a test prop")
 last = "Made it."
+if mode == "retro":
+    # the retrospective's run: two lessons, a how-to and a reference kept through the kit
+    here = mr.folder(os.getcwd(), rid)
+    mr.lesson(os.getcwd(), rid, "study", "measure the head in heads before any line")
+    mr.lesson(os.getcwd(), rid, "director", "check the eye sockets before the grade")
+    (here / "plan").mkdir(exist_ok=True)
+    (here / "plan" / "method_mane.md").write_text("# Mane as cards\\n\\nkit.cards(body, 'mane', count=400, size=(0.04, 0.09), lean=0.7)\\n", encoding="utf-8")
+    mr.method(os.getcwd(), rid, "Mane as cards", "private/requests/" + rid + "/plan/method_mane.md")
+    (here / "plan" / "refs").mkdir(parents=True, exist_ok=True)
+    (here / "plan" / "refs" / "toad_side.png").write_bytes(b"\\x89PNG" + b"\\x00" * 16)
+    mr.keep_ref(os.getcwd(), rid, "toad_side.png", "a toad from the side, its legs folded")
+    last = "Kept 2 lessons, 1 how-to and 1 reference."
 if mode in ("judge", "judge_back"):
     # the director's run: its grade and verdict on the stage judged, and a note
     here = mr.folder(os.getcwd(), rid)
@@ -461,7 +473,7 @@ gone = kit_cmd("fetch", "test_stages", f"{at}/missing.png")
 check("  a page, a picture too big, a file path and a missing one refused, each saying why", page.returncode == 1 and "not a picture" in page.stdout and huge.returncode == 1 and "too big" in huge.stdout
       and nowhere.returncode == 1 and "not a web address" in nowhere.stdout and gone.returncode == 1 and "couldn't fetch" in gone.stdout and sorted(p.name for p in refs.iterdir()) == ["back_view.png", "back_view_2.png"],
       f"{page.stdout} {huge.stdout} {nowhere.stdout} {gone.stdout}")
-check("  the log says what was fetched, and how many the room holds", "Reference fetched: plan/refs/back_view.png (0 KB) from " + at in (mr.folder(SCRATCH, "test_stages") / "log.txt").read_text(encoding="utf-8")
+check("  the log says what was fetched, and how many the room holds", f"Reference fetched from {at}/photo.png: plan/refs/back_view.png (0 KB)" in (mr.folder(SCRATCH, "test_stages") / "log.txt").read_text(encoding="utf-8")
       and f"(2 of {mr.REFS_MOST} pictures taken" in again.stdout, again.stdout)
 for k in range(mr.REFS_MOST - 2):
     (refs / f"filler_{k}.png").write_bytes(b"x")
@@ -493,8 +505,65 @@ check("the assembly: a character rigged, finished; done, every stage done, the d
       and rec["stage"] == "assemble" and rec["next"] == "direct:assemble" and "rig it: every part on the\n  bones that move it, as plan.md's chains say" in asked and "run_request.py test_stages --finish" in asked
       and "Done: the prop test_prop" in log and "The director judges the assembly next" in log, f"{rec['status']} {rec['stages']} {rec['next']} {log[-300:]}")
 code, out, rec, log = run("test_stages", "judge", "--stage", "assemble", "--direct")
-check("  the assembly judged: done, nothing next", rec["status"] == "done" and rec["next"] == "" and rec["judgment"]["stage"] == "assemble" and "the prop it added, its record and its .glb, and its renders" in rc.prompt(rec, stage="assemble", direct=True)
-      and "The director judges the assemble stage 85/100: go on" in log, f"{rec['status']} {rec['next']} {log[-300:]}")
+check("  the assembly judged: done, the retrospective next, the grades kept per stage", rec["status"] == "done" and rec["next"] == "retrospect" and rec["judgment"]["stage"] == "assemble"
+      and rec["judgment"]["grades"].get("assemble") == 85 and rec["judgment"]["grades"].get("study") == 85 and "the prop it added, its record and its .glb, and its renders" in rc.prompt(rec, stage="assemble", direct=True)
+      and "The director judges the assemble stage 85/100: go on: the retrospective next" in log, f"{rec['status']} {rec['next']} {rec['judgment']['grades']} {log[-300:]}")
+# the retrospective: what the request taught, kept for the next ones through the kit (a line per
+# stage, a how-to in the library, a reference in the index), the request done again; the next
+# runs read them: the stage its lessons, the director its own and its grades against the user's
+# ratings, the researchers the library and the index
+lessons_dir = SCRATCH / mr.STAGE_LESSONS
+code, out, rec, log = run("test_stages", "retro", "--retrospect")
+study_taught = (lessons_dir / "study.md").read_text(encoding="utf-8") if (lessons_dir / "study.md").is_file() else ""
+check("the retrospective: run after the assembly's judgment, on Sonnet, the request done again; a lesson a stage, dated and signed", code == 0 and rec["status"] == "done" and rec["next"] == ""
+      and "--model sonnet" in log and "The retrospective says: Kept 2 lessons" in log and study_taught.strip() == f"- {time.strftime('%Y-%m-%d')} test_stages: measure the head in heads before any line"
+      and (lessons_dir / "director.md").read_text(encoding="utf-8").strip().endswith("test_stages: check the eye sockets before the grade"), f"{rec['status']} {rec['next']} {study_taught!r} {log[-400:]}")
+kept = SCRATCH / mr.METHODS / "mane_as_cards.md"
+check("  the how-to in the library under its topic, headed; listed with its gist", kept.is_file() and kept.read_text(encoding="utf-8").startswith("# Mane as cards\n\nFrom test_stages, ")
+      and mr.methods(SCRATCH) == [("Mane as cards", "private/requests/.lessons/methods/mane_as_cards.md", "kit.cards(body, 'mane', count=400, size=(0.04, 0.09), lean=0.7)")]
+      and "Mane as cards (private/requests/.lessons/methods/mane_as_cards.md): kit.cards" in kit_cmd("methods").stdout, str(mr.methods(SCRATCH)))
+check("  the reference in the library and the index, found by its words", (SCRATCH / mr.REFS / "test_stages" / "toad_side.png").is_file() and mr.refs(SCRATCH, "toad side") == [("test_stages/toad_side.png", "a toad from the side, its legs folded")]
+      and mr.refs(SCRATCH, "pine") == [] and "test_stages/toad_side.png: a toad from the side" in kit_cmd("refs").stdout, str(mr.refs(SCRATCH)))
+again = kit_cmd("reuse", "test_stages", "test_stages/toad_side.png", "--name", "Side again")
+wrong = kit_cmd("reuse", "test_stages", "nowhere/none.png")
+check("  a kept picture brought into a request's plan/refs/ (the room counted), a wrong path refused", again.returncode == 0 and (mr.folder(SCRATCH, "test_stages") / "plan" / "refs" / "side_again.png").is_file()
+      and f"of {mr.REFS_MOST} pictures taken" in again.stdout and wrong.returncode == 1 and "no such picture kept" in wrong.stdout, again.stdout + wrong.stdout)
+asked = rc.prompt(rec, root=SCRATCH, stage="study")
+check("  the study's next run reads what earlier requests taught it; the look's, with none, nothing", "what earlier requests taught this stage (private/requests/.lessons/stages/study.md" in asked
+      and "test_stages: measure the head in heads before any line" in asked and "what earlier requests taught" not in rc.prompt(rec, root=SCRATCH, stage="look"), asked[-1200:])
+check("  the researchers read the library and the index first", "model_requests.py methods lists them" in rc.prompt(rec, stage="research", role="methods")
+      and "python tools/blender/model_requests.py refs (words after it narrow the list)" in rc.prompt(rec, stage="research", role="references") and "reuse test_stages PATH --name" in rc.prompt(rec, stage="research", role="references")
+      and "private/requests/.lessons/methods/ (python tools/blender/model_requests.py methods" in rc.prompt(rec, stage="body"))
+rated = kit_cmd("rate", "test_stages", "88")
+director_asked = rc.prompt(rec, root=SCRATCH, stage="look", direct=True)
+check("  the user's rating against the director's grade of the assembly, a line the director's next runs read, with its own lessons", rated.returncode == 0
+      and (SCRATCH / mr.CALIBRATION).read_text(encoding="utf-8").strip().startswith("- test_stages: the director graded the assembly 85/100, the user rated the model 88/100")
+      and "your grades against the user's ratings of the finished models so far" in director_asked and "85/100, the user rated the model 88/100" in director_asked
+      and "test_stages: check the eye sockets before the grade" in director_asked, director_asked[-1500:])
+for k in range(mr.LESSON_LINES + 5):
+    mr.lesson(SCRATCH, "test_stages", "dress", f"line {k}")
+trimmed = mr.stage_lessons(SCRATCH, "dress")
+check("  a stage's lessons keep their last lines", len(trimmed) == mr.LESSON_LINES and trimmed[-1].endswith(f"line {mr.LESSON_LINES + 4}") and trimmed[0].endswith("line 5"), f"{len(trimmed)} {trimmed[:1]}")
+bad = kit_cmd("lesson", "test_stages", "paint", "nothing")
+check("  a lesson for no such stage refused", bad.returncode == 1 and "no such stage: paint" in bad.stdout, bad.stdout)
+# the record written by many at once (the researchers): one writer at a time, nothing lost
+import threading as th  # noqa: E402
+
+
+def writer(field, n):
+    for k in range(n):
+        mr.update(SCRATCH, "test_stages", **{field: f"{field}{k}"})
+
+
+pair = [th.Thread(target=writer, args=("notes", 25)), th.Thread(target=writer, args=("comments", 25))]
+for t in pair:
+    t.start()
+for t in pair:
+    t.join()
+rec = mr.load(SCRATCH, "test_stages")
+check("the record written by two at once: both their last words there, the lock gone", rec["notes"] == "notes24" and rec["comments"] == "comments24" and not (mr.folder(SCRATCH, "test_stages") / ".lock").exists(),
+      f"{rec['notes']} {rec['comments']}")
+mr.update(SCRATCH, "test_stages", notes="", comments="")
 # a stage run again: its files there already, one of them changed is enough; none changed isn't
 code, out, rec, log = run("test_stages", "partial", "--stage", "body")
 check("a stage run again that changes one of its files (the other as it was): done", rec["status"] == "in_progress" and rec["stages"] == ["study", "research", "review", "look", "detail", "merge", "body"]

@@ -1022,7 +1022,11 @@ guesses in a shared log; the panel shows the stages as chips, a done one clicked
 with those after it, a failed one run again by Start. **A director judges each stage** (on
 unless unticked): after each stage a run of Claude on Opus grades its work against your pictures and
 notes, 0 to 100; under 70 the work goes back to the stage at fault with what to fix, the
-stages after it following, a stage sent back three times stopping for you
+stages after it following, a stage sent back three times stopping for you. After the last
+judgment a retrospective keeps what the request taught, a few lines per stage, the how-tos
+that worked and the reference pictures worth keeping, under `private/requests/.lessons/`,
+which the next requests' stages read first; your rating of a finished model is kept against
+the director's grade of it, so the director learns whether it's harsh or lenient
 (`tools/blender/requests.md`, "Made in stages"). A tree's cells are its trunk's foot (what
 stands below a character's height), not its crown's. A picture with several drawings of one
 kind of asset (trees, bushes, rocks, plants) makes as many: tick "Process multiple" and Start

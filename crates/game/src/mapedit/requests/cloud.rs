@@ -95,7 +95,7 @@ pub(super) fn recipe() -> String {
 /// `stage`: a request made in stages, the stage this run is).
 pub(super) fn flags(how: How, noted: bool, stage: Option<RequestStage>) -> String {
     let mut out = match how {
-        How::Whole | How::Stage(_) | How::Direct(_) => "",
+        How::Whole | How::Stage(_) | How::Direct(_) | How::Retrospect => "",
         How::GoOn => " --go-on",
         How::Again => " --again",
         How::Variants => " --variants",
@@ -110,6 +110,9 @@ pub(super) fn flags(how: How, noted: bool, stage: Option<RequestStage>) -> Strin
     }
     if matches!(how, How::Direct(_)) {
         out += " --direct";
+    }
+    if matches!(how, How::Retrospect) {
+        out += " --retrospect";
     }
     if noted {
         out += " --note-file /mnt/session/uploads/note.txt";
@@ -126,6 +129,7 @@ pub(super) fn first_message(id: &str, name: &str, how: How, noted: bool, stage: 
         How::Variants => "variants of the model it made".into(),
         How::Stage(s) => format!("its {} stage, run again (it's made in stages, a session each: {})", s.name(), s.about()),
         How::Direct(s) => format!("the director's judgment of its {} stage's work against the artwork (it's made in stages, a session each)", s.name()),
+        How::Retrospect => "its retrospective: what it taught, kept for the next requests (it's made in stages, a session each)".into(),
     };
     let what = match (how, stage) {
         (How::Whole | How::GoOn, Some(s)) => format!("{what}: its {} stage (it's made in stages, a session each: {})", s.name(), s.about()),
@@ -800,6 +804,8 @@ mod run {
                 How::Again
             } else if args.iter().any(|a| a == "--variants") {
                 How::Variants
+            } else if args.iter().any(|a| a == "--retrospect") {
+                How::Retrospect
             } else if let Some(s) = stage.filter(|_| args.iter().any(|a| a == "--direct")) {
                 How::Direct(s)
             } else if let Some(s) = stage {
@@ -1106,6 +1112,8 @@ mod tests {
         assert_eq!(flags(How::GoOn, true, Some(RequestStage::Study)), " --go-on --stage study --note-file /mnt/session/uploads/note.txt");
         assert_eq!(flags(How::Stage(RequestStage::Body), false, None), " --stage body");
         assert_eq!(flags(How::Direct(RequestStage::Body), false, None), " --stage body --direct");
+        assert_eq!(flags(How::Retrospect, false, None), " --retrospect");
+        assert!(first_message("moss_toad", "Moss toad", How::Retrospect, false, None).contains("its retrospective: what it taught"));
         assert!(first_message("moss_toad", "Moss toad", How::Direct(RequestStage::Look), false, None).contains("the director's judgment of its look stage's work"));
         let staged = first_message("moss_toad", "Moss toad", How::Stage(RequestStage::Dress), false, None);
         assert!(staged.starts_with("Make the model request \"Moss toad\" (moss_toad): its dress stage, run again (it's made in stages, a session each: the detached parts and the detail on the body)"), "{staged}");
